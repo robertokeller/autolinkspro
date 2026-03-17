@@ -1,5 +1,7 @@
 const TARGET_PATH = "/mercadolivre/configuracoes";
 const TRUSTED_PANEL_ORIGINS = [
+  "https://autolinks.pro",
+  "https://www.autolinks.pro",
   "https://app.autolinks.pro",
   "http://localhost:5173",
   "http://localhost:5175",

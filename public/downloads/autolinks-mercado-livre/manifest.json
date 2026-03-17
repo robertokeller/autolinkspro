@@ -8,6 +8,8 @@
     "https://*.mercadolivre.com.br/*",
     "https://*.mercadolibre.com/*",
     "https://*.meli.la/*",
+    "https://autolinks.pro/*",
+    "https://www.autolinks.pro/*",
     "https://app.autolinks.pro/*",
     "http://localhost/*",
     "http://127.0.0.1/*",
@@ -35,6 +37,8 @@
   "content_scripts": [
     {
       "matches": [
+        "https://autolinks.pro/*",
+        "https://www.autolinks.pro/*",
         "https://app.autolinks.pro/*",
         "http://localhost/*",
         "http://127.0.0.1/*",
