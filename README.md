@@ -1,0 +1,244 @@
+# Auto Links
+
+Sistema para operacao de afiliados com roteamento de mensagens, integracoes de canais e automacoes.
+
+## Requisitos
+
+- Node.js 20+
+- npm 10+
+- Runtime de deploy: Node.js (sem Deno)
+
+## Modos de execucao
+
+- Local (npm): recomendado para desenvolvimento.
+- Cloud (Coolify): recomendado para producao 24/7 com dominio e SSL.
+
+## Setup local
+
+```bash
+cd "C:\Users\Rober\Downloads\Autolinks - codex"
+npm install
+```
+
+Crie `.env` a partir de `.env.example` antes de iniciar os servicos.
+
+## Preview em tempo real
+
+```bash
+npm run preview
+```
+
+- URL padrao (sem parametros): `http://127.0.0.1:5173` (com fallback para `5174` e, se necessario, proxima porta livre)
+- `npm run preview` agora sobe automaticamente banco local (Docker), migracoes, seeds, API e microservicos necessarios.
+- Ao salvar codigo, a pagina recarrega automaticamente.
+
+Para porta local padrao (`127.0.0.1:5173`, com fallback automatico para `5174`):
+
+```bash
+npm run preview:local
+```
+
+- Esse comando tambem sobe automaticamente banco + API + servicos (WhatsApp/Telegram/Shopee/Mercado Livre) antes do preview.
+
+Para subir somente o frontend em porta livre automaticamente:
+
+```bash
+npm run preview:safe
+```
+
+Para subir tudo pronto (PostgreSQL + API + microservicos + preview) com um comando:
+
+```bash
+npm run preview:ready -- --host 127.0.0.1 --port 5174
+```
+
+Ou explicitamente na porta padrao:
+
+```bash
+npm run preview:ready -- --host 127.0.0.1 --port 5173
+```
+
+- Se banco/API/microservicos nao estiverem rodando, esse comando faz `build + start` automaticamente.
+- Depois basta abrir o link exibido no terminal, ir em `Conexoes > WhatsApp`, criar sessao e clicar em `Conectar` para gerar QR.
+
+## Desenvolvimento
+
+```bash
+npm run dev
+```
+
+- `npm run dev` inicia o frontend + `Ops Control` em paralelo.
+- Com isso, o botao `Ligar todos` no dashboard admin consegue acionar os microservicos locais.
+- Se quiser apenas o frontend, use `npm run dev:web`.
+
+Credenciais seed (dev/local):
+
+- Admin: `robertokellercontato@gmail.com` / `abacate1`
+- User: `aliancaslovely@gmail.com` / `abacate1`
+
+## Integracoes reais (Baileys + Telegram + Shopee API)
+
+1. Suba os microservicos em terminais separados:
+
+```bash
+npm run svc:wa:build
+npm run svc:wa:start
+```
+
+```bash
+npm run svc:tg:build
+npm run svc:tg:start
+```
+
+```bash
+npm run svc:shopee:build
+npm run svc:shopee:start
+```
+
+```bash
+npm run svc:ops:start
+```
+
+2. Configure no `.env` do frontend:
+
+```bash
+VITE_WHATSAPP_MICROSERVICE_URL=http://127.0.0.1:3111
+VITE_TELEGRAM_MICROSERVICE_URL=http://127.0.0.1:3112
+VITE_SHOPEE_MICROSERVICE_URL=http://127.0.0.1:3113
+VITE_MELI_RPA_URL=http://127.0.0.1:3114
+VITE_OPS_CONTROL_URL=http://127.0.0.1:3115
+```
+
+Credenciais sensiveis e segredos devem ficar apenas nos arquivos `.env` dos servicos:
+
+- `services/whatsapp-baileys/.env`
+- `services/telegram-telegraph/.env`
+- `services/shopee-affiliate/.env`
+- `services/mercadolivre-rpa/.env`
+
+3. Reinicie o `npm run preview` apos alterar `.env`.
+
+4. Diagnostico rapido do QR do WhatsApp:
+
+```bash
+# deve responder {"ok":true,...}
+curl http://127.0.0.1:3111/health
+```
+
+- Diagnostico rapido Shopee API:
+
+```bash
+curl http://127.0.0.1:3113/health
+```
+
+- Se `VITE_WHATSAPP_MICROSERVICE_URL` nao estiver configurado, o sistema nao gera QR e exibira erro de configuracao.
+- `WEBHOOK_SECRET` e credenciais de API nao devem ser expostos no frontend.
+
+## Fluxo validado (monitorar e enviar)
+
+- WhatsApp:
+  - gera QR/pairing code;
+  - captura mensagens de grupos (`message_received`);
+  - sincroniza grupos;
+  - envia mensagens para grupos (`send-message`).
+- Telegram:
+  - autentica por `send_code` + `verify_code` (+ `verify_password` quando 2FA);
+  - captura mensagens de grupos/canais;
+  - sincroniza grupos;
+  - envia mensagens para grupos/canais.
+- Agendamentos (`dispatch-messages`) agora enviam de fato via conectores reais e registram falhas no historico.
+- Automacoes Shopee (`shopee-automation-run`) executam busca real na API Shopee, aplicam template e disparam para grupos da sessao configurada.
+
+## Build e testes
+
+```bash
+npm run build
+npm run test
+```
+
+## Deploy com Coolify (Hostinger)
+
+Arquivos prontos para deploy:
+
+- `docker-compose.coolify.yml`
+- `docker/web.Dockerfile`
+- `docker/whatsapp.Dockerfile`
+- `docker/telegram.Dockerfile`
+- `docker/shopee.Dockerfile`
+- `docker/meli.Dockerfile`
+- `docker/scheduler.Dockerfile`
+- `.env.coolify.example`
+
+Passos rapidos:
+
+1. Rode `npm run deploy:preflight` para validar estrutura e arquivos obrigatorios.
+2. Copie `.env.coolify.example` para `.env.coolify` e ajuste dominios/segredos.
+3. No Coolify, crie um recurso `Docker Compose` apontando para `docker-compose.coolify.yml` (**nao use Application/Nixpacks**).
+4. Cadastre as variaveis de ambiente iguais ao `.env.coolify`.
+5. Associe dominios e SSL para `web`, `whatsapp`, `telegram`, `shopee`, `meli` e `ops-control`.
+6. Mantenha `.env`, `.env.local` e `.env.coolify` fora do GitHub.
+
+Guia completo:
+
+- `docs/HOSTINGER_COOLIFY_DEPLOY.md`
+
+## Execucao 24/7 no Windows
+
+Para manter todo o stack sempre ativo (frontend + WhatsApp + Telegram + Shopee + Mercado Livre), use PM2.
+
+Guia completo: `docs/RUN_24_7_WINDOWS.md`.
+
+Resumo rapido:
+
+```bash
+npm install -g pm2 pm2-windows-startup
+npm run pm2:bootstrap
+```
+
+- O processo `autolinks-health-guardian` roda junto no PM2 para monitorar os 4 servicos e reiniciar automaticamente em caso de falhas consecutivas.
+- Para agendamentos e automacoes rodarem sem depender da interface aberta, configure `SCHEDULER_MODE=remote`, `SCHEDULER_RPC_BASE_URL` e `SCHEDULER_RPC_TOKEN`.
+
+## Estudo de reestruturacao visual
+
+- Guia de padronizacao visual (icones, componentes, transicoes, janelas, cards e flyout menus): `docs/VISUAL_RESTRUCTURING_STUDY.md`
+
+## Estudo de estabilidade operacional
+
+- Arquitetura com workers separados + fila dinamica por processo completo (24/7, prioridade global e anti-pico): `docs/WORKER_QUEUE_STABILITY_STUDY.md`
+
+## Scripts principais
+
+- `npm run dev`: frontend + Ops Control em paralelo (fluxo recomendado para desenvolvimento)
+- `npm run dev:web`: apenas frontend (sem Ops Control)
+- `npm run preview`: sobe stack local completa (PostgreSQL + API + WhatsApp + Telegram + Shopee + Mercado Livre + preview)
+- `npm run preview:local`: sobe stack completa e preview local em `127.0.0.1:5173` (fallback sequencial: `5174`, `5175`, ...)
+- `npm run preview:safe`: inicia somente o frontend em porta livre automaticamente (a partir da `5173`)
+- `npm run preview:live`: sobe stack completa e preview na rede local (`0.0.0.0`)
+- `npm run preview:dist`: preview do build de producao
+- `npm run lint`: analise estatica
+- `npm run test`: testes automatizados
+- `npm run deploy:preflight`: valida estrutura minima para deploy no Coolify (antes de subir para GitHub)
+- `npm run scheduler:start`: scheduler 24/7 (modo remoto quando `SCHEDULER_RPC_BASE_URL` estiver configurado)
+- `npm run guardian:start`: monitor 24/7 de saude dos servicos
+- `npm run svc:shopee:build`: build do servico Shopee
+- `npm run svc:shopee:start`: sobe servico Shopee (porta `3113`)
+- `npm run svc:ops:start`: sobe servico Ops Control (porta `3115`)
+
+## Credenciais de teste locais
+
+- email admin: `admin@autolinks.local`
+- senha admin: `Mudar@1234!`
+- email cliente: `cliente@autolinks.local`
+- senha cliente: `Mudar@1234!`
+
+## Estrutura de alto nivel
+
+- `src/pages`: telas
+- `src/components`: componentes reutilizaveis
+- `src/routes`: definicao modular das rotas
+- `src/integrations/backend`: camada de dados/auth/rpc local
+- `services`: microservicos externos (WhatsApp/Telegram)
+
+## Observacoes
+
+- O projeto roda 100% local sem plataforma externa obrigatoria.

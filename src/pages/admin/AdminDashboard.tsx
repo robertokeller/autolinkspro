@@ -1,8 +1,8 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BarChart3, Flame, Route, Users, AlertTriangle, Play, Square, RotateCcw,
+  BarChart3, Flame, Route, Users, AlertTriangle, Play, RotateCcw,
   RefreshCw, Loader2, Copy, Power, Server, Activity, Cpu,
-  HardDrive, Clock, Circle, ShieldCheck, Eye,
+  HardDrive, Clock, Circle, ShieldCheck, Eye, Edit2,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
@@ -13,6 +13,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
@@ -109,22 +112,20 @@ interface CommandStatus {
   detail: string;
 }
 
-type ServiceOperation = "start" | "stop" | "restart" | "pause";
+type ServiceOperation = "start" | "stop" | "restart";
 type BulkOperation = ServiceOperation;
-type SystemOperation = "start" | "restart" | "pause" | "shutdown";
+type SystemOperation = "start" | "restart" | "shutdown";
 
 const SERVICE_OPERATION_LABEL: Record<ServiceOperation, string> = {
-  start: "iniciar",
-  stop: "desligar",
-  restart: "reiniciar",
-  pause: "pausar",
+  start: "Iniciar",
+  stop: "Desligar",
+  restart: "Reiniciar",
 };
 
 const SYSTEM_OPERATION_LABEL: Record<SystemOperation, string> = {
-  start: "iniciar sistema",
-  restart: "reiniciar sistema",
-  pause: "pausar sistema",
-  shutdown: "desligar sistema",
+  start: "Iniciar Sistema",
+  restart: "Reiniciar Sistema",
+  shutdown: "Desligar Sistema",
 };
 
 function formatUptime(uptimeSec: number | null) {
@@ -137,23 +138,23 @@ function formatUptime(uptimeSec: number | null) {
 
 function formatProcessStatusLabel(processStatus: string) {
   const normalized = String(processStatus || "").trim().toLowerCase();
-  if (!normalized) return "Sem telemetria";
-  if (normalized === "online-local") return "Processo ativo (local)";
-  if (normalized === "starting-local") return "Inicializando (local)";
-  if (normalized === "offline-local") return "Processo parado (local)";
-  if (normalized === "online") return "Processo ativo (PM2)";
-  if (normalized === "stopped" || normalized === "stop") return "Processo parado (PM2)";
-  if (normalized === "degraded") return "Processo ativo, componente sem resposta";
-  if (normalized === "port-conflict") return "Porta ativa sem processo PM2";
-  if (normalized === "ops-indisponivel") return "Ops indisponível";
-  if (normalized === "unknown" || normalized === "desconhecido") return "Sem telemetria";
+  if (!normalized) return "Sem Telemetria";
+  if (normalized === "online-local") return "Processo Ativo (Local)";
+  if (normalized === "starting-local") return "Inicializando (Local)";
+  if (normalized === "offline-local") return "Processo Parado (Local)";
+  if (normalized === "online") return "Processo Ativo (PM2)";
+  if (normalized === "stopped" || normalized === "stop") return "Processo Parado (PM2)";
+  if (normalized === "degraded") return "Processo Ativo, Componente Sem Resposta";
+  if (normalized === "port-conflict") return "Porta Ativa Sem Processo PM2";
+  if (normalized === "ops-indisponivel") return "Ops Indisponível";
+  if (normalized === "unknown" || normalized === "desconhecido") return "Sem Telemetria";
   return normalized.replace(/[-_]/g, " ");
 }
 
 function formatComponentStatusLabel(componentOnline: boolean, componentError: string | null) {
-  if (componentOnline) return "Componente respondendo";
-  if (componentError) return "Componente sem resposta";
-  return "Componente indisponível";
+  if (componentOnline) return "Componente Respondendo";
+  if (componentError) return "Componente Sem Resposta";
+  return "Componente Indisponível";
 }
 
 export default function AdminDashboard() {
@@ -189,14 +190,19 @@ export default function AdminDashboard() {
   const [maintenanceEnabled, setMaintenanceEnabled] = useState(false);
   const [commandStatus, setCommandStatus] = useState<CommandStatus>({
     phase: "idle",
-    title: "Sem comando em execução",
-    detail: "",
+    title: "Monitor de Operações",
+    detail: "Aqui aparecem os status das operações do sistema e serviços",
   });
   const [processQueues, setProcessQueues] = useState<ProcessQueueSnapshot | null>(null);
   const [topUserUsage, setTopUserUsage] = useState<UserObservabilityRow[]>([]);
   const [anomalies, setAnomalies] = useState<ObservabilityAnomaly[]>([]);
   const [nextRefreshIn, setNextRefreshIn] = useState(AUTO_HEALTH_INTERVAL_MS / 1000);
   const lastRefreshTsRef = useRef(Date.now());
+  
+  // Port edit modal state
+  const [editPortService, setEditPortService] = useState<RuntimeServiceView["key"] | null>(null);
+  const [editPortValue, setEditPortValue] = useState<string>("");
+  const [editPortBusy, setEditPortBusy] = useState(false);
 
   const refreshSystemObservability = useCallback(async () => {
     const [snapshot, maintenance] = await Promise.all([
@@ -349,21 +355,21 @@ export default function AdminDashboard() {
     operation: ServiceOperation,
     options?: { silent?: boolean; refreshAfter?: boolean },
   ) => {
-    const backendOperation = operation === "pause" ? "stop" : operation;
     setServiceActionBusy((prev) => ({ ...prev, [`${service}:${operation}`]: true }));
     try {
+      const serviceName = SERVICE_META[service]?.label || service;
       setCommandStatus({
         phase: "running",
-        title: `${service.toUpperCase()} em execução`,
+        title: `Controlando ${serviceName}`,
         detail: `${SERVICE_OPERATION_LABEL[operation]} em andamento...`,
       });
 
       const res = await invokeBackendRpc<OpsControlResponse>("ops-service-control", {
-        body: { service, operation: backendOperation },
+        body: { service, operation },
       });
 
       if (res?.ok === false) {
-        throw new Error(String(res.error || `Falha ao ${SERVICE_OPERATION_LABEL[operation]} ${service}`));
+        throw new Error(String(res.error || `Falha ao ${SERVICE_OPERATION_LABEL[operation]} ${serviceName}`));
       }
 
       if (options?.refreshAfter !== false) {
@@ -372,21 +378,23 @@ export default function AdminDashboard() {
 
       setCommandStatus({
         phase: "success",
-        title: `${service.toUpperCase()} concluído`,
-        detail: `${SERVICE_OPERATION_LABEL[operation]} executado com sucesso.`,
+        title: `${serviceName} pronto`,
+        detail: `${SERVICE_OPERATION_LABEL[operation]} completado com sucesso.`,
       });
 
       if (!options?.silent) {
-        toast.success(`${service.toUpperCase()} ${SERVICE_OPERATION_LABEL[operation]}: ${String(res.status || "ok")}`);
+        toast.success(`${serviceName} ${SERVICE_OPERATION_LABEL[operation]} com sucesso`);
       }
     } catch (error) {
+      const serviceName = SERVICE_META[service]?.label || service;
+      const errorMsg = error instanceof Error ? error.message : `Falha ao ${SERVICE_OPERATION_LABEL[operation]}`;
       setCommandStatus({
         phase: "error",
-        title: `${service.toUpperCase()} falhou`,
-        detail: error instanceof Error ? error.message : "Falha ao controlar serviço",
+        title: `${serviceName} — erro`,
+        detail: errorMsg,
       });
       if (!options?.silent) {
-        toast.error(error instanceof Error ? error.message : "Falha ao controlar serviço");
+        toast.error(errorMsg);
       }
       throw error;
     } finally {
@@ -395,12 +403,12 @@ export default function AdminDashboard() {
   };
 
   const controlAllServices = async (operation: BulkOperation, options?: { silent?: boolean; throwOnFailure?: boolean }) => {
-    const backendOperation = operation === "pause" ? "stop" : operation;
-    const allSuccessMessage = `Serviços: ${SERVICE_OPERATION_LABEL[operation]} concluído em todos`;
+    const operationLabel = SERVICE_OPERATION_LABEL[operation];
+    const allSuccessMessage = `Todos os serviços ${operationLabel} com sucesso`;
     const reportBulkFailure = (detail: string) => {
       setCommandStatus({
         phase: "error",
-        title: "Falha em comando em massa",
+        title: `Erro ao ${operationLabel} serviços`,
         detail,
       });
       if (!options?.silent) toast.error(detail);
@@ -411,12 +419,12 @@ export default function AdminDashboard() {
     try {
       setCommandStatus({
         phase: "running",
-        title: "Comando em massa em execução",
-        detail: `Tentando ${SERVICE_OPERATION_LABEL[operation]} todos os serviços...`,
+        title: `Aplicando ${operationLabel} em todos`,
+        detail: `Iniciando operação em 4 serviços...`,
       });
 
       const response = await invokeBackendRpc<OpsControlResponse>("ops-service-control", {
-        body: { service: "all", operation: backendOperation },
+        body: { service: "all", operation },
       });
 
       const initialFailures = Array.isArray(response.results)
@@ -425,7 +433,7 @@ export default function AdminDashboard() {
 
       if (response?.ok === false || initialFailures.length > 0) {
         if (response?.ok === false && initialFailures.length === 0) {
-          reportBulkFailure(String(response?.error || `Falha ao ${SERVICE_OPERATION_LABEL[operation]} todos os serviços`));
+          reportBulkFailure(String(response?.error || `Falha ao ${operationLabel} todos os serviços`));
           return;
         }
 
@@ -435,6 +443,12 @@ export default function AdminDashboard() {
 
         const retryFailed: string[] = [];
         if (retryTargets.length > 0) {
+          setCommandStatus({
+            phase: "running",
+            title: `Repetindo ${retryTargets.length} operação(ões)`,
+            detail: `Tentando ${operationLabel} serviços com falha...`,
+          });
+          
           await Promise.all(
             retryTargets.map(async (svc) => {
               try {
@@ -449,7 +463,7 @@ export default function AdminDashboard() {
         await refreshAllHealth();
 
         if (retryFailed.length > 0) {
-          reportBulkFailure(`Falha em massa ao ${SERVICE_OPERATION_LABEL[operation]}: ${retryFailed.join(", ")}`);
+          reportBulkFailure(`${retryFailed.length}/4 serviços falharam: ${retryFailed.join(", ")}`);
           return;
         }
       }
@@ -457,12 +471,18 @@ export default function AdminDashboard() {
       await refreshAllHealth();
       setCommandStatus({
         phase: "success",
-        title: "Comando em massa concluído",
-        detail: `Serviços: ${SERVICE_OPERATION_LABEL[operation]} concluído em todos.`,
+        title: `Todos os serviços ${operationLabel}`,
+        detail: `A operação foi concluída com sucesso em 4/4 serviços.`,
       });
       if (!options?.silent) toast.success(allSuccessMessage);
     } catch (error) {
       const failedServices: string[] = [];
+      setCommandStatus({
+        phase: "running",
+        title: "Tentando recuperação",
+        detail: `Realizando fallback individual em cada serviço...`,
+      });
+      
       await Promise.all(
         SERVICE_KEYS.map(async (service) => {
           try {
@@ -472,17 +492,19 @@ export default function AdminDashboard() {
           }
         }),
       );
+      
       await refreshAllHealth();
+      
       if (failedServices.length > 0) {
         const detail = failedServices.length === SERVICE_KEYS.length && !opsHealth.online
-          ? `Ops Control indisponível em ${opsHealth.url || "URL desconhecida"}. Inicie o microsserviço e tente novamente.`
-          : `Falha parcial na ação em massa. Serviços com erro: ${failedServices.join(", ")}`;
+          ? `Ops Control indisponível em ${opsHealth.url || "URL desconhecida"}. Inicie o serviço e tente novamente.`
+          : `${failedServices.length}/4 serviços falharam: ${failedServices.join(", ")}`;
         reportBulkFailure(detail);
       } else {
         setCommandStatus({
           phase: "success",
-          title: "Recuperação automática concluída",
-          detail: `Serviços: ${SERVICE_OPERATION_LABEL[operation]} concluído após retentativa.`,
+          title: `Todos os serviços ${operationLabel}`,
+          detail: `Recuperação automática completada em 4/4 serviços.`,
         });
         if (!options?.silent) toast.success(allSuccessMessage);
       }
@@ -503,7 +525,7 @@ export default function AdminDashboard() {
       body: {
         action: "set",
         maintenance_enabled: enabled,
-        maintenance_title: enabled ? "Sistema pausado" : "Sistema operacional",
+        maintenance_title: enabled ? "Sistema Pausado" : "Sistema Operacional",
         maintenance_message: enabled
           ? "Operação pausada temporariamente pelo painel admin."
           : "Sistema operando normalmente.",
@@ -516,10 +538,12 @@ export default function AdminDashboard() {
   const controlSystem = async (operation: SystemOperation) => {
     setSystemActionBusy((prev) => ({ ...prev, [operation]: true }));
     try {
+      const operationLabel = SYSTEM_OPERATION_LABEL[operation];
+      
       setCommandStatus({
         phase: "running",
-        title: "Comando de sistema em execução",
-        detail: `${SYSTEM_OPERATION_LABEL[operation]} em andamento...`,
+        title: `Iniciando procedimento de ${operationLabel}`,
+        detail: `Etapa 1 de 3: Verificando orquestrador...`,
       });
 
       // When starting/restarting, try to bring ops-control online automatically.
@@ -527,44 +551,143 @@ export default function AdminDashboard() {
       if ((operation === "start" || operation === "restart") && !opsHealth.online) {
         setCommandStatus({
           phase: "running",
-          title: "Inicializando orquestrador",
-          detail: "Tentando iniciar o Ops Control...",
+          title: `${operationLabel} — inicializando orquestrador`,
+          detail: `Etapa 1 de 3: Iniciando Ops Control...`,
         });
         await invokeBackendRpc("ops-bootstrap", { body: {} });
         await refreshAllHealth();
       }
 
       if (operation === "start") {
+        setCommandStatus({
+          phase: "running",
+          title: `${operationLabel} — ativando sistema`,
+          detail: `Etapa 2 de 3: Desativando modo manutenção...`,
+        });
         await updateMaintenanceMode(false);
+        
+        setCommandStatus({
+          phase: "running",
+          title: `${operationLabel} — iniciando serviços`,
+          detail: `Etapa 3 de 3: Iniciando todos os 4 serviços...`,
+        });
         await controlAllServices("start", { silent: true, throwOnFailure: true });
       } else if (operation === "restart") {
+        setCommandStatus({
+          phase: "running",
+          title: `${operationLabel} — reiniciando`,
+          detail: `Etapa 2 de 3: Desativando modo manutenção...`,
+        });
         await updateMaintenanceMode(false);
+        
+        setCommandStatus({
+          phase: "running",
+          title: `${operationLabel} — reiniciando serviços`,
+          detail: `Etapa 3 de 3: Reiniciando todos os 4 serviços...`,
+        });
         await controlAllServices("restart", { silent: true, throwOnFailure: true });
-      } else if (operation === "pause") {
-        await updateMaintenanceMode(true);
-        await controlAllServices("pause", { silent: true, throwOnFailure: true });
       } else {
+        setCommandStatus({
+          phase: "running",
+          title: `${operationLabel} — em andamento`,
+          detail: `Etapa 2 de 3: Ativando modo manutenção...`,
+        });
         await updateMaintenanceMode(true);
+        
+        setCommandStatus({
+          phase: "running",
+          title: `${operationLabel} — parando serviços`,
+          detail: `Etapa 3 de 3: Parando todos os 4 serviços...`,
+        });
         await controlAllServices("stop", { silent: true, throwOnFailure: true });
       }
 
       await refreshAllHealth();
       setCommandStatus({
         phase: "success",
-        title: "Comando de sistema concluído",
-        detail: `${SYSTEM_OPERATION_LABEL[operation]} executado com sucesso.`,
+        title: `Sistema ${operation === "start" ? "iniciado" : operation === "restart" ? "reiniciado" : "encerrado"}`,
+        detail: `${operationLabel} completado com sucesso.`,
       });
-      toast.success(`Comando concluído: ${SYSTEM_OPERATION_LABEL[operation]}`);
+      toast.success(`${operationLabel} realizado com sucesso`);
     } catch (error) {
+      const operationLabel = SYSTEM_OPERATION_LABEL[operation];
+      const errorMsg = error instanceof Error ? error.message : `Falha ao ${operationLabel}`;
       setCommandStatus({
         phase: "error",
-        title: "Comando de sistema falhou",
-        detail: error instanceof Error ? error.message : `Falha ao ${SYSTEM_OPERATION_LABEL[operation]}`,
+        title: `${operationLabel} — falha`,
+        detail: errorMsg,
       });
-      toast.error(error instanceof Error ? error.message : `Falha ao ${SYSTEM_OPERATION_LABEL[operation]}`);
+      toast.error(errorMsg);
       throw error;
     } finally {
       setSystemActionBusy((prev) => ({ ...prev, [operation]: false }));
+    }
+  };
+
+  const handleChangeServicePort = async (serviceKey: RuntimeServiceView["key"], newPortStr: string) => {
+    const newPort = parseInt(newPortStr, 10);
+    
+    // Validation
+    if (isNaN(newPort) || newPort < 1 || newPort > 65535) {
+      toast.error("Porta deve estar entre 1 e 65535");
+      return;
+    }
+
+    const currentPort = SERVICE_META[serviceKey]?.port;
+    if (newPort === currentPort) {
+      toast.info("Nova porta é igual à atual");
+      setEditPortService(null);
+      return;
+    }
+
+    setEditPortBusy(true);
+    try {
+      const serviceName = SERVICE_META[serviceKey]?.label || serviceKey;
+      
+      setCommandStatus({
+        phase: "running",
+        title: `Alterando porta de ${serviceName}`,
+        detail: `Mudando de porta ${currentPort} para ${newPort}...`,
+      });
+
+      const response = await invokeBackendRpc<OpsControlResponse>("ops-service-port", {
+        body: { service: serviceKey, port: newPort },
+      });
+
+      if (!response?.ok) {
+        const errorMsg = String(response?.error || `Falha ao alterar porta de ${serviceName}`);
+        setCommandStatus({
+          phase: "error",
+          title: `Erro ao alterar porta`,
+          detail: errorMsg,
+        });
+        toast.error(errorMsg);
+        return;
+      }
+
+      // Update SERVICE_META locally for immediate UI feedback
+      SERVICE_META[serviceKey].port = newPort;
+      
+      await refreshAllHealth();
+      
+      setCommandStatus({
+        phase: "success",
+        title: `Porta alterada com sucesso`,
+        detail: `${serviceName} agora opera na porta ${newPort}.`,
+      });
+      toast.success(`${serviceName} — porta alterada para ${newPort}`);
+      setEditPortService(null);
+      setEditPortValue("");
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Falha ao alterar porta";
+      setCommandStatus({
+        phase: "error",
+        title: "Erro ao alterar porta",
+        detail: errorMsg,
+      });
+      toast.error(errorMsg);
+    } finally {
+      setEditPortBusy(false);
     }
   };
 
@@ -662,12 +785,12 @@ export default function AdminDashboard() {
   const systemPressureBadge = useMemo(() => {
     const pressure = String(opsHealth.system?.pressure || "ok").toLowerCase();
     if (pressure === "critical") {
-      return { variant: "destructive" as const, label: "Host crítico" };
+      return { variant: "destructive" as const, label: "Host Crítico" };
     }
     if (pressure === "warn") {
-      return { variant: "secondary" as const, label: "Host em alerta" };
+      return { variant: "secondary" as const, label: "Host em Alerta" };
     }
-    return { variant: "default" as const, label: "Host estável" };
+    return { variant: "default" as const, label: "Host Estável" };
   }, [opsHealth.system?.pressure]);
 
   const allServicesOnline = useMemo(
@@ -683,31 +806,29 @@ export default function AdminDashboard() {
   const anyGlobalActionBusy = allServiceActionBusy.start === true
     || allServiceActionBusy.stop === true
     || allServiceActionBusy.restart === true
-    || allServiceActionBusy.pause === true
     ;
   const anySystemActionBusy = systemActionBusy.start === true
     || systemActionBusy.restart === true
-    || systemActionBusy.pause === true
     || systemActionBusy.shutdown === true;
   const anyServiceBulkActionBusy = allServiceActionBusy.start === true
     || allServiceActionBusy.stop === true
     || allServiceActionBusy.restart === true
-    || allServiceActionBusy.pause === true;
+    ;
 
   const onlineCount = useMemo(() => services.filter((s) => s.online).length, [services]);
   const totalCount = services.length;
   const systemStatusLabel = useMemo(() => {
     if (opsConnecting) return { text: "Conectando...", variant: "secondary" as const };
-    if (!opsHealth.online) return { text: "Ops indisponível", variant: "destructive" as const };
-    if (onlineCount === totalCount) return { text: "Tudo operacional", variant: "default" as const };
-    if (onlineCount === 0) return { text: "Tudo parado", variant: "destructive" as const };
+    if (!opsHealth.online) return { text: "Ops Indisponível", variant: "destructive" as const };
+    if (onlineCount === totalCount) return { text: "Tudo Operacional", variant: "default" as const };
+    if (onlineCount === 0) return { text: "Tudo Parado", variant: "destructive" as const };
     return { text: `${onlineCount}/${totalCount} online`, variant: "secondary" as const };
   }, [opsConnecting, opsHealth.online, onlineCount, totalCount]);
 
   return (
     <TooltipProvider>
-    <div className="admin-page max-w-[1320px] px-1 sm:px-2 lg:px-3">
-      <PageHeader title="Dashboard admin" description="Central operacional do sistema">
+    <div className="admin-page max-w-[1320px] px-2 sm:px-4">
+      <PageHeader title="Dashboard Admin" description="Central Operacional do Sistema">
         <div className="flex items-center gap-2">
           <Badge variant={systemStatusLabel.variant} className="gap-1.5">
             <Circle className={`h-2 w-2 fill-current ${onlineCount === totalCount && opsHealth.online ? "text-green-500" : onlineCount > 0 ? "text-yellow-500" : "text-red-500"}`} />
@@ -719,26 +840,26 @@ export default function AdminDashboard() {
       </PageHeader>
 
       <Card className="admin-card overflow-hidden">
-        <CardHeader className="pb-2">
+        <CardHeader className="pb-2 border-b border-border/30">
           <div className="flex items-center justify-between">
-            <CardTitle className="admin-card-title">Controle operacional</CardTitle>
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <CardTitle className="admin-card-title">Controle Operacional</CardTitle>
+            <div className="flex items-center gap-2 text-2xs text-muted-foreground">
               <Clock className="h-3 w-3" />
               <span>Próx. check: {nextRefreshIn}s</span>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-3 rounded-xl border border-border/70 bg-background/40 p-3 sm:p-4">
-            <div className="grid gap-2 lg:grid-cols-2">
-              <div className="rounded-lg border border-border/60 bg-card/50 p-3">
+        <CardContent className="space-y-3 pt-4">
+          <div className="space-y-3 rounded-lg border border-border/40 bg-muted/10 p-3">
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-border/40 bg-card/80 p-3">
                 <div className="mb-2 flex items-center justify-between">
-                  <p className="text-xs font-semibold">Controles do sistema</p>
-                  <Badge variant={maintenanceEnabled ? "secondary" : "default"} className="text-[10px]">
-                    {maintenanceEnabled ? "Sistema pausado" : "Sistema ativo"}
+                  <p className="text-2xs uppercase font-semibold tracking-wider text-foreground">Controles do Sistema</p>
+                  <Badge variant={maintenanceEnabled ? "secondary" : "default"} className="text-2xs">
+                    {maintenanceEnabled ? "Sistema Pausado" : "Sistema Ativo"}
                   </Badge>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center justify-center gap-2">
                   <Button
                     variant="default"
                     size="sm"
@@ -746,7 +867,7 @@ export default function AdminDashboard() {
                     onClick={() => void controlSystem("start")}
                   >
                     {systemActionBusy.start ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                    Iniciar sistema
+                    Iniciar Sistema
                   </Button>
                   <Button
                     variant="outline"
@@ -755,16 +876,7 @@ export default function AdminDashboard() {
                     onClick={() => void controlSystem("restart")}
                   >
                     {systemActionBusy.restart ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                    Reiniciar sistema
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={anySystemActionBusy || anyServiceBulkActionBusy || !opsHealth.online}
-                    onClick={() => void controlSystem("pause")}
-                  >
-                    {systemActionBusy.pause ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
-                    Pausar sistema
+                    Reiniciar Sistema
                   </Button>
                   <Button
                     variant="destructive"
@@ -773,19 +885,19 @@ export default function AdminDashboard() {
                     onClick={() => void controlSystem("shutdown")}
                   >
                     {systemActionBusy.shutdown ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
-                    Desligar sistema
+                    Desligar Sistema
                   </Button>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-border/60 bg-card/50 p-3">
+              <div className="rounded-lg border border-border/40 bg-card/80 p-3">
                 <div className="mb-2 flex items-center justify-between">
-                  <p className="text-xs font-semibold">Controles dos serviços</p>
-                  <Badge variant={onlineCount === totalCount ? "default" : "secondary"} className="text-[10px]">
+                  <p className="text-2xs uppercase font-semibold tracking-wider text-foreground">Controles dos Serviços</p>
+                  <Badge variant={onlineCount === totalCount ? "default" : "secondary"} className="text-2xs">
                     {onlineCount}/{totalCount} online
                   </Badge>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center justify-center gap-2">
                   <Button
                     variant="default"
                     size="sm"
@@ -793,7 +905,7 @@ export default function AdminDashboard() {
                     onClick={() => void controlAllServices("start")}
                   >
                     <Play className="h-3.5 w-3.5" />
-                    Iniciar serviços
+                    Iniciar Serviços
                   </Button>
                   <Button
                     variant="outline"
@@ -802,133 +914,134 @@ export default function AdminDashboard() {
                     onClick={() => void controlAllServices("restart")}
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
-                    Reiniciar serviços
+                    Reiniciar Serviços
                   </Button>
                   <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={allServiceActionBusy.pause === true || !opsHealth.online || allServicesOffline || anyGlobalActionBusy || anySystemActionBusy}
-                    onClick={() => void controlAllServices("pause")}
-                  >
-                    <Square className="h-3.5 w-3.5" />
-                    Pausar serviços
-                  </Button>
-                  <Button
-                    variant="outline"
+                    variant="destructive"
                     size="sm"
                     disabled={allServiceActionBusy.stop === true || !opsHealth.online || allServicesOffline || anyGlobalActionBusy || anySystemActionBusy}
                     onClick={() => void controlAllServices("stop")}
                   >
                     <Power className="h-3.5 w-3.5" />
-                    Desligar serviços
+                    Desligar Serviços
                   </Button>
                 </div>
               </div>
             </div>
 
-            <div className={`rounded-md border px-3 py-2 text-xs ${
+            <div className={`rounded-lg border px-4 py-3 text-xs ${
               commandStatus.phase === "running"
-                ? "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-200"
+                ? "border-blue-300/50 bg-blue-50/80 text-blue-900 dark:border-blue-700/50 dark:bg-blue-950/40 dark:text-blue-300"
                 : commandStatus.phase === "error"
-                  ? "border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/50 dark:text-red-200"
+                  ? "border-red-300/50 bg-red-50/80 text-red-900 dark:border-red-700/50 dark:bg-red-950/40 dark:text-red-300"
                   : commandStatus.phase === "success"
-                    ? "border-green-300 bg-green-50 text-green-900 dark:border-green-800 dark:bg-green-950/50 dark:text-green-200"
-                    : "border-border/60 bg-muted/20 text-muted-foreground"
+                    ? "border-green-300/50 bg-green-50/80 text-green-900 dark:border-green-700/50 dark:bg-green-950/40 dark:text-green-300"
+                    : "border-border/50 bg-muted/30 text-muted-foreground"
             }`}>
-              <div className="flex items-center gap-2">
-                {commandStatus.phase === "running" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
-                <p className="font-semibold">{commandStatus.title}</p>
+              <div className="flex items-center gap-2.5">
+                {commandStatus.phase === "running" 
+                  ? <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" /> 
+                  : commandStatus.phase === "success"
+                    ? <div className="h-4 w-4 rounded-full bg-green-500 flex-shrink-0" />
+                    : commandStatus.phase === "error"
+                      ? <div className="h-4 w-4 rounded-full bg-red-500 flex-shrink-0" />
+                      : <Activity className="h-4 w-4 flex-shrink-0" />
+                }
+                <div className="flex-1">
+                  <p className="font-semibold leading-tight">{commandStatus.title}</p>
+                  {commandStatus.detail && <p className="mt-1 opacity-90">{commandStatus.detail}</p>}
+                </div>
               </div>
-              {commandStatus.detail && <p className="mt-1 opacity-90">{commandStatus.detail}</p>}
             </div>
 
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center justify-end">
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
+                className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
                 onClick={refreshAllHealth}
                 disabled={isRefreshingHealth}
               >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Atualizar saúde
+                <RefreshCw className={`h-3 w-3 ${isRefreshingHealth ? "animate-spin" : ""}`} />
+                Atualizar
               </Button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <Badge variant={opsHealth.online ? "default" : "secondary"} className="gap-1.5">
+          <div className="flex flex-wrap items-center gap-2 text-2xs text-muted-foreground">
+            <Badge variant={opsHealth.online ? "default" : "secondary"} className="gap-1.5 text-2xs">
               <Circle className={`h-1.5 w-1.5 fill-current ${opsHealth.online ? "text-green-500" : "text-red-500"}`} />
-              {opsHealth.online ? "Ops online" : "Ops offline"}
+              {opsHealth.online ? "Ops Online" : "Ops Offline"}
             </Badge>
-            <span className="text-[11px]">{opsHealth.url || "-"}</span>
-            <span className="text-[11px]">Último: {lastHealthCheckAt ? new Date(lastHealthCheckAt).toLocaleTimeString("pt-BR") : "-"}</span>
+            <span className="text-2xs">{opsHealth.url || "-"}</span>
+            <span className="text-2xs">Último: {lastHealthCheckAt ? new Date(lastHealthCheckAt).toLocaleTimeString("pt-BR") : "-"}</span>
           </div>
           {opsHealth.system && (
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="admin-kpi space-y-1.5">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="admin-kpi space-y-2">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <HardDrive className="h-3 w-3 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">Memória</span>
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-2xs uppercase tracking-wider text-muted-foreground">Memória</span>
                   </div>
-                  <span className="text-xs font-semibold">
+                  <span className="text-xs font-medium">
                     {Number.isFinite(opsHealth.system.memory?.usedPercent)
                       ? `${Number(opsHealth.system.memory?.usedPercent || 0).toFixed(1)}%`
                       : "-"}
                   </span>
                 </div>
                 <Progress value={Number(opsHealth.system.memory?.usedPercent || 0)} className="h-2" />
-                <p className="text-[11px] text-muted-foreground">
-                  alerta: {Number.isFinite(opsHealth.system.memory?.warnPercent) ? `${Number(opsHealth.system.memory?.warnPercent || 0).toFixed(0)}%` : "-"}
+                <p className="text-2xs text-muted-foreground">
+                  Alerta: {Number.isFinite(opsHealth.system.memory?.warnPercent) ? `${Number(opsHealth.system.memory?.warnPercent || 0).toFixed(0)}%` : "-"}
                   {" · "}
-                  crítico: {Number.isFinite(opsHealth.system.memory?.criticalPercent) ? `${Number(opsHealth.system.memory?.criticalPercent || 0).toFixed(0)}%` : "-"}
+                  Crítico: {Number.isFinite(opsHealth.system.memory?.criticalPercent) ? `${Number(opsHealth.system.memory?.criticalPercent || 0).toFixed(0)}%` : "-"}
                 </p>
               </div>
-              <div className="admin-kpi space-y-1.5">
+              <div className="admin-kpi space-y-2">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <Cpu className="h-3 w-3 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">CPU / núcleo (1m)</span>
+                  <div className="flex items-center gap-2">
+                    <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-2xs uppercase tracking-wider text-muted-foreground">CPU / núcleo (1m)</span>
                   </div>
-                  <span className="text-xs font-semibold">
+                  <span className="text-xs font-medium">
                     {Number.isFinite(opsHealth.system.cpu?.loadPerCpu1m)
                       ? Number(opsHealth.system.cpu?.loadPerCpu1m || 0).toFixed(2)
                       : "-"}
                   </span>
                 </div>
                 <Progress value={Math.min(Number(opsHealth.system.cpu?.loadPerCpu1m || 0) * 50, 100)} className="h-2" />
-                <p className="text-[11px] text-muted-foreground">
-                  alerta: {Number.isFinite(opsHealth.system.cpu?.warnPerCpu) ? Number(opsHealth.system.cpu?.warnPerCpu || 0).toFixed(2) : "-"}
+                <p className="text-2xs text-muted-foreground">
+                  Alerta: {Number.isFinite(opsHealth.system.cpu?.warnPerCpu) ? Number(opsHealth.system.cpu?.warnPerCpu || 0).toFixed(2) : "-"}
                   {" · "}
-                  crítico: {Number.isFinite(opsHealth.system.cpu?.criticalPerCpu) ? Number(opsHealth.system.cpu?.criticalPerCpu || 0).toFixed(2) : "-"}
+                  Crítico: {Number.isFinite(opsHealth.system.cpu?.criticalPerCpu) ? Number(opsHealth.system.cpu?.criticalPerCpu || 0).toFixed(2) : "-"}
                 </p>
               </div>
             </div>
           )}
           {processQueues && (
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <div className="admin-kpi">
-                <p className="text-xs text-muted-foreground">Fila de rotas</p>
-                <p className="font-medium">ativo: {processQueues.route.active}</p>
-                <p className="text-xs text-muted-foreground">pendente: {processQueues.route.pending} | limite: {processQueues.route.limit}</p>
+                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Fila de Rotas</p>
+                <p className="text-sm font-semibold mt-1.5">Ativo: {processQueues.route.active}</p>
+                <p className="text-2xs text-muted-foreground">Pendente: {processQueues.route.pending} | Limite: {processQueues.route.limit}</p>
               </div>
               <div className="admin-kpi">
-                <p className="text-xs text-muted-foreground">Fila de disparo</p>
-                <p className="font-medium">ativo: {processQueues.dispatch.active}</p>
-                <p className="text-xs text-muted-foreground">pendente: {processQueues.dispatch.pending} | limite: {processQueues.dispatch.limit}</p>
+                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Fila de Disparo</p>
+                <p className="text-sm font-semibold mt-1.5">Ativo: {processQueues.dispatch.active}</p>
+                <p className="text-2xs text-muted-foreground">Pendente: {processQueues.dispatch.pending} | Limite: {processQueues.dispatch.limit}</p>
               </div>
               <div className="admin-kpi">
-                <p className="text-xs text-muted-foreground">Fila de automação</p>
-                <p className="font-medium">ativo: {processQueues.automation.active}</p>
-                <p className="text-xs text-muted-foreground">pendente: {processQueues.automation.pending} | limite: {processQueues.automation.limit}</p>
+                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Fila de Automação</p>
+                <p className="text-sm font-semibold mt-1.5">Ativo: {processQueues.automation.active}</p>
+                <p className="text-2xs text-muted-foreground">Pendente: {processQueues.automation.pending} | Limite: {processQueues.automation.limit}</p>
               </div>
               <div className="admin-kpi">
-                <p className="text-xs text-muted-foreground">Fila de conversão</p>
-                <p className="font-medium">ativo: {processQueues.convert.active}</p>
-                <p className="text-xs text-muted-foreground">pendente: {processQueues.convert.pending} | limite: {processQueues.convert.limit}</p>
+                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Fila de Conversão</p>
+                <p className="text-sm font-semibold mt-1.5">Ativo: {processQueues.convert.active}</p>
+                <p className="text-2xs text-muted-foreground">Pendente: {processQueues.convert.pending} | Limite: {processQueues.convert.limit}</p>
               </div>
             </div>
           )}
-          <p className="text-[11px] text-muted-foreground">Auto-checagem a cada 30s. Status combina processo + endpoint de saúde.</p>
+          <p className="text-2xs text-muted-foreground">Auto-checagem a cada 30s · combina processo + endpoint de saúde</p>
           {opsHealth.error && <p className="text-xs text-destructive">{opsHealth.error}</p>}
           {!opsHealth.online && opsConnecting && (
             <div className="flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 dark:border-blue-800 dark:bg-blue-950">
@@ -968,7 +1081,7 @@ export default function AdminDashboard() {
       </Card>
 
       <Tabs defaultValue="services" className="w-full space-y-4">
-        <TabsList className="w-full flex-wrap justify-start gap-1 rounded-xl border border-border/70 bg-card/60 p-1">
+        <TabsList className="w-full flex-wrap justify-center gap-1 rounded-xl border border-border/50 bg-card/70 p-1.5">
           <TabsTrigger value="services" className="gap-1.5">
             <Server className="h-3.5 w-3.5" />
             Serviços
@@ -995,115 +1108,118 @@ export default function AdminDashboard() {
 
         <TabsContent value="services">
 
-      <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {services.map((service) => {
           const meta = SERVICE_META[service.key];
           return (
-            <Card key={service.key} className={`admin-card flex h-full min-h-[260px] flex-col transition-all ${service.online ? "border-green-500/20 dark:border-green-700/20" : ""}`}>
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className={`flex h-7 w-7 items-center justify-center rounded-lg ${service.online ? "bg-green-100 dark:bg-green-900/30" : "bg-muted"}`}>
-                      <ServiceIcon id={service.key} className={`h-3.5 w-3.5 ${service.online ? (meta?.color || "text-foreground") : "text-muted-foreground"}`} />
+            <Card key={service.key} className={`admin-card flex h-full flex-col transition-all ${service.online ? "border-green-500/25 dark:border-green-700/25" : ""}`}>
+              <CardHeader className="pb-2 border-b border-border/30">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 flex-1">
+                    <div className={`flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0 ${service.online ? "bg-green-100 dark:bg-green-900/30" : "bg-muted"}`}>
+                      <ServiceIcon id={service.key} className={`h-4 w-4 ${service.online ? (meta?.color || "text-foreground") : "text-muted-foreground"}`} />
                     </div>
-                    <div>
-                      <CardTitle className="text-sm font-semibold">{service.label}</CardTitle>
-                      <p className="text-[11px] text-muted-foreground">:{meta?.port ?? "?"}</p>
+                    <div className="min-w-0 flex-1">
+                      <CardTitle className="text-sm font-semibold truncate">{service.label}</CardTitle>
+                      <p className="text-2xs text-muted-foreground">:{meta?.port ?? "?"}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <Circle className={`h-2 w-2 fill-current ${service.online ? "text-green-500" : "text-red-400"}`} />
-                    <span className={`text-xs font-medium ${service.online ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <Circle className={`h-2 w-2 fill-current flex-shrink-0 ${service.online ? "text-green-500" : "text-red-400"}`} />
+                    <span className={`text-2xs font-semibold whitespace-nowrap ${service.online ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
                       {service.online ? "Online" : "Offline"}
                     </span>
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="flex flex-1 flex-col gap-2 text-xs">
-                <div className="grid grid-cols-2 gap-2">
+              <CardContent className="flex flex-1 flex-col gap-3 text-xs pt-3">
+                <div className="grid grid-cols-2 gap-3">
                   <div className="admin-kpi">
-                    <p className="text-[11px] text-muted-foreground">Uptime</p>
-                    <p className="font-semibold">{formatUptime(service.uptimeSec)}</p>
+                    <p className="text-2xs uppercase tracking-wider text-muted-foreground mb-1.5">Uptime</p>
+                    <p className="text-sm font-semibold">{formatUptime(service.uptimeSec)}</p>
                   </div>
                   <div className="admin-kpi">
-                    <p className="text-[11px] text-muted-foreground">Processo</p>
-                    <p className="font-semibold text-[11px]">{formatProcessStatusLabel(service.processStatus)}</p>
+                    <p className="text-2xs uppercase tracking-wider text-muted-foreground mb-1.5">Processo</p>
+                    <p className="text-2xs font-medium line-clamp-1">{formatProcessStatusLabel(service.processStatus)}</p>
                   </div>
                 </div>
-                <div className="flex items-center justify-between gap-1 rounded-lg border border-border/50 px-2 py-1">
-                  <div className="flex items-center gap-1.5">
-                    <ShieldCheck className={`h-3 w-3 ${service.componentOnline ? "text-green-500" : "text-muted-foreground"}`} />
-                    <span className="text-[11px]">Health check</span>
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                    <ShieldCheck className={`h-3.5 w-3.5 flex-shrink-0 ${service.componentOnline ? "text-green-500" : "text-muted-foreground"}`} />
+                    <span className="text-2xs truncate">Health Check</span>
                   </div>
-                  <Badge variant={service.componentOnline ? "default" : "secondary"} className="text-[10px] px-1.5 py-0">
+                  <Badge variant={service.componentOnline ? "default" : "secondary"} className="text-2xs px-2 py-0.5 flex-shrink-0">
                     {service.componentOnline ? "OK" : "Falha"}
                   </Badge>
                 </div>
-                {service.error && <p className="line-clamp-2 text-destructive text-[11px]">{service.error}</p>}
-                <div className="mt-auto flex flex-wrap items-center justify-end gap-1 pt-1">
+                {service.error && <p className="line-clamp-2 text-destructive text-2xs bg-destructive/5 rounded px-2 py-1.5 border border-destructive/20">{service.error}</p>}
+                <div className="mt-auto flex flex-wrap items-center justify-center gap-1.5 pt-1.5">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-7 px-2 text-xs"
+                        className="h-8 px-2 text-xs gap-1"
                         disabled={serviceActionBusy[`${service.key}:start`] === true || !opsHealth.online || service.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "start")}
                       >
-                        {serviceActionBusy[`${service.key}:start`] ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-                        Ligar
+                        {serviceActionBusy[`${service.key}:start`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        <span className="hidden sm:inline">Ligar</span>
                       </Button>
                     </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço de orquestração primeiro</TooltipContent>}
+                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço primeiro</TooltipContent>}
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-7 px-2 text-xs"
-                        disabled={serviceActionBusy[`${service.key}:pause`] === true || !opsHealth.online || !service.online || anyGlobalActionBusy || anySystemActionBusy}
-                        onClick={() => void controlService(service.key, "pause")}
-                      >
-                        {serviceActionBusy[`${service.key}:pause`] ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
-                        Pausar
-                      </Button>
-                    </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço de orquestração primeiro</TooltipContent>}
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
+                        className="h-8 px-2 text-xs gap-1"
                         disabled={serviceActionBusy[`${service.key}:restart`] === true || !opsHealth.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "restart")}
                       >
-                        {serviceActionBusy[`${service.key}:restart`] ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                        Reiniciar
+                        {serviceActionBusy[`${service.key}:restart`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                        <span className="hidden sm:inline">Reiniciar</span>
                       </Button>
                     </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço de orquestração primeiro</TooltipContent>}
+                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço primeiro</TooltipContent>}
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="destructive"
                         size="sm"
-                        className="h-7 px-2 text-xs"
+                        className="h-8 px-2 text-xs gap-1"
                         disabled={serviceActionBusy[`${service.key}:stop`] === true || !opsHealth.online || !service.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "stop")}
                       >
-                        {serviceActionBusy[`${service.key}:stop`] ? <Loader2 className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />}
-                        Desligar
+                        {serviceActionBusy[`${service.key}:stop`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
+                        <span className="hidden sm:inline">Desligar</span>
                       </Button>
                     </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço de orquestração primeiro</TooltipContent>}
+                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço primeiro</TooltipContent>}
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-2 text-xs gap-1"
+                        disabled={editPortBusy || !opsHealth.online || anyGlobalActionBusy || anySystemActionBusy}
+                        onClick={() => {
+                          setEditPortService(service.key);
+                          setEditPortValue(String(meta?.port ?? 3111));
+                        }}
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">Porta</span>
+                      </Button>
+                    </TooltipTrigger>
+                    {!opsHealth.online && <TooltipContent>Ops indisponível para alterações</TooltipContent>}
                   </Tooltip>
                 </div>
-                <p className="text-[11px] text-muted-foreground">
-                  Processo: {formatProcessStatusLabel(service.processStatus)} · {formatComponentStatusLabel(service.componentOnline, service.error)}
+                <p className="text-2xs text-muted-foreground py-1.5 border-t border-border/30">
+                  {formatComponentStatusLabel(service.componentOnline, service.error)}
                 </p>
               </CardContent>
             </Card>
@@ -1115,11 +1231,11 @@ export default function AdminDashboard() {
 
         <TabsContent value="metrics">
       <div className="ds-card-grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="Total de usuários" value={String(counts.users)} icon={Users} />
+        <StatCard title="Total de Usuários" value={String(counts.users)} icon={Users} />
         <StatCard title="Sessões WhatsApp" value={String(counts.waSessions)} icon={WhatsAppIcon} />
         <StatCard title="Sessões Telegram" value={String(counts.tgSessions)} icon={TelegramIcon} />
         <StatCard title="Grupos" value={String(counts.groups)} icon={Users} />
-        <StatCard title="Rotas ativas" value={String(counts.routes)} icon={Route} />
+        <StatCard title="Rotas Ativas" value={String(counts.routes)} icon={Route} />
         <StatCard title="Automações Shopee" value={String(counts.automations)} icon={Flame} />
         <StatCard title="Registros 24h" value={String(counts.history)} icon={BarChart3} />
         <StatCard title="Erros 24h" value={String(counts.errors24h)} icon={AlertTriangle} />
@@ -1130,7 +1246,7 @@ export default function AdminDashboard() {
       <Card className="admin-card overflow-hidden">
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
-            <CardTitle className="admin-card-title">Uso por usuário (top 8)</CardTitle>
+            <CardTitle className="admin-card-title">Uso por Usuário (Top 8)</CardTitle>
             <Badge variant="outline" className="text-[10px]">{topUserUsage.length} usuários</Badge>
           </div>
         </CardHeader>
@@ -1170,7 +1286,7 @@ export default function AdminDashboard() {
       <Card className="admin-card overflow-hidden">
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
-            <CardTitle className="admin-card-title">Alertas do sistema</CardTitle>
+            <CardTitle className="admin-card-title">Alertas do Sistema</CardTitle>
             <Badge variant={anomalies.length > 0 ? "destructive" : "default"} className="text-[10px]">
               {anomalies.length > 0 ? `${anomalies.length} alerta${anomalies.length > 1 ? "s" : ""}` : "Tudo limpo"}
             </Badge>
@@ -1180,7 +1296,7 @@ export default function AdminDashboard() {
           {anomalies.length === 0 && (
             <div className="flex flex-col items-center gap-2 py-6 text-center">
               <ShieldCheck className="h-8 w-8 text-green-500" />
-              <p className="text-sm font-medium text-green-600 dark:text-green-400">Nenhuma anomalia detectada</p>
+              <p className="text-sm font-medium text-green-600 dark:text-green-400">Nenhuma Anomalia Detectada</p>
               <p className="text-xs text-muted-foreground">O sistema está operando normalmente.</p>
             </div>
           )}
@@ -1203,6 +1319,69 @@ export default function AdminDashboard() {
         </TabsContent>
 
       </Tabs>
+
+      {/* Port Edit Modal Dialog */}
+      <Dialog open={editPortService !== null} onOpenChange={(open) => {
+        if (!open) {
+          setEditPortService(null);
+          setEditPortValue("");
+        }
+      }}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Alterar Porta de Serviço</DialogTitle>
+            <DialogDescription>
+              Mude a porta para o serviço {SERVICE_META[editPortService]?.label || editPortService}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="port-input" className="text-right">
+                Porta
+              </Label>
+              <Input
+                id="port-input"
+                type="number"
+                min="1"
+                max="65535"
+                value={editPortValue}
+                onChange={(e) => setEditPortValue(e.target.value)}
+                placeholder={String(SERVICE_META[editPortService]?.port ?? 3111)}
+                disabled={editPortBusy}
+                className="col-span-3"
+              />
+            </div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <p>Porta Atual: {SERVICE_META[editPortService]?.port ?? "?"}</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setEditPortService(null);
+                setEditPortValue("");
+              }}
+              disabled={editPortBusy}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              disabled={editPortBusy || !editPortValue}
+              onClick={() => {
+                if (editPortService) {
+                  void handleChangeServicePort(editPortService, editPortValue);
+                }
+              }}
+            >
+              {editPortBusy && <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />}
+              Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
     </TooltipProvider>
   );

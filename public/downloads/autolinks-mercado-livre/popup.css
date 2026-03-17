@@ -1,0 +1,137 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Plus Jakarta Sans", "Inter", system-ui, sans-serif;
+  background: #0b0d12;
+  color: #f5f7fb;
+  min-width: 380px;
+}
+
+.app {
+  padding: 14px;
+}
+
+.brand {
+  background: linear-gradient(135deg, #ff8c42, #f36a2f);
+  color: #fff;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.subtitle {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.card {
+  background: #121722;
+  border: 1px solid #232a38;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.card.hidden {
+  display: none;
+}
+
+.card h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.copy {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #95a2ba;
+}
+
+label {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #2f3a4f;
+  border-radius: 8px;
+  background: #0f1420;
+  color: #f7fafc;
+  margin-bottom: 4px;
+}
+
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #1b2230;
+  color: #dbe4f5;
+  cursor: pointer;
+}
+
+button.primary {
+  background: #f36a2f;
+  color: #ffffff;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.status {
+  margin-top: 6px;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+
+.status.info {
+  background: #1a2438;
+  border-color: #2c3a56;
+  color: #9ec2ff;
+}
+
+.status.success {
+  background: #11291f;
+  border-color: #22563d;
+  color: #7be2ae;
+}
+
+.status.error {
+  background: #341c1d;
+  border-color: #6a2f32;
+  color: #ffb4b4;
+}

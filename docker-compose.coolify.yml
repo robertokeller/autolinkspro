@@ -1,0 +1,378 @@
+services:
+  web:
+    image: autolinks-web:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+        VITE_WHATSAPP_MICROSERVICE_URL: ${VITE_WHATSAPP_MICROSERVICE_URL}
+        VITE_TELEGRAM_MICROSERVICE_URL: ${VITE_TELEGRAM_MICROSERVICE_URL}
+        VITE_SHOPEE_MICROSERVICE_URL: ${VITE_SHOPEE_MICROSERVICE_URL}
+        VITE_MELI_RPA_URL: ${VITE_MELI_RPA_URL}
+        VITE_OPS_CONTROL_URL: ${VITE_OPS_CONTROL_URL}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+      whatsapp:
+        condition: service_healthy
+      telegram:
+        condition: service_healthy
+      shopee:
+        condition: service_healthy
+      meli:
+        condition: service_healthy
+      ops-control:
+        condition: service_healthy
+      scheduler:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  whatsapp:
+    image: autolinks-whatsapp:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/whatsapp.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3111
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      BAILEYS_SESSIONS_DIR: /data/wa-sessions
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - wa_sessions:/data/wa-sessions
+    expose:
+      - "3111"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3111/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 35s
+    restart: unless-stopped
+
+  telegram:
+    image: autolinks-telegram:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/telegram.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3112
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      TELEGRAM_SESSIONS_DIR: /data/tg-sessions
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - tg_sessions:/data/tg-sessions
+    expose:
+      - "3112"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3112/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 35s
+    restart: unless-stopped
+
+  shopee:
+    image: autolinks-shopee:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/shopee.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3113
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "3113"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3113/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 35s
+    restart: unless-stopped
+
+  meli:
+    image: autolinks-meli:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/meli.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      MELI_RPA_PORT: 3114
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${MELI_CORS_ORIGIN:?MELI_CORS_ORIGIN is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - meli_sessions:/app/services/mercadolivre-rpa/.sessions
+    expose:
+      - "3114"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3114/api/meli/health',{headers:{'x-webhook-secret':process.env.WEBHOOK_SECRET||''}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 45s
+    restart: unless-stopped
+
+  ops-control:
+    image: autolinks-ops-control:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/ops-control.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3115
+      OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      ALLOW_INSECURE_NO_TOKEN: "false"
+    expose:
+      - "3115"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3115/health',{headers:{'x-ops-token':process.env.OPS_CONTROL_TOKEN||''}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-autolinks}
+      POSTGRES_USER: ${POSTGRES_USER:-autolinks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    shm_size: 256m
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autolinks} -d ${POSTGRES_DB:-autolinks}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  migrate:
+    image: autolinks-migrate:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/migrate.Dockerfile
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-autolinks}
+      POSTGRES_USER: ${POSTGRES_USER:-autolinks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  pg-backup:
+    image: autolinks-pg-backup:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/pg-backup.Dockerfile
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-autolinks}
+      POSTGRES_USER: ${POSTGRES_USER:-autolinks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 3 * * *}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+    volumes:
+      - postgres_backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    image: autolinks-api:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3116
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-autolinks}
+      POSTGRES_USER: ${POSTGRES_USER:-autolinks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@autolinks.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      WHATSAPP_MICROSERVICE_URL: http://whatsapp:3111
+      TELEGRAM_MICROSERVICE_URL: http://telegram:3112
+      SHOPEE_MICROSERVICE_URL: http://shopee:3113
+      MELI_RPA_URL: http://meli:3114
+      OPS_CONTROL_URL: http://ops-control:3115
+      OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
+      DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
+    expose:
+      - "3116"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3116/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 8s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  scheduler:
+    image: autolinks-scheduler:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/scheduler.Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    environment:
+      NODE_ENV: production
+      SCHEDULER_MODE: ${SCHEDULER_MODE}
+      SCHEDULER_RPC_BASE_URL: ${SCHEDULER_RPC_BASE_URL}
+      SCHEDULER_RPC_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
+      DISPATCH_INTERVAL_SECONDS: ${DISPATCH_INTERVAL_SECONDS}
+      SHOPEE_INTERVAL_SECONDS: ${SHOPEE_INTERVAL_SECONDS}
+      DISPATCH_LIMIT: ${DISPATCH_LIMIT}
+      DISPATCH_SOURCE: ${DISPATCH_SOURCE}
+      SCHEDULER_TIMEOUT_MS: ${SCHEDULER_TIMEOUT_MS}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sessions-backup:
+    image: autolinks-sessions-backup:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/sessions-backup.Dockerfile
+    environment:
+      BACKUP_SCHEDULE: ${SESSIONS_BACKUP_SCHEDULE:-0 4 * * *}
+      BACKUP_KEEP_DAYS: ${SESSIONS_BACKUP_KEEP_DAYS:-7}
+    volumes:
+      - wa_sessions:/data/wa-sessions:ro
+      - tg_sessions:/data/tg-sessions:ro
+      - meli_sessions:/data/meli-sessions:ro
+      - sessions_backups:/backups
+    depends_on:
+      whatsapp:
+        condition: service_healthy
+      telegram:
+        condition: service_healthy
+      meli:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  postgres_backups:
+  sessions_backups:
+  wa_sessions:
+  tg_sessions:
+  meli_sessions:

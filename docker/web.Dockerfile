@@ -1,0 +1,40 @@
+FROM node:20-bookworm-slim AS build
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+ARG VITE_API_URL
+ARG VITE_WHATSAPP_MICROSERVICE_URL
+ARG VITE_TELEGRAM_MICROSERVICE_URL
+ARG VITE_SHOPEE_MICROSERVICE_URL
+ARG VITE_MELI_RPA_URL
+ARG VITE_OPS_CONTROL_URL
+# NOTE: VITE_ build args are inlined into the browser JS bundle and visible
+# to anyone who inspects the built JS. Only include non-sensitive config here.
+# WEBHOOK_SECRET and OPS_CONTROL_TOKEN must NEVER be VITE_ variables — they stay server-side only.
+
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_WHATSAPP_MICROSERVICE_URL=${VITE_WHATSAPP_MICROSERVICE_URL}
+ENV VITE_TELEGRAM_MICROSERVICE_URL=${VITE_TELEGRAM_MICROSERVICE_URL}
+ENV VITE_SHOPEE_MICROSERVICE_URL=${VITE_SHOPEE_MICROSERVICE_URL}
+ENV VITE_MELI_RPA_URL=${VITE_MELI_RPA_URL}
+ENV VITE_OPS_CONTROL_URL=${VITE_OPS_CONTROL_URL}
+
+RUN npm run build
+
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/scripts/serve-dist.mjs ./scripts/serve-dist.mjs
+
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=3000
+
+EXPOSE 3000
+
+CMD ["node", "scripts/serve-dist.mjs"]

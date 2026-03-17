@@ -1,0 +1,3645 @@
+﻿import { Router } from "express";
+import bcrypt from "bcryptjs";
+import { v4 as uuid } from "uuid";
+import { pool, query, queryOne, execute, transaction } from "./db.js";
+import { requireAuth, signToken } from "./auth.js";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const rpcRouter = Router();
+
+// â”€â”€ Public: link-hub pages (no authentication required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+rpcRouter.post("/rpc", async (req, res, next) => {
+  if (String(req.body?.name ?? "") !== "link-hub-public") { next(); return; }
+  const params = req.body ?? {};
+  const slug = String(params.slug ?? "").trim();
+  if (!slug) { res.json({ data: null, error: { message: "Slug obrigatÃ³rio" } }); return; }
+  try {
+    const page = await queryOne("SELECT slug, title, description, config, is_active FROM link_hub_pages WHERE slug = $1 AND is_active = TRUE", [slug]);
+    if (!page) { res.json({ data: { page: null, groups: [], groupLabels: {} }, error: null }); return; }
+    const cfg = page.config ?? {};
+    const gids = Array.isArray(cfg.groupIds) ? cfg.groupIds : [];
+    const mgids = Array.isArray(cfg.masterGroupIds) ? cfg.masterGroupIds : [];
+    const groupLabels = cfg.groupLabels ?? {};
+    const directGroups = gids.length > 0 ? await query(`SELECT id, name, platform, member_count FROM groups WHERE id = ANY($1)`, [gids]) : [];
+    let linkedGroups: Array<Record<string, unknown>> = [];
+    if (mgids.length > 0) {
+      const links = await query("SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1)", [mgids]);
+      const linkedIds = links.map((l: Record<string, unknown>) => l.group_id);
+      linkedGroups = linkedIds.length > 0 ? await query("SELECT id, name, platform, member_count FROM groups WHERE id = ANY($1)", [linkedIds]) : [];
+    }
+    const seen = new Set();
+    const groups = [...directGroups, ...linkedGroups].filter((g: Record<string, unknown>) => { if (seen.has(g.id)) return false; seen.add(g.id); return true; });
+    res.json({ data: { page, groups, groupLabels }, error: null });
+  } catch {
+    res.status(500).json({ data: null, error: { message: "Erro interno" } });
+  }
+});
+
+rpcRouter.use(requireAuth);
+
+const IS_PRODUCTION = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+const USE_LOCAL_FALLBACK_URLS = !IS_PRODUCTION;
+const WHATSAPP_URL  = process.env.WHATSAPP_MICROSERVICE_URL
+  ?? process.env.VITE_WHATSAPP_MICROSERVICE_URL
+  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3111" : "");
+const TELEGRAM_URL  = process.env.TELEGRAM_MICROSERVICE_URL
+  ?? process.env.VITE_TELEGRAM_MICROSERVICE_URL
+  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3112" : "");
+const SHOPEE_URL    = process.env.SHOPEE_MICROSERVICE_URL
+  ?? process.env.VITE_SHOPEE_MICROSERVICE_URL
+  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3113" : "");
+const MELI_URL      = process.env.MELI_RPA_URL
+  ?? process.env.VITE_MELI_RPA_URL
+  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3114" : "");
+const OPS_URL       = process.env.OPS_CONTROL_URL
+  ?? process.env.VITE_OPS_CONTROL_URL
+  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3115" : "");
+const OPS_TOKEN     = process.env.OPS_CONTROL_TOKEN ?? "";
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
+const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance"]);
+
+// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function ok(res, data) { res.json({ data, error: null }); }
+function fail(res, message, status = 200) { res.status(status).json({ data: null, error: { message } }); }
+function nowIso() { return new Date().toISOString(); }
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLocalhostUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    const host = String(u.hostname || "").toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function inferPortFromUrl(raw: string, fallback: number): number {
+  try {
+    const u = new URL(raw);
+    const port = Number(u.port);
+    if (Number.isFinite(port) && port > 0) return port;
+    if (u.protocol === "https:") return 443;
+    if (u.protocol === "http:") return 80;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function sanitizeScopePart(value: string, max = 24): string {
+  return String(value || "")
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, max) || "x";
+}
+
+function buildScopedMeliSessionId(userId: string, sessionId: string): string {
+  return `${sanitizeScopePart(userId, 64)}__${sanitizeScopePart(sessionId, 48)}`;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function toInt(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function safeGrowthRatio(current: number, expected: number): number {
+  if (expected <= 0) return current > 0 ? Number(current.toFixed(4)) : 0;
+  return Number((current / expected).toFixed(4));
+}
+
+function calcExpected24hFrom7d(total7d: number): number {
+  return Number((Math.max(total7d, 0) / 7).toFixed(4));
+}
+
+function isSessionOnlineStatus(status: unknown): boolean {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized === "online" || normalized === "active" || normalized === "connected" || normalized === "ready";
+}
+
+type QueueBucket = { active: number; pending: number; limit: number };
+
+function normalizeQueueBucket(value: unknown, fallbackLimit: number): QueueBucket {
+  const row = (value && typeof value === "object" && !Array.isArray(value)) ? value as Record<string, unknown> : {};
+  return {
+    active: Math.max(0, toInt(row.active, 0)),
+    pending: Math.max(0, toInt(row.pending, 0)),
+    limit: Math.max(1, toInt(row.limit, fallbackLimit)),
+  };
+}
+
+async function collectProcessQueueSnapshot() {
+  const dispatchLimit = Math.max(10, toInt(process.env.DISPATCH_LIMIT, 100));
+  const routeLimit = Math.max(10, toInt(process.env.ROUTE_PROCESS_LIMIT, 200));
+  const automationLimit = Math.max(5, toInt(process.env.SHOPEE_AUTOMATION_LIMIT, 50));
+
+  const [dispatchRow, automationRow, routeActiveRow, waHealth, tgHealth, meliHealth] = await Promise.all([
+    queryOne<{
+      processing_active: string | number;
+      pending_due: string | number;
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'processing') AS processing_active,
+         COUNT(*) FILTER (WHERE status = 'pending' AND scheduled_at <= NOW()) AS pending_due
+       FROM scheduled_posts`
+    ),
+    queryOne<{
+      active: string | number;
+      pending_due: string | number;
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'active' AND is_active = TRUE) AS active,
+         COUNT(*) FILTER (
+           WHERE status = 'active' AND is_active = TRUE
+             AND (
+               last_run_at IS NULL
+               OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
+             )
+         ) AS pending_due
+       FROM shopee_automations`
+    ),
+    queryOne<{ active_routes: string | number }>("SELECT COUNT(*) FILTER (WHERE status = 'active') AS active_routes FROM routes"),
+    WHATSAPP_URL ? proxyMicroservice(WHATSAPP_URL, "/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "WHATSAPP_MICROSERVICE_URL nao configurado" } }),
+    TELEGRAM_URL ? proxyMicroservice(TELEGRAM_URL, "/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "TELEGRAM_MICROSERVICE_URL nao configurado" } }),
+    MELI_URL ? proxyMicroservice(MELI_URL, "/api/meli/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "MELI_RPA_URL nao configurado" } }),
+  ]);
+
+  const waPayload = (waHealth.data && typeof waHealth.data === "object") ? waHealth.data as Record<string, unknown> : {};
+  const tgPayload = (tgHealth.data && typeof tgHealth.data === "object") ? tgHealth.data as Record<string, unknown> : {};
+  const waSessions = Array.isArray(waPayload.sessions) ? waPayload.sessions : [];
+  const tgSessions = Array.isArray(tgPayload.sessions) ? tgPayload.sessions : [];
+
+  const waQueued = waSessions.reduce((acc, item) => {
+    const row = (item && typeof item === "object") ? item as Record<string, unknown> : {};
+    return acc + Math.max(0, toInt(row.queuedEvents, 0));
+  }, 0);
+  const tgQueued = tgSessions.reduce((acc, item) => {
+    const row = (item && typeof item === "object") ? item as Record<string, unknown> : {};
+    return acc + Math.max(0, toInt(row.queuedEvents, 0));
+  }, 0);
+  const routeQueued = waQueued + tgQueued;
+
+  const meliPayload = (meliHealth.data && typeof meliHealth.data === "object") ? meliHealth.data as Record<string, unknown> : {};
+  const meliStats = (meliPayload.stats && typeof meliPayload.stats === "object")
+    ? meliPayload.stats as Record<string, unknown>
+    : {};
+
+  const convertActive = Math.max(0, toInt(meliStats.activeCount, 0));
+  const convertPending = Math.max(0, toInt(meliStats.queueLength, 0));
+  const convertLimit = Math.max(1, toInt(meliStats.maxConcurrency, toInt(process.env.MELI_CONVERTER_CONCURRENCY, 1)));
+
+  return {
+    route: normalizeQueueBucket(
+      { active: toInt(routeActiveRow?.active_routes, 0), pending: routeQueued, limit: routeLimit },
+      routeLimit,
+    ),
+    dispatch: normalizeQueueBucket(
+      {
+        active: toInt(dispatchRow?.processing_active, 0),
+        pending: toInt(dispatchRow?.pending_due, 0),
+        limit: dispatchLimit,
+      },
+      dispatchLimit,
+    ),
+    automation: normalizeQueueBucket(
+      {
+        active: toInt(automationRow?.active, 0),
+        pending: toInt(automationRow?.pending_due, 0),
+        limit: automationLimit,
+      },
+      automationLimit,
+    ),
+    convert: normalizeQueueBucket(
+      {
+        active: convertActive,
+        pending: convertPending,
+        limit: convertLimit,
+      },
+      convertLimit,
+    ),
+    telemetry: {
+      whatsapp: {
+        queuedEvents: waQueued,
+        sessions: waSessions.length,
+        online: waHealth.error ? false : true,
+        error: waHealth.error?.message ?? null,
+      },
+      telegram: {
+        queuedEvents: tgQueued,
+        sessions: tgSessions.length,
+        online: tgHealth.error ? false : true,
+        error: tgHealth.error?.message ?? null,
+      },
+      meli: {
+        online: meliHealth.error ? false : true,
+        error: meliHealth.error?.message ?? null,
+      },
+    },
+  };
+}
+
+function extractMicroserviceError(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === "object") {
+    const row = payload as Record<string, unknown>;
+    if (typeof row.error === "string" && row.error.trim()) return row.error.trim();
+    if (row.error && typeof row.error === "object" && typeof (row.error as Record<string, unknown>).message === "string") {
+      return String((row.error as Record<string, unknown>).message);
+    }
+    if (typeof row.message === "string" && row.message.trim()) return row.message.trim();
+  }
+  return fallback;
+}
+
+async function proxyMicroservice(baseUrl, path, method, body, extraHeaders = {}, timeoutMs = 10_000) {
+  const url = `${baseUrl}${path}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json", "x-webhook-secret": WEBHOOK_SECRET, ...extraHeaders },
+      body: method !== "GET" ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+
+    const rawText = await r.text();
+    let json: unknown = null;
+    if (rawText) {
+      try {
+        json = JSON.parse(rawText);
+      } catch {
+        json = null;
+      }
+    }
+
+    if (!r.ok) {
+      const fallback = rawText?.trim() || `Microservice error ${r.status}`;
+      return { data: null, error: { message: extractMicroserviceError(json, fallback), status: r.status } };
+    }
+
+    if (json === null) {
+      return { data: null, error: { message: "Invalid JSON from microservice" } };
+    }
+
+    return { data: json, error: null };
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name === "AbortError") {
+      console.warn(`[rpc] proxyMicroservice timeout: ${method} ${url}`);
+      return { data: null, error: { message: `Microservice timeout (${Math.round(timeoutMs / 1000)}s)` } };
+    }
+    const message = e instanceof Error ? e.message : String(e);
+    return { data: null, error: { message } };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function buildUserScopedHeaders(userId: string) {
+  return { "x-autolinks-user-id": userId };
+}
+
+type RouteForwardMedia = {
+  kind: "image";
+  token?: string;
+  base64?: string;
+  mimeType?: string;
+  fileName?: string;
+};
+
+function parseRouteForwardMedia(raw: unknown): RouteForwardMedia | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  if (row.kind !== "image") return null;
+
+  const token = typeof row.token === "string" ? row.token.trim() : "";
+  const base64 = typeof row.base64 === "string" ? row.base64.trim() : "";
+  if (!token && !base64) return null;
+
+  return {
+    kind: "image",
+    token: token || undefined,
+    base64: base64 || undefined,
+    mimeType: typeof row.mimeType === "string" && row.mimeType.trim() ? row.mimeType.trim() : "image/jpeg",
+    fileName: typeof row.fileName === "string" && row.fileName.trim() ? row.fileName.trim() : "route_image.jpg",
+  };
+}
+
+async function resolveRouteForwardMediaForPlatform(input: {
+  userId: string;
+  platform: string;
+  media: RouteForwardMedia | null;
+}): Promise<RouteForwardMedia | null> {
+  const { userId, platform, media } = input;
+  if (!media || media.kind !== "image") return null;
+
+  if (platform === "whatsapp") return media;
+  if (platform !== "telegram") return null;
+
+  if (media.base64) {
+    return {
+      kind: "image",
+      base64: media.base64,
+      mimeType: media.mimeType || "image/jpeg",
+      fileName: media.fileName || "route_image.jpg",
+    };
+  }
+
+  if (!media.token || !WHATSAPP_URL) return null;
+
+  const mediaResponse = await proxyMicroservice(
+    WHATSAPP_URL,
+    `/api/media/${encodeURIComponent(media.token)}`,
+    "GET",
+    null,
+    buildUserScopedHeaders(userId),
+    8000,
+  );
+  if (mediaResponse.error) return null;
+
+  const payload = (mediaResponse.data && typeof mediaResponse.data === "object")
+    ? mediaResponse.data as Record<string, unknown>
+    : {};
+  const base64 = typeof payload.base64 === "string" ? payload.base64.trim() : "";
+  if (!base64) return null;
+
+  return {
+    kind: "image",
+    base64,
+    mimeType: typeof payload.mimeType === "string" && payload.mimeType.trim()
+      ? payload.mimeType.trim()
+      : (media.mimeType || "image/jpeg"),
+    fileName: typeof payload.fileName === "string" && payload.fileName.trim()
+      ? payload.fileName.trim()
+      : (media.fileName || "route_image.jpg"),
+  };
+}
+
+async function scheduleRouteForwardMediaDeletion(input: {
+  userId: string;
+  media: RouteForwardMedia | null;
+  delayMs?: number;
+}): Promise<void> {
+  const { userId, media } = input;
+  if (!media?.token || !WHATSAPP_URL) return;
+
+  const delayMs = Number.isFinite(Number(input.delayMs))
+    ? Math.max(1_000, Number(input.delayMs))
+    : 120_000;
+
+  await proxyMicroservice(
+    WHATSAPP_URL,
+    `/api/media/${encodeURIComponent(media.token)}/schedule-delete`,
+    "POST",
+    { delayMs },
+    buildUserScopedHeaders(userId),
+    8_000,
+  );
+}
+
+const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const AUTO_IMAGE_FETCH_TIMEOUT_MS = 10_000;
+const GENERAL_URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+const OG_IMAGE_REGEX = /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*\/?>/i;
+const OG_IMAGE_REVERSE_REGEX = /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["'][^>]*\/?>/i;
+
+function isImageMime(mime: string): boolean {
+  return mime.startsWith("image/") && !mime.includes("svg");
+}
+
+async function fetchImageBuffer(imageUrl: string, signal: AbortSignal): Promise<RouteForwardMedia | null> {
+  const response = await fetch(imageUrl, { method: "GET", redirect: "follow", signal });
+  if (!response.ok) return null;
+
+  const contentLength = Number(response.headers.get("content-length") || "0");
+  if (Number.isFinite(contentLength) && contentLength > AUTO_IMAGE_MAX_BYTES) return null;
+
+  const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (!isImageMime(mimeType)) return null;
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length || buffer.length > AUTO_IMAGE_MAX_BYTES) return null;
+
+  return {
+    kind: "image",
+    base64: buffer.toString("base64"),
+    mimeType: mimeType || "image/jpeg",
+    fileName: "route_auto_image.jpg",
+  };
+}
+
+async function extractOgImage(pageUrl: string, signal: AbortSignal): Promise<string | null> {
+  const response = await fetch(pageUrl, {
+    method: "GET",
+    redirect: "follow",
+    signal,
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; AutolinksBot/1.0)", Accept: "text/html" },
+  });
+  if (!response.ok) return null;
+
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.includes("text/html")) return null;
+
+  const html = await response.text();
+  const head = html.slice(0, 32_000);
+  const match = head.match(OG_IMAGE_REGEX) || head.match(OG_IMAGE_REVERSE_REGEX);
+  if (!match || !match[1]) return null;
+
+  const ogUrl = match[1].replace(/&amp;/g, "&").trim();
+  if (!ogUrl.startsWith("http")) return null;
+  return ogUrl;
+}
+
+async function tryAutoDownloadImageFromMessage(text: string): Promise<RouteForwardMedia | null> {
+  const rawUrls = String(text || "").match(GENERAL_URL_REGEX);
+  if (!rawUrls || rawUrls.length === 0) return null;
+
+  const urls = rawUrls
+    .map((u) => u.replace(/[),.!?]+$/, "").trim())
+    .filter((u) => /^https?:\/\//i.test(u));
+
+  for (const url of urls.slice(0, 3)) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), AUTO_IMAGE_FETCH_TIMEOUT_MS);
+    try {
+      // 1. Try direct image download
+      const direct = await fetchImageBuffer(url, controller.signal);
+      if (direct) return direct;
+
+      // 2. If HTML page, extract og:image and download that
+      const ogImageUrl = await extractOgImage(url, controller.signal);
+      if (ogImageUrl) {
+        const controller2 = new AbortController();
+        const timeout2 = setTimeout(() => controller2.abort(), AUTO_IMAGE_FETCH_TIMEOUT_MS);
+        try {
+          const ogResult = await fetchImageBuffer(ogImageUrl, controller2.signal);
+          if (ogResult) return ogResult;
+        } finally {
+          clearTimeout(timeout2);
+        }
+      }
+    } catch {
+      continue;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  return null;
+}
+
+function isNotFoundSessionError(message: string): boolean {
+  const normalized = String(message || "").toLowerCase();
+  return (
+    normalized.includes("não encontrada")
+    || normalized.includes("nao encontrada")
+    || normalized.includes("sessão não encontrada")
+    || normalized.includes("sessao nao encontrada")
+    || normalized.includes("session not found")
+    || normalized.includes("not found")
+  );
+}
+
+function normalizeWhatsAppStatus(status: unknown): string {
+  const value = String(status ?? "").trim().toLowerCase();
+  if (value === "online") return "online";
+  if (value === "connecting") return "connecting";
+  if (value === "qr_code") return "qr_code";
+  if (value === "pairing_code") return "pairing_code";
+  if (value === "warning") return "warning";
+  if (value === "error") return "error";
+  return "offline";
+}
+
+function normalizeTelegramStatus(status: unknown): string {
+  const value = String(status ?? "").trim().toLowerCase();
+  if (value === "online") return "online";
+  if (value === "connecting") return "connecting";
+  if (value === "awaiting_code") return "awaiting_code";
+  if (value === "awaiting_password") return "awaiting_password";
+  if (value === "warning") return "warning";
+  if (value === "error") return "error";
+  return "offline";
+}
+
+type IntegrationEvent = { event: string; data: Record<string, unknown> };
+
+function toIntegrationEvents(payload: unknown): IntegrationEvent[] {
+  if (!payload || typeof payload !== "object") return [];
+  const eventsRaw = (payload as Record<string, unknown>).events;
+  if (!Array.isArray(eventsRaw)) return [];
+
+  const events: IntegrationEvent[] = [];
+  for (const row of eventsRaw) {
+    if (!row || typeof row !== "object") continue;
+    const event = String((row as Record<string, unknown>).event ?? "").trim();
+    if (!event) continue;
+    const dataRaw = (row as Record<string, unknown>).data;
+    const data = dataRaw && typeof dataRaw === "object" && !Array.isArray(dataRaw)
+      ? dataRaw as Record<string, unknown>
+      : {};
+    events.push({ event, data });
+  }
+  return events;
+}
+
+async function upsertGroupRow(input: {
+  userId: string;
+  sessionId: string;
+  platform: "whatsapp" | "telegram";
+  externalId: string;
+  name: string;
+  memberCount: number;
+}) {
+  const externalId = String(input.externalId || "").trim();
+  if (!externalId) return;
+  const normalizedName = String(input.name || "").trim();
+  if (!normalizedName) return;
+  const memberCount = Number.isFinite(input.memberCount) ? Math.max(0, Math.trunc(input.memberCount)) : 0;
+
+  // If a group changed external_id in the provider, recover the previously saved row
+  // by matching the same session + normalized name before regular upsert by external_id.
+  await execute(
+    `UPDATE groups g
+     SET external_id = $1,
+         name = $2,
+         member_count = $3,
+         deleted_at = NULL,
+         updated_at = NOW()
+     WHERE g.id = (
+       SELECT g1.id
+       FROM groups g1
+       WHERE g1.user_id = $4
+         AND g1.platform = $5
+         AND g1.session_id = $6
+         AND g1.deleted_at IS NULL
+         AND LOWER(TRIM(g1.name)) = LOWER(TRIM($2))
+         AND g1.external_id <> $1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM groups g2
+           WHERE g2.user_id = $4
+             AND g2.platform = $5
+             AND g2.session_id = $6
+             AND g2.external_id = $1
+             AND g2.deleted_at IS NULL
+         )
+       ORDER BY g1.updated_at DESC NULLS LAST
+       LIMIT 1
+     )`,
+    [externalId, normalizedName, memberCount, input.userId, input.platform, input.sessionId],
+  );
+
+  await execute(
+    `INSERT INTO groups (id, user_id, name, platform, member_count, session_id, external_id, deleted_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NOW())
+     ON CONFLICT (user_id, session_id, external_id)
+     DO UPDATE SET
+       name = EXCLUDED.name,
+       member_count = EXCLUDED.member_count,
+       deleted_at = NULL,
+       updated_at = NOW()`,
+    [uuid(), input.userId, normalizedName, input.platform, memberCount, input.sessionId, externalId],
+  );
+}
+
+async function refreshTelegramHealthState(userId: string): Promise<number> {
+  if (!TELEGRAM_URL) return 0;
+
+  const health = await proxyMicroservice(TELEGRAM_URL, "/health", "GET", null);
+  if (health.error) return 0;
+
+  const payload = (health.data && typeof health.data === "object")
+    ? health.data as Record<string, unknown>
+    : {};
+  const sessionsRaw = Array.isArray(payload.sessions) ? payload.sessions : [];
+
+  const runtimeStatusBySession = new Map<string, string>();
+  for (const row of sessionsRaw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const sessionId = String(r.sessionId ?? "").trim();
+    const owner = String(r.userId ?? "").trim();
+    if (!sessionId || owner !== userId) continue;
+    runtimeStatusBySession.set(sessionId, normalizeTelegramStatus(r.status));
+  }
+
+  const dbSessions = await query<{ id: string }>(
+    "SELECT id FROM telegram_sessions WHERE user_id = $1",
+    [userId],
+  );
+
+  let touched = 0;
+  for (const row of dbSessions) {
+    const sessionId = String(row?.id ?? "").trim();
+    if (!sessionId) continue;
+
+    const runtimeStatus = runtimeStatusBySession.get(sessionId);
+    if (runtimeStatus) {
+      await execute(
+        `UPDATE telegram_sessions
+         SET status = $1,
+             connected_at = CASE WHEN $1 = 'online' THEN COALESCE(connected_at, NOW()) ELSE NULL END,
+             error_message = CASE WHEN $1 = 'online' THEN '' ELSE error_message END,
+             updated_at = NOW()
+         WHERE id = $2 AND user_id = $3`,
+        [runtimeStatus, sessionId, userId],
+      );
+      touched += 1;
+      continue;
+    }
+
+    await execute(
+      `UPDATE telegram_sessions
+       SET status = 'offline',
+           connected_at = NULL,
+           phone_code_hash = '',
+           error_message = CASE
+             WHEN COALESCE(error_message, '') = '' THEN 'Sessão não encontrada no runtime do Telegram. Reautentique para reconectar.'
+             ELSE error_message
+           END,
+           updated_at = NOW()
+       WHERE id = $1 AND user_id = $2`,
+      [sessionId, userId],
+    );
+    touched += 1;
+  }
+
+  return touched;
+}
+
+function normalizeGroupNameKey(name: unknown): string {
+  return String(name ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+async function reconcileWhatsAppSessionsFromHealth(userId: string) {
+  if (!WHATSAPP_URL) return { reconciled: 0, online: false };
+
+  const health = await proxyMicroservice(WHATSAPP_URL, "/health", "GET", null, {}, 6000);
+  if (health.error) {
+    return { reconciled: 0, online: false };
+  }
+
+  const payload = (health.data && typeof health.data === "object")
+    ? (health.data as Record<string, unknown>)
+    : {};
+  const sessionsRaw = Array.isArray(payload.sessions) ? payload.sessions : [];
+
+  const statusBySessionId = new Map<string, { status: string; queuedEvents: number }>();
+  for (const row of sessionsRaw) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    if (String(item.userId ?? "") !== userId) continue;
+    const sessionId = String(item.sessionId ?? "").trim();
+    if (!sessionId) continue;
+    statusBySessionId.set(sessionId, {
+      status: normalizeWhatsAppStatus(item.status),
+      queuedEvents: Math.max(0, toInt(item.queuedEvents, 0)),
+    });
+  }
+
+  const ownSessions = await query<{ id: string }>("SELECT id FROM whatsapp_sessions WHERE user_id = $1", [userId]);
+  let reconciled = 0;
+
+  for (const row of ownSessions) {
+    const sessionId = String(row?.id ?? "").trim();
+    if (!sessionId) continue;
+
+    const fromHealth = statusBySessionId.get(sessionId);
+    if (!fromHealth) {
+      await execute(
+        "UPDATE whatsapp_sessions SET status='offline', connected_at=NULL, qr_code='', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2",
+        [sessionId, userId],
+      );
+      reconciled += 1;
+      continue;
+    }
+
+    const connectedAt = fromHealth.status === "online" ? nowIso() : null;
+    await execute(
+      `UPDATE whatsapp_sessions
+       SET status = $1,
+           connected_at = $2,
+           qr_code = CASE WHEN $1 IN ('qr_code', 'pairing_code') THEN qr_code ELSE '' END,
+           error_message = CASE WHEN $1 = 'warning' THEN error_message ELSE '' END,
+           updated_at = NOW()
+       WHERE id = $3 AND user_id = $4`,
+      [fromHealth.status, connectedAt, sessionId, userId],
+    );
+    reconciled += 1;
+  }
+
+  return { reconciled, online: true };
+}
+
+async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: string, remoteGroups: Array<Record<string, unknown>>) {
+  const existingRows = await query<{
+    id: string;
+    name: string;
+    external_id: string;
+  }>(
+    `SELECT id, name, external_id
+     FROM groups
+     WHERE user_id = $1
+       AND platform = 'whatsapp'
+       AND session_id = $2
+       AND deleted_at IS NULL`,
+    [userId, sessionId],
+  );
+
+  const existingByExternalId = new Map<string, { id: string; name: string; external_id: string }>();
+  const existingByNameKey = new Map<string, Array<{ id: string; name: string; external_id: string }>>();
+  for (const row of existingRows) {
+    const ext = String(row.external_id || "").trim();
+    if (ext) existingByExternalId.set(ext, row);
+    const nameKey = normalizeGroupNameKey(row.name);
+    if (!nameKey) continue;
+    const bucket = existingByNameKey.get(nameKey) || [];
+    bucket.push(row);
+    existingByNameKey.set(nameKey, bucket);
+  }
+
+  const remoteExternalIds = new Set<string>();
+  const claimedExistingIds = new Set<string>();
+
+  for (const row of remoteGroups) {
+    if (!row || typeof row !== "object") continue;
+    const group = row as Record<string, unknown>;
+    const externalId = String(group.id ?? "").trim();
+    if (!externalId) continue;
+
+    remoteExternalIds.add(externalId);
+    const name = String(group.name ?? group.id ?? "Grupo");
+    const memberCount = Number(group.memberCount ?? group.member_count ?? group.participantsCount ?? 0);
+
+    const alreadyMatched = existingByExternalId.get(externalId);
+    if (alreadyMatched) {
+      claimedExistingIds.add(alreadyMatched.id);
+      await upsertGroupRow({
+        userId,
+        sessionId,
+        platform: "whatsapp",
+        externalId,
+        name,
+        memberCount,
+      });
+      continue;
+    }
+
+    const nameKey = normalizeGroupNameKey(name);
+    const candidates = nameKey ? (existingByNameKey.get(nameKey) || []) : [];
+    const available = candidates.filter((c) => !claimedExistingIds.has(c.id) && !remoteExternalIds.has(String(c.external_id || "").trim()));
+
+    if (available.length === 1) {
+      const candidate = available[0];
+      await execute(
+        `UPDATE groups
+         SET external_id = $1,
+             name = $2,
+             member_count = $3,
+             deleted_at = NULL,
+             updated_at = NOW()
+         WHERE id = $4 AND user_id = $5`,
+        [externalId, name, Number.isFinite(memberCount) ? Math.max(0, Math.trunc(memberCount)) : 0, candidate.id, userId],
+      );
+      claimedExistingIds.add(candidate.id);
+      continue;
+    }
+
+    await upsertGroupRow({
+      userId,
+      sessionId,
+      platform: "whatsapp",
+      externalId,
+      name,
+      memberCount,
+    });
+  }
+}
+
+async function applyWhatsAppEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
+  let groupsSynced = 0;
+  for (const raw of events) {
+    const event = raw.event;
+    const data = raw.data;
+
+    if (event === "connection_update") {
+      const status = normalizeWhatsAppStatus(data.status);
+      const connectedAt = status === "online" ? nowIso() : null;
+      const errorMessage = String(data.errorMessage ?? data.error_message ?? "");
+      let qrCode = "";
+      if (status === "qr_code") qrCode = String(data.qrCode ?? "");
+      if (status === "pairing_code") qrCode = String(data.pairingCode ?? "");
+      const phone = String(data.phone ?? "").trim();
+
+      await execute(
+        `UPDATE whatsapp_sessions
+         SET status = $1,
+             connected_at = $2,
+             error_message = $3,
+             qr_code = $4,
+             phone = CASE WHEN $5 <> '' THEN $5 ELSE phone END,
+             updated_at = NOW()
+         WHERE id = $6 AND user_id = $7`,
+        [status, connectedAt, errorMessage, qrCode, phone, sessionId, userId],
+      );
+      continue;
+    }
+
+    if (event === "groups_sync") {
+      const groups = Array.isArray(data.groups) ? data.groups : [];
+      for (const row of groups) {
+        if (!row || typeof row !== "object") continue;
+        const group = row as Record<string, unknown>;
+        await upsertGroupRow({
+          userId,
+          sessionId,
+          platform: "whatsapp",
+          externalId: String(group.id ?? ""),
+          name: String(group.name ?? group.id ?? "Grupo"),
+          memberCount: Number(group.memberCount ?? group.member_count ?? group.participantsCount ?? 0),
+        });
+        groupsSynced += 1;
+      }
+      continue;
+    }
+
+    if (event === "group_name_update") {
+      const externalId = String(data.id ?? "").trim();
+      const name = String(data.name ?? "").trim();
+      if (!externalId || !name) continue;
+      await execute(
+        "UPDATE groups SET name = $1, updated_at = NOW() WHERE user_id = $2 AND platform = 'whatsapp' AND external_id = $3 AND deleted_at IS NULL",
+        [name, userId, externalId],
+      );
+      continue;
+    }
+
+    if (event === "message_received") {
+      const sourceExternalId = String(data.groupId ?? "").trim();
+      const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
+      const message = String(data.message ?? "").trim();
+      const media = parseRouteForwardMedia(data.media);
+      if (!sourceExternalId || (!message && !media)) continue;
+
+      await processRouteMessageForUser({
+        userId,
+        sessionId,
+        sourceExternalId,
+        sourceName,
+        message,
+        media,
+      });
+    }
+  }
+  return { groupsSynced };
+}
+
+async function applyTelegramEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
+  let groupsSynced = 0;
+  for (const raw of events) {
+    const event = raw.event;
+    const data = raw.data;
+
+    if (event === "connection_update") {
+      const status = normalizeTelegramStatus(data.status);
+      const connectedAt = status === "online" ? nowIso() : null;
+      const errorMessage = String(data.errorMessage ?? data.error_message ?? "");
+      const sessionString = String(data.session_string ?? "");
+      const phone = String(data.phone ?? "").trim();
+      const clearSession = data.clear_session === true;
+
+      await execute(
+        `UPDATE telegram_sessions
+         SET status = $1,
+             connected_at = $2,
+             error_message = $3,
+             session_string = CASE
+               WHEN $8 THEN ''
+               WHEN $4 <> '' THEN $4
+               ELSE session_string
+             END,
+             phone = CASE WHEN $5 <> '' THEN $5 ELSE phone END,
+             phone_code_hash = CASE WHEN $8 THEN '' ELSE phone_code_hash END,
+             updated_at = NOW()
+         WHERE id = $6 AND user_id = $7`,
+        [status, connectedAt, errorMessage, sessionString, phone, sessionId, userId, clearSession],
+      );
+      continue;
+    }
+
+    if (event === "groups_sync") {
+      const groups = Array.isArray(data.groups) ? data.groups : [];
+      for (const row of groups) {
+        if (!row || typeof row !== "object") continue;
+        const group = row as Record<string, unknown>;
+        await upsertGroupRow({
+          userId,
+          sessionId,
+          platform: "telegram",
+          externalId: String(group.id ?? ""),
+          name: String(group.name ?? group.id ?? "Grupo"),
+          memberCount: Number(group.memberCount ?? group.member_count ?? 0),
+        });
+        groupsSynced += 1;
+      }
+      continue;
+    }
+
+    if (event === "group_name_update") {
+      const externalId = String(data.id ?? "").trim();
+      const name = String(data.name ?? "").trim();
+      if (!externalId || !name) continue;
+      await execute(
+        "UPDATE groups SET name = $1, updated_at = NOW() WHERE user_id = $2 AND platform = 'telegram' AND external_id = $3 AND deleted_at IS NULL",
+        [name, userId, externalId],
+      );
+      continue;
+    }
+
+    if (event === "message_received") {
+      const sourceExternalId = String(data.groupId ?? "").trim();
+      const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
+      const message = String(data.message ?? "").trim();
+      const media = parseRouteForwardMedia(data.media);
+      if (!sourceExternalId || (!message && !media)) continue;
+
+      await processRouteMessageForUser({
+        userId,
+        sessionId,
+        sourceExternalId,
+        sourceName,
+        message,
+        media,
+      });
+    }
+  }
+  return { groupsSynced };
+}
+
+const ROUTE_LINK_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+
+const ROUTE_PARTNER_MARKETPLACE_PATTERNS: Record<string, RegExp[]> = {
+  shopee: [/shopee\.com(\.\w+)?/i, /shope\.ee/i, /s\.shopee\./i],
+  mercadolivre: [/mercadolivre\.com\.br/i, /mercadolibre\.com/i, /mlb\.am/i, /meli\.la/i],
+};
+
+function extractRouteLinks(content: string): string[] {
+  return String(content || "").match(ROUTE_LINK_REGEX) || [];
+}
+
+function normalizeRouteMarketplaceList(value: unknown): string[] {
+  if (!Array.isArray(value)) return ["shopee"];
+  const cleaned = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item in ROUTE_PARTNER_MARKETPLACE_PATTERNS);
+  return cleaned.length > 0 ? [...new Set(cleaned)] : ["shopee"];
+}
+
+function detectRoutePartnerMarketplace(url: string): string | null {
+  for (const [name, patterns] of Object.entries(ROUTE_PARTNER_MARKETPLACE_PATTERNS)) {
+    if (patterns.some((pattern) => pattern.test(url))) return name;
+  }
+  return null;
+}
+
+async function resolveRouteLinkWithRedirect(url: string): Promise<string> {
+  const target = String(url || "").trim();
+  if (!/^https?:\/\//i.test(target)) return target;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4_000);
+  try {
+    const response = await fetch(target, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    return response.url || target;
+  } catch {
+    return target;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveRouteMeliSessionId(userId: string, configuredSessionId: unknown): Promise<string> {
+  const configured = String(configuredSessionId || "").trim();
+  if (configured) {
+    const ownedConfigured = await queryOne<{ id: string }>(
+      "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
+      [configured, userId],
+    );
+    if (ownedConfigured?.id) return String(ownedConfigured.id);
+  }
+
+  const active = await queryOne<{ id: string }>(
+    "SELECT id FROM meli_sessions WHERE user_id = $1 AND status = 'active' ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 1",
+    [userId],
+  );
+  if (active?.id) return String(active.id);
+
+  const latest = await queryOne<{ id: string }>(
+    "SELECT id FROM meli_sessions WHERE user_id = $1 ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 1",
+    [userId],
+  );
+  return latest?.id ? String(latest.id) : "";
+}
+
+async function processRouteMessageForUser(input: {
+  userId: string;
+  sessionId: string;
+  sourceExternalId: string;
+  sourceName: string;
+  message: string;
+  media?: RouteForwardMedia | null;
+}) {
+  const { userId, sessionId, sourceExternalId, sourceName, message, media = null } = input;
+  const messageType = media ? "image" : "text";
+
+  const shopeeCredentials = await queryOne<{ app_id: string; secret_key: string; region: string }>(
+    "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id = $1 AND provider = 'shopee'",
+    [userId],
+  );
+  const shopeeConversionCache = new Map<string, { affiliateLink: string; resolvedUrl: string; ok: boolean; error?: string; productImageUrl?: string }>();
+  const meliConversionCache = new Map<string, { affiliateLink: string; ok: boolean; error?: string }>();
+  const routeMeliSessionCache = new Map<string, string>();
+
+  const sourceCandidates = new Set<string>([sourceExternalId, sessionId].filter(Boolean));
+  const sourceGroupRows = await query<{ id: string }>(
+    `SELECT id
+     FROM groups
+     WHERE user_id = $1
+       AND session_id = $2
+       AND external_id = $3
+       AND deleted_at IS NULL`,
+    [userId, sessionId, sourceExternalId],
+  );
+  for (const row of sourceGroupRows) {
+    if (row?.id) sourceCandidates.add(String(row.id));
+  }
+
+  const routes = await query<{ id: string; name: string; source_group_id: string; rules: unknown; dest_ids: string[] }>(
+    `SELECT
+       r.id,
+       r.name,
+       r.source_group_id,
+       r.rules,
+       COALESCE(json_agg(rd.group_id) FILTER (WHERE rd.group_id IS NOT NULL),'[]') AS dest_ids
+     FROM routes r
+     LEFT JOIN route_destinations rd ON rd.route_id = r.id
+     WHERE r.user_id = $1 AND r.status = 'active'
+     GROUP BY r.id`,
+    [userId],
+  );
+
+  const matching = routes.filter((route) => sourceCandidates.has(String(route.source_group_id || "")));
+  if (matching.length === 0) {
+    await execute(
+      "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','warning',$4,'inbound',$5,'blocked','no_active_routes','route_match')",
+      [uuid(), userId, sourceName, JSON.stringify({ message, sourceExternalId, sessionId, reason: "no_active_routes", hasMedia: !!media }), media ? "image" : "text"],
+    );
+    return { dispatched: 0, routesMatched: 0 };
+  }
+
+  const routeMasterGroupIds = new Map<string, string[]>();
+  const allMasterGroupIds = new Set<string>();
+  for (const route of matching) {
+    const rules = route.rules && typeof route.rules === "object" && !Array.isArray(route.rules)
+      ? route.rules as Record<string, unknown>
+      : {};
+    const fromArray = Array.isArray(rules.masterGroupIds)
+      ? rules.masterGroupIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      : [];
+    const fromSingle = typeof rules.masterGroupId === "string" && rules.masterGroupId.trim().length > 0
+      ? [rules.masterGroupId.trim()]
+      : [];
+    const ids = [...new Set([...fromArray, ...fromSingle])];
+    routeMasterGroupIds.set(route.id, ids);
+    for (const id of ids) allMasterGroupIds.add(id);
+  }
+
+  const masterLinks = allMasterGroupIds.size > 0
+    ? await query<{ master_group_id: string; group_id: string }>(
+      "SELECT master_group_id, group_id FROM master_group_links WHERE master_group_id = ANY($1)",
+      [[...allMasterGroupIds]],
+    )
+    : [];
+  const linkedByMaster = new Map<string, string[]>();
+  for (const row of masterLinks) {
+    const list = linkedByMaster.get(row.master_group_id) ?? [];
+    list.push(row.group_id);
+    linkedByMaster.set(row.master_group_id, list);
+  }
+
+  const targetByRoute = new Map<string, string[]>();
+  const allTargetGroupIds = new Set<string>();
+  for (const route of matching) {
+    const direct = Array.isArray(route.dest_ids) ? route.dest_ids : [];
+    const fromMaster = (routeMasterGroupIds.get(route.id) ?? []).flatMap((masterId) => linkedByMaster.get(masterId) ?? []);
+    const targetIds = [...new Set([...direct, ...fromMaster])];
+    targetByRoute.set(route.id, targetIds);
+    for (const gid of targetIds) allTargetGroupIds.add(gid);
+  }
+
+  const destGroupRows = allTargetGroupIds.size > 0
+    ? await query<{ id: string; name: string; platform: string; session_id: string; external_id: string }>(
+      "SELECT id, name, platform, session_id, external_id FROM groups WHERE id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
+      [[...allTargetGroupIds], userId],
+    )
+    : [];
+  const destGroupMap = new Map(destGroupRows.map((group) => [String(group.id), group]));
+
+  let dispatched = 0;
+  let mediaUsedInSuccessfulDispatch = false;
+  for (const route of matching) {
+    const rules = route.rules && typeof route.rules === "object" && !Array.isArray(route.rules)
+      ? route.rules as Record<string, unknown>
+      : {};
+
+    const shouldResolveBeforeValidate = rules.resolvePartnerLinks !== false;
+    const partnerMarketplaces = normalizeRouteMarketplaceList(rules.partnerMarketplaces);
+    const requirePartnerLink = rules.requirePartnerLink !== false;
+    const routeLinks = extractRouteLinks(message);
+
+    const inspectedLinks: Array<{
+      original: string;
+      resolved: string;
+      originalMarketplace: string | null;
+      resolvedMarketplace: string | null;
+      partnerMarketplace: string | null;
+    }> = [];
+
+    for (const originalLink of routeLinks) {
+      const original = String(originalLink || "").trim();
+      if (!original) continue;
+      const originalMarketplace = detectRoutePartnerMarketplace(original);
+      const resolved = shouldResolveBeforeValidate ? await resolveRouteLinkWithRedirect(original) : original;
+      const resolvedMarketplace = detectRoutePartnerMarketplace(resolved);
+      const partnerMarketplace = originalMarketplace && partnerMarketplaces.includes(originalMarketplace)
+        ? originalMarketplace
+        : resolvedMarketplace && partnerMarketplaces.includes(resolvedMarketplace)
+          ? resolvedMarketplace
+          : null;
+      inspectedLinks.push({ original, resolved, originalMarketplace, resolvedMarketplace, partnerMarketplace });
+    }
+
+    const disallowedMarketplaceLink = inspectedLinks.find((item) => {
+      const detected = item.originalMarketplace || item.resolvedMarketplace;
+      return Boolean(detected && !partnerMarketplaces.includes(detected));
+    });
+    if (disallowedMarketplaceLink) {
+      const disallowedMarketplace = disallowedMarketplaceLink.originalMarketplace || disallowedMarketplaceLink.resolvedMarketplace || "unknown";
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','marketplace_not_enabled','partner_gate')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message,
+          routeId: route.id,
+          routeName: route.name,
+          marketplace: disallowedMarketplace,
+          allowedMarketplaces: partnerMarketplaces,
+          reason: "marketplace_not_enabled",
+          hasMedia: !!media,
+        }), messageType],
+      );
+      continue;
+    }
+
+    const partnerLinks = inspectedLinks.filter((item) => Boolean(item.partnerMarketplace));
+    if (requirePartnerLink && partnerLinks.length === 0) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','partner_link_required','partner_gate')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message,
+          routeId: route.id,
+          routeName: route.name,
+          allowedMarketplaces: partnerMarketplaces,
+          reason: "partner_link_required",
+          hasMedia: !!media,
+        }), messageType],
+      );
+      continue;
+    }
+
+    let outboundText = message;
+    let conversionFailure: { reason: string; error: string } | null = null;
+    let convertedLinks = 0;
+    let conversionProductImageUrl = "";
+
+    for (const link of partnerLinks) {
+      const marketplace = String(link.partnerMarketplace || "");
+      if (!marketplace) continue;
+
+      if (marketplace === "shopee") {
+        if (!SHOPEE_URL) {
+          conversionFailure = { reason: "shopee_service_unavailable", error: "Serviço Shopee indisponível para conversão." };
+          break;
+        }
+        if (!shopeeCredentials) {
+          conversionFailure = { reason: "shopee_credentials_missing", error: "Credenciais Shopee não configuradas." };
+          break;
+        }
+
+        const conversionSource = link.resolvedMarketplace === "shopee" ? link.resolved : link.original;
+        const cacheKey = conversionSource;
+        let conversion = shopeeConversionCache.get(cacheKey);
+        if (!conversion) {
+          const response = await proxyMicroservice(
+            SHOPEE_URL,
+            "/api/shopee/convert-link",
+            "POST",
+            {
+              url: conversionSource,
+              appId: shopeeCredentials.app_id,
+              secret: shopeeCredentials.secret_key,
+              region: shopeeCredentials.region,
+            },
+          );
+          if (response.error) {
+            conversion = { affiliateLink: "", resolvedUrl: conversionSource, ok: false, error: response.error.message };
+          } else {
+            const payload = (response.data && typeof response.data === "object")
+              ? response.data as Record<string, unknown>
+              : {};
+            const rawAffLink = String(payload.affiliateLink || "").trim();
+            const affiliateLink = rawAffLink.replace(/[?&]lp=aff(?=(&|#|$))/gi, (m, s) => m.startsWith("?") ? (s === "&" ? "?" : "") : (s === "&" ? "&" : "")).replace(/[?&]$/, "");
+            const product = (payload.product && typeof payload.product === "object") ? payload.product as Record<string, unknown> : null;
+            const productImageUrl = product ? String(product.imageUrl || "").trim() : "";
+            conversion = {
+              affiliateLink,
+              resolvedUrl: String(payload.resolvedUrl || conversionSource || link.original),
+              ok: Boolean(affiliateLink),
+              error: affiliateLink ? undefined : "Conversão Shopee retornou link vazio.",
+              productImageUrl: productImageUrl || undefined,
+            };
+          }
+          shopeeConversionCache.set(cacheKey, conversion);
+        }
+
+        if (!conversion.ok || !conversion.affiliateLink) {
+          conversionFailure = { reason: "shopee_conversion_failed", error: conversion.error || "Falha ao converter link Shopee." };
+          break;
+        }
+
+        outboundText = outboundText.split(link.original).join(conversion.affiliateLink);
+        if (link.resolved && link.resolved !== link.original) {
+          outboundText = outboundText.split(link.resolved).join(conversion.affiliateLink);
+        }
+        if (!conversionProductImageUrl && conversion.productImageUrl) {
+          conversionProductImageUrl = conversion.productImageUrl;
+        }
+        convertedLinks += 1;
+        continue;
+      }
+
+      if (marketplace === "mercadolivre") {
+        if (!MELI_URL) {
+          conversionFailure = { reason: "meli_service_unavailable", error: "Serviço Mercado Livre indisponível para conversão." };
+          break;
+        }
+
+        let meliSessionId = routeMeliSessionCache.get(route.id);
+        if (!meliSessionId) {
+          meliSessionId = await resolveRouteMeliSessionId(userId, rules.meliSessionId);
+          routeMeliSessionCache.set(route.id, meliSessionId);
+        }
+        if (!meliSessionId) {
+          conversionFailure = { reason: "meli_session_missing", error: "Sessão Mercado Livre não configurada para a rota." };
+          break;
+        }
+
+        const conversionSource = link.resolvedMarketplace === "mercadolivre" ? link.resolved : link.original;
+        const cacheKey = `${meliSessionId}::${conversionSource}`;
+        let conversion = meliConversionCache.get(cacheKey);
+        if (!conversion) {
+          const scopedSessionId = buildScopedMeliSessionId(userId, meliSessionId);
+          const meliHeaders = buildUserScopedHeaders(userId);
+          const response = await proxyMicroservice(
+            MELI_URL,
+            "/api/meli/convert",
+            "POST",
+            { productUrl: conversionSource, sessionId: scopedSessionId },
+            meliHeaders,
+            90_000,
+          );
+          if (response.error) {
+            conversion = { affiliateLink: "", ok: false, error: response.error.message };
+          } else {
+            const payload = (response.data && typeof response.data === "object")
+              ? response.data as Record<string, unknown>
+              : {};
+            const success = payload.success === true;
+            const affiliateLink = String(payload.affiliateLink || "").trim();
+            conversion = {
+              affiliateLink,
+              ok: success && Boolean(affiliateLink),
+              error: success ? undefined : String(payload.error || "Falha ao converter link Mercado Livre."),
+            };
+          }
+          meliConversionCache.set(cacheKey, conversion);
+        }
+
+        if (!conversion.ok || !conversion.affiliateLink) {
+          conversionFailure = { reason: "meli_conversion_failed", error: conversion.error || "Falha ao converter link Mercado Livre." };
+          break;
+        }
+
+        outboundText = outboundText.split(link.original).join(conversion.affiliateLink);
+        if (link.resolved && link.resolved !== link.original) {
+          outboundText = outboundText.split(link.resolved).join(conversion.affiliateLink);
+        }
+        convertedLinks += 1;
+      }
+    }
+
+    if (conversionFailure) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked',$7,'conversion')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message,
+          routeId: route.id,
+          routeName: route.name,
+          error: conversionFailure.error,
+          reason: conversionFailure.reason,
+          hasMedia: !!media,
+        }), messageType, conversionFailure.reason],
+      );
+      continue;
+    }
+
+    if (partnerLinks.length > 0 && convertedLinks === 0) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','conversion_required','conversion')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message,
+          routeId: route.id,
+          routeName: route.name,
+          reason: "conversion_required",
+          hasMedia: !!media,
+        }), messageType],
+      );
+      continue;
+    }
+
+    // Auto-download image from URLs in message when no media is attached
+    let routeMedia = media;
+    let autoImageSource = "";
+    if (!routeMedia && rules.autoDownloadImage !== false) {
+      // Prefer product image from Shopee/ML conversion response
+      if (conversionProductImageUrl) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), AUTO_IMAGE_FETCH_TIMEOUT_MS);
+        try {
+          routeMedia = await fetchImageBuffer(conversionProductImageUrl, controller.signal);
+          if (routeMedia) autoImageSource = "shopee_product";
+        } catch { /* ignore */ } finally {
+          clearTimeout(timeout);
+        }
+      }
+      // Fallback: try to extract image from any URL in the message
+      if (!routeMedia) {
+        routeMedia = await tryAutoDownloadImageFromMessage(outboundText);
+        if (routeMedia) autoImageSource = "url_extraction";
+      }
+    }
+    const routeMessageType = routeMedia ? "image" : "text";
+
+    const targetIds = targetByRoute.get(route.id) ?? [];
+    if (targetIds.length === 0) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','no_destination_groups','route_targets')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, reason: "no_destination_groups", hasMedia: !!routeMedia }), routeMessageType],
+      );
+      continue;
+    }
+
+    for (const targetId of targetIds) {
+      const group = destGroupMap.get(String(targetId));
+      if (!group) {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_not_found','destination_lookup')",
+          [uuid(), userId, sourceName, route.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, destinationId: targetId, reason: "destination_not_found" })],
+        );
+        continue;
+      }
+
+      const platform = String(group.platform ?? "");
+      const destinationSessionId = String(group.session_id ?? "");
+      const destinationExternalId = String(group.external_id ?? "");
+      if (!destinationSessionId || !destinationExternalId) {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_session_offline','destination_validation')",
+          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, reason: "destination_session_offline" })],
+        );
+        continue;
+      }
+
+      const scopedHeaders = buildUserScopedHeaders(userId);
+      const mediaForDestination = await resolveRouteForwardMediaForPlatform({ userId, platform, media: routeMedia });
+      const outboundTextSafe = outboundText || " ";
+      let result = { data: null as unknown, error: { message: "Plataforma inválida" } as { message: string } | null };
+      if (platform === "whatsapp" && WHATSAPP_URL) {
+        result = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+          sessionId: destinationSessionId,
+          jid: destinationExternalId,
+          content: outboundTextSafe,
+          media: mediaForDestination ?? undefined,
+        }, scopedHeaders);
+      } else if (platform === "telegram" && TELEGRAM_URL) {
+        result = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+          sessionId: destinationSessionId,
+          chatId: destinationExternalId,
+          message: outboundTextSafe,
+          media: mediaForDestination ?? undefined,
+        }, scopedHeaders);
+      }
+
+      if (result.error) {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_send_failed','send_message')",
+          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform })],
+        );
+        continue;
+      }
+
+      dispatched += 1;
+      if (mediaForDestination) {
+        mediaUsedInSuccessfulDispatch = true;
+      }
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'success',$5,'outbound',$6,'sent','','')",
+        [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, platform, routeId: route.id, routeName: route.name, hasMedia: !!mediaForDestination, ...(autoImageSource ? { autoImageSource } : {}) }), mediaForDestination ? "image" : "text"],
+      );
+    }
+  }
+
+  if (mediaUsedInSuccessfulDispatch) {
+    await scheduleRouteForwardMediaDeletion({
+      userId,
+      media,
+      delayMs: 120_000,
+    });
+  }
+
+  return { dispatched, routesMatched: matching.length };
+}
+
+async function pollWhatsAppEventsForSession(userId: string, sessionId: string): Promise<number> {
+  const headers = buildUserScopedHeaders(userId);
+  const upstream = await proxyMicroservice(
+    WHATSAPP_URL,
+    `/api/sessions/${encodeURIComponent(sessionId)}/events`,
+    "GET",
+    null,
+    headers,
+  );
+  if (upstream.error) {
+    if (isNotFoundSessionError(upstream.error.message)) {
+      await execute(
+        "UPDATE whatsapp_sessions SET status='offline', connected_at=NULL, qr_code='', error_message='Sessão não encontrada no serviço WhatsApp. Conecte novamente para recriar.', updated_at=NOW() WHERE id=$1 AND user_id=$2",
+        [sessionId, userId],
+      );
+      return 0;
+    }
+    await execute(
+      "UPDATE whatsapp_sessions SET status='warning', connected_at=NULL, error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+      [upstream.error.message, sessionId, userId],
+    );
+    return 0;
+  }
+  const events = toIntegrationEvents(upstream.data);
+  if (events.length === 0) return 0;
+  await applyWhatsAppEvents(userId, sessionId, events);
+  return events.length;
+}
+
+async function pollTelegramEventsForSession(userId: string, sessionId: string): Promise<number> {
+  const headers = buildUserScopedHeaders(userId);
+  const upstream = await proxyMicroservice(
+    TELEGRAM_URL,
+    `/api/telegram/events/${encodeURIComponent(sessionId)}`,
+    "GET",
+    null,
+    headers,
+  );
+  if (upstream.error) {
+    if (isNotFoundSessionError(upstream.error.message)) {
+      await execute(
+        "UPDATE telegram_sessions SET status='offline', connected_at=NULL, phone_code_hash='', error_message='Sessão não encontrada no serviço Telegram. Inicie uma nova conexão.', updated_at=NOW() WHERE id=$1 AND user_id=$2",
+        [sessionId, userId],
+      );
+      return 0;
+    }
+    await execute(
+      "UPDATE telegram_sessions SET status='warning', connected_at=NULL, error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+      [upstream.error.message, sessionId, userId],
+    );
+    return 0;
+  }
+  const events = toIntegrationEvents(upstream.data);
+  if (events.length === 0) return 0;
+  await applyTelegramEvents(userId, sessionId, events);
+  return events.length;
+}
+
+function spawnOpsControlLocal(targetPort: number): { ok: true; pid: number } | { ok: false; error: string } {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  // services/api/src -> project root
+  const projectRoot = path.resolve(__dirname, "..", "..", "..");
+  const entry = path.join(projectRoot, "services", "ops-control", "src", "server.mjs");
+
+  try {
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (!k || v == null) continue;
+      env[k] = String(v);
+    }
+
+    // Ensure ops-control binds the expected port, and inherits security token if configured.
+    env.PORT = String(targetPort);
+    env.HOST = env.HOST || "0.0.0.0";
+    if (OPS_TOKEN && !String(env.OPS_CONTROL_TOKEN || "").trim()) {
+      env.OPS_CONTROL_TOKEN = OPS_TOKEN;
+    }
+
+    const child = spawn(process.execPath, [entry], {
+      cwd: projectRoot,
+      detached: true,
+      stdio: "ignore",
+      env,
+      windowsHide: true,
+    });
+    child.unref();
+
+    const pid = Number(child.pid);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      return { ok: false, error: "Falha ao iniciar ops-control (PID invÃ¡lido)" };
+    }
+
+    return { ok: true, pid };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// Module-level cache for admin_config â€” TTL 60s.
+// The value changes only when an admin explicitly reconfigures plans/limits,
+// so a 1-minute cache is safe and eliminates a DB round-trip on every
+// admin-users and account-plan request.
+let _cpCache: { value: Record<string, unknown>; expiresAt: number } | null = null;
+async function loadControlPlane() {
+  if (_cpCache && _cpCache.expiresAt > Date.now()) return _cpCache.value;
+  const row = await queryOne("SELECT value FROM system_settings WHERE key = 'admin_config'");
+  const value = (row?.value ?? {}) as Record<string, unknown>;
+  _cpCache = { value, expiresAt: Date.now() + 60_000 };
+  return value;
+}
+// Invalidate the cache immediately after any write to admin_config.
+function invalidateControlPlaneCache() { _cpCache = null; }
+
+// Built-in plan catalog â€” mirrors src/lib/plans.ts. Acts as fallback when
+// admin_config has not yet been configured via the admin panel.
+const BUILTIN_PLANS: Array<{ id: string; period: string; isActive: boolean }> = [
+  { id: "plan-starter",        period: "7 dias",   isActive: true },
+  { id: "plan-start",          period: "30 dias",  isActive: true },
+  { id: "plan-pro",            period: "30 dias",  isActive: true },
+  { id: "plan-business",       period: "30 dias",  isActive: true },
+  { id: "plan-start-annual",   period: "365 dias", isActive: true },
+  { id: "plan-pro-annual",     period: "365 dias", isActive: true },
+  { id: "plan-business-annual",period: "365 dias", isActive: true },
+];
+const BUILTIN_PLAN_IDS = new Set(BUILTIN_PLANS.map((p) => p.id));
+
+function getValidPlanIds(cp) {
+  const plans = Array.isArray(cp.plans) ? cp.plans : [];
+  const configured = new Set(plans.map((p) => String(p.id ?? "").trim()).filter(Boolean));
+  // Fall back to built-in IDs when admin hasn't configured plans yet
+  return configured.size > 0 ? configured : BUILTIN_PLAN_IDS;
+}
+
+function getFallbackPlanId(cp) {
+  const plans = Array.isArray(cp.plans) ? cp.plans : [];
+  const preferred = String(cp.defaultSignupPlanId ?? "").trim();
+  const ids = getValidPlanIds(cp);
+  if (preferred && ids.has(preferred)) return preferred;
+  const active = plans.find((p) => p.isActive && String(p.id ?? "").trim());
+  return active ? String(active.id) : (plans[0] ? String(plans[0].id) : "plan-starter");
+}
+
+function resolvePlanPeriodMs(cp, planId) {
+  const plans = Array.isArray(cp.plans) ? cp.plans : [];
+  const plan = plans.find((p) => String(p.id ?? "") === planId);
+  // Fall back to built-in periods when admin hasn't configured plans yet
+  const period = String(plan?.period ?? (BUILTIN_PLANS.find((p) => p.id === planId)?.period ?? "")).toLowerCase().trim();
+  if (!period) return null;
+  const month = 30 * 24 * 60 * 60 * 1000, year = 365 * 24 * 60 * 60 * 1000;
+  const m = period.match(/(\d+)\s*(dia|mes|m[ês]s|ano)/i);
+  if (m) {
+    const n = Number(m[1]), u = m[2].toLowerCase();
+    if (u.startsWith("dia")) return n * 86400000;
+    if (u.startsWith("mes") || u.startsWith("mês")) return n * month;
+    if (u.startsWith("ano")) return n * year;
+  }
+  if (period.includes("ano")) return year;
+  if (period.includes("mes") || period.includes("mês")) return month;
+  return null;
+}
+
+function planExpiresAt(cp, planId, baseMs = Date.now()) {
+  const ms = resolvePlanPeriodMs(cp, planId);
+  return ms ? new Date(baseMs + ms).toISOString() : null;
+}
+
+function normalizeTargetFilter(raw) {
+  const s = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
+  const arr = (v) => Array.isArray(v) ? v.filter((i) => typeof i === "string") : [];
+  return { planIds: arr(s.planIds), accessLevelIds: arr(s.accessLevelIds), roles: arr(s.roles), userIds: arr(s.userIds), matchMode: s.matchMode === "all" ? "all" : "any" };
+}
+
+function isAnnouncementActiveNow(row) {
+  if (row.is_active === false) return false;
+  const now = Date.now();
+  if (row.starts_at && Date.parse(String(row.starts_at)) > now) return false;
+  if (row.ends_at && Date.parse(String(row.ends_at)) < now) return false;
+  return true;
+}
+
+async function appendAudit(action, actorId, targetId, details) {
+  await execute("INSERT INTO admin_audit_logs (id, user_id, action, target_user_id, details) VALUES ($1,$2,$3,$4,$5)",
+    [uuid(), actorId, action, targetId || null, JSON.stringify(details)]);
+}
+
+async function isPlanExpired(userId) {
+  const row = await queryOne("SELECT plan_expires_at FROM profiles WHERE user_id = $1", [userId]);
+  if (!row?.plan_expires_at) return false;
+  return Date.parse(row.plan_expires_at) <= Date.now();
+}
+
+async function listUsersWithMeta() {
+  // Single JOIN instead of 3 sequential round-trips â€” reduces latency under load
+  // and frees 2 pool connections per call.
+  const rows = await query(`
+    SELECT u.id, u.email, u.metadata, u.created_at,
+           COALESCE(p.plan_id, 'plan-starter') AS plan_id,
+           p.plan_expires_at,
+           p.name AS profile_name,
+           COALESCE(r.role, 'user') AS role
+    FROM users u
+    LEFT JOIN profiles p ON p.user_id = u.id
+    LEFT JOIN user_roles r ON r.user_id = u.id
+    ORDER BY u.created_at
+  `);
+  return rows.map((u) => ({
+    id: u.id, user_id: u.id,
+    name: String(u.profile_name ?? u.metadata?.name ?? "UsuÃ¡rio"),
+    email: u.email,
+    plan_id: u.plan_id,
+    plan_expires_at: u.plan_expires_at ?? null,
+    created_at: u.created_at,
+    role: u.role,
+    account_status: String(u.metadata?.account_status ?? "active"),
+  }));
+}
+
+async function deliverAnnouncement(announcement) {
+  const filter = normalizeTargetFilter(announcement.target_filter);
+  const users = await listUsersWithMeta();
+  const toDeliver = [];
+  for (const u of users) {
+    if (["inactive","blocked","archived"].includes(u.account_status)) continue;
+    const { planIds, roles: filterRoles, userIds, matchMode } = filter;
+    let match = false;
+    if (planIds.length === 0 && filterRoles.length === 0 && userIds.length === 0) {
+      match = true;
+    } else if (matchMode === "all") {
+      const checks = [
+        planIds.length === 0 || planIds.includes(u.plan_id),
+        filterRoles.length === 0 || filterRoles.includes(u.role),
+        userIds.length === 0 || userIds.includes(u.user_id),
+      ];
+      match = checks.every(Boolean);
+    } else {
+      match = planIds.includes(u.plan_id) || filterRoles.includes(u.role) || userIds.includes(u.user_id);
+    }
+    if (match) toDeliver.push(u.user_id);
+  }
+  if (toDeliver.length > 0) {
+    // Bulk-insert all notifications in a single query instead of N sequential INSERTs.
+    // UNNEST avoids a large VALUES list while still being a single round-trip.
+    const ids = toDeliver.map(() => uuid());
+    await execute(
+      `INSERT INTO user_notifications (id, user_id, announcement_id, status, delivered_at)
+       SELECT UNNEST($1::uuid[]), UNNEST($2::uuid[]), $3, 'unread', NOW()
+       ON CONFLICT (user_id, announcement_id) DO NOTHING`,
+      [ids, toDeliver, announcement.id]
+    );
+  }
+  await execute("UPDATE system_announcements SET last_delivered_at = NOW() WHERE id = $1", [announcement.id]);
+  return { delivered: toDeliver.length, matchedUsers: toDeliver.length };
+}
+
+// â”€â”€â”€ POST /functions/v1/rpc â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+rpcRouter.post("/rpc", async (req, res) => {
+  const userId = req.currentUser?.sub;
+  const userIsAdmin = req.currentUser?.role === "admin";
+  const isService = !!(req.currentUser)?.isService;
+  const effectiveAdmin = userIsAdmin || isService;
+
+  if (!userId) { fail(res, "NÃ£o autenticado", 401); return; }
+
+  const { name, ...params } = req.body;
+  const funcName = String(name ?? "");
+
+  // Plan expiry check
+  if (!PLAN_EXPIRY_ALLOWED.has(funcName) && !effectiveAdmin) {
+    if (await isPlanExpired(userId)) { fail(res, "Plano expirado. Renove ou troque de plano."); return; }
+  }
+
+  try {
+    // â”€â”€ whatsapp-connect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "whatsapp-connect") {
+      const action = String(params.action ?? "");
+      const sessionId = String(params.sessionId ?? "");
+      if (!WHATSAPP_URL) {
+        if (action === "health") { ok(res, { online: false, url: "", uptimeSec: null, sessions: [], error: "WHATSAPP_MICROSERVICE_URL nÃ£o definido" }); return; }
+        if (action === "poll_events_all" || action === "poll_events") { ok(res, { success: true, sessions: 0, events: 0 }); return; }
+        fail(res, "WHATSAPP_MICROSERVICE_URL nÃ£o definido"); return;
+      }
+      if (action === "health") {
+        const r = await proxyMicroservice(WHATSAPP_URL, "/health", "GET", null);
+        if (r.error) { ok(res, { online: false, url: WHATSAPP_URL, uptimeSec: null, sessions: [], error: r.error.message }); return; }
+        const payload: Record<string, unknown> = (r.data && typeof r.data === "object") ? (r.data as Record<string, unknown>) : {};
+        ok(res, {
+          online: payload.ok === true || payload.online === true,
+          url: WHATSAPP_URL,
+          uptimeSec: Number.isFinite(Number(payload.uptimeSec)) ? Number(payload.uptimeSec) : null,
+          sessions: Array.isArray(payload.sessions) ? payload.sessions : [],
+          error: null,
+        });
+        return;
+      }
+      if (action === "poll_events_all") {
+        await reconcileWhatsAppSessionsFromHealth(userId).catch(() => ({ reconciled: 0, online: false }));
+        const sessions = await query<{ id: string }>("SELECT id FROM whatsapp_sessions WHERE user_id = $1", [userId]);
+        let totalEvents = 0;
+        for (const row of sessions) {
+          if (!row?.id) continue;
+          try {
+            totalEvents += await pollWhatsAppEventsForSession(userId, String(row.id));
+          } catch {
+            // best effort polling
+          }
+        }
+        ok(res, { success: true, sessions: sessions.length, events: totalEvents }); return;
+      }
+      // Ownership guard: verify session belongs to this user before any session-specific action
+      if (sessionId && action !== "health" && action !== "poll_events_all") {
+        const ownedWa = await queryOne("SELECT id FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
+        if (!ownedWa) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+      }
+      if (action === "poll_events") {
+        const events = await pollWhatsAppEventsForSession(userId, sessionId);
+        ok(res, { success: true, events }); return;
+      }
+      if (action === "connect") {
+        const sess = await queryOne("SELECT auth_method, phone, name FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
+        if (!sess) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+        await execute("UPDATE whatsapp_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        const waHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(WHATSAPP_URL, `/api/sessions/${encodeURIComponent(sessionId)}/connect`, "POST", {
+          userId,
+          webhookUrl: "",
+          phone: String(sess.phone ?? ""),
+          authMethod: String(sess.auth_method ?? "qr"),
+          sessionName: String(sess.name ?? sessionId),
+        }, waHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
+        const status = (r.data && typeof r.data === "object" && typeof (r.data as Record<string, unknown>).status === "string")
+          ? String((r.data as Record<string, unknown>).status)
+          : "connecting";
+        ok(res, { success: true, status, waiting_webhook: false }); return;
+      }
+      if (action === "disconnect") {
+        const waHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(
+          WHATSAPP_URL,
+          `/api/sessions/${encodeURIComponent(sessionId)}/disconnect`,
+          "POST",
+          { sessionId },
+          waHeaders,
+        );
+        if (r.error) { fail(res, r.error.message); return; }
+        await execute("UPDATE whatsapp_sessions SET status='offline', connected_at=NULL, qr_code='', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, { success: true, status: "offline" }); return;
+      }
+      if (action === "sync_groups") {
+        const waHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(
+          WHATSAPP_URL,
+          `/api/sessions/${encodeURIComponent(sessionId)}/sync-groups`,
+          "POST",
+          { sessionId },
+          waHeaders,
+        );
+        if (r.error) { fail(res, r.error.message); return; }
+        const remoteGroups: Array<Record<string, unknown>> = (r.data && typeof r.data === "object" && Array.isArray((r.data as Record<string, unknown>).groups))
+          ? ((r.data as Record<string, unknown>).groups as Array<Record<string, unknown>>)
+          : [];
+        await syncWhatsAppGroupsWithReconciliation(userId, sessionId, remoteGroups);
+        const events = await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, { success: true, count: remoteGroups.length, events }); return;
+      }
+      if (action === "send_message") {
+        const jid = String(params.groupId ?? params.jid ?? "").trim();
+        const content = String(params.text ?? params.content ?? "").trim();
+        if (!jid || !content) { fail(res, "groupId/jid e text/content são obrigatórios"); return; }
+        const waHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+          sessionId,
+          jid,
+          content,
+          media: params.media ?? undefined,
+        }, waHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, r.data ?? { success: true }); return;
+      }
+      fail(res, "AÃ§Ã£o WhatsApp invÃ¡lida"); return;
+    }
+
+    // â”€â”€ telegram-connect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "telegram-connect") {
+      const action = String(params.action ?? "");
+      const sessionId = String(params.sessionId ?? "");
+      if (!TELEGRAM_URL) {
+        if (action === "health") { ok(res, { online: false, url: "", uptimeSec: null, sessions: [], error: "TELEGRAM_MICROSERVICE_URL nÃ£o definido" }); return; }
+        if (action === "poll_events_all" || action === "poll_events") { ok(res, { success: true, sessions: 0, events: 0 }); return; }
+        fail(res, "TELEGRAM_MICROSERVICE_URL nÃ£o definido"); return;
+      }
+      if (action === "health") {
+        const r = await proxyMicroservice(TELEGRAM_URL, "/health", "GET", null);
+        if (r.error) { ok(res, { online: false, url: TELEGRAM_URL, uptimeSec: null, sessions: [], error: r.error.message }); return; }
+        const payload: Record<string, unknown> = (r.data && typeof r.data === "object") ? (r.data as Record<string, unknown>) : {};
+        ok(res, {
+          online: payload.ok === true || payload.online === true,
+          url: TELEGRAM_URL,
+          uptimeSec: Number.isFinite(Number(payload.uptimeSec)) ? Number(payload.uptimeSec) : null,
+          sessions: Array.isArray(payload.sessions) ? payload.sessions : [],
+          error: null,
+        });
+        return;
+      }
+      if (action === "poll_events_all") {
+        const sessions = await query<{ id: string }>("SELECT id FROM telegram_sessions WHERE user_id = $1", [userId]);
+        let totalEvents = 0;
+        for (const row of sessions) {
+          if (!row?.id) continue;
+          try {
+            totalEvents += await pollTelegramEventsForSession(userId, String(row.id));
+          } catch {
+            // best effort polling
+          }
+        }
+        ok(res, { success: true, sessions: sessions.length, events: totalEvents }); return;
+      }
+      if (action === "refresh_status") {
+        const touched = await refreshTelegramHealthState(userId).catch(() => 0);
+        const sessions = await query<{ id: string }>("SELECT id FROM telegram_sessions WHERE user_id = $1", [userId]);
+        let totalEvents = 0;
+        for (const row of sessions) {
+          if (!row?.id) continue;
+          try {
+            totalEvents += await pollTelegramEventsForSession(userId, String(row.id));
+          } catch {
+            // best effort polling
+          }
+        }
+        ok(res, { success: true, sessions: sessions.length, events: totalEvents, touched }); return;
+      }
+      // Ownership guard: verify session belongs to this user before any session-specific action
+      if (sessionId && action !== "health" && action !== "poll_events_all") {
+        const ownedTg = await queryOne("SELECT id FROM telegram_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
+        if (!ownedTg) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+      }
+      if (action === "poll_events") {
+        const events = await pollTelegramEventsForSession(userId, sessionId);
+        ok(res, { success: true, events }); return;
+      }
+      if (action === "send_code") {
+        const sess = await queryOne("SELECT phone, session_string FROM telegram_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
+        if (!sess) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+        await execute("UPDATE telegram_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        const tgHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send_code", "POST", {
+          sessionId,
+          userId,
+          phone: String(params.phone ?? sess.phone ?? ""),
+          webhookUrl: "",
+          sessionString: String(sess.session_string ?? ""),
+        }, tgHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
+        const status = (r.data && typeof r.data === "object" && typeof (r.data as Record<string, unknown>).status === "string")
+          ? String((r.data as Record<string, unknown>).status)
+          : "connecting";
+        ok(res, { status }); return;
+      }
+      if (action === "verify_code") {
+        await execute("UPDATE telegram_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        const tgHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/verify_code", "POST", { sessionId, code: params.code }, tgHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, r.data ?? { status: "connecting" }); return;
+      }
+      if (action === "verify_password") {
+        await execute("UPDATE telegram_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        const tgHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/verify_password", "POST", { sessionId, password: params.password }, tgHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, r.data ?? { status: "connecting" }); return;
+      }
+      if (action === "disconnect") {
+        const tgHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/disconnect", "POST", { sessionId }, tgHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        await execute("UPDATE telegram_sessions SET status='offline', connected_at=NULL, phone_code_hash='', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, { status: "offline" }); return;
+      }
+      if (action === "sync_groups") {
+        const tgHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/sync_groups", "POST", { sessionId }, tgHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        const events = await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
+        const payload = (r.data && typeof r.data === "object") ? r.data as Record<string, unknown> : {};
+        ok(res, { ...payload, events }); return;
+      }
+      if (action === "send_message") {
+        const chatId = String(params.groupId ?? params.chatId ?? "").trim();
+        const message = String(params.text ?? params.message ?? "").trim();
+        if (!chatId || !message) { fail(res, "groupId/chatId e text/message são obrigatórios"); return; }
+        const tgHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+          sessionId,
+          chatId,
+          message,
+          media: params.media ?? undefined,
+        }, tgHeaders);
+        if (r.error) { fail(res, r.error.message); return; }
+        await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, r.data ?? { status: "online" }); return;
+      }
+      fail(res, "AÃ§Ã£o Telegram invÃ¡lida"); return;
+    }
+
+    // â”€â”€ dispatch-messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "dispatch-messages") {
+      // Rescue stuck jobs: posts left in 'processing' after a crash or timeout.
+      // Reset them to 'pending' so they are retried in this or the next cycle.
+      const stuckRows = await query<{ id: string; updated_at: string }>(
+        `UPDATE scheduled_posts SET status = 'pending', updated_at = NOW()
+         WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '5 minutes'
+         RETURNING id, updated_at`
+      );
+      if (stuckRows.length > 0) {
+        console.log(JSON.stringify({
+          ts: new Date().toISOString(), svc: "api", event: "dispatch_released_stuck_jobs",
+          count: stuckRows.length, ids: stuckRows.map((r) => r.id),
+        }));
+      }
+
+      const limit = Math.min(Number(params.limit ?? 20), 50);
+      // Atomic claim: UPDATE status â†’ 'processing' using FOR UPDATE SKIP LOCKED so that
+      // concurrent calls from the frontend and the scheduler never process the same post.
+      // Only rows still 'pending' at the moment of the UPDATE are claimed, preventing
+      // double-dispatch (SQL-5).
+      const claimedRows = (effectiveAdmin && !userIsAdmin)
+        ? await query(
+            `UPDATE scheduled_posts SET status = 'processing', updated_at = NOW()
+             WHERE id IN (
+               SELECT id FROM scheduled_posts
+               WHERE status = 'pending' AND scheduled_at <= NOW()
+               ORDER BY scheduled_at LIMIT $1
+               FOR UPDATE SKIP LOCKED
+             ) RETURNING *`,
+            [limit]
+          )
+        : await query(
+            `UPDATE scheduled_posts SET status = 'processing', updated_at = NOW()
+             WHERE id IN (
+               SELECT id FROM scheduled_posts
+               WHERE status = 'pending' AND scheduled_at <= NOW() AND user_id = $2
+               ORDER BY scheduled_at LIMIT $1
+               FOR UPDATE SKIP LOCKED
+             ) RETURNING *`,
+            [limit, userId]
+          );
+      // Load destinations for all claimed posts in a single query (avoids per-post N+1)
+      const claimedIds = claimedRows.map((r: { id: string }) => r.id);
+      const destRows = claimedIds.length > 0
+        ? await query(
+            `SELECT post_id, group_id FROM scheduled_post_destinations WHERE post_id = ANY($1)`,
+            [claimedIds]
+          )
+        : [];
+      const destsByPost = new Map<string, string[]>();
+      for (const d of destRows) {
+        const list = destsByPost.get(d.post_id) ?? [];
+        list.push(d.group_id);
+        destsByPost.set(d.post_id, list);
+      }
+      const pending = claimedRows.map((r: Record<string, unknown>) => ({
+        ...r,
+        dest_ids: destsByPost.get(r.id as string) ?? [],
+      })) as Array<{
+        id: string; user_id: string; content: string;
+        metadata: Record<string, unknown>; recurrence: string;
+        dest_ids: string[];
+        [k: string]: unknown;
+      }>;
+      let sent = 0, failed = 0, skipped = 0;
+      for (const post of pending) {
+        const meta = post.metadata ?? {};
+        const mgids = Array.isArray(meta.masterGroupIds) ? meta.masterGroupIds : [];
+        const directIds = Array.isArray(post.dest_ids) ? post.dest_ids : [];
+        let linkedIds = [];
+        if (mgids.length > 0) {
+          const links = await query("SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1)", [mgids]);
+          linkedIds = links.map((l) => l.group_id);
+        }
+        const destIds = [...new Set([...directIds, ...linkedIds])];
+        if (destIds.length === 0) { skipped++; await execute("UPDATE scheduled_posts SET status='cancelled', updated_at=NOW() WHERE id=$1", [post.id]); continue; }
+        const message = typeof meta.finalContent === "string" ? meta.finalContent : String(post.content ?? "");
+        let ok_ = true;
+        // Batch load all destination groups in one query (avoids N+1)
+        const groupRows = destIds.length > 0
+          ? await query("SELECT id, name, platform, session_id, external_id FROM groups WHERE id = ANY($1) AND user_id = $2", [destIds, post.user_id])
+          : [];
+        const groupMap = new Map(groupRows.map((g) => [g.id, g]));
+        for (const gid of destIds) {
+          const g = groupMap.get(gid);
+          if (!g) { ok_ = false; failed++; break; }
+
+          const platform = String(g.platform ?? "");
+          const session = String(g.session_id ?? "");
+          const externalId = String(g.external_id ?? "");
+          if (!session || !externalId) { ok_ = false; failed++; break; }
+
+          const scopedHeaders = buildUserScopedHeaders(String(post.user_id));
+          let sentResult = { data: null, error: { message: "Plataforma inválida" } };
+          if (platform === "whatsapp" && WHATSAPP_URL) {
+            sentResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+              sessionId: session,
+              jid: externalId,
+              content: message,
+            }, scopedHeaders);
+          } else if (platform === "telegram" && TELEGRAM_URL) {
+            sentResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+              sessionId: session,
+              chatId: externalId,
+              message,
+            }, scopedHeaders);
+          } else {
+            sentResult = { data: null, error: { message: `Serviço ${platform || "desconhecido"} indisponível` } };
+          }
+          if (sentResult.error) { ok_ = false; failed++; break; }
+
+          await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'success',$4,'outbound','text','sent','','')",
+            [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform })]);
+          sent++;
+        }
+        const recurrence = String(post.recurrence ?? "none");
+        if (!ok_) {
+          await execute("UPDATE scheduled_posts SET status='cancelled', updated_at=NOW() WHERE id=$1", [post.id]);
+        } else if (recurrence !== "none") {
+          const nextMs = recurrence === "daily" ? Date.now() + 86400000 : Date.now() + 7 * 86400000;
+          await execute("UPDATE scheduled_posts SET status='pending', scheduled_at=$1, updated_at=NOW() WHERE id=$2", [new Date(nextMs).toISOString(), post.id]);
+        } else {
+          await execute("UPDATE scheduled_posts SET status='sent', updated_at=NOW() WHERE id=$1", [post.id]);
+        }
+      }
+      ok(res, { ok: true, source: String(params.source ?? "frontend"), scanned: pending.length, processed: pending.length, sent, failed, skipped }); return;
+    }
+
+    // â”€â”€ route-process-message â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "route-process-message") {
+      const sessionId = String(params.sessionId ?? "");
+      const sourceExternalId = String(params.groupId ?? params.sourceExternalId ?? "");
+      const sourceName = String(params.groupName ?? params.sourceName ?? "Grupo");
+      const message = String(params.message ?? "");
+      if (!sessionId || !sourceExternalId || !message) { fail(res, "sessionId, groupId e message sÃ£o obrigatÃ³rios"); return; }
+      const processed = await processRouteMessageForUser({
+        userId,
+        sessionId,
+        sourceExternalId,
+        sourceName,
+        message,
+      });
+      ok(res, { ok: true, dispatched: processed.dispatched, routesMatched: processed.routesMatched }); return;
+    }
+
+    // â”€â”€ shopee handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "shopee-service-health") {
+      if (!SHOPEE_URL) {
+        ok(res, {
+          online: false,
+          url: "",
+          uptimeSec: null,
+          error: "Shopee microservice nÃ£o configurado.",
+          service: "shopee-affiliate",
+          stats: null,
+        });
+        return;
+      }
+      const r = await proxyMicroservice(SHOPEE_URL, "/health", "GET", null);
+      if (r.error) {
+        ok(res, {
+          online: false,
+          url: SHOPEE_URL,
+          uptimeSec: null,
+          error: r.error.message,
+          service: "shopee-affiliate",
+          stats: null,
+        });
+        return;
+      }
+      const payload: Record<string, unknown> = (r.data && typeof r.data === "object")
+        ? (r.data as Record<string, unknown>)
+        : {};
+      ok(res, {
+        online: payload.ok === true || payload.online === true,
+        url: SHOPEE_URL,
+        uptimeSec: Number.isFinite(Number(payload.uptimeSec)) ? Number(payload.uptimeSec) : null,
+        error: null,
+        service: String(payload.service || "shopee-affiliate"),
+        stats: (payload.stats && typeof payload.stats === "object") ? payload.stats : null,
+      });
+      return;
+    }
+    if (funcName === "shopee-test-connection") {
+      if (!SHOPEE_URL) { ok(res, { success: false, reason: "Shopee microservice nÃ£o configurado.", region: "BR" }); return; }
+      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      if (!cred) { ok(res, { success: false, reason: "Credenciais Shopee nÃ£o configuradas.", region: "BR" }); return; }
+      const fallbackRegion = String(cred.region || "BR").toUpperCase();
+      const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/test-connection", "POST", { appId: cred.app_id, secret: cred.secret_key, region: cred.region });
+      if (r.error) {
+        ok(res, { success: false, reason: r.error.message || "Falha na conexÃ£o", region: fallbackRegion });
+        return;
+      }
+      const payload: Record<string, unknown> = (r.data && typeof r.data === "object")
+        ? (r.data as Record<string, unknown>)
+        : {};
+      const success = payload.success === true || payload.connected === true;
+      const region = String(payload.region || fallbackRegion || "BR").toUpperCase();
+      const reason = String(payload.reason || payload.error || payload.message || "Falha na conexÃ£o");
+      ok(res, success ? { success: true, region } : { success: false, reason, region });
+      return;
+    }
+    if (funcName === "shopee-convert-link") {
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
+      const sourceUrl = String(params.url ?? params.link ?? "").trim();
+      if (!sourceUrl) { fail(res, "URL Shopee obrigatoria"); return; }
+      const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
+        url: sourceUrl,
+        appId: cred.app_id,
+        secret: cred.secret_key,
+        region: cred.region,
+      });
+      if (r.error) { fail(res, r.error.message); return; }
+      ok(res, r.data); return;
+    }
+    if (funcName === "shopee-convert-links") {
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
+      const urlsRaw = Array.isArray(params.urls) ? params.urls : (Array.isArray(params.links) ? params.links : []);
+      const urls = urlsRaw
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (urls.length === 0) { fail(res, "Lista de URLs Shopee obrigatoria"); return; }
+
+      const conversions = [];
+      for (const originalLink of urls) {
+        const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
+          url: originalLink,
+          appId: cred.app_id,
+          secret: cred.secret_key,
+          region: cred.region,
+        });
+        if (r.error) {
+          conversions.push({
+            originalLink,
+            resolvedLink: originalLink,
+            affiliateLink: originalLink,
+            usedService: false,
+            product: null,
+            error: r.error.message,
+          });
+          continue;
+        }
+        const payload = (r.data && typeof r.data === "object") ? r.data as Record<string, unknown> : {};
+        conversions.push({
+          originalLink,
+          resolvedLink: String(payload.resolvedUrl ?? originalLink),
+          affiliateLink: String(payload.affiliateLink ?? originalLink),
+          usedService: true,
+          product: payload.product ?? null,
+          error: null,
+        });
+      }
+      ok(res, { conversions }); return;
+    }
+    if (funcName === "shopee-batch") {
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
+      const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/batch", "POST", { ...params, appId: cred.app_id, secret: cred.secret_key, region: cred.region });
+      if (r.error) { fail(res, r.error.message); return; }
+      ok(res, r.data); return;
+    }
+    if (funcName === "shopee-automation-run") {
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      const requestedAutomationId = String(params.automationId ?? "").trim();
+      const source = String(params.source ?? "manual").trim() || "manual";
+      const runAllUsers = isService || (effectiveAdmin && params.allUsers === true);
+      const limit = Math.max(1, Math.min(toInt(params.limit, runAllUsers ? 120 : 30), runAllUsers ? 300 : 100));
+
+      const dueClause = `
+        status = 'active' AND is_active = TRUE
+        AND (
+          last_run_at IS NULL
+          OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
+        )
+      `;
+
+      const automations = requestedAutomationId
+        ? (runAllUsers
+            ? await query(
+                "SELECT * FROM shopee_automations WHERE id = $1 LIMIT 1",
+                [requestedAutomationId],
+              )
+            : await query(
+                "SELECT * FROM shopee_automations WHERE id = $1 AND user_id = $2 LIMIT 1",
+                [requestedAutomationId, userId],
+              ))
+        : (runAllUsers
+            ? await query(
+                `SELECT * FROM shopee_automations
+                 WHERE ${dueClause}
+                 ORDER BY COALESCE(last_run_at, to_timestamp(0)) ASC
+                 LIMIT $1`,
+                [limit],
+              )
+            : await query(
+                `SELECT * FROM shopee_automations
+                 WHERE user_id = $1 AND ${dueClause}
+                 ORDER BY COALESCE(last_run_at, to_timestamp(0)) ASC
+                 LIMIT $2`,
+                [userId, limit],
+              ));
+
+      if (requestedAutomationId && automations.length === 0) { fail(res, "AutomaÃ§Ã£o nÃ£o encontrada"); return; }
+      if (automations.length === 0) {
+        ok(res, {
+          ok: true,
+          source,
+          scope: runAllUsers ? "global" : "user",
+          active: 0,
+          processed: 0,
+          sent: 0,
+          skipped: 0,
+          failed: 0,
+          errors: [],
+          message: "Nenhuma automaÃ§Ã£o elegÃ­vel para execuÃ§Ã£o neste ciclo.",
+        });
+        return;
+      }
+
+      const uniqueUserIds = [...new Set(automations.map((row) => String(row.user_id || "").trim()).filter(Boolean))];
+      const credRows = uniqueUserIds.length > 0
+        ? await query<{ user_id: string; app_id: string; secret_key: string; region: string }>(
+            "SELECT user_id, app_id, secret_key, region FROM api_credentials WHERE provider='shopee' AND user_id = ANY($1)",
+            [uniqueUserIds],
+          )
+        : [];
+      const credsByUser = new Map(credRows.map((row) => [String(row.user_id), row]));
+
+      let processed = 0;
+      let sent = 0;
+      let skipped = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      for (const auto of automations) {
+        const ownerUserId = String(auto.user_id || "").trim();
+        const automationName = String(auto.name || auto.id || "Automacao Shopee");
+        const cred = credsByUser.get(ownerUserId);
+        if (!cred) {
+          skipped += 1;
+          errors.push(`${automationName}: credenciais Shopee ausentes`);
+          continue;
+        }
+
+        const runResult = await proxyMicroservice(
+          SHOPEE_URL,
+          "/automation-run",
+          "POST",
+          { automation: auto, appId: cred.app_id, secret: cred.secret_key, region: cred.region, userId: ownerUserId, source },
+          {},
+          120_000,
+        );
+        if (runResult.error) {
+          failed += 1;
+          errors.push(`${automationName}: ${runResult.error.message}`);
+          continue;
+        }
+
+        const runPayload = (runResult.data && typeof runResult.data === "object") ? runResult.data as Record<string, unknown> : {};
+        const sentNow = Math.max(0, toInt(runPayload.sent, 0));
+        sent += sentNow;
+        processed += 1;
+        await execute("UPDATE shopee_automations SET last_run_at=NOW(), products_sent=products_sent+$1 WHERE id=$2", [sentNow, auto.id]);
+      }
+
+      ok(res, {
+        ok: failed === 0,
+        source,
+        scope: runAllUsers ? "global" : "user",
+        active: automations.length,
+        processed,
+        sent,
+        skipped,
+        failed,
+        errors: errors.slice(0, 30),
+      });
+      return;
+    }
+
+    // â”€â”€ meli handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "meli-service-health") {
+      if (!MELI_URL) {
+        ok(res, {
+          online: false,
+          url: "",
+          uptimeSec: null,
+          error: "MeLi RPA nao configurado.",
+          service: "mercadolivre-rpa",
+          stats: null,
+        });
+        return;
+      }
+      const meliHeaders = { "x-autolinks-user-id": userId };
+      const r = await proxyMicroservice(MELI_URL, "/api/meli/health", "GET", null, meliHeaders);
+      if (r.error) {
+        ok(res, {
+          online: false,
+          url: MELI_URL,
+          uptimeSec: null,
+          error: r.error.message,
+          service: "mercadolivre-rpa",
+          stats: null,
+        });
+        return;
+      }
+      const payload: Record<string, unknown> = (r.data && typeof r.data === "object")
+        ? (r.data as Record<string, unknown>)
+        : {};
+      ok(res, {
+        online: payload.ok === true || payload.online === true,
+        url: MELI_URL,
+        uptimeSec: null,
+        error: null,
+        service: String(payload.service || "mercadolivre-rpa"),
+        stats: (payload.stats && typeof payload.stats === "object") ? payload.stats : null,
+      });
+      return;
+    }
+    if (funcName === "meli-save-session") {
+      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+
+      const sessionId = String(params.sessionId ?? "").trim();
+      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
+      if (params.cookies == null) { fail(res, "cookies e obrigatorio"); return; }
+
+      const existingSession = await queryOne<{ user_id: string; name: string }>(
+        "SELECT user_id, name FROM meli_sessions WHERE id = $1",
+        [sessionId],
+      );
+      if (existingSession && String(existingSession.user_id) !== userId) {
+        fail(res, "Sessao ja pertence a outro usuario", 403);
+        return;
+      }
+
+      const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+      const meliHeaders = { "x-autolinks-user-id": userId };
+      const upstream = await proxyMicroservice(
+        MELI_URL,
+        "/api/meli/sessions",
+        "POST",
+        { sessionId: scopedSessionId, cookies: params.cookies },
+        meliHeaders,
+        45_000,
+      );
+      if (upstream.error) { fail(res, upstream.error.message); return; }
+
+      const upstreamData: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+        ? (upstream.data as Record<string, unknown>)
+        : {};
+      const status = String(upstreamData.status || "untested");
+      const accountName = String(upstreamData.accountName || "");
+      const mlUserId = String(upstreamData.mlUserId || "");
+      const logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
+      const inputName = String(params.name ?? "").trim();
+      const fallbackName = `Conta ${sessionId.slice(0, 8)}`;
+      const finalName = inputName || String(existingSession?.name || "").trim() || fallbackName;
+      const errorMessage = status === "error"
+        ? String((upstreamData as { error?: unknown }).error || "Falha ao salvar cookies")
+        : "";
+
+      await execute(
+        `INSERT INTO meli_sessions (id, user_id, name, account_name, ml_user_id, status, last_checked_at, error_message)
+         VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)
+         ON CONFLICT (id) DO UPDATE
+         SET user_id = EXCLUDED.user_id,
+             name = EXCLUDED.name,
+             account_name = EXCLUDED.account_name,
+             ml_user_id = EXCLUDED.ml_user_id,
+             status = EXCLUDED.status,
+             last_checked_at = EXCLUDED.last_checked_at,
+             error_message = EXCLUDED.error_message,
+             updated_at = NOW()`,
+        [sessionId, userId, finalName, accountName, mlUserId, status, errorMessage],
+      );
+
+      ok(res, {
+        success: true,
+        sessionId,
+        status,
+        accountName,
+        mlUserId,
+        logs,
+      });
+      return;
+    }
+    if (funcName === "meli-test-session") {
+      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+
+      const sessionId = String(params.sessionId ?? "").trim();
+      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
+
+      const owned = await queryOne<{ id: string }>(
+        "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
+        [sessionId, userId],
+      );
+      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+
+      const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+      const meliHeaders = { "x-autolinks-user-id": userId };
+      const upstream = await proxyMicroservice(
+        MELI_URL,
+        `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test`,
+        "POST",
+        {},
+        meliHeaders,
+        45_000,
+      );
+
+      if (upstream.error) {
+        await execute(
+          "UPDATE meli_sessions SET status='error', last_checked_at=NOW(), error_message=$1 WHERE id=$2 AND user_id=$3",
+          [upstream.error.message, sessionId, userId],
+        );
+        fail(res, upstream.error.message);
+        return;
+      }
+
+      const upstreamData: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+        ? (upstream.data as Record<string, unknown>)
+        : {};
+      const status = String(upstreamData.status || "error");
+      const accountName = String(upstreamData.accountName || "");
+      const mlUserId = String(upstreamData.mlUserId || "");
+      const logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
+      const firstErrorLog = logs.find((item) => {
+        if (!item || typeof item !== "object") return false;
+        const lvl = String((item as { level?: unknown }).level || "").toLowerCase();
+        return lvl === "error";
+      });
+      const errorMessage = status === "active"
+        ? ""
+        : String(
+          (upstreamData as { error?: unknown }).error
+          || ((firstErrorLog && typeof firstErrorLog === "object")
+            ? (firstErrorLog as { message?: unknown }).message
+            : "")
+          || "Sessao expirada",
+        );
+
+      await execute(
+        "UPDATE meli_sessions SET status=$1, account_name=$2, ml_user_id=$3, last_checked_at=NOW(), error_message=$4 WHERE id=$5 AND user_id=$6",
+        [status, accountName, mlUserId, errorMessage, sessionId, userId],
+      );
+
+      ok(res, {
+        status,
+        accountName,
+        mlUserId,
+        errorMessage,
+        logs,
+      });
+      return;
+    }
+    if (funcName === "meli-list-sessions") {
+      const data = await query(
+        "SELECT id, name, account_name, ml_user_id, status, last_checked_at, error_message, created_at FROM meli_sessions WHERE user_id=$1 ORDER BY created_at",
+        [userId],
+      );
+      ok(res, { sessions: data });
+      return;
+    }
+    if (funcName === "meli-delete-session") {
+      const sessionId = String(params.sessionId ?? "").trim();
+      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
+
+      const owned = await queryOne<{ id: string }>(
+        "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
+        [sessionId, userId],
+      );
+      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+
+      let warning: string | null = null;
+      if (MELI_URL) {
+        const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+        const meliHeaders = { "x-autolinks-user-id": userId };
+        const upstream = await proxyMicroservice(
+          MELI_URL,
+          `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}`,
+          "DELETE",
+          {},
+          meliHeaders,
+          30_000,
+        );
+        if (upstream.error) warning = upstream.error.message;
+      }
+
+      await execute("DELETE FROM meli_sessions WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+      ok(res, { success: true, warning });
+      return;
+    }
+    if (funcName === "meli-convert-link") {
+      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+
+      const productUrl = String(params.productUrl ?? params.url ?? "").trim();
+      const sessionId = String(params.sessionId ?? "").trim();
+      if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
+      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
+
+      const owned = await queryOne<{ id: string }>(
+        "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
+        [sessionId, userId],
+      );
+      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+
+      const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+      const meliHeaders = { "x-autolinks-user-id": userId };
+      const upstream = await proxyMicroservice(
+        MELI_URL,
+        "/api/meli/convert",
+        "POST",
+        { productUrl, sessionId: scopedSessionId },
+        meliHeaders,
+        90_000,
+      );
+      if (upstream.error) { fail(res, upstream.error.message); return; }
+
+      const payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+        ? (upstream.data as Record<string, unknown>)
+        : {};
+      if (payload.success !== true) {
+        fail(res, String(payload.error || "Falha ao converter link do Mercado Livre"));
+        return;
+      }
+
+      ok(res, {
+        success: true,
+        originalLink: String(payload.originalUrl || productUrl),
+        affiliateLink: String(payload.affiliateLink || productUrl),
+        cached: payload.cached === true,
+        conversionTimeMs: Number.isFinite(Number(payload.conversionTimeMs))
+          ? Number(payload.conversionTimeMs)
+          : undefined,
+      });
+      return;
+    }
+    if (funcName === "meli-convert-links") {
+      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+
+      const urls = Array.isArray(params.urls)
+        ? params.urls.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+      const sessionId = String(params.sessionId ?? "").trim();
+      if (urls.length === 0) { fail(res, "urls deve ser um array nao vazio"); return; }
+      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
+
+      const owned = await queryOne<{ id: string }>(
+        "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
+        [sessionId, userId],
+      );
+      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+
+      const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+      const meliHeaders = { "x-autolinks-user-id": userId };
+      const upstream = await proxyMicroservice(
+        MELI_URL,
+        "/api/meli/convert/batch",
+        "POST",
+        { urls, sessionId: scopedSessionId },
+        meliHeaders,
+        120_000,
+      );
+      if (upstream.error) { fail(res, upstream.error.message); return; }
+
+      const payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+        ? (upstream.data as Record<string, unknown>)
+        : {};
+      const rawResults = Array.isArray(payload.results) ? payload.results : [];
+      const results = rawResults.map((item) => {
+        const row = (item && typeof item === "object") ? item as Record<string, unknown> : {};
+        return {
+          success: row.success === true,
+          originalLink: String(row.originalUrl || row.originalLink || ""),
+          affiliateLink: row.success === true ? String(row.affiliateLink || "") : "",
+          cached: row.cached === true,
+          conversionTimeMs: Number.isFinite(Number(row.conversionTimeMs))
+            ? Number(row.conversionTimeMs)
+            : undefined,
+          error: row.success === true ? undefined : String(row.error || "Falha na conversao"),
+        };
+      });
+
+      ok(res, {
+        total: Number.isFinite(Number(payload.total)) ? Number(payload.total) : urls.length,
+        successful: Number.isFinite(Number(payload.successful))
+          ? Number(payload.successful)
+          : results.filter((item) => item.success).length,
+        results,
+      });
+      return;
+    }
+    if (funcName === "process-queue-health") {
+      const queues = await collectProcessQueueSnapshot();
+      ok(res, { queues, timestamp: nowIso() }); return;
+    }
+    if (funcName === "ops-service-health") {
+      if (!OPS_URL) { ok(res, { online: false, services: [] }); return; }
+      const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
+      const r = await proxyMicroservice(OPS_URL, "/api/services", "GET", null, opsHeaders, 20_000);
+      ok(res, r.data ?? { online: false, services: [] }); return;
+    }
+    if (funcName === "ops-service-control") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+      const svc = String(params.service ?? "").trim().toLowerCase();
+      const op = String(params.operation ?? params.action ?? "").trim().toLowerCase();
+      if (!svc || !["whatsapp","telegram","shopee","meli","all"].includes(svc)) { fail(res, "ServiÃ§o invÃ¡lido"); return; }
+      if (!["start","stop","restart"].includes(op)) { fail(res, "AÃ§Ã£o invÃ¡lida"); return; }
+      const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
+      const r = await proxyMicroservice(OPS_URL, `/api/services/${encodeURIComponent(svc)}/${encodeURIComponent(op)}`, "POST", { source: "admin-panel-api" }, opsHeaders, svc === "all" ? 120_000 : 60_000);
+      if (r.error) { fail(res, r.error.message); return; }
+      ok(res, r.data); return;
+    }
+
+    if (funcName === "ops-service-ports") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+      const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
+      const r = await proxyMicroservice(OPS_URL, "/api/config/ports", "GET", null, opsHeaders, 20_000);
+      if (r.error) { fail(res, r.error.message); return; }
+      ok(res, r.data); return;
+    }
+
+    if (funcName === "ops-service-port") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+      const svc = String(params.service ?? params.id ?? "").trim().toLowerCase();
+      const portRaw = params.port;
+      const port = Number(portRaw);
+      if (!svc || !["whatsapp","telegram","shopee","meli"].includes(svc)) { fail(res, "ServiÃ§o invÃ¡lido"); return; }
+      if (!Number.isInteger(port) || port < 1 || port > 65535) { fail(res, "Porta invÃ¡lida"); return; }
+      const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
+      const r = await proxyMicroservice(OPS_URL, "/api/config/ports", "POST", { service: svc, port }, opsHeaders, 20_000);
+      if (r.error) { fail(res, r.error.message); return; }
+      ok(res, r.data); return;
+    }
+
+    // â”€â”€ ops-bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Ensures ops-control is online. In local/dev environments, if OPS_URL points
+    // to localhost and ops-control is down, we attempt to spawn it.
+    if (funcName === "ops-bootstrap") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+
+      const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
+      const probe = await proxyMicroservice(OPS_URL, `/api/services?_ts=${Date.now()}`, "GET", null, opsHeaders, 5000);
+      if (!probe.error) {
+        ok(res, { ok: true, online: true, started: false, url: OPS_URL });
+        return;
+      }
+
+      if (!isLocalhostUrl(OPS_URL)) {
+        fail(res, `Ops Control offline em ${OPS_URL}. Bootstrap automÃ¡tico sÃ³ Ã© suportado quando OPS_CONTROL_URL aponta para localhost.`);
+        return;
+      }
+
+      const targetPort = inferPortFromUrl(OPS_URL, 3115);
+      const started = spawnOpsControlLocal(targetPort);
+      if (!started.ok) {
+        const startError = "error" in started ? started.error : "erro desconhecido";
+        fail(res, `Falha ao iniciar Ops Control: ${startError}`);
+        return;
+      }
+
+      const deadline = Date.now() + 25_000;
+      let lastError = probe.error?.message ?? "offline";
+      while (Date.now() < deadline) {
+        const r = await proxyMicroservice(OPS_URL, `/api/services?_ts=${Date.now()}`, "GET", null, opsHeaders, 3500);
+        if (!r.error) {
+          ok(res, { ok: true, online: true, started: true, pid: started.pid, url: OPS_URL });
+          return;
+        }
+        lastError = r.error.message;
+        await sleep(800);
+      }
+
+      fail(res, `Ops Control nÃ£o respondeu apÃ³s iniciar (pid=${started.pid}). Ãšltimo erro: ${lastError}`);
+      return;
+    }
+    if (funcName === "admin-system-observability") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      const [
+        usersRows,
+        routesAggRows,
+        automationsAggRows,
+        groupsAggRows,
+        waAggRows,
+        tgAggRows,
+        meliAggRows,
+        schedulesAggRows,
+        historyAggRows,
+        activityAggRows,
+        maintenanceRow,
+        queueSnapshot,
+      ] = await Promise.all([
+        query<{
+          user_id: string;
+          email: string;
+          name: string;
+          role: string;
+          account_status: string;
+          plan_id: string;
+          created_at: string;
+        }>(
+          `SELECT u.id AS user_id, u.email,
+                  COALESCE(p.name, u.metadata->>'name', 'Usuario') AS name,
+                  COALESCE(r.role, 'user') AS role,
+                  COALESCE(u.metadata->>'account_status', 'active') AS account_status,
+                  COALESCE(p.plan_id, 'plan-starter') AS plan_id,
+                  u.created_at
+           FROM users u
+           LEFT JOIN profiles p ON p.user_id = u.id
+           LEFT JOIN user_roles r ON r.user_id = u.id`
+        ),
+        query<{ user_id: string; routes_total: string | number; routes_active: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) AS routes_total,
+                  COUNT(*) FILTER (WHERE status = 'active') AS routes_active
+           FROM routes
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; automations_total: string | number; automations_active: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) AS automations_total,
+                  COUNT(*) FILTER (WHERE status = 'active' AND is_active = TRUE) AS automations_active
+           FROM shopee_automations
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; groups_total: string | number; groups_whatsapp: string | number; groups_telegram: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) FILTER (WHERE deleted_at IS NULL) AS groups_total,
+                  COUNT(*) FILTER (WHERE deleted_at IS NULL AND platform = 'whatsapp') AS groups_whatsapp,
+                  COUNT(*) FILTER (WHERE deleted_at IS NULL AND platform = 'telegram') AS groups_telegram
+           FROM groups
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; wa_sessions_total: string | number; wa_sessions_online: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) AS wa_sessions_total,
+                  COUNT(*) FILTER (WHERE status IN ('online','active','connected','ready')) AS wa_sessions_online
+           FROM whatsapp_sessions
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; tg_sessions_total: string | number; tg_sessions_online: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) AS tg_sessions_total,
+                  COUNT(*) FILTER (WHERE status IN ('online','active','connected','ready')) AS tg_sessions_online
+           FROM telegram_sessions
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; meli_sessions_total: string | number; meli_sessions_active: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) AS meli_sessions_total,
+                  COUNT(*) FILTER (WHERE status = 'active') AS meli_sessions_active
+           FROM meli_sessions
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; schedules_total: string | number; schedules_pending: string | number; schedules_active_recurring: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) AS schedules_total,
+                  (
+                    COUNT(*) FILTER (WHERE status = 'pending' AND scheduled_at <= NOW())
+                    + COUNT(*) FILTER (WHERE status = 'processing')
+                  ) AS schedules_pending,
+                  COUNT(*) FILTER (WHERE recurrence IN ('daily','weekly') AND status IN ('pending','processing')) AS schedules_active_recurring
+           FROM scheduled_posts
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; history24h: string | number; history7d: string | number; errors24h: string | number; errors7d: string | number }>(
+          `SELECT user_id,
+                  COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day') AS history24h,
+                  COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS history7d,
+                  COUNT(*) FILTER (
+                    WHERE created_at >= NOW() - INTERVAL '1 day'
+                      AND (status = 'error' OR processing_status IN ('error','blocked'))
+                  ) AS errors24h,
+                  COUNT(*) FILTER (
+                    WHERE created_at >= NOW() - INTERVAL '7 days'
+                      AND (status = 'error' OR processing_status IN ('error','blocked'))
+                  ) AS errors7d
+           FROM history_entries
+           GROUP BY user_id`
+        ),
+        query<{ user_id: string; last_activity_at: string | null }>(
+          `SELECT user_id, MAX(activity_at) AS last_activity_at
+           FROM (
+             SELECT user_id, MAX(created_at) AS activity_at FROM history_entries GROUP BY user_id
+             UNION ALL
+             SELECT user_id, MAX(updated_at) AS activity_at FROM routes GROUP BY user_id
+             UNION ALL
+             SELECT user_id, MAX(updated_at) AS activity_at FROM shopee_automations GROUP BY user_id
+             UNION ALL
+             SELECT user_id, MAX(updated_at) AS activity_at FROM scheduled_posts GROUP BY user_id
+             UNION ALL
+             SELECT user_id, MAX(updated_at) AS activity_at FROM groups GROUP BY user_id
+             UNION ALL
+             SELECT user_id, MAX(updated_at) AS activity_at FROM whatsapp_sessions GROUP BY user_id
+             UNION ALL
+             SELECT user_id, MAX(updated_at) AS activity_at FROM telegram_sessions GROUP BY user_id
+             UNION ALL
+             SELECT user_id, MAX(updated_at) AS activity_at FROM meli_sessions GROUP BY user_id
+           ) activity
+           GROUP BY user_id`
+        ),
+        queryOne<{ maintenance_enabled: boolean }>("SELECT maintenance_enabled FROM app_runtime_flags WHERE id = 'global'"),
+        collectProcessQueueSnapshot(),
+      ]);
+
+      const byUser = <T extends { user_id: string }>(rows: T[]) =>
+        new Map(rows.map((row) => [String(row.user_id), row]));
+
+      const routeMap = byUser(routesAggRows);
+      const automationMap = byUser(automationsAggRows);
+      const groupMap = byUser(groupsAggRows);
+      const waMap = byUser(waAggRows);
+      const tgMap = byUser(tgAggRows);
+      const meliMap = byUser(meliAggRows);
+      const scheduleMap = byUser(schedulesAggRows);
+      const historyMap = byUser(historyAggRows);
+      const activityMap = byUser(activityAggRows);
+
+      const users = usersRows.map((u) => {
+        const uid = String(u.user_id);
+        const routeRow = routeMap.get(uid);
+        const automationRow = automationMap.get(uid);
+        const groupRow = groupMap.get(uid);
+        const waRow = waMap.get(uid);
+        const tgRow = tgMap.get(uid);
+        const meliRow = meliMap.get(uid);
+        const scheduleRow = scheduleMap.get(uid);
+        const historyRow = historyMap.get(uid);
+        const activityRow = activityMap.get(uid);
+
+        const history24h = toInt(historyRow?.history24h, 0);
+        const history7d = toInt(historyRow?.history7d, 0);
+        const historyExpected = calcExpected24hFrom7d(history7d);
+        const errors24h = toInt(historyRow?.errors24h, 0);
+        const errors7d = toInt(historyRow?.errors7d, 0);
+        const errorsExpected = calcExpected24hFrom7d(errors7d);
+
+        return {
+          user_id: uid,
+          email: String(u.email || ""),
+          name: String(u.name || "Usuario"),
+          role: String(u.role || "user"),
+          account_status: String(u.account_status || "active"),
+          plan_id: String(u.plan_id || "plan-starter"),
+          created_at: u.created_at,
+          usage: {
+            routesTotal: toInt(routeRow?.routes_total, 0),
+            routesActive: toInt(routeRow?.routes_active, 0),
+            automationsTotal: toInt(automationRow?.automations_total, 0),
+            automationsActive: toInt(automationRow?.automations_active, 0),
+            groupsTotal: toInt(groupRow?.groups_total, 0),
+            groupsWhatsapp: toInt(groupRow?.groups_whatsapp, 0),
+            groupsTelegram: toInt(groupRow?.groups_telegram, 0),
+            waSessionsTotal: toInt(waRow?.wa_sessions_total, 0),
+            waSessionsOnline: toInt(waRow?.wa_sessions_online, 0),
+            tgSessionsTotal: toInt(tgRow?.tg_sessions_total, 0),
+            tgSessionsOnline: toInt(tgRow?.tg_sessions_online, 0),
+            meliSessionsTotal: toInt(meliRow?.meli_sessions_total, 0),
+            meliSessionsActive: toInt(meliRow?.meli_sessions_active, 0),
+            schedulesTotal: toInt(scheduleRow?.schedules_total, 0),
+            schedulesPending: toInt(scheduleRow?.schedules_pending, 0),
+            schedulesActiveRecurring: toInt(scheduleRow?.schedules_active_recurring, 0),
+            history24h,
+            history7d,
+            history24hExpectedFrom7dAvg: historyExpected,
+            history24hGrowthRatio: safeGrowthRatio(history24h, historyExpected),
+            errors24h,
+            errors7d,
+            errors24hExpectedFrom7dAvg: errorsExpected,
+            errors24hGrowthRatio: safeGrowthRatio(errors24h, errorsExpected),
+            lastActivityAt: activityRow?.last_activity_at ? String(activityRow.last_activity_at) : null,
+          },
+        };
+      });
+
+      const global = {
+        usersTotal: usersRows.length,
+        usersActive: 0,
+        usersInactive: 0,
+        usersBlocked: 0,
+        usersArchived: 0,
+        routesTotal: 0,
+        routesActive: 0,
+        automationsTotal: 0,
+        automationsActive: 0,
+        groupsTotal: 0,
+        groupsWhatsapp: 0,
+        groupsTelegram: 0,
+        waSessionsTotal: 0,
+        waSessionsOnline: 0,
+        tgSessionsTotal: 0,
+        tgSessionsOnline: 0,
+        meliSessionsTotal: 0,
+        meliSessionsActive: 0,
+        schedulesTotal: 0,
+        schedulesPending: 0,
+        history24h: 0,
+        history7d: 0,
+        history24hExpectedFrom7dAvg: 0,
+        history24hGrowthRatio: 0,
+        errors24h: 0,
+        errors7d: 0,
+        errors24hExpectedFrom7dAvg: 0,
+        errors24hGrowthRatio: 0,
+      };
+
+      for (const user of users) {
+        const status = String(user.account_status || "").trim().toLowerCase();
+        if (status === "inactive") global.usersInactive += 1;
+        else if (status === "blocked") global.usersBlocked += 1;
+        else if (status === "archived") global.usersArchived += 1;
+        else global.usersActive += 1;
+
+        global.routesTotal += toInt(user.usage.routesTotal, 0);
+        global.routesActive += toInt(user.usage.routesActive, 0);
+        global.automationsTotal += toInt(user.usage.automationsTotal, 0);
+        global.automationsActive += toInt(user.usage.automationsActive, 0);
+        global.groupsTotal += toInt(user.usage.groupsTotal, 0);
+        global.groupsWhatsapp += toInt(user.usage.groupsWhatsapp, 0);
+        global.groupsTelegram += toInt(user.usage.groupsTelegram, 0);
+        global.waSessionsTotal += toInt(user.usage.waSessionsTotal, 0);
+        global.waSessionsOnline += toInt(user.usage.waSessionsOnline, 0);
+        global.tgSessionsTotal += toInt(user.usage.tgSessionsTotal, 0);
+        global.tgSessionsOnline += toInt(user.usage.tgSessionsOnline, 0);
+        global.meliSessionsTotal += toInt(user.usage.meliSessionsTotal, 0);
+        global.meliSessionsActive += toInt(user.usage.meliSessionsActive, 0);
+        global.schedulesTotal += toInt(user.usage.schedulesTotal, 0);
+        global.schedulesPending += toInt(user.usage.schedulesPending, 0);
+        global.history24h += toInt(user.usage.history24h, 0);
+        global.history7d += toInt(user.usage.history7d, 0);
+        global.errors24h += toInt(user.usage.errors24h, 0);
+        global.errors7d += toInt(user.usage.errors7d, 0);
+      }
+      global.history24hExpectedFrom7dAvg = calcExpected24hFrom7d(global.history7d);
+      global.history24hGrowthRatio = safeGrowthRatio(global.history24h, global.history24hExpectedFrom7dAvg);
+      global.errors24hExpectedFrom7dAvg = calcExpected24hFrom7d(global.errors7d);
+      global.errors24hGrowthRatio = safeGrowthRatio(global.errors24h, global.errors24hExpectedFrom7dAvg);
+
+      // Fetch ops-control health
+      let ops: Record<string, unknown> = { online: false, url: OPS_URL, error: "Ops Control nao configurado", system: null, services: [] };
+      if (OPS_URL) {
+        const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
+        const opsResult = await proxyMicroservice(OPS_URL, `/api/services?_ts=${Date.now()}`, "GET", null, opsHeaders, 20_000);
+        if (opsResult.data && !opsResult.error) {
+          ops = {
+            online: opsResult.data.online === true,
+            url: OPS_URL,
+            error: opsResult.data.error ?? null,
+            system: opsResult.data.system ?? null,
+            services: Array.isArray(opsResult.data.services) ? opsResult.data.services : [],
+          };
+        } else {
+          ops = {
+            online: false,
+            url: OPS_URL,
+            error: opsResult.error?.message ?? "Falha ao conectar ao Ops Control",
+            system: null,
+            services: [],
+          };
+        }
+      }
+
+      const scoringRows = users.map((user) => {
+        const usage = user.usage;
+        const loadScore = Number((
+          usage.routesActive * 2
+          + usage.automationsActive * 3
+          + usage.schedulesPending * 2
+          + usage.groupsTotal
+          + usage.waSessionsOnline
+          + usage.tgSessionsOnline
+          + usage.meliSessionsActive
+          + usage.history24h * 0.2
+        ).toFixed(2));
+        const errorsScore = Number((usage.errors24h * 4 + usage.errors7d * 0.5).toFixed(2));
+        const spikeScore = Number((
+          Math.max(usage.history24hGrowthRatio, usage.errors24hGrowthRatio)
+          * (usage.history24h + usage.errors24h + 1)
+        ).toFixed(2));
+        return { ...user, loadScore, errorsScore, spikeScore };
+      });
+
+      const rankings = {
+        byErrors: scoringRows
+          .filter((row) => row.errorsScore > 0)
+          .sort((a, b) => b.errorsScore - a.errorsScore)
+          .slice(0, 10)
+          .map((row) => ({ user_id: row.user_id, name: row.name, email: row.email, score: row.errorsScore, usage: row.usage })),
+        byLoad: scoringRows
+          .sort((a, b) => b.loadScore - a.loadScore)
+          .slice(0, 10)
+          .map((row) => ({ user_id: row.user_id, name: row.name, email: row.email, score: row.loadScore, usage: row.usage })),
+        bySpike: scoringRows
+          .filter((row) => row.spikeScore > 1)
+          .sort((a, b) => b.spikeScore - a.spikeScore)
+          .slice(0, 10)
+          .map((row) => ({ user_id: row.user_id, name: row.name, email: row.email, score: row.spikeScore, usage: row.usage })),
+      };
+
+      const anomalies: Array<Record<string, unknown>> = [];
+      const maintenanceEnabled = maintenanceRow?.maintenance_enabled === true;
+      if (maintenanceEnabled) {
+        anomalies.push({
+          id: "maintenance-enabled",
+          severity: "warning",
+          title: "Modo manutencao ativo",
+          message: "Clientes podem ter funcionalidades limitadas ate o retorno operacional.",
+          metric: "maintenance",
+        });
+      }
+
+      if (ops.online !== true) {
+        anomalies.push({
+          id: "ops-offline",
+          severity: "critical",
+          title: "Ops Control indisponivel",
+          message: String(ops.error || "Nao foi possivel obter telemetria do Ops Control."),
+          metric: "ops",
+        });
+      } else {
+        const system = (ops.system && typeof ops.system === "object") ? ops.system as Record<string, unknown> : {};
+        const pressure = String(system.pressure || "").toLowerCase();
+        if (pressure === "critical" || pressure === "warn") {
+          anomalies.push({
+            id: `ops-pressure-${pressure || "unknown"}`,
+            severity: pressure === "critical" ? "critical" : "warning",
+            title: pressure === "critical" ? "Host em pressao critica" : "Host em estado de alerta",
+            message: `Pressao atual do host reportada pelo Ops Control: ${pressure || "unknown"}.`,
+            metric: "host_pressure",
+          });
+        }
+
+        const services = Array.isArray(ops.services) ? ops.services : [];
+        for (const service of services) {
+          const row = (service && typeof service === "object") ? service as Record<string, unknown> : {};
+          const serviceId = String(row.id || row.appName || "service");
+          const serviceLabel = serviceId.toUpperCase();
+          const processOnline = row.processOnline === true || row.online === true || isSessionOnlineStatus(row.processStatus);
+          const componentOnline = row.componentOnline === true || row.online === true;
+          if (!processOnline) {
+            anomalies.push({
+              id: `service-${serviceId}-process-offline`,
+              severity: "critical",
+              title: `${serviceLabel} parado`,
+              message: "Processo principal indisponivel no orchestrator.",
+              metric: "service_process",
+            });
+          } else if (!componentOnline) {
+            anomalies.push({
+              id: `service-${serviceId}-component-offline`,
+              severity: "warning",
+              title: `${serviceLabel} sem resposta`,
+              message: String(row.componentError || "Processo ativo, mas endpoint de health falhou."),
+              metric: "service_component",
+            });
+          }
+        }
+      }
+
+      const queueBuckets = {
+        route: normalizeQueueBucket(queueSnapshot.route, 200),
+        dispatch: normalizeQueueBucket(queueSnapshot.dispatch, Math.max(10, toInt(process.env.DISPATCH_LIMIT, 100))),
+        automation: normalizeQueueBucket(queueSnapshot.automation, 50),
+        convert: normalizeQueueBucket(queueSnapshot.convert, 1),
+      };
+
+      const queueThresholds = [
+        { id: "dispatch", title: "Fila de agendamentos", bucket: queueBuckets.dispatch },
+        { id: "automation", title: "Fila de automacoes", bucket: queueBuckets.automation },
+        { id: "convert", title: "Fila de conversao MeLi", bucket: queueBuckets.convert },
+        { id: "route", title: "Fila de roteamento", bucket: queueBuckets.route },
+      ];
+      for (const item of queueThresholds) {
+        const hard = Math.max(item.bucket.limit * 2, 20);
+        if (item.bucket.pending >= hard) {
+          anomalies.push({
+            id: `queue-${item.id}-critical`,
+            severity: "critical",
+            title: `${item.title} congestionada`,
+            message: `Pendentes: ${item.bucket.pending} (limite recomendado ${item.bucket.limit}).`,
+            metric: `queue_${item.id}`,
+            value: item.bucket.pending,
+            threshold: item.bucket.limit,
+          });
+        } else if (item.bucket.pending > item.bucket.limit) {
+          anomalies.push({
+            id: `queue-${item.id}-warn`,
+            severity: "warning",
+            title: `${item.title} acima do limite`,
+            message: `Pendentes: ${item.bucket.pending} (limite recomendado ${item.bucket.limit}).`,
+            metric: `queue_${item.id}`,
+            value: item.bucket.pending,
+            threshold: item.bucket.limit,
+          });
+        }
+      }
+
+      for (const row of scoringRows) {
+        if (row.usage.errors24h >= 10) {
+          anomalies.push({
+            id: `user-errors-${row.user_id}`,
+            severity: row.usage.errors24h >= 20 ? "critical" : "warning",
+            title: `Alta taxa de erro: ${row.name}`,
+            message: `${row.usage.errors24h} erros nas ultimas 24h.`,
+            user_id: row.user_id,
+            metric: "errors24h",
+            value: row.usage.errors24h,
+            threshold: 10,
+          });
+        }
+        if (row.usage.history24h >= 40 && row.usage.history24hGrowthRatio >= 2.5) {
+          anomalies.push({
+            id: `user-spike-history-${row.user_id}`,
+            severity: "warning",
+            title: `Pico de volume: ${row.name}`,
+            message: `Volume 24h em ${row.usage.history24hGrowthRatio.toFixed(2)}x da media semanal.`,
+            user_id: row.user_id,
+            metric: "history24hGrowthRatio",
+            value: row.usage.history24hGrowthRatio,
+            threshold: 2.5,
+          });
+        }
+        if (row.usage.schedulesPending >= 50) {
+          anomalies.push({
+            id: `user-schedule-backlog-${row.user_id}`,
+            severity: "warning",
+            title: `Backlog de agendamentos: ${row.name}`,
+            message: `${row.usage.schedulesPending} itens aguardando processamento.`,
+            user_id: row.user_id,
+            metric: "schedulesPending",
+            value: row.usage.schedulesPending,
+            threshold: 50,
+          });
+        }
+      }
+
+      const severityWeight: Record<string, number> = { critical: 3, warning: 2, info: 1 };
+      const anomalyMap = new Map<string, Record<string, unknown>>();
+      for (const anomaly of anomalies) {
+        anomalyMap.set(String(anomaly.id), anomaly);
+      }
+      const sortedAnomalies = [...anomalyMap.values()]
+        .sort((a, b) => {
+          const wa = severityWeight[String(a.severity || "info")] ?? 0;
+          const wb = severityWeight[String(b.severity || "info")] ?? 0;
+          if (wb !== wa) return wb - wa;
+          const va = Number(a.value ?? 0);
+          const vb = Number(b.value ?? 0);
+          return vb - va;
+        })
+        .slice(0, 20);
+
+      ok(res, {
+        ok: true,
+        checkedAt: nowIso(),
+        global,
+        users,
+        rankings,
+        anomalies: sortedAnomalies,
+        workers: {
+          ops,
+          queues: queueBuckets,
+          queueTelemetry: queueSnapshot.telemetry,
+        },
+      }); return;
+    }
+
+    // â”€â”€ admin-maintenance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "admin-maintenance") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      const action = String(params.action ?? "get");
+      if (action === "get") {
+        const data = await queryOne("SELECT * FROM app_runtime_flags WHERE id = 'global'");
+        ok(res, data ?? { maintenance_enabled: false, allow_admin_bypass: true }); return;
+      }
+      if (action === "set") {
+        const upd: Record<string, unknown> = {};
+        if (typeof params.maintenance_enabled === "boolean") upd.maintenance_enabled = params.maintenance_enabled;
+        if (typeof params.maintenance_title === "string") upd.maintenance_title = params.maintenance_title.trim() || "Sistema em manutenÃ§Ã£o";
+        if (typeof params.maintenance_message === "string") upd.maintenance_message = params.maintenance_message.trim() || "Estamos realizando melhorias.";
+        if (params.maintenance_eta !== undefined) upd.maintenance_eta = params.maintenance_eta || null;
+        if (typeof params.allow_admin_bypass === "boolean") upd.allow_admin_bypass = params.allow_admin_bypass;
+        const keys = Object.keys(upd);
+        const updateValues = Object.values(upd);
+        // Double-quote identifiers: keys are hardcoded strings, but quoting prevents future injection if pattern is reused
+        const setClause = keys.map((k, i) => `"${k}" = $${i + 1}`).join(", ");
+        await execute(
+          `UPDATE app_runtime_flags SET ${setClause}, updated_by_user_id = $${keys.length + 1}, updated_at = NOW() WHERE id = 'global'`,
+          [...updateValues, userId]
+        );
+        await appendAudit("set_maintenance", userId, null, { maintenance_enabled: upd.maintenance_enabled });
+        const data = await queryOne("SELECT * FROM app_runtime_flags WHERE id = 'global'");
+        ok(res, data); return;
+      }
+      fail(res, "AÃ§Ã£o de manutenÃ§Ã£o invÃ¡lida"); return;
+    }
+
+    // â”€â”€ user-notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "user-notifications") {
+      const action = String(params.action ?? "list");
+      if (action === "unread_count") {
+        const row = await queryOne("SELECT COUNT(*) AS c FROM user_notifications WHERE user_id=$1 AND status='unread'", [userId]);
+        ok(res, { count: Number(row?.c ?? 0) }); return;
+      }
+      if (action === "list") {
+        const VALID_NOTIF_STATUS = new Set(["unread", "read", "dismissed"]);
+        const rawStatus = String(params.status ?? "all");
+        const validStatus = VALID_NOTIF_STATUS.has(rawStatus) ? rawStatus : null;
+        const lim = Math.min(Number(params.limit ?? 50), 200);
+        const statusSql = validStatus ? "AND un.status = $3" : "";
+        const queryArgs = validStatus ? [userId, lim, validStatus] : [userId, lim];
+        const items = await query(`SELECT un.*, row_to_json(sa) AS system_announcements FROM user_notifications un LEFT JOIN system_announcements sa ON sa.id = un.announcement_id WHERE un.user_id=$1 ${statusSql} ORDER BY un.delivered_at DESC LIMIT $2`, queryArgs);
+        const unreadRow = await queryOne("SELECT COUNT(*) AS c FROM user_notifications WHERE user_id=$1 AND status='unread'", [userId]);
+        ok(res, { items, unread_count: Number(unreadRow?.c ?? 0) }); return;
+      }
+      if (action === "mark_read") {
+        const ids = Array.isArray(params.ids) ? params.ids : (params.id ? [String(params.id)] : []);
+        if (!ids.length) { fail(res, "ID obrigatÃ³rio"); return; }
+        await execute("UPDATE user_notifications SET status='read', read_at=NOW(), updated_at=NOW() WHERE user_id=$1 AND id=ANY($2) AND status='unread'", [userId, ids]);
+        ok(res, { success: true }); return;
+      }
+      if (action === "mark_all_read") {
+        await execute("UPDATE user_notifications SET status='read', read_at=NOW(), updated_at=NOW() WHERE user_id=$1 AND status='unread'", [userId]);
+        ok(res, { success: true }); return;
+      }
+      if (action === "dismiss") {
+        const nid = String(params.id ?? ""); if (!nid) { fail(res, "ID obrigatÃ³rio"); return; }
+        await execute("UPDATE user_notifications SET status='dismissed', dismissed_at=NOW(), updated_at=NOW() WHERE id=$1 AND user_id=$2", [nid, userId]);
+        ok(res, { success: true }); return;
+      }
+      if (action === "login_popup") {
+        const items = await query(`SELECT un.*, row_to_json(sa) AS system_announcements FROM user_notifications un LEFT JOIN system_announcements sa ON sa.id = un.announcement_id WHERE un.user_id=$1 AND un.status='unread' ORDER BY un.delivered_at DESC LIMIT 20`, [userId]);
+        const candidate = items.find((item) => {
+          const ann = item.system_announcements;
+          if (!ann) return false;
+          if (!isAnnouncementActiveNow(ann)) return false;
+          return ann.auto_popup_on_login === true && ann.severity === "critical" && (ann.channel === "modal" || ann.channel === "both");
+        });
+        if (!candidate) { ok(res, { item: null }); return; }
+        await execute("UPDATE user_notifications SET status='read', read_at=NOW(), updated_at=NOW() WHERE id=$1", [candidate.id]);
+        ok(res, { item: candidate }); return;
+      }
+      fail(res, "AÃ§Ã£o de notificaÃ§Ã£o invÃ¡lida"); return;
+    }
+
+    // â”€â”€ admin-announcements â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "admin-announcements") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      const action = String(params.action ?? "list");
+      if (action === "list") {
+        const rows = await query("SELECT * FROM system_announcements ORDER BY created_at DESC");
+        // Aggregate notification metrics in a single query instead of N+1 per announcement
+        const metricsRows = await query(
+          `SELECT announcement_id,
+            COUNT(*) AS delivered,
+            COUNT(*) FILTER (WHERE status='read') AS read_count,
+            COUNT(*) FILTER (WHERE status='dismissed') AS dismissed_count
+           FROM user_notifications GROUP BY announcement_id`
+        );
+        const metricsMap = new Map(metricsRows.map((m) => [m.announcement_id, m]));
+        const items = rows.map((row) => {
+          const m = metricsMap.get(row.id);
+          const delivered = Number(m?.delivered ?? 0), read = Number(m?.read_count ?? 0), dismissed = Number(m?.dismissed_count ?? 0);
+          return { ...row, metrics: { delivered, read, dismissed, unread: delivered - read - dismissed, read_rate: delivered > 0 ? Math.round((read / delivered) * 100) : 0 } };
+        });
+        ok(res, { announcements: items }); return;
+      }
+      if (action === "create") {
+        const title = String(params.title ?? "").trim(); const message = String(params.message ?? "").trim();
+        if (!title) { fail(res, "TÃ­tulo obrigatÃ³rio"); return; } if (!message) { fail(res, "Mensagem obrigatÃ³ria"); return; }
+        const id = uuid();
+        await execute("INSERT INTO system_announcements (id, created_by_user_id, title, message, severity, channel, auto_popup_on_login, starts_at, ends_at, is_active, target_filter) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+          [id, userId, title, message, ["critical","warning"].includes(String(params.severity)) ? params.severity : "info", ["modal","both"].includes(String(params.channel)) ? params.channel : "bell", params.auto_popup_on_login === true, params.starts_at || null, params.ends_at || null, params.is_active !== false, JSON.stringify(normalizeTargetFilter(params.target_filter))]);
+        const row = await queryOne("SELECT * FROM system_announcements WHERE id=$1", [id]);
+        let delivery = { delivered: 0, matchedUsers: 0 };
+        if (params.deliver_now !== false) delivery = await deliverAnnouncement(row);
+        await appendAudit("create_announcement", userId, null, { announcement_id: id, delivered: delivery.delivered });
+        ok(res, { announcement: row, delivery }); return;
+      }
+      if (action === "update") {
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        const updates: Record<string, unknown> = {};
+        if (params.title) updates.title = String(params.title).trim();
+        if (params.message) updates.message = String(params.message).trim();
+        if (["info","warning","critical"].includes(String(params.severity))) updates.severity = params.severity;
+        if (["bell","modal","both"].includes(String(params.channel))) updates.channel = params.channel;
+        if (typeof params.auto_popup_on_login === "boolean") updates.auto_popup_on_login = params.auto_popup_on_login;
+        if (params.starts_at !== undefined) updates.starts_at = params.starts_at || null;
+        if (params.ends_at !== undefined) updates.ends_at = params.ends_at || null;
+        if (typeof params.is_active === "boolean") updates.is_active = params.is_active;
+        if (params.target_filter) updates.target_filter = JSON.stringify(normalizeTargetFilter(params.target_filter));
+        const keys = Object.keys(updates);
+        if (keys.length > 0) {
+          // Double-quote identifiers â€” keys are hardcoded strings above, quoting prevents future injection
+          const setClause = keys.map((k, i) => `"${k}" = $${i + 2}`).join(", ");
+          await execute(`UPDATE system_announcements SET ${setClause}, updated_at=NOW() WHERE id=$1`, [aid, ...Object.values(updates)]);
+        }
+        let delivery = { delivered: 0, matchedUsers: 0 };
+        if (params.redeliver === true) { const row = await queryOne("SELECT * FROM system_announcements WHERE id=$1", [aid]); if (row) delivery = await deliverAnnouncement(row); }
+        await appendAudit("update_announcement", userId, null, { announcement_id: aid });
+        ok(res, { success: true, delivery }); return;
+      }
+      if (action === "deactivate") {
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        await execute("UPDATE system_announcements SET is_active=FALSE, updated_at=NOW() WHERE id=$1", [aid]);
+        ok(res, { success: true }); return;
+      }
+      if (action === "delete") {
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        await execute("DELETE FROM user_notifications WHERE announcement_id=$1", [aid]);
+        await execute("DELETE FROM system_announcements WHERE id=$1", [aid]);
+        await appendAudit("delete_announcement", userId, null, { announcement_id: aid });
+        ok(res, { success: true }); return;
+      }
+      if (action === "deliver_now") {
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        const row = await queryOne("SELECT * FROM system_announcements WHERE id=$1", [aid]);
+        if (!row) { fail(res, "Comunicado nÃ£o encontrado"); return; }
+        const lastMs = row.last_delivered_at ? Date.parse(row.last_delivered_at) : 0;
+        if (Date.now() - lastMs < 30000) { fail(res, "Aguarde 30s antes de reenviar."); return; }
+        const delivery = await deliverAnnouncement(row);
+        ok(res, { success: true, delivery }); return;
+      }
+      if (action === "preview_recipients") {
+        const filter = normalizeTargetFilter(params.target_filter);
+        const users = (await listUsersWithMeta()).filter((u) => !["inactive","blocked","archived"].includes(u.account_status)).filter((u) => filter.planIds.length === 0 || filter.planIds.includes(u.plan_id)).slice(0, 200).map((u) => ({ user_id: u.user_id, email: u.email, name: u.name, plan_id: u.plan_id }));
+        ok(res, { count: users.length, users }); return;
+      }
+      fail(res, "AÃ§Ã£o de comunicados invÃ¡lida"); return;
+    }
+
+    // â”€â”€ admin-users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "admin-users") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      const action = String(params.action ?? "");
+      const cp = await loadControlPlane();
+      const validPlanIds = getValidPlanIds(cp);
+      const fallbackPlan = getFallbackPlanId(cp);
+
+      if (action === "list_users") { ok(res, { users: await listUsersWithMeta() }); return; }
+      if (action === "list_audit") {
+        const data = await query("SELECT al.*, u.email AS actor_email, t.email AS target_email FROM admin_audit_logs al LEFT JOIN users u ON u.id = al.user_id LEFT JOIN users t ON t.id = al.target_user_id ORDER BY al.created_at DESC LIMIT 50");
+        ok(res, { audit: data }); return;
+      }
+      if (action === "update_plan") {
+        const tid = String(params.user_id ?? ""); const planId = String(params.plan_id ?? "").trim();
+        if (!planId || !validPlanIds.has(planId)) { fail(res, "Plano invÃ¡lido"); return; }
+        const expiresAt = planExpiresAt(cp, planId);
+        await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [planId, expiresAt, tid]);
+        await appendAudit("update_plan", userId, tid, { plan_id: planId });
+        ok(res, { success: true }); return;
+      }
+      if (action === "set_role") {
+        const tid = String(params.user_id ?? ""); const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
+        if (role === "user") {
+          const p = await queryOne("SELECT plan_id FROM profiles WHERE user_id=$1", [tid]);
+          const rawPlan = String(p?.plan_id ?? "").trim();
+          if (!rawPlan || !validPlanIds.has(rawPlan)) await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [fallbackPlan, planExpiresAt(cp, fallbackPlan), tid]);
+        }
+        // Wrap role change + token invalidation in a transaction â€” DELETE without INSERT leaves user roleless
+        await transaction(async (client) => {
+          await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
+          await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
+          // Invalidate all active tokens for the target user â€” JWT embeds role, so old tokens
+          // would otherwise remain valid with the previous role until natural expiry.
+          await client.query("UPDATE users SET token_invalidated_before = NOW() WHERE id = $1", [tid]);
+        });
+        await appendAudit("set_role", userId, tid, { role });
+        ok(res, { success: true }); return;
+      }
+      if (action === "set_name") {
+        const tid = String(params.user_id ?? ""); const name = String(params.name ?? "").trim();
+        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (!name) { fail(res, "Nome obrigatÃ³rio"); return; }
+        await execute("UPDATE users SET metadata = metadata || $1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify({ name }), tid]);
+        await execute("UPDATE profiles SET name=$1, updated_at=NOW() WHERE user_id=$2", [name, tid]);
+        await appendAudit("set_name", userId, tid, { name });
+        ok(res, { success: true }); return;
+      }
+      if (action === "set_status") {
+        const tid = String(params.user_id ?? ""); const status = String(params.account_status ?? "active");
+        if (!["active","inactive","blocked","archived"].includes(status)) { fail(res, "Status invÃ¡lido"); return; }
+        if (tid === userId && status !== "active") { fail(res, "NÃ£o Ã© permitido alterar o prÃ³prio status"); return; }
+        const setInv = status !== "active" ? ", token_invalidated_before = NOW()" : "";
+        await execute(`UPDATE users SET metadata = metadata || $1::jsonb${setInv}, updated_at=NOW() WHERE id=$2`, [JSON.stringify({ account_status: status, status_updated_at: nowIso() }), tid]);
+        await appendAudit("set_status", userId, tid, { account_status: status });
+        ok(res, { success: true }); return;
+      }
+      if (action === "archive_user") {
+        const tid = String(params.user_id ?? ""); if (tid === userId) { fail(res, "NÃ£o Ã© permitido arquivar o prÃ³prio usuÃ¡rio"); return; }
+        await execute("UPDATE users SET metadata = metadata || $1::jsonb, token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$2", [JSON.stringify({ account_status: "archived", archived_at: nowIso(), status_updated_at: nowIso() }), tid]);
+        await appendAudit("archive_user", userId, tid, {});
+        ok(res, { success: true }); return;
+      }
+      if (action === "restore_user") {
+        const tid = String(params.user_id ?? "");
+        await execute("UPDATE users SET metadata = metadata || $1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify({ account_status: "active", status_updated_at: nowIso() }), tid]);
+        await appendAudit("restore_user", userId, tid, {});
+        ok(res, { success: true }); return;
+      }
+      if (action === "delete_user") {
+        const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (tid === userId) { fail(res, "NÃ£o Ã© permitido apagar o prÃ³prio usuÃ¡rio"); return; }
+        await execute("DELETE FROM users WHERE id=$1", [tid]);
+        await appendAudit("delete_user", userId, tid, {});
+        ok(res, { success: true }); return;
+      }
+      if (action === "create_user") {
+        const email = String(params.email ?? "").trim().toLowerCase(); const password = String(params.password ?? "");
+        const name = String(params.name ?? "UsuÃ¡rio").trim() || "UsuÃ¡rio"; const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
+        const planId = role === "user" ? fallbackPlan : (String(params.plan_id ?? "").trim() || fallbackPlan);
+        if (!email || password.length < 12) { fail(res, "Informe email vÃ¡lido e senha com no mÃ­nimo 12 caracteres"); return; }
+        const exists = await queryOne("SELECT id FROM users WHERE email=$1", [email]);
+        if (exists) { fail(res, "Email jÃ¡ cadastrado"); return; }
+        const hash = await bcrypt.hash(password, 10);
+        const newId = uuid();
+        // Wrap 3 INSERTs in a transaction â€” if any fails, roll back to avoid orphan user/role/profile
+        await transaction(async (client) => {
+          await client.query("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,NOW())", [newId, email, hash, JSON.stringify({ name, account_status: "active", status_updated_at: nowIso() })]);
+          await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), newId, role]);
+          await client.query("INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at) VALUES ($1,$2,$3,$4,$5,$6)", [uuid(), newId, name, email, planId, planExpiresAt(cp, planId)]);
+        });
+        await appendAudit("create_user", userId, newId, { email, role, plan_id: planId });
+        ok(res, { success: true, created_user: { id: newId, user_id: newId, name, email, plan_id: planId, role } }); return;
+      }
+      if (action === "update_user") {
+        const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; }
+        const name = String(params.name ?? "").trim();
+        if (name) { await execute("UPDATE users SET metadata = metadata || $1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify({ name }), tid]); await execute("UPDATE profiles SET name=$1, updated_at=NOW() WHERE user_id=$2", [name, tid]); }
+        const planId = String(params.plan_id ?? "").trim(); const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
+        if (role === "user" && planId) {
+          if (!validPlanIds.has(planId)) { fail(res, "Plano invÃ¡lido"); return; }
+          await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [planId, planExpiresAt(cp, planId), tid]);
+        }
+        // Wrap DELETE+INSERT in a transaction â€” if process crashes between the two,
+        // the user would have no user_roles row (roleless = no access).
+        const accountStatus = String(params.account_status ?? "active");
+        if (["active","inactive","blocked","archived"].includes(accountStatus)) {
+          if (tid === userId && accountStatus !== "active") { fail(res, "NÃ£o Ã© permitido alterar o prÃ³prio status"); return; }
+        }
+        await transaction(async (client) => {
+          await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
+          await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
+          // Always invalidate tokens: role is re-set above (JWT embeds role), so existing tokens must be rotated
+          if (["active","inactive","blocked","archived"].includes(accountStatus)) {
+            await client.query(`UPDATE users SET metadata = metadata || $1::jsonb, token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$2`, [JSON.stringify({ account_status: accountStatus, status_updated_at: nowIso() }), tid]);
+          }
+        });
+        await appendAudit("update_user", userId, tid, { name, plan_id: planId, role, account_status: accountStatus });
+        ok(res, { success: true }); return;
+      }
+      if (action === "extend_plan") {
+        const tid = String(params.user_id ?? "");
+        const p = await queryOne("SELECT plan_id, plan_expires_at FROM profiles WHERE user_id=$1", [tid]);
+        if (!p) { fail(res, "Perfil nÃ£o encontrado"); return; }
+        const currentPlan = String(p.plan_id ?? "").trim();
+        if (!currentPlan || !validPlanIds.has(currentPlan)) { fail(res, "Plano invÃ¡lido"); return; }
+        const base = p.plan_expires_at && Date.parse(p.plan_expires_at) > Date.now() ? Date.parse(p.plan_expires_at) : Date.now();
+        const newExpiry = planExpiresAt(cp, currentPlan, base);
+        await execute("UPDATE profiles SET plan_expires_at=$1, updated_at=NOW() WHERE user_id=$2", [newExpiry, tid]);
+        await appendAudit("extend_plan", userId, tid, { plan_id: currentPlan, plan_expires_at: newExpiry });
+        ok(res, { success: true, plan_expires_at: newExpiry }); return;
+      }
+      if (action === "set_plan_expiry") {
+        const tid = String(params.user_id ?? ""); const rawDate = params.expires_at;
+        let expiresAt = null;
+        if (rawDate !== null && rawDate !== undefined && rawDate !== "" && rawDate !== "never") {
+          const ms = Date.parse(String(rawDate));
+          if (!Number.isFinite(ms)) { fail(res, "Data de vencimento invÃ¡lida"); return; }
+          expiresAt = new Date(ms).toISOString();
+        }
+        await execute("UPDATE profiles SET plan_expires_at=$1, updated_at=NOW() WHERE user_id=$2", [expiresAt, tid]);
+        await appendAudit("set_plan_expiry", userId, tid, { plan_expires_at: expiresAt });
+        ok(res, { success: true, plan_expires_at: expiresAt }); return;
+      }
+      if (action === "reset_password") {
+        const tid = String(params.user_id ?? ""); const pwd = String(params.password ?? "").trim();
+        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (pwd.length < 12) { fail(res, "Senha deve ter ao menos 12 caracteres"); return; }
+        const hash = await bcrypt.hash(pwd, 10);
+        // Invalidate all existing tokens immediately â€” the account must be secured after password reset
+        await execute("UPDATE users SET password_hash=$1, token_invalidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
+        await appendAudit("reset_password", userId, tid, {});
+        ok(res, { success: true }); return;
+      }
+      if (action === "add_billing_note") {
+        const tid = String(params.user_id ?? ""); const reason = String(params.reason ?? "").trim();
+        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (!reason) { fail(res, "Motivo obrigatÃ³rio"); return; }
+        const noteType = ["refund","credit","note"].includes(String(params.note_type)) ? String(params.note_type) : "note";
+        await appendAudit(`billing_${noteType}`, userId, tid, { note_type: noteType, amount: Number(params.amount ?? 0), reason });
+        ok(res, { success: true }); return;
+      }
+      fail(res, "AÃ§Ã£o administrativa invÃ¡lida"); return;
+    }
+
+    // â”€â”€ account-plan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "account-plan") {
+      const action = String(params.action ?? "");
+      if (action !== "change_plan") { fail(res, "AÃ§Ã£o de conta invÃ¡lida"); return; }
+      const nextPlanId = String(params.plan_id ?? "").trim(); if (!nextPlanId) { fail(res, "Plano obrigatÃ³rio"); return; }
+      const cp = await loadControlPlane();
+      const plans = Array.isArray(cp.plans) ? cp.plans : [];
+      const targetPlan = plans.find((p) => String(p.id) === nextPlanId);
+      // Only allow self-service if the plan is explicitly marked allowSelfServiceChange.
+      // Upgrades to paid plans must go through the admin panel (prevents free upgrades).
+      if (!targetPlan || !targetPlan.isActive || !targetPlan.visibleInAccount || !targetPlan.allowSelfServiceChange) { fail(res, "Troca de plano requer aÃ§Ã£o do administrador. Entre em contato com o suporte."); return; }
+      const profile = await queryOne("SELECT * FROM profiles WHERE user_id=$1", [userId]);
+      if (!profile) { fail(res, "Perfil nÃ£o encontrado"); return; }
+      const newExpiry = planExpiresAt(cp, nextPlanId);
+      await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [nextPlanId, newExpiry, userId]);
+      await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'session_event','Conta','Plano','success',$3,'system','text','processed','','')",
+        [uuid(), userId, JSON.stringify({ message: `Plano alterado para ${targetPlan.name}`, plan_id: nextPlanId })]);
+      ok(res, { success: true, plan_id: nextPlanId, plan_expires_at: newExpiry }); return;
+    }
+
+    fail(res, `FunÃ§Ã£o nÃ£o implementada: ${funcName}`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[rpc] ${funcName} error:`, msg);
+    res.status(500).json({ data: null, error: { message: msg } });
+  }
+});
+

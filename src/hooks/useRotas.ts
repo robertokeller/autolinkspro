@@ -8,6 +8,8 @@ import { useCallback } from "react";
 import { logHistorico } from "@/lib/log-historico";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
 
+const ROUTE_DESTINATIONS_TABLE_WARNING = "Não foi possível carregar os destinos das rotas. As rotas foram exibidas sem os grupos vinculados.";
+
 type RouteRow = Tables<"routes">;
 type RouteDestRow = Tables<"route_destinations">;
 
@@ -71,7 +73,6 @@ export function useRotas() {
       const routesRes = await backend
         .from("routes")
         .select("*")
-        .eq("user_id", user!.id)
         .order("created_at", { ascending: false });
 
       if (routesRes.error) throw routesRes.error;
@@ -85,7 +86,10 @@ export function useRotas() {
         .select("*")
         .in("route_id", routeIds);
 
-      if (destsRes.error) throw destsRes.error;
+      if (destsRes.error) {
+        console.warn("[useRotas]", ROUTE_DESTINATIONS_TABLE_WARNING, destsRes.error.message);
+        return routeRows.map((row) => mapRow(row, []));
+      }
       return routeRows.map((row) => mapRow(row, destsRes.data || []));
     },
     enabled: !!user,
@@ -102,7 +106,6 @@ export function useRotas() {
       const { data: profile, error: profileError } = await backend
         .from("profiles")
         .select("plan_id")
-        .eq("user_id", user.id)
         .maybeSingle();
       if (profileError) {
         toast.error("Não foi possível validar o limite de rotas");
@@ -133,7 +136,7 @@ export function useRotas() {
       ? route.masterGroupIds.filter((id) => typeof id === "string" && id.trim().length > 0)
       : [];
     const { data, error } = await backend.from("routes").insert({
-      user_id: user.id, name: route.name, source_group_id: route.sourceGroupId,
+      name: route.name, source_group_id: route.sourceGroupId,
       status: "active",
       rules: {
         ...route.rules,
@@ -143,7 +146,13 @@ export function useRotas() {
     }).select().single();
     if (error) { toast.error("Erro ao criar rota"); return null; }
     if (route.destinationGroupIds.length > 0) {
-      await backend.from("route_destinations").insert(route.destinationGroupIds.map((gid) => ({ route_id: data.id, group_id: gid })));
+      const destinationsInsert = await backend
+        .from("route_destinations")
+        .insert(route.destinationGroupIds.map((gid) => ({ route_id: data.id, group_id: gid })));
+
+      if (destinationsInsert.error) {
+        toast.warning("Rota criada, mas não foi possível vincular os grupos de destino.");
+      }
     }
     qc.invalidateQueries({ queryKey: ["routes"] });
     toast.success("Rota criada!");
@@ -157,7 +166,7 @@ export function useRotas() {
     options?: { silent?: boolean },
   ) => {
     const route = routes.find((r) => r.id === id);
-    const { error } = await backend.from("routes").update({ status }).eq("id", id).eq("user_id", user!.id);
+    const { error } = await backend.from("routes").update({ status }).eq("id", id);
     if (error) {
       if (!options?.silent) toast.error("Não foi possível atualizar o status da rota");
       return false;
@@ -180,7 +189,7 @@ export function useRotas() {
 
   const setAllRoutesStatus = useCallback(async (status: Exclude<RouteStatus, "error">) => {
     if (!user?.id) return false;
-    const { error } = await backend.from("routes").update({ status }).eq("user_id", user.id);
+    const { error } = await backend.from("routes").update({ status });
     if (error) {
       toast.error("Não foi possível atualizar as rotas em massa");
       return false;
@@ -207,7 +216,6 @@ export function useRotas() {
     const pauseResult = await backend
       .from("routes")
       .update({ status: "paused" })
-      .eq("user_id", user.id)
       .in("id", activeRouteIds);
 
     if (pauseResult.error) {
@@ -219,7 +227,6 @@ export function useRotas() {
     const resumeResult = await backend
       .from("routes")
       .update({ status: "active" })
-      .eq("user_id", user.id)
       .in("id", activeRouteIds);
 
     if (resumeResult.error) {
@@ -236,8 +243,16 @@ export function useRotas() {
 
   const deleteRoute = useCallback(async (id: string) => {
     const route = routes.find((r) => r.id === id);
-    await backend.from("route_destinations").delete().eq("route_id", id);
-    await backend.from("routes").delete().eq("id", id).eq("user_id", user!.id);
+    const deleteRouteResult = await backend
+      .from("routes")
+      .delete()
+      .eq("id", id);
+
+    if (deleteRouteResult.error) {
+      toast.error("Não foi possível remover a rota");
+      return;
+    }
+
     qc.invalidateQueries({ queryKey: ["routes"] });
     toast.success("Rota removida");
     if (user) await logHistorico(user.id, "route_forward", route?.name || id, "-", "warning", `Rota removida`);
@@ -253,7 +268,6 @@ export function useRotas() {
       const { data: profile, error: profileError } = await backend
         .from("profiles")
         .select("plan_id")
-        .eq("user_id", user!.id)
         .maybeSingle();
       if (!profileError) {
         const limits = resolveEffectiveLimitsByPlanId(profile?.plan_id || "plan-starter");
@@ -282,12 +296,28 @@ export function useRotas() {
         masterGroupIds: normalizedMasterGroupIds,
         masterGroupId: normalizedMasterGroupIds[0] || route.masterGroupId || null,
       },
-    }).eq("id", id).eq("user_id", user!.id);
+    }).eq("id", id);
     if (error) { toast.error("Erro ao atualizar rota"); return null; }
     // Sync destinations: delete old, insert new
-    await backend.from("route_destinations").delete().eq("route_id", id);
+    const deleteDestinations = await backend
+      .from("route_destinations")
+      .delete()
+      .eq("route_id", id);
+
+    if (deleteDestinations.error) {
+      toast.error(`Falha ao limpar destinos antigos da rota: ${deleteDestinations.error.message}`);
+      return null;
+    }
+
     if (route.destinationGroupIds.length > 0) {
-      await backend.from("route_destinations").insert(route.destinationGroupIds.map((gid) => ({ route_id: id, group_id: gid })));
+      const insertDestinations = await backend
+        .from("route_destinations")
+        .insert(route.destinationGroupIds.map((gid) => ({ route_id: id, group_id: gid })));
+
+      if (insertDestinations.error) {
+        toast.error(`Falha ao salvar grupos de destino da rota: ${insertDestinations.error.message}`);
+        return null;
+      }
     }
     qc.invalidateQueries({ queryKey: ["routes"] });
     toast.success("Rota atualizada!");
