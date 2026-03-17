@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { v4 as uuid } from "uuid";
 import { pool, query, queryOne, execute, transaction } from "./db.js";
 import { requireAuth, signToken } from "./auth.js";
+import { getPasswordPolicyError } from "./password-policy.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3532,7 +3533,8 @@ rpcRouter.post("/rpc", async (req, res) => {
         const email = String(params.email ?? "").trim().toLowerCase(); const password = String(params.password ?? "");
         const name = String(params.name ?? "UsuÃ¡rio").trim() || "UsuÃ¡rio"; const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
         const planId = role === "user" ? fallbackPlan : (String(params.plan_id ?? "").trim() || fallbackPlan);
-        if (!email || password.length < 12) { fail(res, "Informe email vÃ¡lido e senha com no mÃ­nimo 12 caracteres"); return; }
+        const createPasswordError = getPasswordPolicyError(password);
+        if (!email || createPasswordError) { fail(res, createPasswordError ? `Senha invalida: ${createPasswordError}` : "Informe email valido"); return; }
         const exists = await queryOne("SELECT id FROM users WHERE email=$1", [email]);
         if (exists) { fail(res, "Email jÃ¡ cadastrado"); return; }
         const hash = await bcrypt.hash(password, 10);
@@ -3598,7 +3600,8 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "reset_password") {
         const tid = String(params.user_id ?? ""); const pwd = String(params.password ?? "").trim();
-        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (pwd.length < 12) { fail(res, "Senha deve ter ao menos 12 caracteres"); return; }
+        const resetPasswordError = getPasswordPolicyError(pwd);
+        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (resetPasswordError) { fail(res, resetPasswordError); return; }
         const hash = await bcrypt.hash(pwd, 10);
         // Invalidate all existing tokens immediately â€” the account must be secured after password reset
         await execute("UPDATE users SET password_hash=$1, token_invalidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
@@ -3625,7 +3628,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       const targetPlan = plans.find((p) => String(p.id) === nextPlanId);
       // Only allow self-service if the plan is explicitly marked allowSelfServiceChange.
       // Upgrades to paid plans must go through the admin panel (prevents free upgrades).
-      if (!targetPlan || !targetPlan.isActive || !targetPlan.visibleInAccount || !targetPlan.allowSelfServiceChange) { fail(res, "Troca de plano requer aÃ§Ã£o do administrador. Entre em contato com o suporte."); return; }
+      if (!targetPlan || !targetPlan.isActive || !targetPlan.visibleInAccount || !targetPlan.allowSelfServiceChange) { fail(res, "Troca de plano requer aÃ§Ã£o do administrador. Entre em contato com o suporte em suporte@autolinks.pro."); return; }
       const profile = await queryOne("SELECT * FROM profiles WHERE user_id=$1", [userId]);
       if (!profile) { fail(res, "Perfil nÃ£o encontrado"); return; }
       const newExpiry = planExpiresAt(cp, nextPlanId);

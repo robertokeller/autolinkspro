@@ -16,6 +16,7 @@ export function PublicRoutes() {
         <Route path={ROUTES.auth.esqueciSenha} element={<Pages.EsqueciSenha />} />
         <Route path={ROUTES.auth.resetarSenha} element={<Pages.ResetarSenha />} />
       </Route>
+      <Route path={ROUTES.auth.verificacaoEmail} element={<Pages.VerificacaoEmail />} />
 
       <Route path={ROUTES.maintenance} element={<Pages.Maintenance />} />
 

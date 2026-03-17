@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { backend } from "@/integrations/backend/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,38 +11,30 @@ import { z } from "zod";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { PasswordField } from "@/components/auth/PasswordField";
 import { ROUTES } from "@/lib/routes";
+import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from "@/lib/password-policy";
 
 const schema = z
   .object({
-    password: z.string().min(12, "Mínimo 12 caracteres").max(128),
+    password: z
+      .string()
+      .max(128)
+      .refine((value) => !getPasswordPolicyError(value), {
+        message: PASSWORD_POLICY_HINT,
+      }),
     confirmPassword: z.string(),
   })
   .refine((data) => data.password === data.confirmPassword, {
-    message: "Senhas não conferem",
+    message: "Senhas nao conferem",
     path: ["confirmPassword"],
   });
 
 export default function ResetarSenha() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    const {
-      data: { subscription },
-    } = backend.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
-        setReady(true);
-      }
-    });
-    // Recovery is held in memory for the current tab and exposed by auth events.
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, []);
+  const resetToken = useMemo(() => searchParams.get("token")?.trim() || "", [searchParams]);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -54,7 +46,10 @@ export default function ResetarSenha() {
     }
 
     setLoading(true);
-    const { error } = await backend.auth.updateUser({ password: parsed.data.password });
+    const { error } = await backend.auth.resetPasswordWithToken({
+      token: resetToken,
+      password: parsed.data.password,
+    });
     setLoading(false);
 
     if (error) {
@@ -66,16 +61,21 @@ export default function ResetarSenha() {
     navigate(ROUTES.app.dashboard);
   };
 
-  if (!ready) {
+  if (!resetToken) {
     return (
       <AuthCard
         title="Redefinir senha"
-        description="Aguardando validação do link..."
+        description="Link invalido ou expirado."
         showLogo={false}
       >
-        <CardContent className="flex justify-center py-8">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        </CardContent>
+        <CardFooter className="flex flex-col gap-3">
+          <Link to={ROUTES.auth.esqueciSenha} className="text-sm text-primary hover:underline">
+            Solicitar novo link
+          </Link>
+          <Link to={ROUTES.auth.login} className="text-sm text-muted-foreground hover:text-primary">
+            Voltar ao login
+          </Link>
+        </CardFooter>
       </AuthCard>
     );
   }
@@ -89,7 +89,7 @@ export default function ResetarSenha() {
             label="Nova senha"
             value={password}
             onChange={setPassword}
-            placeholder="********"
+            placeholder={PASSWORD_POLICY_HINT}
             required
           />
 

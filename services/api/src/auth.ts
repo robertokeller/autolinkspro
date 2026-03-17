@@ -1,9 +1,11 @@
 import { Router, Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { v4 as uuid } from "uuid";
-import { query, queryOne, execute } from "./db.js";
+import { queryOne, execute } from "./db.js";
+import { getPasswordPolicyError } from "./password-policy.js";
+import { isEmailDeliveryConfigured, sendEmail } from "./mailer.js";
 
 const SECRET = process.env.JWT_SECRET ?? "changeme-jwt-secret-32chars-minimum";
 const EXPIRES_IN = "7d";
@@ -25,6 +27,199 @@ const AUTH_COOKIE_SAME_SITE = resolveCookieSameSite();
 // shared between app.seudominio.com (frontend) and api.seudominio.com (API).
 // Leave empty for localhost/dev environments.
 const AUTH_COOKIE_DOMAIN = String(process.env.AUTH_COOKIE_DOMAIN || "").trim();
+const APP_PUBLIC_URL = resolvePublicUrl(process.env.APP_PUBLIC_URL || "");
+const API_PUBLIC_URL = resolvePublicUrl(process.env.API_PUBLIC_URL || "");
+const EMAIL_VERIFY_ROUTE = "/auth/verificacao-email";
+const PASSWORD_RESET_ROUTE = "/auth/resetar-senha";
+const VERIFY_TOKEN_TTL_MINUTES = normalizeMinutes(process.env.EMAIL_VERIFY_TOKEN_TTL_MINUTES, 24 * 60);
+const PASSWORD_RESET_TOKEN_TTL_MINUTES = normalizeMinutes(process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES, 30);
+
+type AuthEmailTokenType = "email_verification" | "password_reset";
+
+function normalizeMinutes(rawValue: unknown, fallbackMinutes: number) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackMinutes;
+  return Math.min(Math.floor(parsed), 7 * 24 * 60);
+}
+
+function resolvePublicUrl(rawValue: unknown) {
+  const value = String(rawValue || "").trim().replace(/\/+$/, "");
+  if (!value) return "";
+  if (!/^https?:\/\//i.test(value)) return "";
+  try {
+    return new URL(value).toString().replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function inferRequestOrigin(req: Request) {
+  const xForwardedProto = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim();
+  const xForwardedHost = String(req.headers["x-forwarded-host"] || "")
+    .split(",")[0]
+    .trim();
+  const protocol = xForwardedProto || req.protocol || "http";
+  const host = xForwardedHost || req.get("host") || "";
+  if (!host) return "";
+  return `${protocol}://${host}`.replace(/\/+$/, "");
+}
+
+function getApiPublicUrl(req: Request) {
+  return API_PUBLIC_URL || inferRequestOrigin(req);
+}
+
+function getAppPublicUrl() {
+  return APP_PUBLIC_URL;
+}
+
+function buildAppUrl(pathname: string, params?: Record<string, string>) {
+  const base = getAppPublicUrl();
+  if (!base) return "";
+  const url = new URL(pathname, `${base}/`);
+  for (const [key, value] of Object.entries(params || {})) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+
+function buildApiUrl(req: Request, pathname: string, params?: Record<string, string>) {
+  const base = getApiPublicUrl(req);
+  if (!base) return "";
+  const url = new URL(pathname, `${base}/`);
+  for (const [key, value] of Object.entries(params || {})) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+
+function generateEmailToken() {
+  return randomBytes(32).toString("hex");
+}
+
+function hashEmailToken(rawToken: string) {
+  return createHash("sha256").update(rawToken).digest("hex");
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function invalidateActiveEmailTokens(userId: string, type: AuthEmailTokenType) {
+  await execute(
+    `UPDATE auth_email_tokens
+        SET consumed_at = NOW()
+      WHERE user_id = $1
+        AND type = $2
+        AND consumed_at IS NULL`,
+    [userId, type],
+  );
+}
+
+async function createAuthEmailToken(userId: string, type: AuthEmailTokenType, ttlMinutes: number) {
+  const rawToken = generateEmailToken();
+  const tokenHash = hashEmailToken(rawToken);
+  const expiresAt = new Date(Date.now() + ttlMinutes * 60_000).toISOString();
+
+  await invalidateActiveEmailTokens(userId, type);
+  await execute(
+    `INSERT INTO auth_email_tokens (id, user_id, token_hash, type, expires_at)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [uuid(), userId, tokenHash, type, expiresAt],
+  );
+
+  return { rawToken, expiresAt };
+}
+
+async function consumeAuthEmailToken(rawToken: string, type: AuthEmailTokenType) {
+  const tokenHash = hashEmailToken(rawToken);
+  return queryOne<{ id: string; user_id: string }>(
+    `UPDATE auth_email_tokens
+        SET consumed_at = NOW()
+      WHERE token_hash = $1
+        AND type = $2
+        AND consumed_at IS NULL
+        AND expires_at > NOW()
+      RETURNING id, user_id`,
+    [tokenHash, type],
+  );
+}
+
+async function dispatchVerificationEmail(
+  req: Request,
+  user: { id: string; email: string; name: string },
+  rawToken?: string,
+) {
+  const safeName = escapeHtml(user.name);
+  const verifyToken = rawToken || (await createAuthEmailToken(user.id, "email_verification", VERIFY_TOKEN_TTL_MINUTES)).rawToken;
+  const verifyUrl = buildApiUrl(req, "/auth/verify-email", { token: verifyToken });
+  if (!verifyUrl) {
+    return { ok: false as const, error: "API_PUBLIC_URL not configured" };
+  }
+
+  const html = `
+    <p>Ola, ${safeName}.</p>
+    <p>Confirme seu e-mail para ativar sua conta no Auto Links:</p>
+    <p><a href="${verifyUrl}">Confirmar e-mail</a></p>
+    <p>Se voce nao criou essa conta, ignore esta mensagem.</p>
+  `;
+  const text = `Ola, ${user.name}. Confirme seu e-mail: ${verifyUrl}`;
+
+  return sendEmail({
+    to: user.email,
+    subject: "Confirme seu e-mail - Auto Links",
+    html,
+    text,
+  });
+}
+
+async function dispatchPasswordResetEmail(
+  user: { id: string; email: string; name: string },
+  options?: { redirectTo?: string },
+) {
+  const safeName = escapeHtml(user.name);
+  const resetToken = await createAuthEmailToken(user.id, "password_reset", PASSWORD_RESET_TOKEN_TTL_MINUTES);
+  const appBase = getAppPublicUrl();
+  if (!appBase) {
+    return { ok: false as const, error: "APP_PUBLIC_URL not configured" };
+  }
+
+  const redirectPath = String(options?.redirectTo || "").trim();
+  const defaultResetUrl = buildAppUrl(PASSWORD_RESET_ROUTE, { token: resetToken.rawToken });
+  const resetUrl = (() => {
+    if (!redirectPath) return defaultResetUrl;
+    try {
+      const candidate = new URL(redirectPath);
+      const allowedOrigin = new URL(appBase).origin;
+      if (candidate.origin !== allowedOrigin) return defaultResetUrl;
+      candidate.searchParams.set("token", resetToken.rawToken);
+      return candidate.toString();
+    } catch {
+      return defaultResetUrl;
+    }
+  })();
+
+  const html = `
+    <p>Ola, ${safeName}.</p>
+    <p>Recebemos uma solicitacao para redefinir sua senha no Auto Links.</p>
+    <p><a href="${resetUrl}">Redefinir senha</a></p>
+    <p>Se voce nao solicitou essa troca, ignore este e-mail.</p>
+  `;
+  const text = `Ola, ${user.name}. Redefina sua senha: ${resetUrl}`;
+
+  return sendEmail({
+    to: user.email,
+    subject: "Redefinicao de senha - Auto Links",
+    html,
+    text,
+  });
+}
 
 function parseCookies(rawCookieHeader: string | undefined): Record<string, string> {
   if (!rawCookieHeader) return {};
@@ -183,7 +378,16 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
 // ─── Auth router ─────────────────────────────────────────────────────────────
 export const authRouter = Router();
 
-function buildUserPayload(user: { id: string; email: string; role: string; metadata: Record<string, unknown>; created_at: string }) {
+interface AuthUserWithRole {
+  id: string;
+  email: string;
+  role: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  email_confirmed_at?: string | null;
+}
+
+function buildUserPayload(user: AuthUserWithRole) {
   return {
     id: user.id,
     email: user.email,
@@ -192,11 +396,12 @@ function buildUserPayload(user: { id: string; email: string; role: string; metad
     app_metadata: { role: user.role },
     aud: "authenticated",
     created_at: user.created_at,
+    email_confirmed_at: user.email_confirmed_at ?? null,
   };
 }
 
 function buildSessionPayload(
-  user: { id: string; email: string; role: string; metadata: Record<string, unknown>; created_at: string },
+  user: AuthUserWithRole,
   expiresAt: number,
 ) {
   return {
@@ -211,7 +416,7 @@ function buildSessionPayload(
 
 function issueSessionForCookie(
   res: Response,
-  user: { id: string; email: string; role: string; metadata: Record<string, unknown>; created_at: string },
+  user: AuthUserWithRole,
 ) {
   const accessToken = signToken({ sub: user.id, email: user.email, role: user.role });
   const decoded = jwt.decode(accessToken) as { exp?: number } | null;
@@ -221,7 +426,7 @@ function issueSessionForCookie(
 }
 
 function buildSessionFromRequestAuth(
-  user: { id: string; email: string; role: string; metadata: Record<string, unknown>; created_at: string },
+  user: AuthUserWithRole,
   req: Request,
 ) {
   const expiresAt = req.currentUser?.exp ?? Math.floor(Date.now() / 1000) + AUTH_COOKIE_MAX_AGE_SECONDS;
@@ -230,8 +435,8 @@ function buildSessionFromRequestAuth(
 
 async function getUserWithRole(id: string) {
   // Single JOIN instead of two separate queries (avoids N+1 on every auth action)
-  return queryOne<{ id: string; email: string; role: string; metadata: Record<string, unknown>; created_at: string }>(
-    `SELECT u.id, u.email, u.metadata, u.created_at, COALESCE(r.role, 'user') AS role
+  return queryOne<AuthUserWithRole>(
+    `SELECT u.id, u.email, u.metadata, u.created_at, u.email_confirmed_at, COALESCE(r.role, 'user') AS role
      FROM users u
      LEFT JOIN user_roles r ON r.user_id = u.id
      WHERE u.id = $1`,
@@ -279,16 +484,47 @@ async function getSignupPlanId(): Promise<string> {
   }
 }
 
+function resolveUserName(metadata: Record<string, unknown> | null | undefined, email: string) {
+  const value = typeof metadata?.name === "string" ? metadata.name.trim() : "";
+  return value || email.split("@")[0] || "Usuario";
+}
+
+function buildVerificationRedirectUrl(status: "success" | "invalid" | "error") {
+  return buildAppUrl(EMAIL_VERIFY_ROUTE, { status });
+}
+
+function respondVerificationRedirect(
+  res: Response,
+  status: "success" | "invalid" | "error",
+  fallbackMessage: string,
+) {
+  const target = buildVerificationRedirectUrl(status);
+  if (target) {
+    res.redirect(302, target);
+    return;
+  }
+  res.status(status === "success" ? 200 : 400).json({
+    data: { status },
+    error: status === "success" ? null : { message: fallbackMessage },
+  });
+}
+
 authRouter.post("/signup", async (req, res) => {
   if (SIGNUP_DISABLED) {
     res.status(403).json({ data: { user: null, session: null }, error: { message: "Cadastro desativado. Contate o administrador." } }); return;
   }
   try {
+    if (!isEmailDeliveryConfigured()) {
+      res.status(503).json({ data: { user: null, session: null }, error: { message: "Servico de e-mail indisponivel. Tente novamente mais tarde." } }); return;
+    }
+
     const { email, password, options } = req.body as { email: string; password: string; options?: { data?: { name?: string } } };
     if (!email || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email e senha obrigatórios" } }); return; }
-    if (password.length < 12) { res.json({ data: { user: null, session: null }, error: { message: "Senha deve ter ao menos 12 caracteres" } }); return; }
+    const passwordPolicyError = getPasswordPolicyError(password);
+    if (passwordPolicyError) { res.json({ data: { user: null, session: null }, error: { message: passwordPolicyError } }); return; }
+    const normalizedEmail = email.toLowerCase().trim();
 
-    const exists = await queryOne("SELECT id FROM users WHERE email = $1", [email.toLowerCase().trim()]);
+    const exists = await queryOne("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
     if (exists) { res.json({ data: { user: null, session: null }, error: { message: "Email já cadastrado" } }); return; }
 
     const hash = await bcrypt.hash(password, 10);
@@ -297,17 +533,171 @@ authRouter.post("/signup", async (req, res) => {
     const id = uuid();
     const signupPlanId = await getSignupPlanId();
 
-    await execute("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,NOW())", [id, email.toLowerCase().trim(), hash, JSON.stringify(metadata)]);
+    await execute("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,$5)", [id, normalizedEmail, hash, JSON.stringify(metadata), null]);
     await execute("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,'user')", [uuid(), id]);
-    await execute("INSERT INTO profiles (id, user_id, name, email, plan_id) VALUES ($1,$2,$3,$4,$5)", [uuid(), id, name, email.toLowerCase().trim(), signupPlanId]);
+    await execute("INSERT INTO profiles (id, user_id, name, email, plan_id) VALUES ($1,$2,$3,$4,$5)", [uuid(), id, name, normalizedEmail, signupPlanId]);
+    const verifyToken = await createAuthEmailToken(id, "email_verification", VERIFY_TOKEN_TTL_MINUTES);
 
     const user = await getUserWithRole(id);
     if (!user) { res.json({ data: { user: null, session: null }, error: { message: "Erro ao criar conta" } }); return; }
-    const session = issueSessionForCookie(res, user);
-    res.json({ data: { user: session.user, session }, error: null });
+    const emailResult = await dispatchVerificationEmail(req, { id, email: normalizedEmail, name }, verifyToken.rawToken);
+    if ("error" in emailResult) {
+      console.error("[auth] signup verification email error:", emailResult.error);
+    }
+
+    res.json({
+      data: {
+        user: buildUserPayload(user),
+        session: null,
+        verification_email_sent: emailResult.ok,
+      },
+      error: null,
+    });
   } catch (e) {
     console.error("[auth] signup error:", e);
     res.json({ data: { user: null, session: null }, error: { message: "Erro interno" } });
+  }
+});
+
+// POST /auth/resend-verification
+authRouter.post("/resend-verification", async (req, res) => {
+  try {
+    if (!isEmailDeliveryConfigured()) {
+      res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponivel no momento." } }); return;
+    }
+
+    const { email } = req.body as { email?: string };
+    const normalizedEmail = String(email || "").toLowerCase().trim();
+    if (!normalizedEmail) {
+      res.json({ data: { sent: true }, error: null }); return;
+    }
+
+    const user = await queryOne<{ id: string; email: string; metadata: Record<string, unknown>; email_confirmed_at: string | null }>(
+      "SELECT id, email, metadata, email_confirmed_at FROM users WHERE email = $1",
+      [normalizedEmail],
+    );
+
+    if (user && !user.email_confirmed_at) {
+      const name = resolveUserName(user.metadata, user.email);
+      const result = await dispatchVerificationEmail(req, { id: user.id, email: user.email, name });
+      if ("error" in result) {
+        console.error("[auth] resend verification email error:", result.error);
+      }
+    }
+
+    res.json({ data: { sent: true }, error: null });
+  } catch (e) {
+    console.error("[auth] resend verification error:", e);
+    res.json({ data: { sent: false }, error: { message: "Erro interno" } });
+  }
+});
+
+// POST /auth/forgot-password
+authRouter.post("/forgot-password", async (req, res) => {
+  try {
+    if (!isEmailDeliveryConfigured()) {
+      res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponivel no momento." } }); return;
+    }
+
+    const { email, options } = req.body as { email?: string; options?: { redirectTo?: string } };
+    const normalizedEmail = String(email || "").toLowerCase().trim();
+    if (!normalizedEmail) {
+      res.json({ data: { sent: true }, error: null }); return;
+    }
+
+    const user = await queryOne<{ id: string; email: string; metadata: Record<string, unknown> }>(
+      "SELECT id, email, metadata FROM users WHERE email = $1",
+      [normalizedEmail],
+    );
+
+    if (user) {
+      const name = resolveUserName(user.metadata, user.email);
+      const result = await dispatchPasswordResetEmail({ id: user.id, email: user.email, name }, options);
+      if ("error" in result) {
+        console.error("[auth] forgot-password email error:", result.error);
+      }
+    }
+
+    // Intentionally always return success to avoid account enumeration.
+    res.json({ data: { sent: true }, error: null });
+  } catch (e) {
+    console.error("[auth] forgot-password error:", e);
+    res.json({ data: { sent: false }, error: { message: "Erro interno" } });
+  }
+});
+
+// POST /auth/reset-password
+authRouter.post("/reset-password", async (req, res) => {
+  try {
+    const { token, password } = req.body as { token?: string; password?: string };
+    const rawToken = String(token || "").trim();
+    const nextPassword = String(password || "");
+    if (!rawToken || !nextPassword) {
+      res.status(400).json({ data: { user: null, session: null }, error: { message: "Token e nova senha sao obrigatorios" } }); return;
+    }
+
+    const passwordPolicyError = getPasswordPolicyError(nextPassword);
+    if (passwordPolicyError) {
+      res.status(400).json({ data: { user: null, session: null }, error: { message: passwordPolicyError } }); return;
+    }
+
+    const consumed = await consumeAuthEmailToken(rawToken, "password_reset");
+    if (!consumed) {
+      res.status(400).json({ data: { user: null, session: null }, error: { message: "Link invalido ou expirado" } }); return;
+    }
+
+    const hash = await bcrypt.hash(nextPassword, 10);
+    await execute(
+      `UPDATE users
+          SET password_hash = $1,
+              token_invalidated_before = NOW(),
+              updated_at = NOW()
+        WHERE id = $2`,
+      [hash, consumed.user_id],
+    );
+    await invalidateActiveEmailTokens(consumed.user_id, "password_reset");
+
+    const user = await getUserWithRole(consumed.user_id);
+    if (!user) {
+      res.status(404).json({ data: { user: null, session: null }, error: { message: "Usuario nao encontrado" } }); return;
+    }
+
+    const session = issueSessionForCookie(res, user);
+    res.json({ data: { user: session.user, session }, error: null });
+  } catch (e) {
+    console.error("[auth] reset-password error:", e);
+    res.status(500).json({ data: { user: null, session: null }, error: { message: "Erro interno" } });
+  }
+});
+
+// GET /auth/verify-email?token=...
+authRouter.get("/verify-email", async (req, res) => {
+  const token = String(req.query.token || "").trim();
+  if (!token) {
+    respondVerificationRedirect(res, "invalid", "Token de verificacao ausente");
+    return;
+  }
+
+  try {
+    const consumed = await consumeAuthEmailToken(token, "email_verification");
+    if (!consumed) {
+      respondVerificationRedirect(res, "invalid", "Link invalido ou expirado");
+      return;
+    }
+
+    await execute(
+      `UPDATE users
+          SET email_confirmed_at = COALESCE(email_confirmed_at, NOW()),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [consumed.user_id],
+    );
+    await invalidateActiveEmailTokens(consumed.user_id, "email_verification");
+
+    respondVerificationRedirect(res, "success", "");
+  } catch (error) {
+    console.error("[auth] verify-email error:", error);
+    respondVerificationRedirect(res, "error", "Falha ao confirmar e-mail");
   }
 });
 
@@ -317,8 +707,8 @@ authRouter.post("/signin", async (req, res) => {
     const { email, password } = req.body as { email: string; password: string };
     if (!email || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email e senha obrigatórios" } }); return; }
 
-    const user = await queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string }>(
-      "SELECT id, email, password_hash, metadata, created_at FROM users WHERE email = $1", [email.toLowerCase().trim()]
+    const user = await queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string; email_confirmed_at: string | null }>(
+      "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM users WHERE email = $1", [email.toLowerCase().trim()]
     );
     if (!user) {
       await bcrypt.compare(password, SIGNIN_DUMMY_HASH); // constant-time — prevents email enumeration via timing oracle
@@ -339,6 +729,12 @@ authRouter.post("/signin", async (req, res) => {
       const rid = (req as { rid?: string }).rid ?? "-";
       console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "wrong_password", email: email.toLowerCase().trim(), ip: req.ip ?? "-", rid }));
       res.json({ data: { user: null, session: null }, error: { message: "Email ou senha inválidos" } }); return;
+    }
+
+    if (!user.email_confirmed_at) {
+      const rid = (req as { rid?: string }).rid ?? "-";
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "email_not_confirmed", email: email.toLowerCase().trim(), ip: req.ip ?? "-", rid }));
+      res.json({ data: { user: null, session: null }, error: { message: "E-mail ainda nao confirmado. Verifique sua caixa de entrada." } }); return;
     }
 
     const roleRow = await queryOne<{ role: string }>("SELECT role FROM user_roles WHERE user_id = $1", [user.id]);
@@ -401,7 +797,8 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
     const userId = req.currentUser!.sub;
 
     if (password) {
-      if (password.length < 12) { res.json({ data: { user: null }, error: { message: "Senha deve ter ao menos 12 caracteres" } }); return; }
+      const passwordPolicyError = getPasswordPolicyError(password);
+      if (passwordPolicyError) { res.json({ data: { user: null }, error: { message: passwordPolicyError } }); return; }
       // Require current password to prevent account takeover via stolen access token
       if (!current_password) { res.json({ data: { user: null }, error: { message: "Senha atual obrigatória para alterar a senha" } }); return; }
       const userRow = await queryOne<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = $1", [userId]);

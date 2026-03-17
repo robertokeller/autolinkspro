@@ -28,6 +28,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import type { ManagedPlan } from "@/lib/admin-control-plane";
 import { loadAdminSystemObservability, type UserObservabilityRow } from "@/lib/system-observability";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
+import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from "@/lib/password-policy";
 
 type UserRole = "admin" | "user";
 type AccountStatus = "active" | "inactive" | "blocked" | "archived";
@@ -285,8 +286,9 @@ export default function AdminUsers() {
       toast.error("Informe e-mail e senha");
       return;
     }
-    if (createPassword.trim().length < 12) {
-      toast.error("Senha deve ter ao menos 12 caracteres");
+    const createPasswordError = getPasswordPolicyError(createPassword.trim());
+    if (createPasswordError) {
+      toast.error(createPasswordError);
       return;
     }
     setSavingCreate(true);
@@ -477,8 +479,9 @@ export default function AdminUsers() {
       }
 
       if (pmNewPassword.trim()) {
-        if (pmNewPassword.trim().length < 12) {
-          toast.error("Senha deve ter ao menos 12 caracteres");
+        const resetPasswordError = getPasswordPolicyError(pmNewPassword.trim());
+        if (resetPasswordError) {
+          toast.error(resetPasswordError);
           setSavingPlanManager(false);
           return;
         }
@@ -979,7 +982,7 @@ export default function AdminUsers() {
                 type="password"
                 value={createPassword}
                 onChange={(event) => setCreatePassword(event.target.value)}
-                placeholder="Mínimo 12 caracteres"
+                placeholder={PASSWORD_POLICY_HINT}
               />
             </div>
             <div className="space-y-2">
@@ -1163,7 +1166,7 @@ export default function AdminUsers() {
                 <div className="flex gap-2">
                   <Input
                     type={pmShowPassword ? "text" : "password"}
-                    placeholder="Nova senha (mín. 12 caracteres)"
+                    placeholder={PASSWORD_POLICY_HINT}
                     value={pmNewPassword}
                     onChange={(e) => setPmNewPassword(e.target.value)}
                     className="flex-1"

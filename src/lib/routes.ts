@@ -8,6 +8,7 @@ export const ROUTES = {
     cadastro: "/auth/cadastro",
     esqueciSenha: "/auth/esqueci-senha",
     resetarSenha: "/auth/resetar-senha",
+    verificacaoEmail: "/auth/verificacao-email",
   },
   app: {
     dashboard: "/dashboard",

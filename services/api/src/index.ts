@@ -88,6 +88,10 @@ function ensureRequiredEnvVars() {
     "OPS_CONTROL_TOKEN",
     "CORS_ORIGIN",
     "ADMIN_PASSWORD",
+    "RESEND_API_KEY",
+    "RESEND_FROM",
+    "APP_PUBLIC_URL",
+    "API_PUBLIC_URL",
   ] as const;
 
   const missing = required.filter((key) => !String(process.env[key] ?? "").trim());
@@ -177,6 +181,9 @@ app.use(authMiddleware);
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use("/auth/signin", authRateLimiter);
 app.use("/auth/signup", authRateLimiter);
+app.use("/auth/forgot-password", authRateLimiter);
+app.use("/auth/reset-password", authRateLimiter);
+app.use("/auth/resend-verification", authRateLimiter);
 app.use("/auth", authRouter);
 app.use("/api/rest", restRouter);
 app.use("/functions/v1/rpc", rpcRateLimiter); // per-IP DoS guard before auth is checked

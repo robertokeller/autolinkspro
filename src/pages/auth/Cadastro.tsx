@@ -11,11 +11,17 @@ import { z } from "zod";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { PasswordField } from "@/components/auth/PasswordField";
 import { ROUTES } from "@/lib/routes";
+import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from "@/lib/password-policy";
 
 const cadastroSchema = z.object({
   name: z.string().trim().min(2, "Nome muito curto").max(100),
   email: z.string().trim().email("E-mail inválido").max(255),
-  password: z.string().min(12, "Mínimo 12 caracteres").max(128),
+  password: z
+    .string()
+    .max(128)
+    .refine((value) => !getPasswordPolicyError(value), {
+      message: PASSWORD_POLICY_HINT,
+    }),
 });
 
 export default function Cadastro() {
@@ -56,7 +62,12 @@ export default function Cadastro() {
       return;
     }
 
-    toast.success("Conta criada! Verifique seu e-mail para confirmar o acesso.");
+    const verificationEmailSent = (data as { verification_email_sent?: boolean } | null)?.verification_email_sent !== false;
+    if (verificationEmailSent) {
+      toast.success("Conta criada! Verifique seu e-mail para confirmar o acesso.");
+    } else {
+      toast.success("Conta criada! Faça login e clique em reenviar verificacao de e-mail.");
+    }
     navigate(ROUTES.auth.login);
   };
 
@@ -94,7 +105,7 @@ export default function Cadastro() {
             label="Senha"
             value={password}
             onChange={setPassword}
-            placeholder="Mínimo 6 caracteres"
+            placeholder={PASSWORD_POLICY_HINT}
             autoComplete="new-password"
             required
           />

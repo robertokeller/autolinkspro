@@ -343,7 +343,13 @@ export default function Index() {
       <section className="container py-20 border-t">
         <div className="text-center mb-12">
           <h2 className="text-3xl font-bold tracking-tight mb-3">Perguntas Frequentes</h2>
-          <p className="text-muted-foreground max-w-lg mx-auto">Tudo que você precisa saber antes de começar. Não encontrou sua resposta? Fale com nosso suporte.</p>
+          <p className="text-muted-foreground max-w-lg mx-auto">
+            Tudo que você precisa saber antes de começar. Não encontrou sua resposta? Fale com nosso suporte em{" "}
+            <a href="mailto:suporte@autolinks.pro" className="underline underline-offset-2 hover:text-foreground transition-colors">
+              suporte@autolinks.pro
+            </a>
+            .
+          </p>
         </div>
         <div className="max-w-3xl mx-auto">
           <Accordion type="single" collapsible className="space-y-3">
@@ -391,15 +397,16 @@ export default function Index() {
               <ul className="space-y-2 text-xs text-muted-foreground">
                 <li><a href="#" className="hover:text-foreground transition-colors">Sobre</a></li>
                 <li><a href="#" className="hover:text-foreground transition-colors">Blog</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Contato</a></li>
+                <li><a href="mailto:suporte@autolinks.pro" className="hover:text-foreground transition-colors">Contato</a></li>
               </ul>
             </div>
             <div>
               <h4 className="text-sm font-semibold mb-3">Suporte</h4>
               <ul className="space-y-2 text-xs text-muted-foreground">
-                <li><a href="#" className="hover:text-foreground transition-colors">Central de Ajuda</a></li>
+                <li><a href="mailto:suporte@autolinks.pro" className="hover:text-foreground transition-colors">Central de Ajuda</a></li>
                 <li><a href="#" className="hover:text-foreground transition-colors">Termos de Uso</a></li>
                 <li><a href="#" className="hover:text-foreground transition-colors">Privacidade</a></li>
+                <li><a href="mailto:suporte@autolinks.pro" className="hover:text-foreground transition-colors">suporte@autolinks.pro</a></li>
               </ul>
             </div>
           </div>
@@ -415,5 +422,4 @@ export default function Index() {
     </div>
   );
 }
-
 

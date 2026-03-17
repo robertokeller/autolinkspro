@@ -86,6 +86,9 @@ Sem backend remoto de RPC, o scheduler nao executa 24/7 real.
 - Fluxo WhatsApp: conectar sessao e gerar QR.
 - Fluxo Telegram: send_code, verify_code, verify_password (quando 2FA).
 - Conversor Shopee e Mercado Livre funcionando pela UI.
+- Cadastro: cria conta sem login automático e envia e-mail de verificação.
+- Login: bloqueia conta não verificada e permite "reenviar verificação".
+- Esqueci senha: envia link por e-mail e redefine senha com token.
 
 ## 9) Operacao continua
 
@@ -110,6 +113,11 @@ Configure as variáveis abaixo **antes** de clicar em Deploy. Variáveis marcada
 | `JWT_SECRET` | String aleatória ≥ 32 chars | `*` |
 | `SERVICE_TOKEN` | Token opaco, único por ambiente | `*` |
 | `CORS_ORIGIN` | `https://app.seudominio.com` — **nunca `*`** | `*` |
+| `APP_PUBLIC_URL` | `https://app.seudominio.com` | `*` |
+| `API_PUBLIC_URL` | `https://api.seudominio.com` | `*` |
+| `RESEND_API_KEY` | Chave `re_...` do Resend | `*` |
+| `RESEND_FROM` | Ex.: `Auto Links <suporte@seudominio.com>` | `*` |
+| `RESEND_REPLY_TO` | E-mail de resposta (opcional) | Não |
 | `WEBHOOK_SECRET` | String aleatória | `*` |
 | `OPS_CONTROL_TOKEN` | String aleatória | `*` |
 | `VITE_API_URL` | `https://api.seudominio.com` | `*` |
@@ -123,6 +131,8 @@ Configure as variáveis abaixo **antes** de clicar em Deploy. Variáveis marcada
 | `VITE_SHOPEE_MICROSERVICE_URL` | `https://shopee-api.seudominio.com` | Build |
 | `VITE_MELI_RPA_URL` | `https://meli-api.seudominio.com` | Build |
 | `VITE_OPS_CONTROL_URL` | `https://ops-api.seudominio.com` | Build |
+| `EMAIL_VERIFY_TOKEN_TTL_MINUTES` | Ex.: `1440` (24h) | Opcional |
+| `PASSWORD_RESET_TOKEN_TTL_MINUTES` | Ex.: `30` (30 min) | Opcional |
 
 > **Nota:** `SERVICE_TOKEN` e `SCHEDULER_RPC_TOKEN` devem ter o mesmo valor — o compose já faz isso via `${SERVICE_TOKEN:?...}` para os dois.  
 > **Nota:** `CORS_ORIGIN=*` é bloqueado em produção pela API (`ensureRequiredEnvVars`).  

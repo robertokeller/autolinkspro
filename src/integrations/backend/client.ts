@@ -361,11 +361,44 @@ const auth = {
     }
   },
 
-  async resetPasswordForEmail(_email: string, _options?: { redirectTo?: string }) {
-    passwordRecoveryPending = true;
-    const current = getRuntimeSession();
-    authListeners.forEach((cb) => { try { cb("PASSWORD_RECOVERY", current); } catch { /* ignore */ } });
-    return { data: {}, error: null };
+  async resetPasswordForEmail(email: string, options?: { redirectTo?: string }) {
+    try {
+      const res = await apiFetch("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email, options }),
+      });
+      return { data: res.data ?? {}, error: res.error ?? null };
+    } catch (e) {
+      return { data: {}, error: { message: String(e) } };
+    }
+  },
+
+  async resetPasswordWithToken({ token, password }: { token: string; password: string }) {
+    try {
+      const res = await apiFetch("/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ token, password }),
+      });
+      if (!res.error && res.data?.session) {
+        passwordRecoveryPending = false;
+        setRuntimeSession(res.data.session as Session);
+      }
+      return { data: { user: res.data?.user ?? null, session: res.data?.session ?? null }, error: res.error ?? null };
+    } catch (e) {
+      return { data: { user: null, session: null }, error: { message: String(e) } };
+    }
+  },
+
+  async resendVerificationEmail(email: string) {
+    try {
+      const res = await apiFetch("/auth/resend-verification", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      return { data: res.data ?? {}, error: res.error ?? null };
+    } catch (e) {
+      return { data: {}, error: { message: String(e) } };
+    }
   },
 };
 

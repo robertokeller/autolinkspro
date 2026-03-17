@@ -175,6 +175,7 @@ Passos rapidos:
 2. Copie `.env.coolify.example` para `.env.coolify` e ajuste dominios/segredos.
 3. No Coolify, crie um recurso `Docker Compose` apontando para `docker-compose.coolify.yml` (**nao use Application/Nixpacks**).
 4. Cadastre as variaveis de ambiente iguais ao `.env.coolify`.
+   Inclua obrigatoriamente `RESEND_API_KEY`, `RESEND_FROM`, `APP_PUBLIC_URL` e `API_PUBLIC_URL` para verificacao de conta e reset de senha por e-mail.
 5. Associe dominios e SSL para `web`, `whatsapp`, `telegram`, `shopee`, `meli` e `ops-control`.
 6. Mantenha `.env`, `.env.local` e `.env.coolify` fora do GitHub.
 

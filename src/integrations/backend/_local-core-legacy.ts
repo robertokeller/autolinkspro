@@ -66,6 +66,7 @@ const HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const LOCAL_DB_UPDATED_EVENT = "autolinks:local-db-updated";
 
 // Seed accounts — override via VITE_DEMO_* env vars in .env.local (git-ignored).
+const SUPPORT_CONTACT_EMAIL = "suporte@autolinks.pro";
 const ROBERTO_ADMIN_EMAIL = (import.meta.env.VITE_DEMO_ADMIN_EMAIL as string | undefined) || "admin@demo.autolinks.local";
 const ROBERTO_ADMIN_PASSWORD = (import.meta.env.VITE_DEMO_ADMIN_PASSWORD as string | undefined) || "demo-admin-change-me";
 const ROBERTO_ADMIN_NAME = (import.meta.env.VITE_DEMO_ADMIN_NAME as string | undefined) || "Admin Demo";
@@ -1620,7 +1621,7 @@ export const authApi = {
     const accountStatus = String(userRecord.user_metadata?.account_status || "active");
     if (accountStatus !== "active") {
       if (accountStatus === "blocked") {
-        return { data: { user: null, session: null }, error: { message: "Conta bloqueada. Fale com o suporte." } as LocalAuthError };
+        return { data: { user: null, session: null }, error: { message: `Conta bloqueada. Fale com o suporte em ${SUPPORT_CONTACT_EMAIL}.` } as LocalAuthError };
       }
       if (accountStatus === "inactive") {
         return { data: { user: null, session: null }, error: { message: "Conta inativa. Solicite reativacao ao administrador." } as LocalAuthError };
@@ -1736,6 +1737,36 @@ export const authApi = {
       }
       return { data: {}, error: null };
     });
+  },
+
+  async resetPasswordWithToken(input: { token?: string; password: string }) {
+    const db = loadDb();
+    const current = db.auth.session;
+
+    const recoveryEmail = db.auth.recoveryEmail;
+    const userRecord = recoveryEmail
+      ? db.auth.users.find((row) => normalizeEmail(row.email) === recoveryEmail)
+      : current
+        ? db.auth.users.find((row) => row.id === current.user.id)
+        : null;
+
+    if (!userRecord || !input.password) {
+      return { data: { user: null, session: null }, error: { message: "Link invalido ou expirado" } as LocalAuthError };
+    }
+
+    userRecord.password = await hashPassword(input.password);
+    db.auth.recoveryEmail = null;
+    recoveryPendingInMemory = false;
+    const user = getUserFromRecord(userRecord);
+    const session = createSessionForUser(user);
+    db.auth.session = session;
+    saveDb(db);
+    emitAuth("USER_UPDATED", session);
+    return { data: { user, session }, error: null };
+  },
+
+  async resendVerificationEmail(_email: string) {
+    return { data: { sent: true }, error: null };
   },
 
   async updateUser(input: { password?: string }) {

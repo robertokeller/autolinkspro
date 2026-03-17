@@ -35,6 +35,20 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState("");
+
+  const handleResendVerification = async () => {
+    if (!pendingVerificationEmail) return;
+    setResendLoading(true);
+    const { error } = await backend.auth.resendVerificationEmail(pendingVerificationEmail);
+    setResendLoading(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Se a conta existir e ainda nao estiver confirmada, enviamos um novo link.");
+  };
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -58,9 +72,11 @@ export default function Login() {
         if (
           msg === "Email not confirmed" ||
           msg.toLowerCase().includes("email not confirmed") ||
-          msg.toLowerCase().includes("email_not_confirmed")
+          msg.toLowerCase().includes("email_not_confirmed") ||
+          msg.toLowerCase().includes("ainda nao confirmado")
         ) {
-          toast.error("E-mail ainda não confirmado. Confirme seu e-mail ou use Esqueci minha senha.");
+          setPendingVerificationEmail(parsed.data.email);
+          toast.error("E-mail ainda nao confirmado. Use o botao para reenviar o link.");
           return;
         }
 
@@ -125,6 +141,19 @@ export default function Login() {
             Esqueci minha senha
           </Link>
 
+          {pendingVerificationEmail ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={handleResendVerification}
+              disabled={resendLoading}
+            >
+              {resendLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Reenviar verificacao de e-mail
+            </Button>
+          ) : null}
+
           <p className="text-sm text-muted-foreground">
             Não tem conta?{" "}
             <Link to={ROUTES.auth.cadastro} className="font-medium text-primary hover:underline">
@@ -136,4 +165,3 @@ export default function Login() {
     </AuthCard>
   );
 }
-

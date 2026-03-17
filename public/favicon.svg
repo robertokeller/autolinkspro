@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="autolinksGradient" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF8C42"/>
+      <stop offset="1" stop-color="#F36A2F"/>
+    </linearGradient>
+    <linearGradient id="autolinksGlow" x1="120" y1="120" x2="392" y2="392" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD4B4" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#FFD4B4" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#autolinksGradient)"/>
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#autolinksGlow)"/>
+  <rect x="40" y="40" width="432" height="432" rx="104" stroke="#000000" stroke-opacity="0.12" stroke-width="8"/>
+
+  <g stroke="#FFFFFF" stroke-width="42" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M191 226C191 200.072 212.072 179 238 179H268"/>
+    <path d="M321 286C321 311.928 299.928 333 274 333H244"/>
+    <path d="M258 270L302 226"/>
+  </g>
+
+  <g stroke="#FFE7D6" stroke-width="14" stroke-linecap="round">
+    <path d="M144 146H182"/>
+    <path d="M163 127V165"/>
+  </g>
+</svg>

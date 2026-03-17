@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { backend } from "@/integrations/backend/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,6 @@ import { ROUTES } from "@/lib/routes";
 const schema = z.object({ email: z.string().trim().email("E-mail inválido").max(255) });
 
 export default function EsqueciSenha() {
-  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
@@ -40,10 +39,7 @@ export default function EsqueciSenha() {
     }
 
     setSent(true);
-    toast.success("Pronto! Defina sua nova senha abaixo.");
-    // Since this is a local app with no real email transport, navigate directly to
-    // the reset page.  resetPasswordForEmail() already stored the recovery intent.
-    setTimeout(() => navigate(ROUTES.auth.resetarSenha), 800);
+    toast.success("Se o e-mail existir, enviamos o link de redefinicao.");
   };
 
   return (

@@ -7,6 +7,7 @@ export const Pages = {
   Cadastro: lazy(() => import("@/pages/auth/Cadastro")),
   EsqueciSenha: lazy(() => import("@/pages/auth/EsqueciSenha")),
   ResetarSenha: lazy(() => import("@/pages/auth/ResetarSenha")),
+  VerificacaoEmail: lazy(() => import("@/pages/auth/VerificacaoEmail")),
   Maintenance: lazy(() => import("@/pages/Maintenance")),
   Dashboard: lazy(() => import("@/pages/Dashboard")),
   ConexoesWhatsApp: lazy(() => import("@/pages/conexoes/ConexoesWhatsApp")),

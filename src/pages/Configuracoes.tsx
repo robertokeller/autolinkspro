@@ -45,6 +45,7 @@ import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
 import type { Json } from "@/integrations/backend/types";
 import { toast } from "sonner";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
+import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from "@/lib/password-policy";
 
 interface NotificationPrefs {
   routeErrors: boolean;
@@ -257,8 +258,9 @@ export default function SettingsPage() {
       toast.error("Preencha e confirme a nova senha");
       return;
     }
-    if (passwordForm.newPassword.length < 12) {
-      toast.error("A senha deve ter pelo menos 12 caracteres");
+    const passwordPolicyError = getPasswordPolicyError(passwordForm.newPassword);
+    if (passwordPolicyError) {
+      toast.error(passwordPolicyError);
       return;
     }
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
@@ -486,7 +488,7 @@ export default function SettingsPage() {
                       <Input
                         id="new-password"
                         type={showPassword ? "text" : "password"}
-                        placeholder="Mínimo de 12 caracteres"
+                        placeholder={PASSWORD_POLICY_HINT}
                         value={passwordForm.newPassword}
                         onChange={(e) => setPasswordForm((prev) => ({ ...prev, newPassword: e.target.value }))}
                       />
@@ -773,7 +775,7 @@ export default function SettingsPage() {
 
             {visiblePlans.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                Nenhum plano disponível no momento. Fale com o suporte para liberar opções de renovação.
+                Nenhum plano disponível no momento. Fale com o suporte em suporte@autolinks.pro para liberar opções de renovação.
               </p>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2">
@@ -949,4 +951,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-
