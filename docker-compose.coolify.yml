@@ -346,7 +346,7 @@ services:
           memory: 256M
     environment:
       NODE_ENV: production
-      SCHEDULER_MODE: ${SCHEDULER_MODE:-remote}
+      SCHEDULER_MODE: remote
       SCHEDULER_RPC_BASE_URL: ${SCHEDULER_RPC_BASE_URL:-http://api:3116}
       SCHEDULER_RPC_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
       DISPATCH_INTERVAL_SECONDS: ${DISPATCH_INTERVAL_SECONDS}

@@ -151,7 +151,17 @@ export function useRotas() {
         .insert(route.destinationGroupIds.map((gid) => ({ route_id: data.id, group_id: gid })));
 
       if (destinationsInsert.error) {
-        toast.warning("Rota criada, mas não foi possível vincular os grupos de destino.");
+        // Compensating action: avoid leaving a partially created route without destinations.
+        const rollback = await backend
+          .from("routes")
+          .delete()
+          .eq("id", data.id);
+        if (rollback.error) {
+          toast.error("Falha ao vincular destinos e não foi possível reverter a rota criada.");
+        } else {
+          toast.error("Falha ao vincular os destinos. A criação da rota foi revertida.");
+        }
+        return null;
       }
     }
     qc.invalidateQueries({ queryKey: ["routes"] });
@@ -298,24 +308,53 @@ export function useRotas() {
       },
     }).eq("id", id);
     if (error) { toast.error("Erro ao atualizar rota"); return null; }
-    // Sync destinations: delete old, insert new
-    const deleteDestinations = await backend
+    // Sync destinations with safer order: insert missing first, delete stale after.
+    // This prevents a route from becoming empty if insertion fails.
+    const currentDestinationsRes = await backend
       .from("route_destinations")
-      .delete()
+      .select("group_id")
       .eq("route_id", id);
 
-    if (deleteDestinations.error) {
-      toast.error(`Falha ao limpar destinos antigos da rota: ${deleteDestinations.error.message}`);
+    if (currentDestinationsRes.error) {
+      toast.error(`Falha ao carregar destinos atuais da rota: ${currentDestinationsRes.error.message}`);
       return null;
     }
 
-    if (route.destinationGroupIds.length > 0) {
+    const currentDestinations = (currentDestinationsRes.data || []).map((row) => String(row.group_id || ""));
+    const currentSet = new Set(currentDestinations);
+    const nextSet = new Set(route.destinationGroupIds);
+
+    const toInsert = route.destinationGroupIds.filter((gid) => !currentSet.has(gid));
+    const toDelete = currentDestinations.filter((gid) => !nextSet.has(gid));
+
+    if (toInsert.length > 0) {
       const insertDestinations = await backend
         .from("route_destinations")
-        .insert(route.destinationGroupIds.map((gid) => ({ route_id: id, group_id: gid })));
+        .insert(toInsert.map((gid) => ({ route_id: id, group_id: gid })));
 
       if (insertDestinations.error) {
         toast.error(`Falha ao salvar grupos de destino da rota: ${insertDestinations.error.message}`);
+        return null;
+      }
+    }
+
+    if (toDelete.length > 0) {
+      const deleteDestinations = await backend
+        .from("route_destinations")
+        .delete()
+        .eq("route_id", id)
+        .in("group_id", toDelete);
+
+      if (deleteDestinations.error) {
+        // Best-effort rollback of freshly inserted rows to avoid mixed destination sets.
+        if (toInsert.length > 0) {
+          await backend
+            .from("route_destinations")
+            .delete()
+            .eq("route_id", id)
+            .in("group_id", toInsert);
+        }
+        toast.error(`Falha ao remover destinos antigos da rota: ${deleteDestinations.error.message}`);
         return null;
       }
     }

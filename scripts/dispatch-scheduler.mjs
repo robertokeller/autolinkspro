@@ -1,6 +1,8 @@
 ﻿import os from "node:os";
 
 const MODE = String(process.env.SCHEDULER_MODE || "auto").trim().toLowerCase();
+const NODE_ENV = String(process.env.NODE_ENV || "development").trim().toLowerCase();
+const IS_PRODUCTION = NODE_ENV === "production";
 
 const DISPATCH_INTERVAL_SECONDS = Number.parseInt(process.env.DISPATCH_INTERVAL_SECONDS || "45", 10);
 const SHOPEE_INTERVAL_SECONDS = Number.parseInt(process.env.SHOPEE_INTERVAL_SECONDS || "60", 10);
@@ -186,28 +188,43 @@ function startLocalFallback() {
 	log("to run 24/7 without browser, migrate backend to server DB and set SCHEDULER_RPC_BASE_URL.");
 }
 
+function failAndExit(message) {
+	log(message);
+	process.exitCode = 1;
+}
+
 const explicitLocal = MODE === "local";
 const explicitRemote = MODE === "remote";
 
 if (explicitRemote) {
 	if (!canRunRemoteMode()) {
-		log("remote mode requested but SCHEDULER_RPC_BASE_URL is missing.");
-		process.exitCode = 1;
+		failAndExit("remote mode requested but SCHEDULER_RPC_BASE_URL is missing.");
 	} else if (!hasRemoteToken()) {
-		log("remote mode requested but SCHEDULER_RPC_TOKEN is missing.");
-		process.exitCode = 1;
+		failAndExit("remote mode requested but SCHEDULER_RPC_TOKEN is missing.");
 	} else {
 		startRemoteWorker();
 	}
 } else if (explicitLocal) {
-	startLocalFallback();
+	if (IS_PRODUCTION) {
+		failAndExit("local mode is not allowed in production. Configure SCHEDULER_MODE=remote.");
+	} else {
+		startLocalFallback();
+	}
 } else if (canRunRemoteMode()) {
 	if (!hasRemoteToken()) {
-		log("auto mode: SCHEDULER_RPC_BASE_URL provided but SCHEDULER_RPC_TOKEN is missing; falling back to local mode.");
-		startLocalFallback();
+		if (IS_PRODUCTION) {
+			failAndExit("auto mode in production requires SCHEDULER_RPC_TOKEN when SCHEDULER_RPC_BASE_URL is set.");
+		} else {
+			log("auto mode: SCHEDULER_RPC_BASE_URL provided but SCHEDULER_RPC_TOKEN is missing; falling back to local mode.");
+			startLocalFallback();
+		}
 	} else {
 		startRemoteWorker();
 	}
 } else {
-	startLocalFallback();
+	if (IS_PRODUCTION) {
+		failAndExit("auto mode in production requires SCHEDULER_RPC_BASE_URL. Local fallback is disabled.");
+	} else {
+		startLocalFallback();
+	}
 }
