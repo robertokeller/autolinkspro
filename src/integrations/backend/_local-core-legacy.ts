@@ -802,6 +802,7 @@ function applyTableShapeDefaults(table: string, row: Record<string, unknown>) {
       row.products_sent = typeof row.products_sent === "number" && Number.isFinite(row.products_sent) ? row.products_sent : 0;
       row.last_run_at = typeof row.last_run_at === "string" ? row.last_run_at : null;
       row.is_active = row.is_active !== false;
+      row.config = asObject(row.config);
       break;
     }
     case "meli_sessions": {

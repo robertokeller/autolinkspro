@@ -39,6 +39,10 @@ function splitCsv(value: string): string[] {
 
 export function buildRoutePayload(form: NewRouteForm) {
   const selectedMasterGroupIds = form.destinationType === "master" ? form.masterGroupIds : [];
+  const partnerMarketplaces = [
+    form.autoConvertShopee ? "shopee" : null,
+    form.autoConvertMercadoLivre ? "mercadolivre" : null,
+  ].filter((item): item is string => Boolean(item));
   return {
     name: form.name,
     sourceGroupId: form.sourceGroupId,
@@ -52,7 +56,7 @@ export function buildRoutePayload(form: NewRouteForm) {
       // Keep compatibility with the existing route pipeline while partner selectors are hidden in the UI.
       resolvePartnerLinks: true,
       requirePartnerLink: true,
-      partnerMarketplaces: ["shopee", "mercadolivre"],
+      partnerMarketplaces,
       filterWords: [],
       negativeKeywords: splitCsv(form.negativeKeywords),
       positiveKeywords: splitCsv(form.positiveKeywords),

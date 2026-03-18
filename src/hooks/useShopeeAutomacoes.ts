@@ -5,6 +5,11 @@ import { logHistorico } from "@/lib/log-historico";
 import { toast } from "sonner";
 import type { Tables } from "@/integrations/backend/types";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
+import {
+  mergeAutomationKeywordFilters,
+  normalizeKeywordList,
+  readAutomationKeywordFilters,
+} from "@/lib/automation-keywords";
 
 export type ShopeeAutomationRow = Tables<"shopee_automations">;
 
@@ -22,6 +27,8 @@ export interface CreateAutomationInput {
   sessionId?: string;
   activeHoursStart?: string;
   activeHoursEnd?: string;
+  positiveKeywords?: string[];
+  negativeKeywords?: string[];
 }
 
 export function useShopeeAutomacoes() {
@@ -73,6 +80,8 @@ export function useShopeeAutomacoes() {
         }
       }
 
+      const positiveKeywords = normalizeKeywordList(input.positiveKeywords || []);
+      const negativeKeywords = normalizeKeywordList(input.negativeKeywords || []);
       const { error } = await backend.from("shopee_automations").insert({
         name: input.name,
         interval_minutes: input.intervalMinutes,
@@ -87,6 +96,7 @@ export function useShopeeAutomacoes() {
         session_id: input.sessionId || null,
         active_hours_start: input.activeHoursStart || "08:00",
         active_hours_end: input.activeHoursEnd || "20:00",
+        config: mergeAutomationKeywordFilters({}, { positiveKeywords, negativeKeywords }),
       });
       if (error) throw error;
     },
@@ -136,6 +146,17 @@ export function useShopeeAutomacoes() {
       if (input.sessionId !== undefined) updates.session_id = input.sessionId || null;
       if (input.activeHoursStart !== undefined) updates.active_hours_start = input.activeHoursStart;
       if (input.activeHoursEnd !== undefined) updates.active_hours_end = input.activeHoursEnd;
+      if (input.positiveKeywords !== undefined || input.negativeKeywords !== undefined) {
+        const currentAutomation = automations.find((item) => item.id === id);
+        const currentFilters = readAutomationKeywordFilters(currentAutomation?.config);
+        const positiveKeywords = input.positiveKeywords !== undefined
+          ? normalizeKeywordList(input.positiveKeywords)
+          : currentFilters.positiveKeywords;
+        const negativeKeywords = input.negativeKeywords !== undefined
+          ? normalizeKeywordList(input.negativeKeywords)
+          : currentFilters.negativeKeywords;
+        updates.config = mergeAutomationKeywordFilters(currentAutomation?.config, { positiveKeywords, negativeKeywords });
+      }
 
       const { error } = await backend
         .from("shopee_automations")
@@ -188,6 +209,7 @@ export function useShopeeAutomacoes() {
 
   const duplicateAutomation = async (auto: ShopeeAutomationRow) => {
     if (!user) return;
+    const filters = readAutomationKeywordFilters(auto.config);
     await createMutation.mutateAsync({
       name: `Copia de ${auto.name}`,
       intervalMinutes: auto.interval_minutes,
@@ -202,6 +224,8 @@ export function useShopeeAutomacoes() {
       sessionId: auto.session_id || undefined,
       activeHoursStart: auto.active_hours_start,
       activeHoursEnd: auto.active_hours_end,
+      positiveKeywords: filters.positiveKeywords,
+      negativeKeywords: filters.negativeKeywords,
     });
   };
 

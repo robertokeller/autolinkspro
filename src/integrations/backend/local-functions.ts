@@ -1250,6 +1250,19 @@ function normalizeMarketplaceList(value: unknown): string[] {
   return cleaned.length > 0 ? cleaned : ["shopee"];
 }
 
+function isMarketplaceConversionEnabled(
+  rules: Record<string, unknown>,
+  marketplace: string,
+): boolean {
+  if (marketplace === "shopee") {
+    return rules.autoConvertShopee !== false;
+  }
+  if (marketplace === "mercadolivre") {
+    return rules.autoConvertMercadoLivre !== false;
+  }
+  return false;
+}
+
 function detectPartnerMarketplace(url: string): string | null {
   for (const [name, patterns] of Object.entries(PARTNER_MARKETPLACE_PATTERNS)) {
     if (patterns.some((pattern) => pattern.test(url))) {
@@ -1889,6 +1902,18 @@ function textMatchesAnyKeyword(text: string, keywords: string[]) {
   if (keywords.length === 0) return false;
   const normalized = text.toLowerCase();
   return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function buildAutomationProductKeywordText(product: Record<string, unknown>): string {
+  return [
+    String(product.title || "").trim(),
+    String(product.productName || "").trim(),
+    String(product.itemName || "").trim(),
+    String(product.shopName || "").trim(),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 async function resolveLinkWithRedirect(url: string): Promise<string> {
@@ -2661,6 +2686,9 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
     const originalLinks = extractLinks(input.message);
     const shouldResolveBeforeValidate = rules.resolvePartnerLinks !== false;
     const partnerMarketplaces = normalizeMarketplaceList(rules.partnerMarketplaces);
+    const enabledPartnerMarketplaces = partnerMarketplaces.filter((marketplace) =>
+      isMarketplaceConversionEnabled(rules, marketplace),
+    );
     const inspectedLinks: Array<{
       original: string;
       resolved: string;
@@ -2682,9 +2710,9 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         resolvedMarketplace = detectPartnerMarketplace(resolved);
       }
 
-      const partnerMarketplace = originalMarketplace && partnerMarketplaces.includes(originalMarketplace)
+      const partnerMarketplace = originalMarketplace && enabledPartnerMarketplaces.includes(originalMarketplace)
         ? originalMarketplace
-        : resolvedMarketplace && partnerMarketplaces.includes(resolvedMarketplace)
+        : resolvedMarketplace && enabledPartnerMarketplaces.includes(resolvedMarketplace)
           ? resolvedMarketplace
           : null;
 
@@ -2695,6 +2723,34 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         resolvedMarketplace,
         partnerMarketplace,
       });
+    }
+
+    const disallowedMarketplaceLink = inspectedLinks.find((item) => {
+      const detected = item.originalMarketplace || item.resolvedMarketplace;
+      return Boolean(detected && !enabledPartnerMarketplaces.includes(detected));
+    });
+    if (disallowedMarketplaceLink) {
+      skipped += 1;
+      withDb((db) => {
+        appendRouteHistory(db, {
+          userId: input.userId,
+          source: sourceName,
+          destination: routeName,
+          status: "info",
+          message: input.message,
+          processingStatus: "blocked",
+          blockReason: "marketplace_not_enabled",
+          routeId: String(route.id),
+          routeName,
+          originPlatform: input.platform,
+          messageData: {
+            marketplace: disallowedMarketplaceLink.originalMarketplace || disallowedMarketplaceLink.resolvedMarketplace || "unknown",
+            allowedMarketplaces: enabledPartnerMarketplaces,
+            configuredMarketplaces: partnerMarketplaces,
+          },
+        });
+      });
+      continue;
     }
 
     const partnerLinks = inspectedLinks.filter((item) => Boolean(item.partnerMarketplace));
@@ -2714,6 +2770,10 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
           routeId: String(route.id),
           routeName,
           originPlatform: input.platform,
+          messageData: {
+            allowedMarketplaces: enabledPartnerMarketplaces,
+            configuredMarketplaces: partnerMarketplaces,
+          },
         });
       });
       continue;
@@ -2725,14 +2785,18 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
     let primaryLink = partnerLinks[0]?.resolved || partnerLinks[0]?.original || originalLinks[0] || "";
     let primaryProduct: Partial<ShopeeProduct> | null = null;
     let convertedShopee = false;
+    let conversionFailure: { reason: string; error: string } | null = null;
+    let linksEligibleForConversion = 0;
+    let convertedLinks = 0;
 
-    if (rules.autoConvertShopee !== false) {
-      for (const inspectedLink of inspectedLinks) {
+    for (const inspectedLink of partnerLinks) {
+      const marketplace = String(inspectedLink.partnerMarketplace || "");
+      if (!marketplace) continue;
+
+      if (marketplace === "shopee") {
+        linksEligibleForConversion += 1;
         const original = inspectedLink.original;
         const resolved = inspectedLink.resolved || original;
-        const isShopeeLink = inspectedLink.originalMarketplace === "shopee" || inspectedLink.resolvedMarketplace === "shopee";
-        if (!isShopeeLink) continue;
-
         const conversionSource = inspectedLink.resolvedMarketplace === "shopee" ? resolved : original;
         const cacheKey = conversionSource || original;
         let conversion = shopeeConversionCache.get(cacheKey);
@@ -2747,6 +2811,11 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         }
 
         const affiliateLink = conversion.affiliateLink || convertShopeeAffiliateLink(resolved || original, input.userId);
+        if (!affiliateLink) {
+          conversionFailure = { reason: "shopee_conversion_failed", error: "Falha ao converter link Shopee." };
+          break;
+        }
+
         if (!convertedShopee) {
           primaryLink = affiliateLink;
           convertedShopee = true;
@@ -2773,20 +2842,21 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         if (resolved && resolved !== original) {
           finalMessage = finalMessage.split(resolved).join(affiliateLink);
         }
-      }
-    }
 
-    // ML affiliate link conversion (route pipeline)
-    if (rules.autoConvertMercadoLivre !== false) {
-      for (const inspectedLink of inspectedLinks) {
+        convertedLinks += 1;
+        continue;
+      }
+
+      if (marketplace === "mercadolivre") {
+        linksEligibleForConversion += 1;
         const original = inspectedLink.original;
         const resolved = inspectedLink.resolved || original;
-        const isMeliLink = inspectedLink.originalMarketplace === "mercadolivre" || inspectedLink.resolvedMarketplace === "mercadolivre";
-        if (!isMeliLink) continue;
-
         const configuredMeliSessionId = typeof rules.meliSessionId === "string" ? rules.meliSessionId : "";
         const meliSessionId = resolveRouteMeliSessionId(snapshot, input.userId, configuredMeliSessionId);
-        if (!meliSessionId) continue;
+        if (!meliSessionId) {
+          conversionFailure = { reason: "meli_session_missing", error: "Sessão Mercado Livre não configurada para a rota." };
+          break;
+        }
 
         const conversionSource = inspectedLink.resolvedMarketplace === "mercadolivre" ? resolved : original;
         const cacheKey = `${meliSessionId}::${conversionSource}`;
@@ -2798,28 +2868,83 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
               sessionId: meliSessionId,
               url: conversionSource,
             });
-            affiliateLink = convResult.affiliateLink || conversionSource;
-            meliConversionCache.set(cacheKey, affiliateLink);
-          } catch {
-            affiliateLink = conversionSource;
+            affiliateLink = convResult.affiliateLink || "";
+            if (affiliateLink) {
+              meliConversionCache.set(cacheKey, affiliateLink);
+            }
+          } catch (error) {
+            conversionFailure = {
+              reason: "meli_conversion_failed",
+              error: error instanceof Error ? error.message : "Falha ao converter link Mercado Livre.",
+            };
+            break;
           }
         }
 
-        if (affiliateLink && affiliateLink !== original) {
-          primaryLink = affiliateLink;
-          withDb((db) => {
-            appendLinkConvertedHistory(db, {
-              userId: input.userId,
-              source: `route:${routeName}`,
-              originalLink: original,
-              affiliateLink,
-              resolvedLink: resolved,
-            });
-          });
-          finalMessage = finalMessage.split(original).join(affiliateLink);
-          if (resolved !== original) finalMessage = finalMessage.split(resolved).join(affiliateLink);
+        if (!affiliateLink) {
+          conversionFailure = { reason: "meli_conversion_failed", error: "Falha ao converter link Mercado Livre." };
+          break;
         }
+
+        primaryLink = affiliateLink;
+        withDb((db) => {
+          appendLinkConvertedHistory(db, {
+            userId: input.userId,
+            source: `route:${routeName}`,
+            originalLink: original,
+            affiliateLink,
+            resolvedLink: resolved,
+          });
+        });
+        finalMessage = finalMessage.split(original).join(affiliateLink);
+        if (resolved !== original) finalMessage = finalMessage.split(resolved).join(affiliateLink);
+        convertedLinks += 1;
       }
+    }
+
+    if (conversionFailure) {
+      skipped += 1;
+      withDb((db) => {
+        appendRouteHistory(db, {
+          userId: input.userId,
+          source: sourceName,
+          destination: routeName,
+          status: "info",
+          message: input.message,
+          processingStatus: "blocked",
+          blockReason: conversionFailure.reason,
+          routeId: String(route.id),
+          routeName,
+          originPlatform: input.platform,
+          messageData: {
+            reason: conversionFailure.reason,
+            error: conversionFailure.error,
+          },
+        });
+      });
+      continue;
+    }
+
+    if (linksEligibleForConversion > 0 && convertedLinks === 0) {
+      skipped += 1;
+      withDb((db) => {
+        appendRouteHistory(db, {
+          userId: input.userId,
+          source: sourceName,
+          destination: routeName,
+          status: "info",
+          message: input.message,
+          processingStatus: "blocked",
+          blockReason: "conversion_required",
+          routeId: String(route.id),
+          routeName,
+          originPlatform: input.platform,
+          messageData: {
+            reason: "conversion_required",
+          },
+        });
+      });
+      continue;
     }
 
     const rawTemplateId = typeof rules.templateId === "string" ? rules.templateId : "";
@@ -4953,6 +5078,11 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       const minDiscount = Number(latestAutomation.min_discount || 0);
       const minPrice = Number(latestAutomation.min_price || 0);
       const maxPrice = Number(latestAutomation.max_price || 9999);
+      const automationConfig = latestAutomation.config && typeof latestAutomation.config === "object" && !Array.isArray(latestAutomation.config)
+        ? (latestAutomation.config as Record<string, unknown>)
+        : {};
+      const positiveKeywords = toKeywordList(automationConfig.positiveKeywords);
+      const negativeKeywords = toKeywordList(automationConfig.negativeKeywords);
       const recentOfferTitles = getRecentOfferTitleSet(latestAutomation);
       let duplicateRejectedCount = 0;
       let filteredCandidatesCount = 0;
@@ -5105,7 +5235,13 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         const filtered = allProducts
           .filter((item) => Number(item.discount || 0) >= minDiscount)
           .filter((item) => Number(item.salePrice || 0) >= minPrice)
-          .filter((item) => Number(item.salePrice || 0) <= maxPrice);
+          .filter((item) => Number(item.salePrice || 0) <= maxPrice)
+          .filter((item) => {
+            const productText = buildAutomationProductKeywordText(item);
+            if (negativeKeywords.length > 0 && textMatchesAnyKeyword(productText, negativeKeywords)) return false;
+            if (positiveKeywords.length > 0 && !textMatchesAnyKeyword(productText, positiveKeywords)) return false;
+            return true;
+          });
         filteredCandidatesCount = filtered.length;
 
         // Enforce affiliate-only products: if there is no real offerLink, this offer cannot be dispatched.
@@ -5126,6 +5262,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
             fetchedProducts: allProducts.length,
             filteredProducts: filtered.length,
             affiliateProducts: withAffiliateLink.length,
+            positiveKeywordsCount: positiveKeywords.length,
+            negativeKeywordsCount: negativeKeywords.length,
             recentMemorySize: recentOfferTitles.size,
             duplicateCandidates: duplicateCount,
           },
@@ -5272,6 +5410,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
               minDiscount,
               minPrice,
               maxPrice,
+              positiveKeywordsCount: positiveKeywords.length,
+              negativeKeywordsCount: negativeKeywords.length,
             },
           );
         } else {

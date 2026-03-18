@@ -1,6 +1,8 @@
 import type { ShopeeProduct } from "@/components/shopee/ProductCard";
+import { applyPlaceholders } from "@/lib/marketplace-utils";
 
 type TemplatePlaceholderData = Record<string, string>;
+const IMAGE_PLACEHOLDER_LINE_REGEX = /^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim;
 
 function safeNumber(value: unknown, fallback = Number.NaN) {
   const parsed = Number(value);
@@ -65,6 +67,28 @@ export function buildTemplatePlaceholderData(
     "{imagem}": "",
     "{avaliacao}": rating > 0 ? String(rating) : "",
   };
+}
+
+export function stripStandaloneImagePlaceholderLines(templateContent: string): string {
+  return String(templateContent || "").replace(IMAGE_PLACEHOLDER_LINE_REGEX, "");
+}
+
+export function templateRequestsImageAttachment(templateContent: string): boolean {
+  const normalized = String(templateContent || "").toLowerCase();
+  return normalized.includes("{imagem}") || normalized.includes("{{imagem}}");
+}
+
+export function applyTemplatePlaceholders(
+  templateContent: string,
+  placeholderData: Record<string, string>,
+): string {
+  const contentWithoutImageLine = stripStandaloneImagePlaceholderLines(templateContent);
+  const safePlaceholderData = {
+    ...(placeholderData || {}),
+    "{imagem}": "",
+    "{{imagem}}": "",
+  };
+  return applyPlaceholders(contentWithoutImageLine, safePlaceholderData);
 }
 
 export const SAMPLE_TEMPLATE_PLACEHOLDER_DATA: TemplatePlaceholderData = {

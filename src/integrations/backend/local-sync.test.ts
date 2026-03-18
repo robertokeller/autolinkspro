@@ -922,7 +922,7 @@ describe("local frontend/backend/database sync", () => {
         source_group_id: sourceGroup.data?.id,
         status: "active",
         rules: {
-          autoConvertShopee: false,
+          autoConvertShopee: true,
           resolvePartnerLinks: true,
           requirePartnerLink: true,
           partnerMarketplaces: ["shopee"],
@@ -1024,7 +1024,7 @@ describe("local frontend/backend/database sync", () => {
         source_group_id: sourceGroup.data?.id,
         status: "active",
         rules: {
-          autoConvertShopee: false,
+          autoConvertShopee: true,
           resolvePartnerLinks: true,
           requirePartnerLink: true,
           partnerMarketplaces: ["shopee"],
@@ -1179,6 +1179,116 @@ describe("local frontend/backend/database sync", () => {
     expect(routeHistory.error).toBeNull();
     const details = (routeHistory.data?.details || {}) as Record<string, unknown>;
     expect(String(details.message || "")).toContain("https://exemplo.com/produto/123");
+  });
+
+  it("blocks Mercado Livre links when Mercado Livre conversion is disabled", async () => {
+    __resetLocalDatabase();
+
+    await backend.auth.signInWithPassword({
+      email: DEMO_ADMIN_EMAIL,
+      password: DEMO_ADMIN_PASSWORD,
+    });
+
+    const {
+      data: { session },
+    } = await backend.auth.getSession();
+    const userId = session?.user.id || "";
+
+    const tgSessions = await backend.from("telegram_sessions").insert([
+      { id: "tg_source_meli", user_id: userId, name: "TG Origem ML", status: "online" },
+      { id: "tg_dest_meli", user_id: userId, name: "TG Destino ML", status: "online" },
+    ]);
+    expect(tgSessions.error).toBeNull();
+
+    const sourceGroup = await backend
+      .from("groups")
+      .insert({
+        user_id: userId,
+        name: "Origem ML",
+        platform: "telegram",
+        member_count: 51,
+        session_id: "tg_source_meli",
+        external_id: "-100source_meli",
+      })
+      .select()
+      .single();
+    expect(sourceGroup.error).toBeNull();
+
+    const destinationGroup = await backend
+      .from("groups")
+      .insert({
+        user_id: userId,
+        name: "Destino ML",
+        platform: "telegram",
+        member_count: 51,
+        session_id: "tg_dest_meli",
+        external_id: "-100dest_meli",
+      })
+      .select()
+      .single();
+    expect(destinationGroup.error).toBeNull();
+
+    const route = await backend
+      .from("routes")
+      .insert({
+        user_id: userId,
+        name: "Rota ML Desligada",
+        source_group_id: sourceGroup.data?.id,
+        status: "active",
+        rules: {
+          autoConvertShopee: true,
+          autoConvertMercadoLivre: false,
+          resolvePartnerLinks: true,
+          requirePartnerLink: true,
+          partnerMarketplaces: ["shopee", "mercadolivre"],
+          templateId: null,
+          sessionId: "tg_dest_meli",
+        },
+      })
+      .select()
+      .single();
+    expect(route.error).toBeNull();
+
+    const routeDestination = await backend.from("route_destinations").insert({
+      route_id: route.data?.id,
+      group_id: destinationGroup.data?.id,
+    });
+    expect(routeDestination.error).toBeNull();
+
+    const processed = await backend.functions.invoke("route-process-message", {
+      body: {
+        platform: "telegram",
+        sessionId: "tg_source_meli",
+        groupId: "-100source_meli",
+        groupName: "Origem ML",
+        from: "Canal ML",
+        message: "oferta https://mercadolivre.com.br/item/123",
+        media: {
+          kind: "image",
+          sourcePlatform: "telegram",
+          base64: "aGVsbG8=",
+          mimeType: "image/jpeg",
+          fileName: "route.jpg",
+        },
+      },
+    });
+
+    expect(processed.error).toBeNull();
+    expect(processed.data?.routesMatched).toBe(1);
+    expect(processed.data?.sent).toBe(0);
+    expect(processed.data?.skipped).toBe(1);
+
+    const blockedHistory = await backend
+      .from("history_entries")
+      .select("*")
+      .eq("type", "route_forward")
+      .eq("processing_status", "blocked")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    expect(blockedHistory.error).toBeNull();
+    expect(blockedHistory.data?.block_reason).toBe("marketplace_not_enabled");
   });
 
   it("runs shopee automations end-to-end for WhatsApp and Telegram", async () => {

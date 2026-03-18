@@ -5,12 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/EmptyState";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bot, Plus, Pause, Trash2, Clock, Pencil, Copy, Play, RefreshCw } from "lucide-react";
+import { Bot, Plus, Pause, Trash2, Clock, Pencil, Copy, Play, RefreshCw, Filter } from "lucide-react";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { useShopeeAutomacoes, type CreateAutomationInput, type ShopeeAutomationRow } from "@/hooks/useShopeeAutomacoes";
 import { useGrupos } from "@/hooks/useGrupos";
@@ -29,6 +30,7 @@ import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown"
 import { useAuth } from "@/contexts/AuthContext";
 import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
+import { keywordsToCsv, readAutomationKeywordFilters, splitKeywordCsv } from "@/lib/automation-keywords";
 
 type FormState = {
   name: string;
@@ -44,6 +46,8 @@ type FormState = {
   destinationGroupIds: string[];
   masterGroupIds: string[];
   templateId: string;
+  positiveKeywords: string;
+  negativeKeywords: string;
 };
 
 const EMPTY_FORM: FormState = {
@@ -60,9 +64,12 @@ const EMPTY_FORM: FormState = {
   destinationGroupIds: [],
   masterGroupIds: [],
   templateId: "",
+  positiveKeywords: "",
+  negativeKeywords: "",
 };
 
 function automationToForm(a: ShopeeAutomationRow): FormState {
+  const keywordFilters = readAutomationKeywordFilters(a.config);
   return {
     name: a.name,
     activeHoursStart: a.active_hours_start || "08:00",
@@ -77,6 +84,8 @@ function automationToForm(a: ShopeeAutomationRow): FormState {
     destinationGroupIds: (a.destination_group_ids || []) as string[],
     masterGroupIds: (a.master_group_ids || []) as string[],
     templateId: a.template_id || "",
+    positiveKeywords: keywordsToCsv(keywordFilters.positiveKeywords),
+    negativeKeywords: keywordsToCsv(keywordFilters.negativeKeywords),
   };
 }
 
@@ -194,6 +203,8 @@ export default function ShopeeAutomacoes() {
         sessionId: form.sessionId,
         activeHoursStart: normalizedStart,
         activeHoursEnd: normalizedEnd,
+        positiveKeywords: splitKeywordCsv(form.positiveKeywords),
+        negativeKeywords: splitKeywordCsv(form.negativeKeywords),
       };
 
       if (editingId) {
@@ -293,6 +304,7 @@ export default function ShopeeAutomacoes() {
             const activeStart = auto.active_hours_start || "08:00";
             const activeEnd = auto.active_hours_end || "20:00";
             const groupCount = (auto.destination_group_ids || []).length + (auto.master_group_ids || []).length;
+            const keywordFilters = readAutomationKeywordFilters(auto.config);
 
             return (
               <Card key={auto.id} className="glass">
@@ -346,6 +358,16 @@ export default function ShopeeAutomacoes() {
                     {sessionLabel && <Badge variant="secondary" className="text-xs">Sessão: {sessionLabel}</Badge>}
                     {templateLabel && <Badge variant="secondary" className="text-xs">Template: {templateLabel}</Badge>}
                     {groupCount > 0 && <Badge variant="secondary" className="text-xs">Grupos: {groupCount} grupo(s)</Badge>}
+                    {keywordFilters.positiveKeywords.length > 0 && (
+                      <Badge variant="secondary" className="text-xs">
+                        <Filter className="h-2.5 w-2.5 mr-1" />+{keywordFilters.positiveKeywords.length} positivas
+                      </Badge>
+                    )}
+                    {keywordFilters.negativeKeywords.length > 0 && (
+                      <Badge variant="secondary" className="text-xs">
+                        <Filter className="h-2.5 w-2.5 mr-1" />-{keywordFilters.negativeKeywords.length} negativas
+                      </Badge>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-4 text-sm text-muted-foreground">
@@ -475,6 +497,38 @@ export default function ShopeeAutomacoes() {
                   <Input type="number" placeholder="Ex: 500" value={form.maxPrice} onChange={(e) => setForm({ ...form, maxPrice: e.target.value })} />
                 </div>
               </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-success inline-block" />
+                    Palavras positivas
+                  </Label>
+                  <Textarea
+                    rows={2}
+                    placeholder="iphone, samsung, notebook"
+                    value={form.positiveKeywords}
+                    onChange={(e) => setForm({ ...form, positiveKeywords: e.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Separe por vírgula. A automação só envia se a oferta tiver pelo menos uma dessas palavras.
+                  </p>
+                </div>
+                <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-destructive inline-block" />
+                    Palavras negativas
+                  </Label>
+                  <Textarea
+                    rows={2}
+                    placeholder="usado, avariado, refil"
+                    value={form.negativeKeywords}
+                    onChange={(e) => setForm({ ...form, negativeKeywords: e.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Separe por vírgula. Se a oferta tiver qualquer uma dessas palavras, ela é descartada.
+                  </p>
+                </div>
+              </div>
             </div>
 
             {/* 5. Categorias */}
@@ -568,5 +622,4 @@ export default function ShopeeAutomacoes() {
     </div>
   );
 }
-
 

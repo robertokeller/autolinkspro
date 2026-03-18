@@ -215,6 +215,7 @@ type TableMap = {
     products_sent: number;
     last_run_at: string | null;
     is_active: boolean;
+    config: Json;
   }>;
   telegram_sessions: TableDef<{
     id: string;

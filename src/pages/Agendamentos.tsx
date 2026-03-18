@@ -29,6 +29,7 @@ import { useSessoes } from "@/hooks/useSessoes";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import { WEEK_DAYS, mergeDateWithScheduleTime, normalizeScheduleTime } from "@/lib/scheduling";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
+import { TimePickerField } from "@/components/scheduling/TimePickerField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
 import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
@@ -523,23 +524,6 @@ export default function Schedules() {
 
             <div className="overflow-y-auto px-5 py-4 max-h-[calc(94dvh-170px)] sm:px-6 sm:py-5">
               <div className="space-y-4 pb-1">
-                <Card className="border-dashed bg-muted/30">
-                  <CardContent className="grid gap-2 p-3 text-xs sm:grid-cols-3">
-                    <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2 text-center">
-                      <p className="text-muted-foreground">Modo</p>
-                      <p className="font-semibold text-foreground">{isRecurring ? "Recorrente" : "Pontual"}</p>
-                    </div>
-                    <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2 text-center">
-                      <p className="text-muted-foreground">Destinos</p>
-                      <p className="font-semibold text-foreground">{totalDestinations}</p>
-                    </div>
-                    <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2 text-center">
-                      <p className="text-muted-foreground">Links encontrados</p>
-                      <p className="font-semibold text-foreground">{detectedLinks.length}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-
                 <Card className="border-border/60 shadow-sm">
                   <CardContent className="space-y-4 p-4">
                 <Label className="text-xs uppercase tracking-wide text-muted-foreground">Conteúdo</Label>
@@ -631,19 +615,21 @@ export default function Schedules() {
                   <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
                     <Label>Horários de envio *</Label>
                     <div className="flex items-center gap-2">
-                      <Input
-                        type="time"
-                        step={60}
+                      <TimePickerField
                         value={recurrenceTimeInput}
-                        onChange={(event) => setRecurrenceTimeInput(event.target.value.slice(0, 5))}
+                        onChange={setRecurrenceTimeInput}
                         className="flex-1"
+                        placeholder="Selecionar horário"
                       />
-                      <Button type="button" variant="outline" onClick={addRecurrenceTime}>Adicionar</Button>
+                      <Button type="button" variant="outline" onClick={addRecurrenceTime} disabled={!recurrenceTimeInput}>
+                        Adicionar
+                      </Button>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {draft.recurrenceTimes.map((time) => (
-                        <Badge key={time} variant="secondary" className="cursor-pointer" onClick={() => removeRecurrenceTime(time)}>
-                          {time} x
+                        <Badge key={time} variant="secondary" className="cursor-pointer gap-1" onClick={() => removeRecurrenceTime(time)}>
+                          <span className="tabular-nums">{time}</span>
+                          <X className="h-3 w-3" />
                         </Badge>
                       ))}
                       {draft.recurrenceTimes.length === 0 && <span className="text-xs text-muted-foreground">Escolha um horário e adicione outros se necessário</span>}

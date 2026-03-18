@@ -12,8 +12,6 @@ interface TimePickerFieldProps {
   className?: string;
 }
 
-const QUICK_TIMES = ["08:00", "09:00", "12:00", "15:00", "18:00", "21:00"];
-
 function normalizeTime(value: string): string {
   const trimmed = value.trim();
   if (!/^\d{2}:\d{2}$/.test(trimmed)) return "";
@@ -44,13 +42,13 @@ export function TimePickerField({
         <Button
           type="button"
           variant="outline"
-          className={cn("h-11 w-full justify-start bg-background/90 font-medium", className)}
+          className={cn("h-11 w-full justify-start bg-background/90 font-medium tabular-nums", className)}
         >
           <Clock3 className="mr-2 h-4 w-4 text-muted-foreground" />
           {value || placeholder}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[260px] p-3">
+      <PopoverContent align="start" className="w-[220px] p-3">
         <div className="space-y-3">
           <Input
             type="time"
@@ -67,7 +65,7 @@ export function TimePickerField({
             }}
             className="h-10"
           />
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 justify-between">
             <Button
               type="button"
               size="sm"
@@ -94,23 +92,6 @@ export function TimePickerField({
                 Limpar
               </Button>
             )}
-          </div>
-          <div className="grid grid-cols-3 gap-1.5">
-            {QUICK_TIMES.map((quickTime) => (
-              <Button
-                key={quickTime}
-                type="button"
-                size="sm"
-                variant={value === quickTime ? "default" : "outline"}
-                onClick={() => {
-                  onChange(quickTime);
-                  setOpen(false);
-                }}
-                className="h-8 text-xs"
-              >
-                {quickTime}
-              </Button>
-            ))}
           </div>
         </div>
       </PopoverContent>

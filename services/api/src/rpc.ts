@@ -66,6 +66,9 @@ function ok(res, data) { res.json({ data, error: null }); }
 function fail(res, message, status = 200) { res.status(status).json({ data: null, error: { message } }); }
 function nowIso() { return new Date().toISOString(); }
 
+const AUTOMATION_RECENT_OFFER_LIMIT = 200;
+const AUTOMATION_RECENT_OFFER_WINDOW_HOURS = 72;
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -224,6 +227,50 @@ function extractValidShopeeAffiliateLink(product: Record<string, unknown>): stri
   return "";
 }
 
+function normalizeOfferTitle(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+async function loadRecentAutomationOfferTitleSet(input: {
+  userId: string;
+  automationId: string;
+  automationName: string;
+}): Promise<Set<string>> {
+  const rows = await query<{ title: string }>(
+    `SELECT COALESCE(
+       NULLIF(TRIM(details->'product'->>'title'), ''),
+       NULLIF(TRIM(details->>'title'), ''),
+       ''
+     ) AS title
+       FROM history_entries
+      WHERE user_id = $1
+        AND type = 'automation_run'
+        AND processing_status = 'sent'
+        AND (
+          details->>'automationId' = $2
+          OR (COALESCE(details->>'automationId', '') = '' AND source = $3)
+        )
+        AND created_at >= NOW() - ($4::int * INTERVAL '1 hour')
+      ORDER BY created_at DESC
+      LIMIT $5`,
+    [
+      input.userId,
+      input.automationId,
+      input.automationName,
+      AUTOMATION_RECENT_OFFER_WINDOW_HOURS,
+      AUTOMATION_RECENT_OFFER_LIMIT,
+    ],
+  );
+
+  const normalizedTitles = rows
+    .map((row) => normalizeOfferTitle(row.title))
+    .filter(Boolean);
+  return new Set(normalizedTitles);
+}
+
 function applyPlaceholders(template: string, replacements: Record<string, string>): string {
   let output = String(template || "");
   for (const [key, value] of Object.entries(replacements)) {
@@ -282,6 +329,18 @@ function routeTextMatchesAnyKeyword(text: string, keywords: string[]): boolean {
   if (keywords.length === 0) return false;
   const normalized = String(text || "").toLowerCase();
   return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function buildAutomationProductKeywordText(product: Record<string, unknown>): string {
+  return [
+    String(product.title || "").trim(),
+    String(product.productName || "").trim(),
+    String(product.itemName || "").trim(),
+    String(product.shopName || "").trim(),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function buildRouteTemplatePlaceholderData(
@@ -1629,6 +1688,19 @@ function normalizeRouteMarketplaceList(value: unknown): string[] {
   return cleaned.length > 0 ? [...new Set(cleaned)] : ["shopee"];
 }
 
+function isRouteMarketplaceConversionEnabled(
+  rules: Record<string, unknown>,
+  marketplace: string,
+): boolean {
+  if (marketplace === "shopee") {
+    return rules.autoConvertShopee !== false;
+  }
+  if (marketplace === "mercadolivre") {
+    return rules.autoConvertMercadoLivre !== false;
+  }
+  return false;
+}
+
 function detectRoutePartnerMarketplace(url: string): string | null {
   for (const [name, patterns] of Object.entries(ROUTE_PARTNER_MARKETPLACE_PATTERNS)) {
     if (patterns.some((pattern) => pattern.test(url))) return name;
@@ -1833,6 +1905,9 @@ async function processRouteMessageForUser(input: {
 
     const shouldResolveBeforeValidate = rules.resolvePartnerLinks !== false;
     const partnerMarketplaces = normalizeRouteMarketplaceList(rules.partnerMarketplaces);
+    const enabledPartnerMarketplaces = partnerMarketplaces.filter((marketplace) =>
+      isRouteMarketplaceConversionEnabled(rules, marketplace),
+    );
     const requirePartnerLink = rules.requirePartnerLink !== false;
     const routeLinks = extractRouteLinks(message);
 
@@ -1850,9 +1925,9 @@ async function processRouteMessageForUser(input: {
       const originalMarketplace = detectRoutePartnerMarketplace(original);
       const resolved = shouldResolveBeforeValidate ? await resolveRouteLinkWithRedirect(original) : original;
       const resolvedMarketplace = detectRoutePartnerMarketplace(resolved);
-      const partnerMarketplace = originalMarketplace && partnerMarketplaces.includes(originalMarketplace)
+      const partnerMarketplace = originalMarketplace && enabledPartnerMarketplaces.includes(originalMarketplace)
         ? originalMarketplace
-        : resolvedMarketplace && partnerMarketplaces.includes(resolvedMarketplace)
+        : resolvedMarketplace && enabledPartnerMarketplaces.includes(resolvedMarketplace)
           ? resolvedMarketplace
           : null;
       inspectedLinks.push({ original, resolved, originalMarketplace, resolvedMarketplace, partnerMarketplace });
@@ -1860,7 +1935,7 @@ async function processRouteMessageForUser(input: {
 
     const disallowedMarketplaceLink = inspectedLinks.find((item) => {
       const detected = item.originalMarketplace || item.resolvedMarketplace;
-      return Boolean(detected && !partnerMarketplaces.includes(detected));
+      return Boolean(detected && !enabledPartnerMarketplaces.includes(detected));
     });
     if (disallowedMarketplaceLink) {
       const disallowedMarketplace = disallowedMarketplaceLink.originalMarketplace || disallowedMarketplaceLink.resolvedMarketplace || "unknown";
@@ -1871,7 +1946,8 @@ async function processRouteMessageForUser(input: {
           routeId: route.id,
           routeName: route.name,
           marketplace: disallowedMarketplace,
-          allowedMarketplaces: partnerMarketplaces,
+          allowedMarketplaces: enabledPartnerMarketplaces,
+          configuredMarketplaces: partnerMarketplaces,
           reason: "marketplace_not_enabled",
           hasMedia: !!media,
         }), messageType],
@@ -1887,7 +1963,8 @@ async function processRouteMessageForUser(input: {
           message,
           routeId: route.id,
           routeName: route.name,
-          allowedMarketplaces: partnerMarketplaces,
+          allowedMarketplaces: enabledPartnerMarketplaces,
+          configuredMarketplaces: partnerMarketplaces,
           reason: "partner_link_required",
           hasMedia: !!media,
         }), messageType],
@@ -1908,9 +1985,6 @@ async function processRouteMessageForUser(input: {
       if (!marketplace) continue;
 
       if (marketplace === "shopee") {
-        if (rules.autoConvertShopee === false) {
-          continue;
-        }
         linksEligibleForConversion += 1;
         if (!SHOPEE_URL) {
           conversionFailure = { reason: "shopee_service_unavailable", error: "Serviço Shopee indisponível para conversão." };
@@ -1981,9 +2055,6 @@ async function processRouteMessageForUser(input: {
       }
 
       if (marketplace === "mercadolivre") {
-        if (rules.autoConvertMercadoLivre === false) {
-          continue;
-        }
         linksEligibleForConversion += 1;
         if (!MELI_URL) {
           conversionFailure = { reason: "meli_service_unavailable", error: "Serviço Mercado Livre indisponível para conversão." };
@@ -3462,6 +3533,11 @@ rpcRouter.post("/rpc", async (req, res) => {
         const minPrice = Math.max(0, toNumber(claimed.min_price, 0));
         const maxPriceRaw = Math.max(0, toNumber(claimed.max_price, 999999));
         const maxPrice = maxPriceRaw > 0 ? maxPriceRaw : 999999;
+        const automationConfig = claimed.config && typeof claimed.config === "object" && !Array.isArray(claimed.config)
+          ? claimed.config as Record<string, unknown>
+          : {};
+        const positiveKeywords = toRouteKeywordList(automationConfig.positiveKeywords);
+        const negativeKeywords = toRouteKeywordList(automationConfig.negativeKeywords);
 
         const candidates: Record<string, unknown>[] = [];
         for (const result of Object.values(batchResults)) {
@@ -3473,10 +3549,13 @@ rpcRouter.post("/rpc", async (req, res) => {
             const salePrice = Math.max(0, toNumber(item.salePrice, 0));
             const discount = Math.max(0, toNumber(item.discount, 0));
             const affiliateLink = extractValidShopeeAffiliateLink(item);
+            const productText = buildAutomationProductKeywordText(item);
             if (!affiliateLink) continue;
             if (discount < minDiscount) continue;
             if (salePrice < minPrice) continue;
             if (salePrice > maxPrice) continue;
+            if (negativeKeywords.length > 0 && routeTextMatchesAnyKeyword(productText, negativeKeywords)) continue;
+            if (positiveKeywords.length > 0 && !routeTextMatchesAnyKeyword(productText, positiveKeywords)) continue;
             candidates.push(item);
           }
         }
@@ -3489,15 +3568,59 @@ rpcRouter.post("/rpc", async (req, res) => {
             destination: "automation:diagnostic",
             status: "warning",
             processingStatus: "blocked",
-            message: "Nenhuma oferta elegível encontrada para disparo.",
-            details: { automationId, source, reason: "no_eligible_offer" },
+            message: "Nada compatível com seus filtros agora. Vamos tentar de novo no próximo ciclo.",
+            details: {
+              automationId,
+              source,
+              reason: "no_eligible_offer",
+              positiveKeywordsCount: positiveKeywords.length,
+              negativeKeywordsCount: negativeKeywords.length,
+            },
             blockReason: "no_eligible_offer",
             errorStep: "offer_filter",
           });
           continue;
         }
 
-        const selectedProduct = candidates[0];
+        const recentOfferTitles = await loadRecentAutomationOfferTitleSet({
+          userId: ownerUserId,
+          automationId,
+          automationName,
+        });
+        let duplicateRejectedCount = 0;
+        let selectedProduct: Record<string, unknown> | null = null;
+        for (const candidate of candidates) {
+          const normalizedTitle = normalizeOfferTitle(candidate.title);
+          if (normalizedTitle && recentOfferTitles.has(normalizedTitle)) {
+            duplicateRejectedCount += 1;
+            continue;
+          }
+          selectedProduct = candidate;
+          break;
+        }
+        if (!selectedProduct) {
+          skipped += 1;
+          errors.push(`${automationName}: sem nova oferta disponível (duplicadas descartadas: ${duplicateRejectedCount})`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Sem oferta nova agora. As opções disponíveis já foram enviadas recentemente.",
+            details: {
+              automationId,
+              source,
+              reason: "offer_duplicate_blocked",
+              duplicateRejectedCount,
+              recentMemorySize: recentOfferTitles.size,
+            },
+            blockReason: "offer_duplicate_blocked",
+            errorStep: "offer_dedupe",
+          });
+          continue;
+        }
+
         const affiliateLink = extractValidShopeeAffiliateLink(selectedProduct);
         if (!affiliateLink) {
           skipped += 1;
@@ -3507,7 +3630,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             destination: "automation:diagnostic",
             status: "warning",
             processingStatus: "blocked",
-            message: "Oferta selecionada sem link de afiliado válido.",
+            message: "Encontramos uma oferta, mas ela veio sem link de afiliado válido.",
             details: { automationId, source, reason: "missing_affiliate_link" },
             blockReason: "missing_affiliate_link",
             errorStep: "offer_validate",

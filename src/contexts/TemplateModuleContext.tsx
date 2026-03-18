@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useMemo, type PropsWithChildren } from "react";
 import { useTemplates } from "@/hooks/useTemplates";
-import { applyPlaceholders } from "@/lib/marketplace-utils";
+import { applyTemplatePlaceholders } from "@/lib/template-placeholders";
 import type { Template } from "@/lib/types";
 
 interface ApplyTemplateInput {
@@ -48,14 +48,7 @@ export function TemplateModuleProvider({ children }: PropsWithChildren) {
       return input.fallbackContent || "";
     }
 
-    // {imagem} only signals media attachment and must never be rendered as text URL.
-    const safePlaceholderData = {
-      ...(input.placeholderData || {}),
-      "{imagem}": "",
-      "{{imagem}}": "",
-    };
-
-    return applyPlaceholders(template.content, safePlaceholderData);
+    return applyTemplatePlaceholders(template.content, input.placeholderData || {});
   }, [defaultTemplate, templates]);
 
   const value = useMemo<TemplateModuleContextValue>(() => ({

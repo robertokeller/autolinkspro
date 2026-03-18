@@ -1,7 +1,12 @@
 const DEFAULT_API_ORIGINS = [
+  "https://api.autolinks.pro",
   "https://autolinks.pro",
   "https://www.autolinks.pro",
   "https://app.autolinks.pro",
+  "http://localhost:3116",
+  "http://127.0.0.1:3116",
+  "https://localhost:3116",
+  "https://127.0.0.1:3116",
   "http://localhost:5173",
   "http://localhost:5175",
   "http://127.0.0.1:5173",
@@ -9,6 +14,15 @@ const DEFAULT_API_ORIGINS = [
   "http://localhost:4173",
   "http://127.0.0.1:4173",
 ];
+
+const TRUSTED_PRODUCTION_HOSTS = new Set([
+  "autolinks.pro",
+  "www.autolinks.pro",
+  "app.autolinks.pro",
+  "api.autolinks.pro",
+]);
+
+const TRUSTED_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
 const STORAGE_KEY_AUTH = "autolinksExtensionAuth";
 
@@ -67,6 +81,71 @@ function unique(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+function isTrustedAutolinksHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  if (!host) return false;
+  return TRUSTED_PRODUCTION_HOSTS.has(host) || TRUSTED_LOCAL_HOSTS.has(host);
+}
+
+function isLikelyAppOrigin(origin) {
+  try {
+    const parsed = new URL(String(origin || ""));
+    return isTrustedAutolinksHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function deriveApiOriginsFromOrigin(origin) {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return [];
+
+  try {
+    const parsed = new URL(normalized);
+    const protocol = parsed.protocol === "http:" ? "http:" : "https:";
+    const host = String(parsed.hostname || "").toLowerCase();
+    const derived = [];
+
+    if (TRUSTED_LOCAL_HOSTS.has(host)) {
+      derived.push(`${protocol}//${host}:3116`);
+      derived.push(`http://${host}:3116`);
+      derived.push(`https://${host}:3116`);
+      return unique(derived.map((value) => normalizeOrigin(value)));
+    }
+
+    if (!TRUSTED_PRODUCTION_HOSTS.has(host)) {
+      return [];
+    }
+
+    if (host === "api.autolinks.pro") {
+      derived.push("https://api.autolinks.pro");
+      return unique(derived.map((value) => normalizeOrigin(value)));
+    }
+
+    if (host === "autolinks.pro" || host === "www.autolinks.pro" || host === "app.autolinks.pro") {
+      derived.push("https://api.autolinks.pro");
+    }
+
+    return unique(derived.map((value) => normalizeOrigin(value)));
+  } catch {
+    return [];
+  }
+}
+
+function getOriginPriority(origin) {
+  try {
+    const parsed = new URL(String(origin || ""));
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (host === "api.autolinks.pro") return 0;
+    if ((host === "localhost" || host === "127.0.0.1") && parsed.port === "3116") return 1;
+    if (host === "localhost" || host === "127.0.0.1") return 2;
+    if (TRUSTED_PRODUCTION_HOSTS.has(host)) return 3;
+    return 4;
+  } catch {
+    return 5;
+  }
+}
+
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -106,6 +185,17 @@ function isCredentialError(message) {
   );
 }
 
+function isConnectionIssueMessage(message) {
+  const raw = String(message || "").toLowerCase();
+  return (
+    raw.includes("failed to fetch") ||
+    raw.includes("networkerror") ||
+    raw.includes("load failed") ||
+    raw.includes("tempo esgotado") ||
+    raw.includes("falha ao conectar")
+  );
+}
+
 function toFriendlyErrorMessage(error) {
   const raw = String(error?.message || error || "");
   const lower = raw.toLowerCase();
@@ -121,6 +211,9 @@ function toFriendlyErrorMessage(error) {
   }
   if (lower.includes("tempo esgotado") || lower.includes("timeout")) {
     return "Tempo esgotado ao conectar com o Autolinks. Tente novamente.";
+  }
+  if (lower.includes("failed to fetch") || lower.includes("networkerror") || lower.includes("load failed")) {
+    return "Falha ao conectar com o Autolinks. Verifique se a API esta online e tente novamente.";
   }
   if (lower.includes("cookie bloqueado")) {
     return "Nao consegui salvar sua sessao. Verifique bloqueio de cookies no navegador.";
@@ -154,10 +247,22 @@ async function getCandidateApiOrigins() {
   const tabs = await listHttpTabs();
   const fromTabs = tabs
     .map((tab) => normalizeOrigin(tab.url))
-    .filter((origin) => origin.includes("autolinks.pro"));
+    .filter((origin) => isLikelyAppOrigin(origin));
 
   const current = normalizeOrigin(extensionAuth?.apiOrigin || "");
-  return unique([current, ...fromTabs, ...DEFAULT_API_ORIGINS]);
+  const safeCurrent = isLikelyAppOrigin(current) ? current : "";
+  const derivedFromCurrent = deriveApiOriginsFromOrigin(safeCurrent);
+  const derivedFromTabs = fromTabs.flatMap((origin) => deriveApiOriginsFromOrigin(origin));
+
+  return unique([
+    safeCurrent,
+    ...derivedFromCurrent,
+    ...derivedFromTabs,
+    ...DEFAULT_API_ORIGINS,
+    ...fromTabs,
+  ])
+    .filter((origin) => isLikelyAppOrigin(origin))
+    .sort((left, right) => getOriginPriority(left) - getOriginPriority(right));
 }
 
 async function readAuthTokenFromCookies(origin) {
@@ -467,6 +572,7 @@ async function loginAndValidate() {
     }
 
     let lastError = "";
+    let bestError = "";
     for (const origin of candidates) {
       try {
         const result = await loginAtOrigin(origin, email, password);
@@ -478,16 +584,28 @@ async function loginAndValidate() {
           return;
         }
 
-        lastError = result?.message || lastError;
+        const message = String(result?.message || "").trim();
+        if (message) {
+          lastError = message;
+          if (!bestError || (isConnectionIssueMessage(bestError) && !isConnectionIssueMessage(message))) {
+            bestError = message;
+          }
+        }
         if (result?.credentialIssue) break;
       } catch (error) {
-        lastError = toFriendlyErrorMessage(error);
+        const message = toFriendlyErrorMessage(error);
+        if (message) {
+          lastError = message;
+          if (!bestError || (isConnectionIssueMessage(bestError) && !isConnectionIssueMessage(message))) {
+            bestError = message;
+          }
+        }
       }
     }
 
     await clearStoredAuth();
     setAuthenticated(false);
-    setStatus(STATUS.error, lastError || "Nao foi possivel validar login. Tente novamente.");
+    setStatus(STATUS.error, bestError || lastError || "Nao foi possivel validar login. Tente novamente.");
   } catch (error) {
     await clearStoredAuth();
     setAuthenticated(false);

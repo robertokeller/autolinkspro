@@ -121,6 +121,11 @@ function normalizeCorsOriginEntry(rawValue: string): string {
   return trimmed.replace(/\/+$/, "");
 }
 
+function isExtensionOrigin(origin: string): boolean {
+  const value = String(origin || "").trim().toLowerCase();
+  return value.startsWith("chrome-extension://") || value.startsWith("moz-extension://");
+}
+
 const corsOriginList = CORS_ORIGIN === "*"
   ? []
   : CORS_ORIGIN
@@ -132,6 +137,7 @@ const corsOriginSet = new Set(corsOriginList);
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) { callback(null, true); return; } // server-to-server
+    if (isExtensionOrigin(origin)) { callback(null, true); return; }
     const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
     if (corsOriginList.length > 0) {
       // In development, Vite may fall back to another port (5174, 5175, ...).

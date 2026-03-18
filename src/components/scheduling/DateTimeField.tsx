@@ -14,7 +14,6 @@ import {
 import { ptBR } from "date-fns/locale";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { CalendarClock, ChevronLeft, ChevronRight } from "lucide-react";
@@ -194,42 +193,6 @@ export function DateTimeField({
               emitIfReady(selectedDate, nextTime);
             }}
             placeholder="Selecionar hora"
-          />
-        </div>
-
-        <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_136px]">
-          <Input
-            type="date"
-            value={selectedDate}
-            onChange={(event) => {
-              const nextDate = String(event.target.value || "");
-              if (!nextDate) {
-                setSelectedDate("");
-                onChange("");
-                return;
-              }
-              const resolvedTime = selectedTime || nowTimeLabel();
-              setSelectedDate(nextDate);
-              if (!selectedTime) setSelectedTime(resolvedTime);
-              emitIfReady(nextDate, resolvedTime);
-            }}
-            className="h-11 bg-background/90"
-          />
-          <Input
-            type="time"
-            step={60}
-            value={selectedTime}
-            onChange={(event) => {
-              const nextTime = String(event.target.value || "").slice(0, 5);
-              if (!nextTime) {
-                setSelectedTime("");
-                onChange("");
-                return;
-              }
-              setSelectedTime(nextTime);
-              emitIfReady(selectedDate, nextTime);
-            }}
-            className="h-11 bg-background/90"
           />
         </div>
       </div>

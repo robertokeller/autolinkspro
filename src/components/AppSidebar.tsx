@@ -43,7 +43,7 @@ const shopeeSubNav = [
   { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
   { title: "Pesquisa de ofertas", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.shopeeAutomacoes },
-  { title: "Templates", icon: FileText, href: ROUTES.app.shopeeTemplates },
+  { title: "Templates Shopee", icon: FileText, href: ROUTES.app.shopeeTemplates },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.shopeeConfiguracoes },
 ];
 

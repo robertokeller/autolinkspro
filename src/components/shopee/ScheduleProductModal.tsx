@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ import type { RecurrenceType, ScheduledMediaAttachment, ScheduledPost, WeekDay }
 import { toast } from "sonner";
 import { WEEK_DAYS, mergeDateWithScheduleTime, normalizeScheduleTime } from "@/lib/scheduling";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
+import { TimePickerField } from "@/components/scheduling/TimePickerField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
 import { formatBRT } from "@/lib/timezone";
@@ -28,6 +29,7 @@ import { extractMarketplaceLinks } from "@/lib/marketplace-utils";
 interface ScheduleProductModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialTemplateId?: string;
   product?: {
     title?: string;
     affiliateLink: string;
@@ -57,7 +59,7 @@ function getTimeFromDateTime(value: string): string {
 async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaAttachment> {
   const target = String(imageUrl || "").trim();
   if (!/^https?:\/\//i.test(target)) {
-    throw new Error("URL de imagem inválida para anexo");
+    throw new Error("URL de imagem invÃ¡lida para anexo");
   }
 
   const response = await fetch(target);
@@ -67,7 +69,7 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
 
   const blob = await response.blob();
   if (!blob.type.startsWith("image/")) {
-    throw new Error("Arquivo retornado não é uma imagem");
+    throw new Error("Arquivo retornado nÃ£o Ã© uma imagem");
   }
   if (blob.size > MAX_SCHEDULE_IMAGE_BYTES) {
     throw new Error("Imagem da oferta excede 8MB");
@@ -82,7 +84,7 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
 
   const base64 = dataUrlToBase64(dataUrl);
   if (!base64) {
-    throw new Error("Conteúdo da imagem inválido");
+    throw new Error("ConteÃºdo da imagem invÃ¡lido");
   }
 
   return {
@@ -93,7 +95,7 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
   };
 }
 
-export function ScheduleProductModal({ open, onOpenChange, product, editingPost }: ScheduleProductModalProps) {
+export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, product, editingPost }: ScheduleProductModalProps) {
   const { templates, defaultTemplate, applyTemplate } = useTemplateModule();
   const { syncedGroups, masterGroups } = useGrupos();
   const { allSessions } = useSessoes();
@@ -175,7 +177,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
       setImageAttachment(media);
     } catch {
       setImageAttachment(null);
-      toast.error("Não deu pra preparar a imagem pra esse agendamento");
+      toast.error("NÃ£o deu pra preparar a imagem pra esse agendamento");
     } finally {
       setPreparingImageAttachment(false);
     }
@@ -210,6 +212,12 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
     setRecurrenceTimeInput("");
     setImageAttachment(editingPost.media || null);
   }, [editingPost, open]);
+
+  useEffect(() => {
+    if (!open || editingPost || !product) return;
+    if (!initialTemplateId) return;
+    setSelectedTemplateId(initialTemplateId || "");
+  }, [editingPost, initialTemplateId, open, product]);
 
   useEffect(() => {
     if (!open || editingPost || !product) return;
@@ -258,7 +266,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
   const addRecurrenceTime = () => {
     const normalized = normalizeScheduleTime(recurrenceTimeInput);
     if (!normalized) {
-      toast.error("Horário inválido — use o formato HH:mm");
+      toast.error("HorÃ¡rio invÃ¡lido â€” use o formato HH:mm");
       return;
     }
     setRecurrenceTimes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized].sort()));
@@ -282,15 +290,15 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
 
   const handleSchedule = async () => {
     if (!scheduleName.trim()) {
-      toast.error("Dê um nome pro agendamento");
+      toast.error("DÃª um nome pro agendamento");
       return;
     }
     if (!messageContent.trim()) {
-      toast.error("Escreva o conteúdo da mensagem");
+      toast.error("Escreva o conteÃºdo da mensagem");
       return;
     }
     if (!isRecurring && !scheduledAt) {
-      toast.error("Escolha a data e o horário");
+      toast.error("Escolha a data e o horÃ¡rio");
       return;
     }
     if (isRecurring && weekDays.length === 0) {
@@ -298,7 +306,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
       return;
     }
     if (isRecurring && recurrenceTimes.length === 0) {
-      toast.error("Adicione pelo menos um horário");
+      toast.error("Adicione pelo menos um horÃ¡rio");
       return;
     }
     if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
@@ -306,11 +314,11 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
       return;
     }
     if (requiresImageAttachment && preparingImageAttachment) {
-      toast.error("Espera só um pouco, a imagem ainda tá sendo preparada");
+      toast.error("Espera sÃ³ um pouco, a imagem ainda tÃ¡ sendo preparada");
       return;
     }
     if (requiresImageAttachment && !imageAttachment) {
-      toast.error("Esse agendamento precisa de imagem e ela não tá disponível");
+      toast.error("Esse agendamento precisa de imagem e ela nÃ£o tÃ¡ disponÃ­vel");
       return;
     }
 
@@ -357,7 +365,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
       onOpenChange(false);
       resetForm();
     } catch {
-      toast.error(editingPost ? "Não deu pra atualizar o agendamento" : "Não deu pra criar o agendamento");
+      toast.error(editingPost ? "NÃ£o deu pra atualizar o agendamento" : "NÃ£o deu pra criar o agendamento");
     } finally {
       setSubmitting(false);
     }
@@ -446,7 +454,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
               className="min-h-[100px]"
             />
             <p className="text-xs text-muted-foreground">
-              Quando você escolhe um template, o texto já vem pronto. Pode editar à vontade.
+              Quando voce escolhe um template, o texto ja vem pronto. Pode editar a vontade.
             </p>
           </div>
 
@@ -484,19 +492,26 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
           {isRecurring && (
             <Card>
               <CardContent className="space-y-2 p-4">
-                <Label>Horários *</Label>
+                <Label>HorÃ¡rios *</Label>
                 <div className="flex items-center gap-2">
-                  <Input type="time" value={recurrenceTimeInput} onChange={(e) => setRecurrenceTimeInput(e.target.value)} />
-                  <Button type="button" variant="outline" onClick={addRecurrenceTime}>Adicionar</Button>
+                  <TimePickerField
+                    value={recurrenceTimeInput}
+                    onChange={setRecurrenceTimeInput}
+                    className="flex-1"
+                    placeholder="Selecionar horário"
+                  />
+                  <Button type="button" variant="outline" onClick={addRecurrenceTime} disabled={!recurrenceTimeInput}>
+                    Adicionar
+                  </Button>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {recurrenceTimes.map((time) => (
                     <Badge key={time} variant="secondary" className="cursor-pointer" onClick={() => removeRecurrenceTime(time)}>
-                      {time} x
+                      <span className="tabular-nums">{time}</span> x
                     </Badge>
                   ))}
                   {recurrenceTimes.length === 0 && (
-                    <span className="text-xs text-muted-foreground">Escolha um horário e adicione outros se necessário</span>
+                    <span className="text-xs text-muted-foreground">Escolha um horÃ¡rio e adicione outros se necessÃ¡rio</span>
                   )}
                 </div>
               </CardContent>
@@ -505,18 +520,18 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
 
           {isRecurring && (
             <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Se ligar a repetição, o envio segue os dias e horários que você escolher (ignora a data fixa).</Label>
+              <Label className="text-xs text-muted-foreground">Se ligar a repetiÃ§Ã£o, o envio segue os dias e horÃ¡rios que vocÃª escolher (ignora a data fixa).</Label>
             </div>
           )}
 
           <div className="space-y-2">
-            <Label>Sessão *</Label>
+            <Label>SessÃ£o *</Label>
             <SessionSelect
               value={selectedSessionId}
               onValueChange={handleSessionChange}
               sessions={allSessions}
-              placeholder="Escolha uma sessão..."
-              emptyLabel="Nenhuma sessão conectada"
+              placeholder="Escolha uma sessÃ£o..."
+              emptyLabel="Nenhuma sessÃ£o conectada"
             />
           </div>
 
@@ -524,7 +539,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
             <Label className="text-xs">Grupos</Label>
             {!selectedSessionId ? (
               <p className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
-                Escolha a sessão primeiro pra ver os grupos.
+                Escolha a sessÃ£o primeiro pra ver os grupos.
               </p>
             ) : (
               <MultiOptionDropdown
@@ -537,7 +552,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
                 }))}
                 placeholder="Escolher grupos"
                 selectedLabel={(count) => `${count} grupo(s)`}
-                emptyMessage="Nenhum grupo nessa sessão"
+                emptyMessage="Nenhum grupo nessa sessÃ£o"
                 title="Grupos"
               />
             )}
@@ -556,7 +571,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
                 }))}
                 placeholder="Escolher grupos mestres"
                 selectedLabel={(count) => `${count} grupo(s) mestre`}
-                emptyMessage="Nenhum grupo mestre nessa sessão"
+                emptyMessage="Nenhum grupo mestre nessa sessÃ£o"
                 title="Grupos mestres"
               />
             </div>
@@ -565,7 +580,7 @@ export function ScheduleProductModal({ open, onOpenChange, product, editingPost 
           {totalDestinations > 0 && (
             <div className="text-xs text-muted-foreground flex items-center gap-1 p-2 rounded-lg bg-muted/30">
               <Send className="h-3 w-3" />
-              {totalDestinations} grupo(s) vão receber
+              {totalDestinations} grupo(s) vÃ£o receber
             </div>
           )}
         </div>

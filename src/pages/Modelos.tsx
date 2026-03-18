@@ -1,8 +1,11 @@
 ﻿import { useRef, useState } from "react";
 import { templateSchema } from "@/lib/validations";
+import { useMemo } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ShopeeCredentialsBanner } from "@/components/ShopeeCredentialsBanner";
+import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
+import type { ShopeeProduct } from "@/components/shopee/ProductCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -39,12 +42,17 @@ import {
   Link2,
   CheckCheck,
   Eye,
+  CalendarDays,
+  ImageIcon,
 } from "lucide-react";
 import { useTemplateModule } from "@/contexts/TemplateModuleContext";
 import { useShopeeLinkModule } from "@/contexts/ShopeeLinkModuleContext";
 import type { Template, TemplateCategory } from "@/lib/types";
-import { applyPlaceholders } from "@/lib/marketplace-utils";
-import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
+import {
+  applyTemplatePlaceholders,
+  buildTemplatePlaceholderData,
+  templateRequestsImageAttachment,
+} from "@/lib/template-placeholders";
 import { renderRichTextPreviewHtml, renderTemplatePreviewHtml, formatMessageForPlatform } from "@/lib/rich-text";
 import { toast } from "sonner";
 
@@ -77,6 +85,79 @@ const PREVIEW_SAMPLE: Record<string, string> = {
   "{avaliacao}": "4.8",
 };
 
+interface GeneratedOffer {
+  templateId: string;
+  templateName: string;
+  message: string;
+  affiliateLink: string;
+  product: Partial<ShopeeProduct> | null;
+  imageUrl: string;
+  requestsImageAttachment: boolean;
+}
+
+interface SchedulableProductInput {
+  title?: string;
+  affiliateLink: string;
+  imageUrl?: string;
+  salePrice?: number;
+  originalPrice?: number;
+  discount?: number;
+  sales?: number;
+  commission?: number;
+  shopName?: string;
+}
+
+function firstNonEmptyString(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = String(value || "").trim();
+    if (parsed) return parsed;
+  }
+  return "";
+}
+
+function toFiniteNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function toPositiveNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveProductImageUrl(product: Partial<ShopeeProduct> | null | undefined): string {
+  const source = (product || {}) as Record<string, unknown>;
+  return firstNonEmptyString(
+    source.imageUrl,
+    source.image_url,
+    source.image,
+    source.thumbnail,
+  );
+}
+
+function toSchedulableProduct(offer: GeneratedOffer): SchedulableProductInput {
+  const source = (offer.product || {}) as Record<string, unknown>;
+  const salePrice = toPositiveNumber(source.salePrice ?? source.price);
+  const originalPrice = toPositiveNumber(
+    source.originalPrice
+    ?? source.priceMinBeforeDiscount
+    ?? source.priceBeforeDiscount
+    ?? source.priceMin,
+  );
+
+  return {
+    title: firstNonEmptyString(source.title, source.productName, "Oferta Shopee"),
+    affiliateLink: offer.affiliateLink,
+    imageUrl: offer.imageUrl,
+    salePrice,
+    originalPrice,
+    discount: toFiniteNumber(source.discount ?? source.priceDiscountRate),
+    sales: toFiniteNumber(source.sales),
+    commission: toFiniteNumber(source.commission ?? source.commissionRate),
+    shopName: firstNonEmptyString(source.shopName),
+  };
+}
+
 export default function Templates() {
   const {
     templates,
@@ -106,9 +187,11 @@ export default function Templates() {
   // ── converter tool ───────────────────────────────────────────────────
   const [converterLink, setConverterLink] = useState("");
   const [converterTemplateId, setConverterTemplateId] = useState("");
-  const [converterResult, setConverterResult] = useState<string | null>(null);
+  const [generatedOffer, setGeneratedOffer] = useState<GeneratedOffer | null>(null);
   const [converting, setConverting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [scheduleProduct, setScheduleProduct] = useState<SchedulableProductInput | null>(null);
+  const [scheduleTemplateId, setScheduleTemplateId] = useState("");
 
   // ── helpers ──────────────────────────────────────────────────────────
   const openNew = () => {
@@ -197,12 +280,25 @@ export default function Templates() {
     }
 
     setConverting(true);
-    setConverterResult(null);
+    setGeneratedOffer(null);
+    setCopied(false);
     try {
       const conversion = await convertLink(link, { source: "templates-converter" });
       const affiliateLink = conversion.affiliateLink || link;
       const data = buildTemplatePlaceholderData(conversion.product, affiliateLink);
-      setConverterResult(applyPlaceholders(template.content, data));
+      const message = applyTemplatePlaceholders(template.content, data);
+      const imageUrl = resolveProductImageUrl(conversion.product);
+
+      setConverterTemplateId(template.id);
+      setGeneratedOffer({
+        templateId: template.id,
+        templateName: template.name,
+        message,
+        affiliateLink,
+        product: conversion.product || null,
+        imageUrl,
+        requestsImageAttachment: templateRequestsImageAttachment(template.content),
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Não deu pra converter o link");
     } finally {
@@ -211,22 +307,34 @@ export default function Templates() {
   };
 
   const handleCopy = () => {
-    if (!converterResult) return;
+    if (!generatedOffer?.message) return;
     // Convert to WhatsApp native format (*bold*, _italic_, ~strike~) so the
     // copied text renders correctly when pasted manually into WhatsApp or
     // Telegram (both accept the single-marker syntax in their chat input).
-    navigator.clipboard.writeText(formatMessageForPlatform(converterResult, "whatsapp"));
+    navigator.clipboard.writeText(formatMessageForPlatform(generatedOffer.message, "whatsapp"));
     setCopied(true);
     toast.success("Copiado!");
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleScheduleGeneratedOffer = () => {
+    if (!generatedOffer) return;
+
+    setScheduleTemplateId(generatedOffer.templateId);
+    setScheduleProduct(toSchedulableProduct(generatedOffer));
+  };
+
+  const generatedOfferPreviewHtml = useMemo(
+    () => (generatedOffer ? renderRichTextPreviewHtml(generatedOffer.message) : ""),
+    [generatedOffer],
+  );
 
   if (shopeeLoading) return null;
 
   return (
     <div className="ds-page">
       <PageHeader
-        title="Templates"
+        title="Templates Shopee"
         description="Monte modelos de mensagem e gere ofertas com dados reais da Shopee"
       >
         <Button size="sm" onClick={openNew}>
@@ -237,18 +345,20 @@ export default function Templates() {
 
       {!isConfigured && <ShopeeCredentialsBanner />}
 
-      <div className="grid items-start gap-4 2xl:grid-cols-[360px_minmax(0,1fr)]">
-        {/* ── Ferramenta: Gerar oferta a partir de link ── */}
-        <Card className="glass 2xl:sticky 2xl:top-20">
-          <CardHeader className="pb-3">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(360px,420px)_minmax(0,1fr)]">
+        <Card className="glass xl:sticky xl:top-20">
+          <CardHeader className="border-b pb-4">
             <CardTitle className="text-sm flex items-center gap-2">
               <Link2 className="h-4 w-4 text-primary" />
-              Gerar oferta a partir de um link
+              Gerador de oferta com template
             </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Cole um link da Shopee, escolha o template e gere a mensagem pronta com preview.
+            </p>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-12 lg:items-end 2xl:grid-cols-1">
-              <div className="space-y-1.5 lg:col-span-7 2xl:col-span-1">
+          <CardContent className="space-y-4 pt-4">
+            <div className="space-y-3">
+              <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">Link do produto</Label>
                 <Input
                   placeholder="Cole o link do produto Shopee aqui"
@@ -257,59 +367,96 @@ export default function Templates() {
                   onKeyDown={(e) => e.key === "Enter" && handleConvert()}
                 />
               </div>
-              <div className="space-y-1.5 lg:col-span-3 2xl:col-span-1">
-                <Label className="text-xs text-muted-foreground">Template</Label>
-                <Select value={converterTemplateId} onValueChange={setConverterTemplateId}>
-                  <SelectTrigger>
-                    <SelectValue
-                      placeholder={
-                        templates.find((t) => t.isDefault)?.name || "Selecionar template"
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {templates.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>
-                        {t.name}
-                        {t.isDefault ? " ★" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Template</Label>
+                  <Select value={converterTemplateId} onValueChange={setConverterTemplateId}>
+                    <SelectTrigger>
+                      <SelectValue
+                        placeholder={
+                          templates.find((t) => t.isDefault)?.name || "Selecionar template"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.name}
+                          {t.isDefault ? " ★" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  onClick={handleConvert}
+                  disabled={converting || !converterLink.trim()}
+                  className="h-10 sm:min-w-28"
+                >
+                  {converting ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+                  ) : (
+                    <Link2 className="h-4 w-4 mr-1.5" />
+                  )}
+                  Converter
+                </Button>
               </div>
-              <Button
-                onClick={handleConvert}
-                disabled={converting || !converterLink.trim()}
-                className="lg:col-span-2 2xl:col-span-1"
-              >
-                {converting ? (
-                  <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-                ) : (
-                  <Link2 className="h-4 w-4 mr-1.5" />
-                )}
-                Converter
-              </Button>
             </div>
 
-            {converterResult !== null && (
-              <div className="space-y-2">
+            {generatedOffer && (
+              <div className="space-y-3">
                 <Separator />
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs text-muted-foreground">Oferta gerada</Label>
-                  <Button size="sm" variant="outline" onClick={handleCopy} className="h-8 text-xs">
-                    {copied ? (
-                      <CheckCheck className="h-3.5 w-3.5 mr-1 text-success" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5 mr-1" />
-                    )}
-                    {copied ? "Copiado!" : "Copiar"}
-                  </Button>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <Label className="text-xs text-muted-foreground">Oferta gerada</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Template: <span className="font-medium text-foreground">{generatedOffer.templateName}</span>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={handleCopy} className="h-8 text-xs">
+                      {copied ? (
+                        <CheckCheck className="h-3.5 w-3.5 mr-1 text-success" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5 mr-1" />
+                      )}
+                      {copied ? "Copiado!" : "Copiar"}
+                    </Button>
+                    <Button size="sm" onClick={handleScheduleGeneratedOffer} className="h-8 text-xs">
+                      <CalendarDays className="h-3.5 w-3.5 mr-1" />
+                      Agendar
+                    </Button>
+                  </div>
                 </div>
+
+                {generatedOffer.requestsImageAttachment && (
+                  <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      Prévia de mídia do placeholder {"{imagem}"}
+                    </div>
+                    {generatedOffer.imageUrl ? (
+                      <img
+                        src={generatedOffer.imageUrl}
+                        alt="Prévia da imagem da oferta"
+                        className="h-40 w-full rounded-md border bg-muted object-cover"
+                        loading="lazy"
+                        onError={(e) => { e.currentTarget.src = "/placeholder.svg"; }}
+                      />
+                    ) : (
+                      <div className="flex h-20 items-center justify-center rounded-md border border-dashed px-3 text-center text-xs text-muted-foreground">
+                        Este template usa {"{imagem}"}, mas esse produto não retornou uma imagem válida.
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* safe: renderRichTextPreviewHtml escapes all HTML via escapeHtml() before applying markup tags */}
                 <pre
-                  className="text-sm whitespace-pre-wrap rounded-lg border bg-muted/30 p-4 leading-relaxed max-h-64 overflow-y-auto"
+                  className="text-sm whitespace-pre-wrap rounded-lg border bg-muted/30 p-4 leading-relaxed max-h-72 overflow-y-auto"
                   dangerouslySetInnerHTML={{
-                    __html: renderRichTextPreviewHtml(converterResult),
+                    __html: generatedOfferPreviewHtml,
                   }}
                 />
               </div>
@@ -317,99 +464,101 @@ export default function Templates() {
           </CardContent>
         </Card>
 
-        {/* ── Lista de templates ── */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3 px-1">
-            <h2 className="text-sm font-semibold tracking-wide text-foreground/90">Templates salvos</h2>
-            <Badge variant="secondary" className="text-xs">
-              {templates.length} {templates.length === 1 ? "template" : "templates"}
-            </Badge>
-          </div>
-
-          {templates.length > 0 ? (
-            <div className="space-y-3">
-              {templates.map((template) => (
-                <Card
-                  key={template.id}
-                  className={`glass relative overflow-hidden rounded-2xl ${
-                    template.isDefault ? "ring-1 ring-primary/30" : ""
-                  }`}
-                >
-                  <span
-                    aria-hidden
-                    className={`absolute inset-y-0 left-0 w-1.5 ${template.isDefault ? "bg-primary/70" : "bg-border"}`}
-                  />
-
-                  <CardContent className="relative px-4 py-4 sm:px-5 sm:py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="min-w-0 flex-1 pl-1">
-                        <p className="text-base font-semibold leading-tight tracking-tight truncate sm:text-lg">
-                          {template.name}
-                        </p>
-                      </div>
-
-                      {template.isDefault && (
-                        <Badge
-                          variant="secondary"
-                          className="text-[11px] bg-primary/12 text-primary shrink-0"
-                        >
-                          Padrão
-                        </Badge>
-                      )}
-
-                      <div className="shrink-0 flex items-center gap-1 rounded-full border border-border/60 bg-background/80 px-1 py-1">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className={`h-8 w-8 ${template.isDefault ? "text-primary" : "text-muted-foreground"}`}
-                          onClick={() => setDefaultTemplate(template.id)}
-                          title={template.isDefault ? "Remover padrão" : "Definir como padrão"}
-                        >
-                          <Star className={`h-3.5 w-3.5 ${template.isDefault ? "fill-primary" : ""}`} />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8"
-                          onClick={() => duplicateTemplate(template.id)}
-                          title="Duplicar"
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8"
-                          onClick={() => openEdit(template)}
-                          title="Editar"
-                        >
-                          <Edit className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 text-destructive"
-                          onClick={() => setDeleteId(template.id)}
-                          title="Excluir"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+        <Card className="glass">
+          <CardHeader className="border-b pb-4">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-sm">Templates salvos</CardTitle>
+              <Badge variant="secondary" className="text-xs">
+                {templates.length} {templates.length === 1 ? "template" : "templates"}
+              </Badge>
             </div>
-          ) : (
-            <EmptyState
-              icon={FileText}
-              title="Nenhum template ainda"
-              description='Crie templates com campos como {titulo}, {preco} e {link} pra gerar ofertas automáticas.'
-              actionLabel="Criar template"
-              onAction={openNew}
-            />
-          )}
-        </section>
+          </CardHeader>
+          <CardContent className="pt-4">
+            {templates.length > 0 ? (
+              <div className="space-y-3">
+                {templates.map((template) => (
+                  <Card
+                    key={template.id}
+                    className={`relative overflow-hidden rounded-xl border bg-card/70 shadow-sm ${
+                      template.isDefault ? "ring-1 ring-primary/30" : ""
+                    }`}
+                  >
+                    <span
+                      aria-hidden
+                      className={`absolute inset-y-0 left-0 w-1.5 ${template.isDefault ? "bg-primary/70" : "bg-border"}`}
+                    />
+
+                    <CardContent className="relative px-4 py-3.5 sm:px-5 sm:py-4">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <div className="min-w-0 flex-1 pl-1">
+                          <p className="truncate text-base font-semibold leading-tight tracking-tight">
+                            {template.name}
+                          </p>
+                        </div>
+
+                        {template.isDefault && (
+                          <Badge
+                            variant="secondary"
+                            className="text-[11px] bg-primary/12 text-primary shrink-0"
+                          >
+                            Padrão
+                          </Badge>
+                        )}
+
+                        <div className="shrink-0 flex items-center gap-1 rounded-full border border-border/60 bg-background/80 px-1 py-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className={`h-8 w-8 ${template.isDefault ? "text-primary" : "text-muted-foreground"}`}
+                            onClick={() => setDefaultTemplate(template.id)}
+                            title={template.isDefault ? "Remover padrão" : "Definir como padrão"}
+                          >
+                            <Star className={`h-3.5 w-3.5 ${template.isDefault ? "fill-primary" : ""}`} />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8"
+                            onClick={() => duplicateTemplate(template.id)}
+                            title="Duplicar"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8"
+                            onClick={() => openEdit(template)}
+                            title="Editar"
+                          >
+                            <Edit className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 text-destructive"
+                            onClick={() => setDeleteId(template.id)}
+                            title="Excluir"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                icon={FileText}
+                title="Nenhum template ainda"
+                description='Crie templates com campos como {titulo}, {preco} e {link} pra gerar ofertas automáticas.'
+                actionLabel="Criar template"
+                onAction={openNew}
+              />
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* ── Modal criar / editar ── */}
@@ -535,6 +684,18 @@ export default function Templates() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ScheduleProductModal
+        open={!!scheduleProduct}
+        onOpenChange={(open) => {
+          if (!open) {
+            setScheduleProduct(null);
+            setScheduleTemplateId("");
+          }
+        }}
+        initialTemplateId={scheduleTemplateId}
+        product={scheduleProduct || undefined}
+      />
 
       {/* ── Confirmação de exclusão ── */}
       <AlertDialog
