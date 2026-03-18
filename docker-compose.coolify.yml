@@ -242,6 +242,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-autolinks}
       POSTGRES_USER: ${POSTGRES_USER:-autolinks}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      APPLY_SEED_MIGRATIONS: ${APPLY_SEED_MIGRATIONS:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -345,8 +346,8 @@ services:
           memory: 256M
     environment:
       NODE_ENV: production
-      SCHEDULER_MODE: ${SCHEDULER_MODE}
-      SCHEDULER_RPC_BASE_URL: ${SCHEDULER_RPC_BASE_URL}
+      SCHEDULER_MODE: ${SCHEDULER_MODE:-remote}
+      SCHEDULER_RPC_BASE_URL: ${SCHEDULER_RPC_BASE_URL:-http://api:3116}
       SCHEDULER_RPC_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
       DISPATCH_INTERVAL_SECONDS: ${DISPATCH_INTERVAL_SECONDS}
       SHOPEE_INTERVAL_SECONDS: ${SHOPEE_INTERVAL_SECONDS}

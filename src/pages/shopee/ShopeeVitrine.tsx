@@ -145,7 +145,7 @@ export default function ShopeeVitrine() {
         };
       });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao carregar vitrine");
+      toast.error(error instanceof Error ? error.message : "Não deu pra carregar a vitrine");
       setTabs((prev) => ({
         ...prev,
         [tabKey]: { ...prev[tabKey], loading: false, loadingMore: false, fetched: true },
@@ -177,7 +177,7 @@ export default function ShopeeVitrine() {
   };
 
   if (isLoading) {
-    return <RoutePendingState label="Carregando vitrine Shopee..." />;
+    return <RoutePendingState label="Carregando vitrine..." />;
   }
 
   const state = tabs[activeTab] || emptyTab;
@@ -185,7 +185,7 @@ export default function ShopeeVitrine() {
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6">
-      <PageHeader title="Vitrine de ofertas" description="Produtos em destaque com links de afiliado">
+      <PageHeader title="Vitrine" description="Produtos em destaque com links de afiliado">
         {isConfigured && (
           <Button size="sm" variant="outline" onClick={refreshCurrent} disabled={anyLoading}>
             <RefreshCw className={`h-4 w-4 mr-1.5 ${anyLoading ? "animate-spin" : ""}`} />
@@ -248,7 +248,7 @@ export default function ShopeeVitrine() {
           )}
 
           {!state.loading && state.fetched && state.products.length === 0 && (
-            <EmptyState icon={ShoppingBag} title="Nenhum produto" description="Nenhum produto encontrado. Tente atualizar." />
+            <EmptyState icon={ShoppingBag} title="Nenhum produto" description="Nenhum produto encontrado. Tenta atualizar." />
           )}
         </>
       )}

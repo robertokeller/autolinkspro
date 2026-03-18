@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Clock3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 interface TimePickerFieldProps {
@@ -12,6 +14,22 @@ interface TimePickerFieldProps {
 
 const QUICK_TIMES = ["08:00", "09:00", "12:00", "15:00", "18:00", "21:00"];
 
+function normalizeTime(value: string): string {
+  const trimmed = value.trim();
+  if (!/^\d{2}:\d{2}$/.test(trimmed)) return "";
+  const [hourRaw, minuteRaw] = trimmed.split(":");
+  const hour = Number(hourRaw);
+  const minute = Number(minuteRaw);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return "";
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return "";
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function currentTimeLabel(): string {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
 export function TimePickerField({
   value,
   onChange,
@@ -19,44 +37,65 @@ export function TimePickerField({
   className,
 }: TimePickerFieldProps) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current) return;
-      if (!rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-    };
-  }, []);
 
   return (
-    <div ref={rootRef} className={cn("relative", className)}>
-      <Button
-        type="button"
-        variant="outline"
-        className="h-11 w-full justify-start bg-background/90 font-medium"
-        onClick={() => setOpen((prev) => !prev)}
-      >
-        <Clock3 className="mr-2 h-4 w-4 text-muted-foreground" />
-        {value || placeholder}
-      </Button>
-
-      {open && (
-        <div className="absolute left-0 top-[calc(100%+0.5rem)] z-50 w-full min-w-[220px] rounded-xl border border-border/70 bg-popover p-3 shadow-xl">
-          <input
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className={cn("h-11 w-full justify-start bg-background/90 font-medium", className)}
+        >
+          <Clock3 className="mr-2 h-4 w-4 text-muted-foreground" />
+          {value || placeholder}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[260px] p-3">
+        <div className="space-y-3">
+          <Input
             type="time"
             value={value}
             step={60}
-            onChange={(event) => onChange(event.target.value.slice(0, 5))}
-            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            onChange={(event) => {
+              const raw = String(event.target.value || "").slice(0, 5);
+              if (!raw) {
+                onChange("");
+                return;
+              }
+              const next = normalizeTime(raw);
+              onChange(next);
+            }}
+            className="h-10"
           />
-          <div className="mt-3 grid grid-cols-3 gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                onChange(currentTimeLabel());
+                setOpen(false);
+              }}
+              className="h-8 text-xs"
+            >
+              Agora
+            </Button>
+            {value && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+                className="h-8 text-xs"
+              >
+                Limpar
+              </Button>
+            )}
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
             {QUICK_TIMES.map((quickTime) => (
               <Button
                 key={quickTime}
@@ -74,7 +113,7 @@ export function TimePickerField({
             ))}
           </div>
         </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

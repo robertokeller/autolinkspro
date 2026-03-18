@@ -167,7 +167,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
       setImageAttachment(media);
     } catch {
       setImageAttachment(null);
-      toast.error("Não foi possível preparar a imagem em anexo para este agendamento");
+      toast.error("Não deu pra preparar a imagem pra esse agendamento");
     } finally {
       setPreparingImageAttachment(false);
     }
@@ -224,7 +224,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
   const addRecurrenceTime = () => {
     const normalized = normalizeScheduleTime(recurrenceTimeInput);
     if (!normalized) {
-      toast.error("Horário inválido. Use HH:mm");
+      toast.error("Horário inválido — use o formato HH:mm");
       return;
     }
     setRecurrenceTimes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized].sort()));
@@ -248,35 +248,35 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
 
   const handleSchedule = async () => {
     if (!scheduleName.trim()) {
-      toast.error("Defina um nome para o agendamento");
+      toast.error("Dê um nome pro agendamento");
       return;
     }
     if (!messageContent.trim()) {
-      toast.error("Preencha o conteúdo da mensagem");
+      toast.error("Escreva o conteúdo da mensagem");
       return;
     }
     if (!isRecurring && !scheduledAt) {
-      toast.error("Selecione a data e hora");
+      toast.error("Escolha a data e o horário");
       return;
     }
     if (isRecurring && weekDays.length === 0) {
-      toast.error("Selecione ao menos um dia da semana");
+      toast.error("Escolha pelo menos um dia da semana");
       return;
     }
     if (isRecurring && recurrenceTimes.length === 0) {
-      toast.error("Defina ao menos um horário para recorrência");
+      toast.error("Adicione pelo menos um horário");
       return;
     }
     if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
-      toast.error("Selecione ao menos um grupo destino");
+      toast.error("Escolha pelo menos um grupo");
       return;
     }
     if (requiresImageAttachment && preparingImageAttachment) {
-      toast.error("Aguarde o processamento da imagem da oferta");
+      toast.error("Espera só um pouco, a imagem ainda tá sendo preparada");
       return;
     }
     if (requiresImageAttachment && !imageAttachment) {
-      toast.error("Template exige imagem em anexo, mas o anexo não está disponível");
+      toast.error("O template precisa de uma imagem, mas ela não tá disponível");
       return;
     }
 
@@ -308,7 +308,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
       onOpenChange(false);
       resetForm();
     } catch {
-      toast.error("Erro ao criar agendamento");
+      toast.error("Não deu pra criar o agendamento");
     } finally {
       setSubmitting(false);
     }
@@ -336,7 +336,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <CalendarDays className="h-5 w-5 text-primary" />
-            Novo Agendamento
+            Agendar envio
           </DialogTitle>
         </DialogHeader>
 
@@ -369,9 +369,9 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
           )}
 
           <div className="space-y-2">
-            <Label>Nome do agendamento *</Label>
+            <Label>Nome *</Label>
             <Input
-              placeholder="Ex: Oferta Shopee para grupos VIP"
+              placeholder="Ex: Oferta pra grupos VIP"
               value={scheduleName}
               onChange={(e) => setScheduleName(e.target.value)}
             />
@@ -379,9 +379,9 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
 
           {/* Template */}
           <div className="space-y-2">
-            <Label>Template da mensagem</Label>
+            <Label>Template</Label>
             <Select value={effectiveTemplateId} onValueChange={handleTemplateChange}>
-              <SelectTrigger><SelectValue placeholder="Selecione um template..." /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
               <SelectContent>
                 {templates.map((t) => (
                   <SelectItem key={t.id} value={t.id}>{t.name}{t.isDefault ? " *" : ""}</SelectItem>
@@ -391,24 +391,24 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
           </div>
 
           <div className="space-y-2">
-            <Label>Conteúdo da mensagem *</Label>
+            <Label>Mensagem *</Label>
             <Textarea
-              placeholder="Mensagem da oferta..."
+              placeholder="Escreva a mensagem aqui..."
               value={messageContent}
               onChange={(e) => setMessageContent(e.target.value)}
               className="min-h-[100px]"
             />
             <p className="text-xs text-muted-foreground">
-              Ao selecionar um template, o conteúdo é preenchido automaticamente. Você pode editar livremente.
+              Quando você escolhe um template, o texto já vem pronto. Pode editar à vontade.
             </p>
           </div>
 
           {/* Date/time + recurrence */}
           <div className="space-y-2">
-            <Label>Recorrência</Label>
+            <Label>Repetir envio</Label>
             <div className="flex items-center gap-2">
               <Switch id="is-recurring-offer" checked={isRecurring} onCheckedChange={toggleRecurrence} />
-              <Label htmlFor="is-recurring-offer">Ativar recorrência</Label>
+              <Label htmlFor="is-recurring-offer">Repetir nos dias escolhidos</Label>
             </div>
           </div>
 
@@ -438,7 +438,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
           {isRecurring && (
             <Card>
               <CardContent className="space-y-2 p-4">
-                <Label>Horários da recorrência *</Label>
+                <Label>Horários *</Label>
                 <div className="flex items-center gap-2">
                   <Input type="time" value={recurrenceTimeInput} onChange={(e) => setRecurrenceTimeInput(e.target.value)} />
                   <Button type="button" variant="outline" onClick={addRecurrenceTime}>Adicionar</Button>
@@ -459,28 +459,28 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
 
           {isRecurring && (
             <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Quando ativada, a data/hora fixa deixa de ser usada e o envio segue os dias e horários selecionados.</Label>
+              <Label className="text-xs text-muted-foreground">Se ligar a repetição, o envio segue os dias e horários que você escolher (ignora a data fixa).</Label>
             </div>
           )}
 
           {/* Session */}
           <div className="space-y-2">
-            <Label>Sessão de envio *</Label>
+            <Label>Sessão *</Label>
             <SessionSelect
               value={selectedSessionId}
               onValueChange={handleSessionChange}
               sessions={allSessions}
-              placeholder="Selecione uma sessão..."
-              emptyLabel="Nenhuma sessão disponível"
+              placeholder="Escolha uma sessão..."
+              emptyLabel="Nenhuma sessão conectada"
             />
           </div>
 
           {/* Groups */}
           <div className="space-y-2">
-            <Label className="text-xs">Grupos destino</Label>
+            <Label className="text-xs">Grupos</Label>
             {!selectedSessionId ? (
               <p className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
-                Selecione a sessão de envio para carregar os grupos disponíveis.
+                Escolha a sessão primeiro pra ver os grupos.
               </p>
             ) : (
               <MultiOptionDropdown
@@ -491,10 +491,10 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
                   label: group.name,
                   meta: `${group.memberCount}`,
                 }))}
-                placeholder="Selecionar grupos de destino"
-                selectedLabel={(count) => `${count} grupo(s) selecionado(s)`}
-                emptyMessage="Nenhum grupo associado a esta sessão"
-                title="Grupos de destino"
+                placeholder="Escolher grupos"
+                selectedLabel={(count) => `${count} grupo(s)`}
+                emptyMessage="Nenhum grupo nessa sessão"
+                title="Grupos"
               />
             )}
           </div>
@@ -502,7 +502,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
           {/* Master groups */}
           {selectedSessionId && filteredMasterGroups.length > 0 && (
             <div className="space-y-2">
-              <Label className="text-xs">Grupos mestre</Label>
+              <Label className="text-xs">Grupos mestres</Label>
               <MultiOptionDropdown
                 value={selectedMasterGroups}
                 onChange={setSelectedMasterGroups}
@@ -511,10 +511,10 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
                   label: masterGroup.name,
                   meta: `${masterGroup.groupIds.length} grupos`,
                 }))}
-                placeholder="Selecionar grupos mestre"
-                selectedLabel={(count) => `${count} grupo(s) mestre selecionado(s)`}
-                emptyMessage="Nenhum grupo mestre associado a esta sessão"
-                title="Grupos mestre"
+                placeholder="Escolher grupos mestres"
+                selectedLabel={(count) => `${count} grupo(s) mestre`}
+                emptyMessage="Nenhum grupo mestre nessa sessão"
+                title="Grupos mestres"
               />
             </div>
           )}
@@ -522,7 +522,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
           {totalDestinations > 0 && (
             <div className="text-xs text-muted-foreground flex items-center gap-1 p-2 rounded-lg bg-muted/30">
               <Send className="h-3 w-3" />
-              {totalDestinations} destino(s) receberão a mensagem
+              {totalDestinations} grupo(s) vão receber
             </div>
           )}
         </div>
@@ -531,7 +531,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
           <Button variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancelar</Button>
           <Button onClick={handleSchedule} disabled={submitting}>
             <Clock className="h-4 w-4 mr-1.5" />
-            {submitting ? "Agendando..." : "Criar Agendamento"}
+            {submitting ? "Agendando..." : "Agendar"}
           </Button>
         </DialogFooter>
       </DialogContent>

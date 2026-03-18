@@ -23,8 +23,8 @@ export function SessionSelect({
   value,
   onValueChange,
   sessions,
-  placeholder = "Selecione uma sessão...",
-  emptyLabel = "Nenhuma sessão disponível",
+  placeholder = "Escolha uma sessão...",
+  emptyLabel = "Nenhuma sessão conectada",
   showStatusIcon = true,
   showPlatformIcon = true,
 }: SessionSelectProps) {

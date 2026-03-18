@@ -36,12 +36,12 @@ export default function Maintenance() {
           <p className="text-sm text-muted-foreground">{state.maintenance_message}</p>
           {state.maintenance_eta && (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
-              Previsao de retorno: {state.maintenance_eta}
+              Previsao de volta: {state.maintenance_eta}
             </div>
           )}
           {!canBypass && (
             <p className="text-xs text-muted-foreground">
-              O acesso ao painel foi temporariamente suspenso para manutencao planejada.
+              O painel está em manutenção agora. Voltamos logo!
             </p>
           )}
           {canBypass && (

@@ -141,7 +141,7 @@ export function NotificationBell() {
       await invokeBackendRpc("user-notifications", { body: { action: "mark_read", id } });
       await refetch();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao marcar notificação");
+      toast.error(error instanceof Error ? error.message : "Não deu pra marcar a notificação");
     } finally {
       setIsBusy(false);
     }
@@ -152,9 +152,9 @@ export function NotificationBell() {
     try {
       await invokeBackendRpc("user-notifications", { body: { action: "mark_all_read" } });
       await refetch();
-      toast.success("Todas as notificações foram marcadas como lidas");
+      toast.success("Todas as notificações marcadas como lidas");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao atualizar notificações");
+      toast.error(error instanceof Error ? error.message : "Não deu pra atualizar as notificações");
     } finally {
       setIsBusy(false);
     }
@@ -166,7 +166,7 @@ export function NotificationBell() {
       await invokeBackendRpc("user-notifications", { body: { action: "dismiss", id } });
       await refetch();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao descartar notificação");
+      toast.error(error instanceof Error ? error.message : "Não deu pra descartar a notificação");
     } finally {
       setIsBusy(false);
     }

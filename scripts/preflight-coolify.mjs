@@ -43,6 +43,7 @@ const requiredComposeServices = [
 
 const requiredEnvVars = [
   "POSTGRES_PASSWORD",
+  "APPLY_SEED_MIGRATIONS",
   "JWT_SECRET",
   "SERVICE_TOKEN",
   "CORS_ORIGIN",
@@ -63,7 +64,6 @@ const requiredEnvVars = [
   "MELI_CORS_ORIGIN",
   "SCHEDULER_MODE",
   "SCHEDULER_RPC_BASE_URL",
-  "SCHEDULER_RPC_TOKEN",
 ];
 
 const errors = [];
@@ -126,6 +126,13 @@ if (exists(".env.coolify.example")) {
     if (!envPattern.test(envExample)) {
       errors.push(`.env.coolify.example missing variable: ${key}`);
     }
+  }
+
+  const seedEnabled = /^APPLY_SEED_MIGRATIONS\s*=\s*true\s*$/mi.test(envExample);
+  if (seedEnabled) {
+    warnings.push(
+      "APPLY_SEED_MIGRATIONS=true found in .env.coolify.example. In production, keep it as false to avoid seeding demo users.",
+    );
   }
 }
 

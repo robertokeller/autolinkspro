@@ -121,7 +121,7 @@ export default function ShopeePesquisa() {
 
     try {
       const { data: { session } } = await backend.auth.getSession();
-      if (!session) { toast.error("Sessão expirada"); return; }
+      if (!session) { toast.error("Sessão expirada. Faça login de novo."); return; }
 
       const runCategoryQuery = (params: Record<string, unknown>) => invokeBackendRpc<{ results?: Record<string, { products?: ShopeeProduct[]; hasMore?: boolean; error?: string }> }>("shopee-batch", {
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -183,7 +183,7 @@ export default function ShopeePesquisa() {
       setPage(pageNum);
     } catch (error) {
       if (!controller.signal.aborted) {
-        toast.error(error instanceof Error ? error.message : "Erro ao carregar categoria");
+        toast.error(error instanceof Error ? error.message : "Não deu pra carregar essa categoria");
         if (!append) setProducts([]);
       }
     } finally {
@@ -207,7 +207,7 @@ export default function ShopeePesquisa() {
 
     try {
       const { data: { session } } = await backend.auth.getSession();
-      if (!session) { toast.error("Sessão expirada"); return; }
+      if (!session) { toast.error("Sessão expirada. Faça login de novo."); return; }
 
       const res = await invokeBackendRpc<{ results?: Record<string, { products?: ShopeeProduct[]; hasMore?: boolean; error?: string }> }>("shopee-batch", {
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -298,12 +298,12 @@ export default function ShopeePesquisa() {
   });
 
   if (isLoading) {
-    return <RoutePendingState label="Carregando pesquisa Shopee..." />;
+    return <RoutePendingState label="Carregando pesquisa..." />;
   }
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6">
-      <PageHeader title="Pesquisa de ofertas" description="Navegue por categorias ou busque por palavra-chave" />
+      <PageHeader title="Pesquisa" description="Navegue por categorias ou busque pelo nome" />
       {!isConfigured && <ShopeeCredentialsBanner />}
 
       {isConfigured && (
@@ -311,7 +311,7 @@ export default function ShopeePesquisa() {
           {/* Search + Sort bar */}
           <div className="flex flex-col gap-2.5 sm:flex-row">
             <Input
-              placeholder="Buscar produtos na Shopee..."
+              placeholder="Buscar produtos..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -479,7 +479,7 @@ export default function ShopeePesquisa() {
                     <div className="flex justify-center pt-4">
                       <Button variant="outline" onClick={loadMore} disabled={loadingMore}>
                         {loadingMore ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <ShoppingBag className="h-4 w-4 mr-1.5" />}
-                        Carregar mais resultados
+                        Carregar mais
                       </Button>
                     </div>
                   )}
@@ -488,11 +488,11 @@ export default function ShopeePesquisa() {
 
               {/* Empty states */}
               {!searching && searched && filtered.length === 0 && (
-                <EmptyState icon={Search} title="Nenhum resultado" description="Tente outra palavra-chave, categoria ou ajuste os filtros." />
+                <EmptyState icon={Search} title="Nada encontrado" description="Tente outra palavra-chave, categoria, ou mude os filtros." />
               )}
 
               {!searched && !searching && isConfigured && (
-                <EmptyState icon={Search} title="Explore ofertas" description="Selecione uma categoria no painel ao lado ou busque por palavra-chave." />
+                <EmptyState icon={Search} title="Explore ofertas" description="Escolha uma categoria ao lado ou busque pelo nome do produto." />
               )}
             </div>
           </div>

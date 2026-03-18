@@ -138,23 +138,23 @@ function formatUptime(uptimeSec: number | null) {
 
 function formatProcessStatusLabel(processStatus: string) {
   const normalized = String(processStatus || "").trim().toLowerCase();
-  if (!normalized) return "Sem Telemetria";
-  if (normalized === "online-local") return "Processo Ativo (Local)";
-  if (normalized === "starting-local") return "Inicializando (Local)";
-  if (normalized === "offline-local") return "Processo Parado (Local)";
-  if (normalized === "online") return "Processo Ativo (PM2)";
-  if (normalized === "stopped" || normalized === "stop") return "Processo Parado (PM2)";
-  if (normalized === "degraded") return "Processo Ativo, Componente Sem Resposta";
-  if (normalized === "port-conflict") return "Porta Ativa Sem Processo PM2";
-  if (normalized === "ops-indisponivel") return "Ops Indisponível";
-  if (normalized === "unknown" || normalized === "desconhecido") return "Sem Telemetria";
+  if (!normalized) return "Sem info";
+  if (normalized === "online-local") return "Ativo (Local)";
+  if (normalized === "starting-local") return "Iniciando (Local)";
+  if (normalized === "offline-local") return "Parado (Local)";
+  if (normalized === "online") return "Ativo (PM2)";
+  if (normalized === "stopped" || normalized === "stop") return "Parado (PM2)";
+  if (normalized === "degraded") return "Ativo, app sem resposta";
+  if (normalized === "port-conflict") return "Porta ocupada sem processo PM2";
+  if (normalized === "ops-indisponivel") return "Ops fora do ar";
+  if (normalized === "unknown" || normalized === "desconhecido") return "Sem info";
   return normalized.replace(/[-_]/g, " ");
 }
 
 function formatComponentStatusLabel(componentOnline: boolean, componentError: string | null) {
-  if (componentOnline) return "Componente Respondendo";
-  if (componentError) return "Componente Sem Resposta";
-  return "Componente Indisponível";
+  if (componentOnline) return "App respondendo";
+  if (componentError) return "App sem resposta";
+  return "App fora do ar";
 }
 
 export default function AdminDashboard() {
@@ -191,7 +191,7 @@ export default function AdminDashboard() {
   const [commandStatus, setCommandStatus] = useState<CommandStatus>({
     phase: "idle",
     title: "Monitor de Operações",
-    detail: "Aqui aparecem os status das operações do sistema e serviços",
+    detail: "Aqui vai aparecer o que tá rolando com o sistema",
   });
   const [processQueues, setProcessQueues] = useState<ProcessQueueSnapshot | null>(null);
   const [topUserUsage, setTopUserUsage] = useState<UserObservabilityRow[]>([]);
@@ -344,7 +344,7 @@ export default function AdminDashboard() {
       lastRefreshTsRef.current = Date.now();
       setNextRefreshIn(AUTO_HEALTH_INTERVAL_MS / 1000);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao consultar saúde dos serviços");
+      toast.error(error instanceof Error ? error.message : "Não deu pra checar os serviços");
     } finally {
       setIsRefreshingHealth(false);
     }
@@ -369,7 +369,7 @@ export default function AdminDashboard() {
       });
 
       if (res?.ok === false) {
-        throw new Error(String(res.error || `Falha ao ${SERVICE_OPERATION_LABEL[operation]} ${serviceName}`));
+        throw new Error(String(res.error || `Não deu pra ${SERVICE_OPERATION_LABEL[operation]} ${serviceName}`));
       }
 
       if (options?.refreshAfter !== false) {
@@ -379,15 +379,15 @@ export default function AdminDashboard() {
       setCommandStatus({
         phase: "success",
         title: `${serviceName} pronto`,
-        detail: `${SERVICE_OPERATION_LABEL[operation]} completado com sucesso.`,
+        detail: `${SERVICE_OPERATION_LABEL[operation]} feito!`,
       });
 
       if (!options?.silent) {
-        toast.success(`${serviceName} ${SERVICE_OPERATION_LABEL[operation]} com sucesso`);
+        toast.success(`${serviceName} — ${SERVICE_OPERATION_LABEL[operation]} feito!`);
       }
     } catch (error) {
       const serviceName = SERVICE_META[service]?.label || service;
-      const errorMsg = error instanceof Error ? error.message : `Falha ao ${SERVICE_OPERATION_LABEL[operation]}`;
+      const errorMsg = error instanceof Error ? error.message : `Não deu pra ${SERVICE_OPERATION_LABEL[operation]}`;
       setCommandStatus({
         phase: "error",
         title: `${serviceName} — erro`,
@@ -404,7 +404,7 @@ export default function AdminDashboard() {
 
   const controlAllServices = async (operation: BulkOperation, options?: { silent?: boolean; throwOnFailure?: boolean }) => {
     const operationLabel = SERVICE_OPERATION_LABEL[operation];
-    const allSuccessMessage = `Todos os serviços ${operationLabel} com sucesso`;
+    const allSuccessMessage = `Todos os serviços — ${operationLabel} feito!`;
     const reportBulkFailure = (detail: string) => {
       setCommandStatus({
         phase: "error",
@@ -420,7 +420,7 @@ export default function AdminDashboard() {
       setCommandStatus({
         phase: "running",
         title: `Aplicando ${operationLabel} em todos`,
-        detail: `Iniciando operação em 4 serviços...`,
+        detail: `Iniciando operação nos 4 serviços...`,
       });
 
       const response = await invokeBackendRpc<OpsControlResponse>("ops-service-control", {
@@ -433,7 +433,7 @@ export default function AdminDashboard() {
 
       if (response?.ok === false || initialFailures.length > 0) {
         if (response?.ok === false && initialFailures.length === 0) {
-          reportBulkFailure(String(response?.error || `Falha ao ${operationLabel} todos os serviços`));
+          reportBulkFailure(String(response?.error || `Não deu pra ${operationLabel} todos os serviços`));
           return;
         }
 
@@ -446,7 +446,7 @@ export default function AdminDashboard() {
           setCommandStatus({
             phase: "running",
             title: `Repetindo ${retryTargets.length} operação(ões)`,
-            detail: `Tentando ${operationLabel} serviços com falha...`,
+            detail: `Tentando ${operationLabel} nos serviços com falha...`,
           });
           
           await Promise.all(
@@ -471,8 +471,8 @@ export default function AdminDashboard() {
       await refreshAllHealth();
       setCommandStatus({
         phase: "success",
-        title: `Todos os serviços ${operationLabel}`,
-        detail: `A operação foi concluída com sucesso em 4/4 serviços.`,
+        title: `Todos os serviços — ${operationLabel} feito`,
+        detail: `Operação completada em 4/4 serviços.`,
       });
       if (!options?.silent) toast.success(allSuccessMessage);
     } catch (error) {
@@ -480,7 +480,7 @@ export default function AdminDashboard() {
       setCommandStatus({
         phase: "running",
         title: "Tentando recuperação",
-        detail: `Realizando fallback individual em cada serviço...`,
+        detail: `Tentando um por um...`,
       });
       
       await Promise.all(
@@ -497,14 +497,14 @@ export default function AdminDashboard() {
       
       if (failedServices.length > 0) {
         const detail = failedServices.length === SERVICE_KEYS.length && !opsHealth.online
-          ? `Ops Control indisponível em ${opsHealth.url || "URL desconhecida"}. Inicie o serviço e tente novamente.`
+          ? `Ops fora do ar em ${opsHealth.url || "URL desconhecida"}. Inicie o serviço e tente de novo.`
           : `${failedServices.length}/4 serviços falharam: ${failedServices.join(", ")}`;
         reportBulkFailure(detail);
       } else {
         setCommandStatus({
           phase: "success",
           title: `Todos os serviços ${operationLabel}`,
-          detail: `Recuperação automática completada em 4/4 serviços.`,
+          detail: `Recuperação automática feita em 4/4 serviços.`,
         });
         if (!options?.silent) toast.success(allSuccessMessage);
       }
@@ -527,8 +527,8 @@ export default function AdminDashboard() {
         maintenance_enabled: enabled,
         maintenance_title: enabled ? "Sistema Pausado" : "Sistema Operacional",
         maintenance_message: enabled
-          ? "Operação pausada temporariamente pelo painel admin."
-          : "Sistema operando normalmente.",
+          ? "Sistema pausado pelo admin."
+          : "Sistema rodando normal.",
         allow_admin_bypass: true,
       },
     });
@@ -611,7 +611,7 @@ export default function AdminDashboard() {
       toast.success(`${operationLabel} realizado com sucesso`);
     } catch (error) {
       const operationLabel = SYSTEM_OPERATION_LABEL[operation];
-      const errorMsg = error instanceof Error ? error.message : `Falha ao ${operationLabel}`;
+      const errorMsg = error instanceof Error ? error.message : `Não deu pra ${operationLabel}`;
       setCommandStatus({
         phase: "error",
         title: `${operationLabel} — falha`,
@@ -629,13 +629,13 @@ export default function AdminDashboard() {
     
     // Validation
     if (isNaN(newPort) || newPort < 1 || newPort > 65535) {
-      toast.error("Porta deve estar entre 1 e 65535");
+      toast.error("Porta tem que ser entre 1 e 65535");
       return;
     }
 
     const currentPort = SERVICE_META[serviceKey]?.port;
     if (newPort === currentPort) {
-      toast.info("Nova porta é igual à atual");
+      toast.info("Essa porta já é a atual");
       setEditPortService(null);
       return;
     }
@@ -655,7 +655,7 @@ export default function AdminDashboard() {
       });
 
       if (!response?.ok) {
-        const errorMsg = String(response?.error || `Falha ao alterar porta de ${serviceName}`);
+        const errorMsg = String(response?.error || `Não deu pra mudar a porta de ${serviceName}`);
         setCommandStatus({
           phase: "error",
           title: `Erro ao alterar porta`,
@@ -679,7 +679,7 @@ export default function AdminDashboard() {
       setEditPortService(null);
       setEditPortValue("");
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : "Falha ao alterar porta";
+      const errorMsg = error instanceof Error ? error.message : "Não deu pra mudar a porta";
       setCommandStatus({
         phase: "error",
         title: "Erro ao alterar porta",
@@ -828,7 +828,7 @@ export default function AdminDashboard() {
   return (
     <TooltipProvider>
     <div className="admin-page max-w-[1320px] px-2 sm:px-4">
-      <PageHeader title="Dashboard Admin" description="Central Operacional do Sistema">
+      <PageHeader title="Dashboard Admin" description="Painel de Controle">
         <div className="flex items-center gap-2">
           <Badge variant={systemStatusLabel.variant} className="gap-1.5">
             <Circle className={`h-2 w-2 fill-current ${onlineCount === totalCount && opsHealth.online ? "text-green-500" : onlineCount > 0 ? "text-yellow-500" : "text-red-500"}`} />
@@ -1041,26 +1041,26 @@ export default function AdminDashboard() {
               </div>
             </div>
           )}
-          <p className="text-2xs text-muted-foreground">Auto-checagem a cada 30s · combina processo + endpoint de saúde</p>
+          <p className="text-2xs text-muted-foreground">Checagem automática a cada 30s</p>
           {opsHealth.error && <p className="text-xs text-destructive">{opsHealth.error}</p>}
           {!opsHealth.online && opsConnecting && (
             <div className="flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 dark:border-blue-800 dark:bg-blue-950">
               <Loader2 className="h-4 w-4 animate-spin text-blue-600 dark:text-blue-400" />
               <p className="text-xs text-blue-700 dark:text-blue-300">
-                Conectando ao Ops Control... aguarde enquanto o serviço inicializa.
+                Conectando ao Ops... aguarda aí que tá iniciando.
               </p>
             </div>
           )}
           {!opsHealth.online && !opsConnecting && (
             <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-950">
               <p className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                Ops Control indisponível — inicie o serviço de orquestração para reativar os comandos.
+                Ops fora do ar — inicie o serviço pra reativar os comandos.
               </p>
               <p className="text-xs text-amber-700 dark:text-amber-300">
-                Em produção (Coolify), reinicie o container <code>ops-control</code> no painel do Coolify.
+                Em produção, reinicie o container <code>ops-control</code> no Coolify.
               </p>
               <p className="text-xs text-amber-700 dark:text-amber-300">
-                Em ambiente local (desenvolvimento), execute no terminal:
+                No ambiente local, rode no terminal:
               </p>
               <div className="flex items-center gap-2">
                 <code className="rounded bg-amber-100 px-2 py-1 text-xs dark:bg-amber-900">npm run svc:ops:dev</code>
@@ -1069,14 +1069,14 @@ export default function AdminDashboard() {
                   size="sm"
                   className="h-6 px-2 text-xs"
                   onClick={() => {
-                    navigator.clipboard.writeText("npm run svc:ops:dev").then(() => toast.success("Comando copiado!"));
+                    navigator.clipboard.writeText("npm run svc:ops:dev").then(() => toast.success("Copiado!"));
                   }}
                 >
                   <Copy className="h-3 w-3" />
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Os estados abaixo refletem checagem direta de saúde de cada serviço.
+                Os estados abaixo mostram a saúde de cada serviço.
               </p>
             </div>
           )}
@@ -1170,7 +1170,7 @@ export default function AdminDashboard() {
                         <span className="hidden sm:inline">Ligar</span>
                       </Button>
                     </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço primeiro</TooltipContent>}
+                    {!opsHealth.online && <TooltipContent>Ops fora do ar: inicie o serviço primeiro</TooltipContent>}
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -1185,7 +1185,7 @@ export default function AdminDashboard() {
                         <span className="hidden sm:inline">Reiniciar</span>
                       </Button>
                     </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço primeiro</TooltipContent>}
+                    {!opsHealth.online && <TooltipContent>Ops fora do ar: inicie o serviço primeiro</TooltipContent>}
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -1200,7 +1200,7 @@ export default function AdminDashboard() {
                         <span className="hidden sm:inline">Desligar</span>
                       </Button>
                     </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível: inicie o serviço primeiro</TooltipContent>}
+                    {!opsHealth.online && <TooltipContent>Ops fora do ar: inicie o serviço primeiro</TooltipContent>}
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -1218,7 +1218,7 @@ export default function AdminDashboard() {
                         <span className="hidden sm:inline">Porta</span>
                       </Button>
                     </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops indisponível para alterações</TooltipContent>}
+                    {!opsHealth.online && <TooltipContent>Ops fora do ar</TooltipContent>}
                   </Tooltip>
                 </div>
                 <p className="text-2xs text-muted-foreground py-1.5 border-t border-border/30">
@@ -1255,7 +1255,7 @@ export default function AdminDashboard() {
         </CardHeader>
         <CardContent className="space-y-2.5">
           {topUserUsage.length === 0 && (
-            <p className="text-xs text-muted-foreground">Sem dados de uso disponíveis.</p>
+            <p className="text-xs text-muted-foreground">Sem dados ainda.</p>
           )}
           {topUserUsage.map((row) => (
             <div key={row.user_id} className="rounded-xl border border-border/70 px-3 py-2.5 text-xs transition-colors hover:bg-muted/30">
@@ -1299,8 +1299,8 @@ export default function AdminDashboard() {
           {anomalies.length === 0 && (
             <div className="flex flex-col items-center gap-2 py-6 text-center">
               <ShieldCheck className="h-8 w-8 text-green-500" />
-              <p className="text-sm font-medium text-green-600 dark:text-green-400">Nenhuma Anomalia Detectada</p>
-              <p className="text-xs text-muted-foreground">O sistema está operando normalmente.</p>
+              <p className="text-sm font-medium text-green-600 dark:text-green-400">Tudo certo, sem alertas</p>
+              <p className="text-xs text-muted-foreground">Sistema rodando normal.</p>
             </div>
           )}
           {anomalies.map((item) => (
@@ -1332,9 +1332,9 @@ export default function AdminDashboard() {
       }}>
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader>
-            <DialogTitle>Alterar Porta de Serviço</DialogTitle>
+            <DialogTitle>Mudar Porta</DialogTitle>
             <DialogDescription>
-              Mude a porta para o serviço {SERVICE_META[editPortService]?.label || editPortService}
+              Mude a porta do serviço {SERVICE_META[editPortService]?.label || editPortService}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">

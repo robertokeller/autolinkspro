@@ -40,11 +40,11 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
 
   const copyLink = () => {
     if (!product.affiliateLink) {
-      toast.error("Link de afiliado não disponível");
+      toast.error("Link não disponível");
       return;
     }
     navigator.clipboard.writeText(product.affiliateLink);
-    toast.success("Link de afiliado copiado!");
+    toast.success("Link copiado!");
   };
 
   // commissionRate comes as decimal from API (0.13 = 13%)
@@ -60,7 +60,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
 
   const openAffiliateLink = () => {
     if (!product.affiliateLink) {
-      toast.error("Link de afiliado não disponível");
+      toast.error("Link não disponível pra esse produto");
       return;
     }
     window.open(product.affiliateLink, "_blank");

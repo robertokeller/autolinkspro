@@ -57,7 +57,7 @@ export default function ResetarSenha() {
       return;
     }
 
-    toast.success("Senha atualizada com sucesso!");
+    toast.success("Senha atualizada!");
     navigate(ROUTES.app.dashboard);
   };
 
@@ -65,7 +65,7 @@ export default function ResetarSenha() {
     return (
       <AuthCard
         title="Redefinir senha"
-        description="Link invalido ou expirado."
+        description="Link inválido ou expirado. Peça um novo."
         showLogo={false}
       >
         <CardFooter className="flex flex-col gap-3">

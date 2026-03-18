@@ -27,25 +27,25 @@ export function OnboardingChecklist({ hasSession, hasGroups, hasShopee, hasAutom
 
   const steps: OnboardingStep[] = [
     {
-      label: "Conecte uma sessão",
+      label: "Conecte uma conta",
       description: "WhatsApp ou Telegram",
       href: ROUTES.app.connectionsWhatsApp,
       done: hasSession,
     },
     {
-      label: "Sincronize grupos",
-      description: "Importe seus grupos",
+      label: "Puxe seus grupos",
+      description: "Importe os grupos que você quer usar",
       href: ROUTES.app.connectionsWhatsApp,
       done: hasGroups,
     },
     {
-      label: "Configure a Shopee",
-      description: "Credenciais de afiliado",
+      label: "Conecte a Shopee",
+      description: "Coloque suas credenciais de afiliado",
       href: ROUTES.app.shopeeConfiguracoes,
       done: hasShopee,
     },
     {
-      label: "Crie uma automação",
+      label: "Crie sua primeira automação",
       description: "Envio automático de ofertas",
       href: ROUTES.app.shopeeAutomacoes,
       done: hasAutomation,
@@ -62,7 +62,7 @@ export function OnboardingChecklist({ hasSession, hasGroups, hasShopee, hasAutom
       <Card className="glass ring-1 ring-primary/20">
         <CardHeader className="pb-2">
           <CardTitle className="flex items-center justify-between text-sm font-semibold">
-            <span>Primeiros Passos</span>
+            <span>Comece por aqui</span>
             <div className="flex items-center gap-1">
               <Badge variant="secondary" className="text-2xs">
                 {completedCount}/{steps.length}

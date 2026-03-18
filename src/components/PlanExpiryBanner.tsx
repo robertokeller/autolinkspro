@@ -31,7 +31,7 @@ export function PlanExpiryBanner() {
           <XCircle className="h-4 w-4 shrink-0" />
           <span className="truncate">
             <strong>Plano expirado{expiryLabel ? ` em ${expiryLabel}` : ""}.</strong>{" "}
-            Renove para recuperar o acesso completo ao sistema.
+            Renove pra voltar a usar tudo.
           </span>
         </div>
         <Button
@@ -58,7 +58,7 @@ export function PlanExpiryBanner() {
               Plano vence {daysLabel}
               {expiryLabel ? ` (${expiryLabel})` : ""}.
             </strong>{" "}
-            Renove agora para não perder o acesso.
+            Renove pra não perder o acesso.
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">

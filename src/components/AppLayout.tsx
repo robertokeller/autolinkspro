@@ -30,7 +30,10 @@ export function AppLayout() {
             <BreadcrumbList>
               <BreadcrumbItem>
                 <BreadcrumbLink asChild>
-                  <Link to={ROUTES.app.dashboard}>Auto Links</Link>
+                  <Link to={ROUTES.app.dashboard} className="inline-flex items-center gap-1.5">
+                    <img src="/brand/logo-chama-64.png" alt="" className="h-3.5 w-3.5 object-contain" loading="lazy" />
+                    <span>Auto Links</span>
+                  </Link>
                 </BreadcrumbLink>
               </BreadcrumbItem>
               <BreadcrumbSeparator />

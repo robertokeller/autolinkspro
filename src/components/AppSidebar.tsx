@@ -4,7 +4,6 @@ import {
   CalendarDays,
   ChevronRight,
   FileText,
-  Flame,
   History,
   LayoutDashboard,
   LayoutGrid,
@@ -41,10 +40,10 @@ import { useAccessControl } from "@/hooks/useAccessControl";
 import { ROUTES } from "@/lib/routes";
 
 const shopeeSubNav = [
-  { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
-  { title: "Pesquisa de ofertas", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
+  { title: "Vitrine", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
+  { title: "Pesquisa", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.shopeeAutomacoes },
-  { title: "Templates Shopee", icon: FileText, href: ROUTES.app.shopeeTemplates },
+  { title: "Templates", icon: FileText, href: ROUTES.app.shopeeTemplates },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.shopeeConfiguracoes },
 ];
 
@@ -84,8 +83,12 @@ export function AppSidebar() {
     <Sidebar collapsible="icon" className="border-r-0">
       <SidebarHeader className="px-3 py-4">
         <Link to={ROUTES.app.dashboard} className="flex items-center gap-2.5 px-1">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Flame className="h-4 w-4" />
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center">
+            <img
+              src="/brand/icon-64.png"
+              alt="Auto Links"
+              className="h-8 w-8 rounded-lg object-contain"
+            />
           </div>
           <span className="truncate text-base font-bold tracking-tight">Auto Links</span>
         </Link>
@@ -95,7 +98,7 @@ export function AppSidebar() {
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Visão geral</SidebarGroupLabel>
+          <SidebarGroupLabel>Início</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -199,20 +202,20 @@ export function AppSidebar() {
               )}
 
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.shopeeConversor)} tooltip="Conversor de links">
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.shopeeConversor)} tooltip="Conversor">
                   <Link to={ROUTES.app.shopeeConversor}>
                     <ArrowLeftRight className="h-4 w-4" />
-                    <span>Conversor de links</span>
+                    <span>Conversor</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
               {featureVisibility.routes && (
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas automáticas">
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas">
                   <Link to={ROUTES.app.routes}>
                     <Route className="h-4 w-4" />
-                    <span>Rotas automáticas</span>
+                    <span>Rotas</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

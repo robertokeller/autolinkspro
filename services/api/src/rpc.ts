@@ -112,6 +112,174 @@ function toInt(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
+function toNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+}
+
+function parseTimeToMinutes(value: unknown, fallbackMinutes: number): number {
+  const raw = String(value || "").trim();
+  const [hRaw, mRaw] = raw.split(":");
+  const hours = Number.parseInt(hRaw || "", 10);
+  const minutes = Number.parseInt(mRaw || "", 10);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return fallbackMinutes;
+  const safeHours = Math.max(0, Math.min(23, hours));
+  const safeMinutes = Math.max(0, Math.min(59, minutes));
+  return safeHours * 60 + safeMinutes;
+}
+
+function nowMinutesInTimeZone(date = new Date()): number {
+  const tz = String(process.env.AUTOMATION_TIMEZONE || process.env.TZ || "America/Sao_Paulo").trim() || "America/Sao_Paulo";
+  try {
+    const parts = new Intl.DateTimeFormat("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: tz,
+    }).formatToParts(date);
+    const hourPart = Number(parts.find((part) => part.type === "hour")?.value || "0");
+    const minutePart = Number(parts.find((part) => part.type === "minute")?.value || "0");
+    if (Number.isFinite(hourPart) && Number.isFinite(minutePart)) {
+      return Math.max(0, Math.min(23, hourPart)) * 60 + Math.max(0, Math.min(59, minutePart));
+    }
+  } catch {
+    // Fallback to host time when timezone parsing is unavailable.
+  }
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function inAutomationTimeWindow(startTime: unknown, endTime: unknown, date = new Date()): boolean {
+  const nowMinutes = nowMinutesInTimeZone(date);
+  const startMinutes = parseTimeToMinutes(startTime, 8 * 60);
+  const endMinutes = parseTimeToMinutes(endTime, 20 * 60);
+  if (startMinutes === endMinutes) return true;
+  if (startMinutes < endMinutes) return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+  return nowMinutes >= startMinutes || nowMinutes <= endMinutes;
+}
+
+function hasLetters(value: string): boolean {
+  return /[a-zA-Z\u00C0-\u024F]/.test(value);
+}
+
+function extractAutomationSearchKeywords(input: {
+  categories: unknown;
+  automationName: string;
+}): string[] {
+  const out: string[] = [];
+  const categories = toStringArray(input.categories);
+  for (const raw of categories) {
+    if (raw.toLowerCase() === "todos") continue;
+    if (hasLetters(raw)) out.push(raw);
+  }
+
+  const name = String(input.automationName || "").trim();
+  if (name && hasLetters(name)) out.push(name);
+
+  out.push("oferta");
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of out) {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(value.trim());
+    if (unique.length >= 5) break;
+  }
+  return unique.length > 0 ? unique : ["oferta"];
+}
+
+function buildShopeeAutomationQueries(input: {
+  categories: unknown;
+  automationName: string;
+}): Array<{ id: string; params: Record<string, unknown> }> {
+  const keywords = extractAutomationSearchKeywords(input);
+  return keywords.map((keyword, index) => ({
+    id: `kw_${index}`,
+    params: {
+      keyword,
+      sortBy: "sales",
+      limit: 20,
+      page: 1,
+    },
+  }));
+}
+
+function extractValidShopeeAffiliateLink(product: Record<string, unknown>): string {
+  const candidates = [
+    String(product.offerLink || "").trim(),
+    String(product.affiliateLink || "").trim(),
+    String(product.link || "").trim(),
+  ];
+  for (const link of candidates) {
+    if (/^https?:\/\//i.test(link)) return link;
+  }
+  return "";
+}
+
+function applyPlaceholders(template: string, replacements: Record<string, string>): string {
+  let output = String(template || "");
+  for (const [key, value] of Object.entries(replacements)) {
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    output = output.replace(new RegExp(escaped, "g"), value);
+  }
+  return output;
+}
+
+function buildShopeeAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
+  const contentWithoutImageLine = String(templateContent || "")
+    .replace(/^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim, "");
+
+  return applyPlaceholders(contentWithoutImageLine, {
+    "{titulo}": String(product.title || "Produto Shopee"),
+    "{preco}": Number(toNumber(product.salePrice, 0)).toFixed(2),
+    "{preco_original}": Number(toNumber(product.originalPrice, 0)).toFixed(2),
+    "{desconto}": String(Math.max(0, toNumber(product.discount, 0))),
+    "{link}": affiliateLink,
+    "{imagem}": "",
+    "{avaliacao}": String(Math.max(0, toNumber(product.rating, 0))),
+  });
+}
+
+async function insertAutomationHistoryEntry(input: {
+  userId: string;
+  automationName: string;
+  destination: string;
+  status: "success" | "error" | "warning" | "info";
+  processingStatus: "sent" | "failed" | "blocked" | "processed";
+  message: string;
+  details?: Record<string, unknown>;
+  blockReason?: string;
+  errorStep?: string;
+  messageType?: "text" | "image";
+}) {
+  await execute(
+    "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'automation_run',$3,$4,$5,$6,'outbound',$7,$8,$9,$10)",
+    [
+      uuid(),
+      input.userId,
+      input.automationName,
+      input.destination,
+      input.status,
+      JSON.stringify({
+        message: input.message,
+        ...(input.details || {}),
+      }),
+      input.messageType || "text",
+      input.processingStatus,
+      input.blockReason || "",
+      input.errorStep || "",
+    ],
+  );
+}
+
 function safeGrowthRatio(current: number, expected: number): number {
   if (expected <= 0) return current > 0 ? Number(current.toFixed(4)) : 0;
   return Number((current / expected).toFixed(4));
@@ -333,6 +501,169 @@ function parseRouteForwardMedia(raw: unknown): RouteForwardMedia | null {
   };
 }
 
+type ScheduleRecurrenceMode = "none" | "daily" | "weekly";
+const SCHEDULE_WEEK_DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+type ScheduleWeekDay = (typeof SCHEDULE_WEEK_DAYS)[number];
+const SCHEDULE_WEEK_DAY_SET = new Set<string>(SCHEDULE_WEEK_DAYS);
+
+function parseScheduleMetadata(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return raw as Record<string, unknown>;
+}
+
+function normalizeScheduleRecurrence(value: unknown): ScheduleRecurrenceMode {
+  if (value === "daily" || value === "weekly") return value;
+  return "none";
+}
+
+function normalizeScheduleTime(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!/^\d{2}:\d{2}$/.test(trimmed)) return "";
+  const [hhRaw, mmRaw] = trimmed.split(":");
+  const hh = Number(hhRaw);
+  const mm = Number(mmRaw);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) return "";
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function parseScheduleRecurrenceTimes(metadata: Record<string, unknown>, scheduledAtRaw: unknown): string[] {
+  const raw = Array.isArray(metadata.recurrenceTimes)
+    ? metadata.recurrenceTimes
+    : [];
+  const normalized = raw
+    .map((item) => normalizeScheduleTime(item))
+    .filter(Boolean);
+
+  if (normalized.length > 0) {
+    return Array.from(new Set(normalized)).sort();
+  }
+
+  const scheduledAt = new Date(String(scheduledAtRaw || ""));
+  if (Number.isNaN(scheduledAt.getTime())) return [];
+  return [`${String(scheduledAt.getHours()).padStart(2, "0")}:${String(scheduledAt.getMinutes()).padStart(2, "0")}`];
+}
+
+function parseScheduleWeekDays(metadata: Record<string, unknown>, baseDate: Date): ScheduleWeekDay[] {
+  if (Array.isArray(metadata.weekDays)) {
+    const values = metadata.weekDays
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim().toLowerCase())
+      .filter((item): item is ScheduleWeekDay => SCHEDULE_WEEK_DAY_SET.has(item));
+    if (values.length > 0) return Array.from(new Set(values));
+  }
+
+  return [SCHEDULE_WEEK_DAYS[baseDate.getDay()] || "sun"];
+}
+
+function dateKeyLocal(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function getLatestScheduleSlotOnDate(times: string[], now: Date): string | null {
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  let best: string | null = null;
+
+  for (const value of times) {
+    const [hhRaw, mmRaw] = value.split(":");
+    const minutes = Number(hhRaw) * 60 + Number(mmRaw);
+    if (minutes <= nowMinutes) {
+      if (!best || minutes > (Number(best.split(":")[0]) * 60 + Number(best.split(":")[1]))) {
+        best = value;
+      }
+    }
+  }
+
+  return best;
+}
+
+function getDueScheduleSlotKey(post: {
+  recurrence: unknown;
+  scheduled_at: unknown;
+  metadata: unknown;
+}, nowMs: number): string | null {
+  const recurrence = normalizeScheduleRecurrence(post.recurrence);
+  const scheduledAt = String(post.scheduled_at || "");
+  const scheduledDate = new Date(scheduledAt);
+  if (Number.isNaN(scheduledDate.getTime())) return null;
+  if (scheduledDate.getTime() > nowMs) return null;
+
+  const metadata = parseScheduleMetadata(post.metadata);
+  const lastDispatchSlot = typeof metadata.lastDispatchSlot === "string"
+    ? metadata.lastDispatchSlot
+    : "";
+  const now = new Date(nowMs);
+
+  if (recurrence === "none") {
+    return `once:${scheduledAt}`;
+  }
+
+  const times = parseScheduleRecurrenceTimes(metadata, scheduledAt);
+  if (times.length === 0) return null;
+
+  if (recurrence === "daily") {
+    const slot = getLatestScheduleSlotOnDate(times, now);
+    if (!slot) return null;
+    const key = `daily:${dateKeyLocal(now)}@${slot}`;
+    return key === lastDispatchSlot ? null : key;
+  }
+
+  const weekDays = parseScheduleWeekDays(metadata, scheduledDate);
+  const today = SCHEDULE_WEEK_DAYS[now.getDay()] || "sun";
+  if (!weekDays.includes(today)) return null;
+  const slot = getLatestScheduleSlotOnDate(times, now);
+  if (!slot) return null;
+  const key = `weekly:${dateKeyLocal(now)}@${slot}`;
+  return key === lastDispatchSlot ? null : key;
+}
+
+function computeNextRecurringScheduleAt(post: {
+  recurrence: unknown;
+  scheduled_at: unknown;
+  metadata: unknown;
+}, nowMs: number): string {
+  const recurrence = normalizeScheduleRecurrence(post.recurrence);
+  const scheduledAt = String(post.scheduled_at || "");
+  const scheduledDate = new Date(scheduledAt);
+  if (Number.isNaN(scheduledDate.getTime())) return nowIso();
+  if (recurrence === "none") return scheduledAt;
+
+  const metadata = parseScheduleMetadata(post.metadata);
+  const times = parseScheduleRecurrenceTimes(metadata, scheduledAt);
+  if (times.length === 0) return scheduledAt;
+
+  const weekDays = parseScheduleWeekDays(metadata, scheduledDate);
+
+  for (let dayOffset = 0; dayOffset <= 370; dayOffset += 1) {
+    const candidateDate = new Date(nowMs);
+    candidateDate.setHours(0, 0, 0, 0);
+    candidateDate.setDate(candidateDate.getDate() + dayOffset);
+
+    if (recurrence === "weekly") {
+      const weekDay = SCHEDULE_WEEK_DAYS[candidateDate.getDay()] || "sun";
+      if (!weekDays.includes(weekDay)) continue;
+    }
+
+    for (const value of times) {
+      const [hhRaw, mmRaw] = value.split(":");
+      const candidate = new Date(candidateDate);
+      candidate.setHours(Number(hhRaw), Number(mmRaw), 0, 0);
+      if (candidate.getTime() > nowMs) {
+        return candidate.toISOString();
+      }
+    }
+  }
+
+  return scheduledAt;
+}
+
+function parseScheduledPostMedia(metadata: Record<string, unknown>): RouteForwardMedia | null {
+  return parseRouteForwardMedia(metadata.media);
+}
+
 async function resolveRouteForwardMediaForPlatform(input: {
   userId: string;
   platform: string;
@@ -407,7 +738,7 @@ async function scheduleRouteForwardMediaDeletion(input: {
 
 const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const AUTO_IMAGE_FETCH_TIMEOUT_MS = 10_000;
-const GENERAL_URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+const GENERAL_URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
 const OG_IMAGE_REGEX = /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*\/?>/i;
 const OG_IMAGE_REVERSE_REGEX = /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["'][^>]*\/?>/i;
 
@@ -989,7 +1320,7 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
   return { groupsSynced };
 }
 
-const ROUTE_LINK_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+const ROUTE_LINK_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
 
 const ROUTE_PARTNER_MARKETPLACE_PATTERNS: Record<string, RegExp[]> = {
   shopee: [/shopee\.com(\.\w+)?/i, /shope\.ee/i, /s\.shopee\./i],
@@ -2031,7 +2362,8 @@ rpcRouter.post("/rpc", async (req, res) => {
       // concurrent calls from the frontend and the scheduler never process the same post.
       // Only rows still 'pending' at the moment of the UPDATE are claimed, preventing
       // double-dispatch (SQL-5).
-      const claimedRows = (effectiveAdmin && !userIsAdmin)
+      const canRunGlobalDispatch = isService || (effectiveAdmin && !userIsAdmin);
+      const claimedRows = canRunGlobalDispatch
         ? await query(
             `UPDATE scheduled_posts SET status = 'processing', updated_at = NOW()
              WHERE id IN (
@@ -2072,13 +2404,48 @@ rpcRouter.post("/rpc", async (req, res) => {
       })) as Array<{
         id: string; user_id: string; content: string;
         metadata: Record<string, unknown>; recurrence: string;
+        scheduled_at: string;
         dest_ids: string[];
         [k: string]: unknown;
       }>;
       let sent = 0, failed = 0, skipped = 0;
       for (const post of pending) {
-        const meta = post.metadata ?? {};
-        const mgids = Array.isArray(meta.masterGroupIds) ? meta.masterGroupIds : [];
+        const nowMs = Date.now();
+        const meta = parseScheduleMetadata(post.metadata);
+        const recurrence = normalizeScheduleRecurrence(post.recurrence);
+        const dueSlotKey = getDueScheduleSlotKey(
+          {
+            recurrence: post.recurrence,
+            scheduled_at: post.scheduled_at,
+            metadata: meta,
+          },
+          nowMs,
+        );
+        if (!dueSlotKey) {
+          skipped += 1;
+          if (recurrence === "none") {
+            await execute("UPDATE scheduled_posts SET status='cancelled', updated_at=NOW() WHERE id=$1", [post.id]);
+          } else {
+            let nextAt = computeNextRecurringScheduleAt(
+              {
+                recurrence: post.recurrence,
+                scheduled_at: post.scheduled_at,
+                metadata: meta,
+              },
+              nowMs,
+            );
+            const nextAtMs = Date.parse(nextAt);
+            if (!Number.isFinite(nextAtMs) || nextAtMs <= nowMs) {
+              nextAt = new Date(nowMs + 60_000).toISOString();
+            }
+            await execute("UPDATE scheduled_posts SET status='pending', scheduled_at=$1, updated_at=NOW() WHERE id=$2", [nextAt, post.id]);
+          }
+          continue;
+        }
+
+        const mgids = Array.isArray(meta.masterGroupIds)
+          ? meta.masterGroupIds.filter((item): item is string => typeof item === "string")
+          : [];
         const directIds = Array.isArray(post.dest_ids) ? post.dest_ids : [];
         let linkedIds = [];
         if (mgids.length > 0) {
@@ -2088,6 +2455,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         const destIds = [...new Set([...directIds, ...linkedIds])];
         if (destIds.length === 0) { skipped++; await execute("UPDATE scheduled_posts SET status='cancelled', updated_at=NOW() WHERE id=$1", [post.id]); continue; }
         const message = typeof meta.finalContent === "string" ? meta.finalContent : String(post.content ?? "");
+        const scheduleMedia = parseScheduledPostMedia(meta);
         let ok_ = true;
         // Batch load all destination groups in one query (avoids N+1)
         const groupRows = destIds.length > 0
@@ -2104,34 +2472,55 @@ rpcRouter.post("/rpc", async (req, res) => {
           if (!session || !externalId) { ok_ = false; failed++; break; }
 
           const scopedHeaders = buildUserScopedHeaders(String(post.user_id));
+          const mediaForDestination = await resolveRouteForwardMediaForPlatform({
+            userId: String(post.user_id),
+            platform,
+            media: scheduleMedia,
+          });
           let sentResult = { data: null, error: { message: "Plataforma inválida" } };
           if (platform === "whatsapp" && WHATSAPP_URL) {
             sentResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
               sessionId: session,
               jid: externalId,
               content: message,
+              media: mediaForDestination ?? undefined,
             }, scopedHeaders);
           } else if (platform === "telegram" && TELEGRAM_URL) {
             sentResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
               sessionId: session,
               chatId: externalId,
               message,
+              media: mediaForDestination ?? undefined,
             }, scopedHeaders);
           } else {
             sentResult = { data: null, error: { message: `Serviço ${platform || "desconhecido"} indisponível` } };
           }
           if (sentResult.error) { ok_ = false; failed++; break; }
 
-          await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'success',$4,'outbound','text','sent','','')",
-            [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform })]);
+          await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'success',$4,'outbound',$5,'sent','','')",
+            [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform, hasMedia: !!mediaForDestination }), mediaForDestination ? "image" : "text"]);
           sent++;
         }
-        const recurrence = String(post.recurrence ?? "none");
         if (!ok_) {
           await execute("UPDATE scheduled_posts SET status='cancelled', updated_at=NOW() WHERE id=$1", [post.id]);
         } else if (recurrence !== "none") {
-          const nextMs = recurrence === "daily" ? Date.now() + 86400000 : Date.now() + 7 * 86400000;
-          await execute("UPDATE scheduled_posts SET status='pending', scheduled_at=$1, updated_at=NOW() WHERE id=$2", [new Date(nextMs).toISOString(), post.id]);
+          const mergedMeta = {
+            ...meta,
+            lastDispatchSlot: dueSlotKey,
+          };
+          let nextAt = computeNextRecurringScheduleAt(
+            {
+              recurrence: post.recurrence,
+              scheduled_at: post.scheduled_at,
+              metadata: mergedMeta,
+            },
+            nowMs,
+          );
+          const nextAtMs = Date.parse(nextAt);
+          if (!Number.isFinite(nextAtMs) || nextAtMs <= nowMs) {
+            nextAt = new Date(nowMs + 60_000).toISOString();
+          }
+          await execute("UPDATE scheduled_posts SET status='pending', scheduled_at=$1, metadata=$2::jsonb, updated_at=NOW() WHERE id=$3", [nextAt, JSON.stringify(mergedMeta), post.id]);
         } else {
           await execute("UPDATE scheduled_posts SET status='sent', updated_at=NOW() WHERE id=$1", [post.id]);
         }
@@ -2280,6 +2669,10 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
     if (funcName === "shopee-automation-run") {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      if (!WHATSAPP_URL && !TELEGRAM_URL) {
+        fail(res, "Nenhum canal de envio configurado (WhatsApp/Telegram).");
+        return;
+      }
       const requestedAutomationId = String(params.automationId ?? "").trim();
       const source = String(params.source ?? "manual").trim() || "manual";
       const runAllUsers = isService || (effectiveAdmin && params.allUsers === true);
@@ -2354,32 +2747,390 @@ rpcRouter.post("/rpc", async (req, res) => {
       for (const auto of automations) {
         const ownerUserId = String(auto.user_id || "").trim();
         const automationName = String(auto.name || auto.id || "Automacao Shopee");
+        const automationId = String(auto.id || "").trim();
+        if (!ownerUserId || !automationId) {
+          skipped += 1;
+          errors.push(`${automationName}: dados da automação inválidos`);
+          continue;
+        }
+
+        if (!inAutomationTimeWindow(auto.active_hours_start, auto.active_hours_end)) {
+          skipped += 1;
+          continue;
+        }
+
         const cred = credsByUser.get(ownerUserId);
         if (!cred) {
           skipped += 1;
           errors.push(`${automationName}: credenciais Shopee ausentes`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Credenciais Shopee ausentes para execução da automação.",
+            details: { automationId, source, reason: "missing_credentials" },
+            blockReason: "missing_credentials",
+            errorStep: "automation_setup",
+          });
           continue;
         }
 
-        const runResult = await proxyMicroservice(
+        const claimed = await queryOne<Record<string, unknown>>(
+          `UPDATE shopee_automations
+             SET last_run_at = NOW(),
+                 updated_at = NOW()
+           WHERE id = $1
+             AND user_id = $2
+             AND status = 'active'
+             AND is_active = TRUE
+             AND (
+               last_run_at IS NULL
+               OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
+             )
+           RETURNING *`,
+          [automationId, ownerUserId],
+        );
+        if (!claimed) {
+          skipped += 1;
+          continue;
+        }
+
+        const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
+        const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
+        const template = await queryOne<{ id: string; name: string; content: string; is_default: boolean }>(
+          `SELECT id, name, content, is_default
+             FROM templates
+            WHERE user_id = $1
+              AND ($2::uuid IS NULL OR id = $2 OR is_default = TRUE)
+            ORDER BY CASE WHEN id = $2 THEN 0 WHEN is_default = TRUE THEN 1 ELSE 2 END
+            LIMIT 1`,
+          [ownerUserId, templateId || null],
+        );
+
+        const queries = buildShopeeAutomationQueries({
+          categories: claimed.categories,
+          automationName,
+        });
+
+        const batchResult = await proxyMicroservice(
           SHOPEE_URL,
-          "/automation-run",
+          "/api/shopee/batch",
           "POST",
-          { automation: auto, appId: cred.app_id, secret: cred.secret_key, region: cred.region, userId: ownerUserId, source },
+          {
+            appId: cred.app_id,
+            secret: cred.secret_key,
+            region: cred.region,
+            queries,
+          },
           {},
           120_000,
         );
-        if (runResult.error) {
+        if (batchResult.error) {
           failed += 1;
-          errors.push(`${automationName}: ${runResult.error.message}`);
+          errors.push(`${automationName}: ${batchResult.error.message}`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: `Falha ao buscar ofertas Shopee: ${batchResult.error.message}`,
+            details: { automationId, source, reason: "offer_lookup_failed" },
+            blockReason: "offer_lookup_failed",
+            errorStep: "offer_lookup",
+          });
           continue;
         }
 
-        const runPayload = (runResult.data && typeof runResult.data === "object") ? runResult.data as Record<string, unknown> : {};
-        const sentNow = Math.max(0, toInt(runPayload.sent, 0));
-        sent += sentNow;
-        processed += 1;
-        await execute("UPDATE shopee_automations SET last_run_at=NOW(), products_sent=products_sent+$1 WHERE id=$2", [sentNow, auto.id]);
+        const batchPayload = (batchResult.data && typeof batchResult.data === "object")
+          ? batchResult.data as Record<string, unknown>
+          : {};
+        const batchResults = (batchPayload.results && typeof batchPayload.results === "object")
+          ? batchPayload.results as Record<string, unknown>
+          : {};
+
+        const minDiscount = Math.max(0, toNumber(claimed.min_discount, 0));
+        const minPrice = Math.max(0, toNumber(claimed.min_price, 0));
+        const maxPriceRaw = Math.max(0, toNumber(claimed.max_price, 999999));
+        const maxPrice = maxPriceRaw > 0 ? maxPriceRaw : 999999;
+
+        const candidates: Record<string, unknown>[] = [];
+        for (const result of Object.values(batchResults)) {
+          const row = (result && typeof result === "object") ? result as Record<string, unknown> : {};
+          const products = Array.isArray(row.products) ? row.products : [];
+          for (const product of products) {
+            if (!product || typeof product !== "object") continue;
+            const item = product as Record<string, unknown>;
+            const salePrice = Math.max(0, toNumber(item.salePrice, 0));
+            const discount = Math.max(0, toNumber(item.discount, 0));
+            const affiliateLink = extractValidShopeeAffiliateLink(item);
+            if (!affiliateLink) continue;
+            if (discount < minDiscount) continue;
+            if (salePrice < minPrice) continue;
+            if (salePrice > maxPrice) continue;
+            candidates.push(item);
+          }
+        }
+
+        if (candidates.length === 0) {
+          skipped += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Nenhuma oferta elegível encontrada para disparo.",
+            details: { automationId, source, reason: "no_eligible_offer" },
+            blockReason: "no_eligible_offer",
+            errorStep: "offer_filter",
+          });
+          continue;
+        }
+
+        const selectedProduct = candidates[0];
+        const affiliateLink = extractValidShopeeAffiliateLink(selectedProduct);
+        if (!affiliateLink) {
+          skipped += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Oferta selecionada sem link de afiliado válido.",
+            details: { automationId, source, reason: "missing_affiliate_link" },
+            blockReason: "missing_affiliate_link",
+            errorStep: "offer_validate",
+          });
+          continue;
+        }
+
+        const templateContent = template && typeof template.content === "string" ? template.content : "";
+        const fallbackTitle = String(selectedProduct.title || "Oferta Shopee");
+        const message = templateContent
+          ? buildShopeeAutomationMessage(templateContent, selectedProduct, affiliateLink)
+          : `${fallbackTitle}\n${affiliateLink}`;
+
+        const directGroupIds = toStringArray(claimed.destination_group_ids);
+        const masterGroupIds = toStringArray(claimed.master_group_ids);
+        const linkedGroupIds = masterGroupIds.length > 0
+          ? (await query<{ group_id: string }>(
+              "SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1) AND is_active <> FALSE",
+              [masterGroupIds],
+            )).map((row) => String(row.group_id || "").trim()).filter(Boolean)
+          : [];
+
+        const destinationIds = [...new Set([...directGroupIds, ...linkedGroupIds])];
+        if (destinationIds.length === 0) {
+          failed += 1;
+          errors.push(`${automationName}: nenhum grupo de destino configurado`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: "Automação sem grupos de destino configurados.",
+            details: { automationId, source, reason: "no_destination_groups" },
+            blockReason: "no_destination_groups",
+            errorStep: "destination_resolve",
+          });
+          continue;
+        }
+
+        const allDestinationGroups = await query<{
+          id: string;
+          name: string;
+          platform: string;
+          session_id: string;
+          external_id: string;
+        }>(
+          "SELECT id, name, platform, session_id, external_id FROM groups WHERE user_id = $1 AND id = ANY($2)",
+          [ownerUserId, destinationIds],
+        );
+        const automationSessionId = String(claimed.session_id || "").trim();
+        const destinationGroups = automationSessionId
+          ? allDestinationGroups.filter((group) => String(group.session_id || "").trim() === automationSessionId)
+          : allDestinationGroups;
+
+        if (destinationGroups.length === 0) {
+          failed += 1;
+          errors.push(`${automationName}: nenhum grupo de destino válido para a sessão configurada`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: "Nenhum grupo válido para a sessão selecionada.",
+            details: { automationId, source, reason: "no_destination_groups_for_session" },
+            blockReason: "no_destination_groups_for_session",
+            errorStep: "destination_resolve",
+          });
+          continue;
+        }
+
+        const waSessionIds = [...new Set(
+          destinationGroups
+            .filter((group) => String(group.platform || "").trim() === "whatsapp")
+            .map((group) => String(group.session_id || "").trim())
+            .filter(Boolean),
+        )];
+        const tgSessionIds = [...new Set(
+          destinationGroups
+            .filter((group) => String(group.platform || "").trim() === "telegram")
+            .map((group) => String(group.session_id || "").trim())
+            .filter(Boolean),
+        )];
+        const [waSessionRows, tgSessionRows] = await Promise.all([
+          waSessionIds.length > 0
+            ? query<{ id: string; status: string }>(
+                "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
+                [ownerUserId, waSessionIds],
+              )
+            : Promise.resolve([]),
+          tgSessionIds.length > 0
+            ? query<{ id: string; status: string }>(
+                "SELECT id, status FROM telegram_sessions WHERE user_id = $1 AND id = ANY($2)",
+                [ownerUserId, tgSessionIds],
+              )
+            : Promise.resolve([]),
+        ]);
+        const onlineWaSessions = new Set(
+          waSessionRows
+            .filter((row) => isSessionOnlineStatus(row.status))
+            .map((row) => String(row.id || "").trim())
+            .filter(Boolean),
+        );
+        const onlineTgSessions = new Set(
+          tgSessionRows
+            .filter((row) => isSessionOnlineStatus(row.status))
+            .map((row) => String(row.id || "").trim())
+            .filter(Boolean),
+        );
+
+        let sentNow = 0;
+        for (const group of destinationGroups) {
+          const groupName = String(group.name || group.id || "Grupo");
+          const platform = String(group.platform || "").trim();
+          const sessionId = String(group.session_id || "").trim();
+          const externalId = String(group.external_id || "").trim();
+          if (!sessionId || !externalId) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: grupo sem sessão/external_id`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "error",
+              processingStatus: "failed",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "invalid_destination",
+              },
+              blockReason: "invalid_destination",
+              errorStep: "destination_validate",
+            });
+            continue;
+          }
+
+          const isOnline = platform === "whatsapp"
+            ? onlineWaSessions.has(sessionId)
+            : platform === "telegram"
+              ? onlineTgSessions.has(sessionId)
+              : false;
+          if (!isOnline) {
+            skipped += 1;
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "info",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "destination_session_offline",
+              },
+              blockReason: "destination_session_offline",
+              errorStep: "destination_precheck",
+            });
+            continue;
+          }
+
+          const scopedHeaders = buildUserScopedHeaders(ownerUserId);
+          const sendResult = platform === "whatsapp" && WHATSAPP_URL
+            ? await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+                sessionId,
+                jid: externalId,
+                content: message || " ",
+              }, scopedHeaders)
+            : platform === "telegram" && TELEGRAM_URL
+              ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+                  sessionId,
+                  chatId: externalId,
+                  message: message || " ",
+                }, scopedHeaders)
+              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
+
+          if (sendResult.error) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: ${sendResult.error.message}`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "error",
+              processingStatus: "failed",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "destination_send_failed",
+                error: sendResult.error.message,
+                product: selectedProduct,
+              },
+              blockReason: "destination_send_failed",
+              errorStep: "automation_send",
+            });
+            continue;
+          }
+
+          sent += 1;
+          sentNow += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: groupName,
+            status: "success",
+            processingStatus: "sent",
+            message,
+            details: {
+              automationId,
+              source,
+              platform,
+              product: selectedProduct,
+            },
+            messageType: "text",
+          });
+        }
+
+        if (sentNow > 0) {
+          processed += 1;
+          await execute(
+            "UPDATE shopee_automations SET products_sent = products_sent + $1, updated_at = NOW() WHERE id = $2 AND user_id = $3",
+            [sentNow, automationId, ownerUserId],
+          );
+        }
       }
 
       ok(res, {

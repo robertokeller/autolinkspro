@@ -72,7 +72,7 @@ export default function LinkHub() {
 
   const handleSave = async () => {
     if (form.groupIds.length === 0 && form.masterGroupIds.length === 0) {
-      toast.error("Selecione pelo menos um grupo"); return;
+      toast.error("Escolha pelo menos um grupo"); return;
     }
     const payload = {
       slug: form.slug, title: form.title, description: form.description,
@@ -91,7 +91,7 @@ export default function LinkHub() {
 
   const handleLogoUpload = async (file: File) => {
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { toast.error("Logo deve ter no máximo 2MB"); return; }
+    if (file.size > 2 * 1024 * 1024) { toast.error("A logo pode ter no máximo 2MB"); return; }
     setUploading(true);
     const tempId = editingId || "new-" + Date.now();
     const url = await uploadLogo(tempId, file);
@@ -126,7 +126,7 @@ export default function LinkHub() {
   if (isLoading) {
     return (
       <div className="ds-page">
-        <PageHeader title="Link Hub" description="Crie páginas públicas personalizáveis com links dos seus grupos" />
+        <PageHeader title="Link Hub" description="Crie páginas com os links dos seus grupos pra compartilhar" />
         <div className="space-y-3">{Array.from({ length: 2 }).map((_, i) => (
           <Card key={i} className="glass"><CardContent className="py-4"><Skeleton className="h-12 w-full" /></CardContent></Card>
         ))}</div>
@@ -136,7 +136,7 @@ export default function LinkHub() {
 
   return (
     <div className="ds-page">
-      <PageHeader title="Link Hub" description="Crie páginas públicas personalizáveis com links dos seus grupos">
+      <PageHeader title="Link Hub" description="Crie páginas com os links dos seus grupos pra compartilhar">
         <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1.5" />Nova página</Button>
       </PageHeader>
 
@@ -181,7 +181,7 @@ export default function LinkHub() {
           ))}
         </div>
       ) : (
-        <EmptyState icon={LinkIcon} title="Nenhuma página criada" description="Crie uma página pública personalizada com links para seus grupos." actionLabel="Criar página" onAction={openNew} />
+        <EmptyState icon={LinkIcon} title="Nenhuma página ainda" description="Crie uma página com links dos seus grupos pra compartilhar com todo mundo." actionLabel="Criar página" onAction={openNew} />
       )}
 
       {/* Dialog Editor */}
@@ -189,7 +189,7 @@ export default function LinkHub() {
         <DialogContent className="max-w-lg max-h-[92dvh] flex flex-col p-0 gap-0">
           <DialogHeader className="p-5 pb-3">
             <DialogTitle>{editingId ? "Editar página" : "Nova página"}</DialogTitle>
-            <DialogDescription>Configure sua página pública de grupos.</DialogDescription>
+            <DialogDescription>Monte sua página com os grupos que você quer mostrar.</DialogDescription>
           </DialogHeader>
 
           <ScrollArea className="flex-1 px-5 overflow-y-auto">
@@ -198,23 +198,23 @@ export default function LinkHub() {
               {/* Slug + Title */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Slug da URL</Label>
+                  <Label className="text-xs">Endereço da página</Label>
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs text-muted-foreground">/hub/</span>
                     <Input className="h-9 text-xs" placeholder="ofertas" value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} />
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Título</Label>
+                  <Label className="text-xs">Título da página</Label>
                   <Input className="h-9 text-xs" placeholder="! Ofertas Tech" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
                 </div>
               </div>
 
               {/* Description */}
               <div className="space-y-1.5">
-                <Label className="text-xs">Descrição</Label>
+                <Label className="text-xs">Descrição curta</Label>
                 <Textarea
-                  placeholder="Os melhores descontos e cupons em tempo real."
+                  placeholder="Descontos e cupons em tempo real."
                   value={form.description}
                   onChange={(e) => setForm({ ...form, description: e.target.value })}
                   rows={2}
@@ -244,7 +244,7 @@ export default function LinkHub() {
 
                 {/* Color */}
                 <div className="space-y-1.5 flex-1">
-                  <Label className="text-xs">Cor do Tema</Label>
+                  <Label className="text-xs">Cor da página</Label>
                   <div className="flex items-center gap-2">
                     <input type="color" value={form.themeColor} onChange={(e) => setForm({ ...form, themeColor: e.target.value })} className="h-8 w-8 rounded-lg cursor-pointer border-0 p-0" />
                     <div className="flex gap-1 flex-wrap">
@@ -270,9 +270,9 @@ export default function LinkHub() {
                       label: masterGroup.name,
                       meta: `${masterGroup.linkedGroups.length} grupos`,
                     }))}
-                    placeholder="Selecionar grupos mestre"
-                    selectedLabel={(count) => `${count} grupo(s) mestre selecionado(s)`}
-                    emptyMessage="Nenhum grupo mestre cadastrado"
+                    placeholder="Escolher grupos mestres"
+                    selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                    emptyMessage="Nenhum grupo mestre criado"
                     title="Grupos mestre"
                     maxHeightClassName="max-h-52"
                   />
@@ -281,7 +281,7 @@ export default function LinkHub() {
 
               {/* Individual Groups */}
               <div className="space-y-1.5">
-                <Label className="text-xs flex items-center gap-1"><Users className="h-3 w-3" />Grupos ({previewGroupCount} selecionados)</Label>
+                <Label className="text-xs flex items-center gap-1"><Users className="h-3 w-3" />Grupos ({previewGroupCount} escolhidos)</Label>
                 <MultiOptionDropdown
                   value={form.groupIds}
                   onChange={(ids) => setForm((prev) => ({ ...prev, groupIds: ids }))}
@@ -290,10 +290,10 @@ export default function LinkHub() {
                     label: group.name,
                     meta: `${group.memberCount}`,
                   }))}
-                  placeholder="Selecionar grupos individuais"
-                  selectedLabel={(count) => `${count} grupo(s) individual(is) selecionado(s)`}
+                  placeholder="Escolher grupos"
+                  selectedLabel={(count) => `${count} grupo(s)`}
                   emptyMessage="Nenhum grupo sincronizado"
-                  title="Grupos individuais"
+                  title="Grupos"
                   maxHeightClassName="max-h-64"
                 />
 
@@ -319,7 +319,7 @@ export default function LinkHub() {
                             </div>
                             <div className="pl-7 pr-1.5">
                               <Input
-                                placeholder="Título na página (opcional)"
+                                placeholder="Nome na página (se quiser mudar)"
                                 value={form.groupLabels[g.id] || ""}
                                 onChange={(e) => setForm((prev) => ({
                                   ...prev,
@@ -331,7 +331,7 @@ export default function LinkHub() {
                           </div>
                         );
                       }) : (
-                        <p className="text-xs text-muted-foreground p-2">Nenhum grupo sincronizado.</p>
+                <p className="text-xs text-muted-foreground p-2">Sem grupos sincronizados.</p>
                       )}
                     </div>
                   </ScrollArea>
@@ -342,7 +342,7 @@ export default function LinkHub() {
 
           <DialogFooter className="p-4 pt-3 border-t gap-2">
             <Button variant="ghost" size="sm" onClick={resetAndClose}>Cancelar</Button>
-            <Button size="sm" onClick={handleSave}>{editingId ? "Salvar" : "Criar Página"}</Button>
+            <Button size="sm" onClick={handleSave}>{editingId ? "Salvar" : "Criar página"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -33,7 +33,7 @@ function buildCategoryMap(): Map<string, { label: string; icon: string; parentLa
 export function CategoryMultiSelect({
   value,
   onChange,
-  placeholder = "Selecione categorias...",
+  placeholder = "Escolha categorias...",
   maxHeight = "max-h-72",
 }: CategoryMultiSelectProps) {
   const [open, setOpen] = useState(false);

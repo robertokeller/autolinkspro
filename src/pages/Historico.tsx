@@ -26,7 +26,7 @@ const ALLOWED_CONNECTIONS = new Set<HistoryEntry["connection"]>(["whatsapp", "te
 const COUNTER_LABELS: Record<"total" | "sent" | "failed" | "blocked", string> = {
   total: "Total",
   sent: "Enviadas",
-  failed: "Falhas",
+  failed: "Com erro",
   blocked: "Bloqueadas",
 };
 
@@ -65,7 +65,7 @@ function mechanismName(entry: HistoryEntry): string {
     return cleanEndpointLabel(entry.source);
   }
   if (entry.mechanism === "schedule") {
-    return "Disparo agendado";
+    return "Envio agendado";
   }
   return "-";
 }
@@ -165,7 +165,7 @@ export default function HistoryPage() {
     }
 
     return {
-      placeholder: "Selecione um tipo primeiro",
+      placeholder: "Escolha um tipo primeiro",
       allLabel: "Todos os itens",
       options: [],
     };
@@ -226,8 +226,8 @@ export default function HistoryPage() {
   return (
     <div className="ds-page">
       <PageHeader
-        title="Histórico de mensagens"
-        description="Apenas mensagens capturadas e o resultado do processamento"
+        title="Histórico"
+        description="Veja tudo que foi capturado e o que aconteceu com cada mensagem"
       >
         <Button
           size="sm"
@@ -241,7 +241,7 @@ export default function HistoryPage() {
         </Button>
       </PageHeader>
 
-      <Card>
+      <Card className="glass">
         <CardContent className="p-4">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <div className="relative min-w-[220px] flex-1">
@@ -249,7 +249,7 @@ export default function HistoryPage() {
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Buscar mensagem, rota ou erro"
+                placeholder="Buscar por mensagem, rota ou erro..."
                 aria-label="Pesquisar no histórico"
                 className="pl-9"
               />
@@ -260,9 +260,9 @@ export default function HistoryPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todos</SelectItem>
-                <SelectItem value="sent">Enviada ao destino</SelectItem>
-                <SelectItem value="failed">Falha ao enviar</SelectItem>
-                <SelectItem value="blocked">Bloqueada por regra</SelectItem>
+                <SelectItem value="sent">Enviada com sucesso</SelectItem>
+                <SelectItem value="failed">Não foi enviada</SelectItem>
+                <SelectItem value="blocked">Bloqueada</SelectItem>
               </SelectContent>
             </Select>
             <Select
@@ -278,7 +278,7 @@ export default function HistoryPage() {
               <SelectContent>
                 <SelectItem value="all">Todos os tipos</SelectItem>
                 <SelectItem value="schedule">Agendamentos</SelectItem>
-                <SelectItem value="automatic_routes">Rotas automáticas</SelectItem>
+                <SelectItem value="automatic_routes">Rotas</SelectItem>
                 <SelectItem value="smart_automation">Piloto automático</SelectItem>
               </SelectContent>
             </Select>
@@ -319,7 +319,7 @@ export default function HistoryPage() {
                 <SelectItem value="yesterday">Ontem</SelectItem>
                 <SelectItem value="last_3_days">Últimos 3 dias</SelectItem>
                 <SelectItem value="last_7_days">Últimos 7 dias</SelectItem>
-                <SelectItem value="all">Todo o período (7 dias)</SelectItem>
+                <SelectItem value="all">Todo o período</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -329,7 +329,7 @@ export default function HistoryPage() {
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Card key={i}>
+            <Card key={i} className="glass">
               <CardContent className="p-4">
                 <Skeleton className="h-12 w-full" />
               </CardContent>
@@ -338,7 +338,7 @@ export default function HistoryPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          <div className="ds-card-grid mx-auto w-full max-w-5xl grid-cols-2 gap-2 rounded-md border bg-muted/20 p-2 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 rounded-xl border bg-muted/20 p-2 sm:grid-cols-4">
             {COUNTER_KEYS.map((key) => (
               <button
                 key={key}
@@ -347,7 +347,7 @@ export default function HistoryPage() {
                   const targetStatus = COUNTER_STATUS_MAP[key];
                   setStatus((prev) => (prev === targetStatus ? "all" : targetStatus));
                 }}
-                className={`rounded-md border px-3 py-2 text-center transition-colors ${
+                className={`rounded-lg border px-3 py-2 text-center transition-colors ${
                   status === COUNTER_STATUS_MAP[key]
                     ? "border-primary bg-primary/10"
                     : "border-transparent bg-background hover:border-border"
@@ -362,19 +362,19 @@ export default function HistoryPage() {
           {filtered.length === 0 ? (
             <EmptyState
               icon={Clock}
-              title="Nenhuma mensagem encontrada"
-              description="Ajuste os filtros para encontrar eventos de captura, envio e falha."
+              title="Nenhuma mensagem aqui"
+              description="Mude os filtros pra encontrar o que você procura."
             />
           ) : (
             <>
-          <div className="hidden grid-cols-[1.9fr_1.1fr_1.1fr_170px] gap-3 rounded-md border bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground md:grid">
+          <div className="hidden grid-cols-[1.9fr_1.1fr_1.1fr_170px] gap-3 rounded-xl border bg-muted/30 px-4 py-2.5 text-xs font-semibold text-muted-foreground md:grid">
             <span>Evento</span>
             <span>Fluxo</span>
             <span>Mecanismo</span>
             <span className="text-right">Horário</span>
           </div>
           {filtered.map((entry) => (
-            <Card key={entry.id}>
+            <Card key={entry.id} className="glass">
               <CardContent className="grid gap-3 p-4 md:grid-cols-[1.9fr_1.1fr_1.1fr_170px] md:items-start">
                 <div className="min-w-0 space-y-1 text-left">
                   <p className="text-sm font-semibold">{entry.title}</p>

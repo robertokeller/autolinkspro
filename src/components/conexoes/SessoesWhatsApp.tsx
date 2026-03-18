@@ -116,7 +116,7 @@ export function SessoesWhatsApp({
       const previous = previousStatusRef.current[session.id];
 
       if (previous === "online" && ["warning", "offline"].includes(session.status)) {
-        toast.warning(`Sessão ${session.name} perdeu conexão. Verifique a autenticação.`);
+        toast.warning(`Sessão ${session.name} desconectou. Confira se está tudo certo.`);
       }
 
       previousStatusRef.current[session.id] = session.status;
@@ -206,7 +206,7 @@ export function SessoesWhatsApp({
 
     const nextName = editSessionName.trim();
     if (!nextName) {
-      toast.error("Informe um nome válido");
+      toast.error("Coloque um nome válido");
       return;
     }
 
@@ -251,9 +251,9 @@ export function SessoesWhatsApp({
             <CheckCircle2 className="h-10 w-10 text-success" />
           </div>
           <div className="text-center">
-            <p className="text-lg font-semibold">Sessão conectada!</p>
+            <p className="text-lg font-semibold">Tudo certo!</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {authSession.name} está autenticada e monitorada automaticamente.
+              {authSession.name} está conectada e funcionando.
             </p>
             {authSession.connectedAt && (
               <p className="mt-2 flex items-center justify-center gap-1 text-xs text-muted-foreground">
@@ -273,9 +273,9 @@ export function SessoesWhatsApp({
             <AlertTriangle className="h-8 w-8 text-warning" />
           </div>
           <div className="text-center">
-            <p className="font-semibold">Não foi possível gerar o QR Code</p>
+            <p className="font-semibold">Não deu pra gerar o QR Code</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              O serviço WhatsApp parece estar offline.
+              O serviço WhatsApp parece estar fora do ar.
             </p>
           </div>
         </div>
@@ -291,7 +291,7 @@ export function SessoesWhatsApp({
             className="aspect-square w-full max-w-[260px] rounded-xl border bg-white p-2 shadow-md"
           />
           <p className="text-center text-sm text-muted-foreground">
-            Abra o WhatsApp no celular → <strong>Aparelhos conectados</strong> → <strong>Conectar aparelho</strong> e escaneie o código.
+            Abra o WhatsApp no celular → <strong>Aparelhos conectados</strong> → <strong>Conectar aparelho</strong> e leia o código.
           </p>
         </div>
       );
@@ -304,7 +304,7 @@ export function SessoesWhatsApp({
         <div className="text-center">
           <p className="font-semibold">Gerando QR Code…</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Aguardando resposta do WhatsApp. Isso pode levar alguns segundos.
+            Esperando resposta do WhatsApp. Pode levar alguns segundos.
           </p>
         </div>
       </div>
@@ -317,7 +317,7 @@ export function SessoesWhatsApp({
       {/* Header bar */}
       <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[70%]">
-          Conecte sessões WhatsApp por QR Code e mantenha a conexão monitorada automaticamente.
+          Conecte contas WhatsApp por QR Code. A conexão fica sendo monitorada o tempo todo.
         </p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={onRefresh}>
@@ -333,16 +333,16 @@ export function SessoesWhatsApp({
 
       {/* Loading */}
       {isLoading && (
-        <InlineLoadingState label="Carregando sessões WhatsApp..." />
+        <InlineLoadingState label="Carregando contas WhatsApp..." />
       )}
 
       {/* Empty */}
       {!isLoading && sessions.length === 0 && (
         <EmptyState
           icon={QrCode}
-          title="Nenhuma sessão WhatsApp"
-          description="Crie uma sessão para autenticar por QR Code."
-          actionLabel="Nova Sessão"
+          title="Nenhuma conta WhatsApp"
+          description="Crie uma conta e conecte por QR Code."
+          actionLabel="Nova conta"
           onAction={openCreateFlow}
         />
       )}
@@ -358,7 +358,7 @@ export function SessoesWhatsApp({
               <Card
                 key={session.id}
                 className={cn(
-                  "overflow-hidden border-border/70 bg-card/90 transition-all",
+                  "glass overflow-hidden transition-all",
                   isOnline && "ring-1 ring-success/30",
                 )}
               >
@@ -495,9 +495,9 @@ export function SessoesWhatsApp({
           {sessionFlowStep === "form" ? (
             <>
               <DialogHeader>
-                <DialogTitle>Nova sessão WhatsApp</DialogTitle>
+                <DialogTitle>Nova conta WhatsApp</DialogTitle>
                 <DialogDescription>
-                  Preencha os dados para criar a sessão e gerar o QR Code.
+                  Dê um nome e vamos gerar o QR Code pra você conectar.
                 </DialogDescription>
               </DialogHeader>
 
@@ -514,7 +514,7 @@ export function SessoesWhatsApp({
                     onKeyDown={(e) => e.key === "Enter" && canCreate && void handleCreateSession()}
                   />
                   <p className="text-xs text-muted-foreground">
-                    O número de telefone será identificado automaticamente após a conexão via QR Code.
+                    O número do celular aparece sozinho depois que você conectar pelo QR Code.
                   </p>
                 </div>
               </div>
@@ -546,13 +546,13 @@ export function SessoesWhatsApp({
               <DialogHeader>
                 <DialogTitle>
                   {authSession?.status === "online"
-                    ? "Sessão conectada com sucesso"
-                    : "Escaneie o QR Code"}
+                    ? "Conta conectada!"
+                    : "Leia o QR Code"}
                 </DialogTitle>
                 <DialogDescription>
                   {authSession?.status === "online"
-                    ? `${authSession.name} está pronta para uso.`
-                    : "Use o WhatsApp no celular para escanear o código abaixo."}
+                    ? `${authSession.name} está pronta.`
+                    : "Use o WhatsApp no celular pra ler o código."}
                 </DialogDescription>
               </DialogHeader>
 
@@ -616,7 +616,7 @@ export function SessoesWhatsApp({
           <DialogHeader>
             <DialogTitle>Editar sessão</DialogTitle>
             <DialogDescription>
-              Apenas o nome pode ser editado para não quebrar a autenticação.
+              Só dá pra mudar o nome. O resto fica do jeito que está pra não perder a conexão.
             </DialogDescription>
           </DialogHeader>
 
@@ -658,9 +658,9 @@ export function SessoesWhatsApp({
       <AlertDialog open={!!deleteSession} onOpenChange={(open) => !open && setDeleteSessionId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apagar sessão?</AlertDialogTitle>
+            <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
             <AlertDialogDescription>
-              A sessão <strong>{deleteSession?.name}</strong> será removida junto com os grupos vinculados. Esta ação não pode ser desfeita.
+              A conta <strong>{deleteSession?.name}</strong> e os grupos dela vão ser removidos. Não tem como desfazer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

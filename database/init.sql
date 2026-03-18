@@ -55,6 +55,23 @@ CREATE TABLE IF NOT EXISTS user_roles (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Auth e-mail tokens (verification + password reset)
+CREATE TABLE IF NOT EXISTS auth_email_tokens (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  TEXT NOT NULL UNIQUE,
+  type        TEXT NOT NULL CHECK (type IN ('email_verification', 'password_reset')),
+  expires_at  TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ,
+  metadata    JSONB NOT NULL DEFAULT '{}',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_auth_email_tokens_user_type_active
+  ON auth_email_tokens (user_id, type, expires_at)
+  WHERE consumed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_auth_email_tokens_expires_at
+  ON auth_email_tokens (expires_at);
+
 -- ─── WhatsApp sessions ────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS whatsapp_sessions (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -73,6 +90,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_sessions (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'whatsapp_sessions_updated_at') THEN
   CREATE TRIGGER whatsapp_sessions_updated_at BEFORE UPDATE ON whatsapp_sessions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_wa_sessions_user
+  ON whatsapp_sessions(user_id, status);
 
 -- ─── Telegram sessions ────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS telegram_sessions (
@@ -91,13 +110,15 @@ CREATE TABLE IF NOT EXISTS telegram_sessions (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'telegram_sessions_updated_at') THEN
   CREATE TRIGGER telegram_sessions_updated_at BEFORE UPDATE ON telegram_sessions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_tg_sessions_user
+  ON telegram_sessions(user_id, status);
 
 -- ─── Groups ───────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS groups (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name         TEXT NOT NULL DEFAULT '',
-  platform     TEXT NOT NULL DEFAULT 'whatsapp',
+  platform     TEXT NOT NULL DEFAULT 'whatsapp' CHECK (platform IN ('whatsapp','telegram')),
   invite_link  TEXT NOT NULL DEFAULT '',
   member_count INTEGER NOT NULL DEFAULT 0,
   session_id   UUID,
@@ -110,6 +131,13 @@ CREATE TABLE IF NOT EXISTS groups (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'groups_updated_at') THEN
   CREATE TRIGGER groups_updated_at BEFORE UPDATE ON groups FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_groups_session_id
+  ON groups(session_id);
+CREATE INDEX IF NOT EXISTS idx_groups_user_id
+  ON groups(user_id);
+CREATE INDEX IF NOT EXISTS idx_groups_active
+  ON groups(user_id, id)
+  WHERE deleted_at IS NULL;
 
 -- ─── Master groups ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS master_groups (
@@ -125,6 +153,8 @@ CREATE TABLE IF NOT EXISTS master_groups (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'master_groups_updated_at') THEN
   CREATE TRIGGER master_groups_updated_at BEFORE UPDATE ON master_groups FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_master_groups_user_id
+  ON master_groups(user_id);
 
 -- ─── Master group links ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS master_group_links (
@@ -139,6 +169,10 @@ CREATE TABLE IF NOT EXISTS master_group_links (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'master_group_links_updated_at') THEN
   CREATE TRIGGER master_group_links_updated_at BEFORE UPDATE ON master_group_links FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_mgl_master_group_id
+  ON master_group_links(master_group_id);
+CREATE INDEX IF NOT EXISTS idx_mgl_group_id
+  ON master_group_links(group_id);
 
 -- ─── Routes ───────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS routes (
@@ -154,6 +188,11 @@ CREATE TABLE IF NOT EXISTS routes (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'routes_updated_at') THEN
   CREATE TRIGGER routes_updated_at BEFORE UPDATE ON routes FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_routes_user_status
+  ON routes(user_id, status)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_routes_user_id
+  ON routes(user_id);
 
 -- ─── Route destinations ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS route_destinations (
@@ -187,14 +226,20 @@ CREATE TABLE IF NOT EXISTS scheduled_posts (
   content      TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','sent','cancelled','failed')),
   scheduled_at TIMESTAMPTZ NOT NULL,
-  recurrence   TEXT NOT NULL DEFAULT 'none',
-  metadata     JSONB NOT NULL DEFAULT '{}',
+  recurrence   TEXT NOT NULL DEFAULT 'none' CHECK (recurrence IN ('none','daily','weekly')),
+  metadata     JSONB NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(metadata) = 'object'),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'scheduled_posts_updated_at') THEN
   CREATE TRIGGER scheduled_posts_updated_at BEFORE UPDATE ON scheduled_posts FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_sp_status_scheduled_at
+  ON scheduled_posts(status, scheduled_at)
+  WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_sp_user_status
+  ON scheduled_posts(user_id, status)
+  WHERE status = 'pending';
 
 -- ─── Scheduled post destinations ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scheduled_post_destinations (
@@ -204,6 +249,8 @@ CREATE TABLE IF NOT EXISTS scheduled_post_destinations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (post_id, group_id)
 );
+CREATE INDEX IF NOT EXISTS idx_spd_post_id
+  ON scheduled_post_destinations(post_id);
 
 -- ─── History entries ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS history_entries (
@@ -214,15 +261,17 @@ CREATE TABLE IF NOT EXISTS history_entries (
   destination       TEXT NOT NULL DEFAULT '',
   status            TEXT NOT NULL DEFAULT 'success',
   details           JSONB NOT NULL DEFAULT '{}',
-  direction         TEXT NOT NULL DEFAULT 'outbound',
+  direction         TEXT NOT NULL DEFAULT 'outbound' CHECK (direction IN ('inbound','outbound','system')),
   message_type      TEXT NOT NULL DEFAULT 'text',
-  processing_status TEXT NOT NULL DEFAULT 'processed',
+  processing_status TEXT NOT NULL DEFAULT 'processed' CHECK (processing_status IN ('processed','sent','skipped','error','blocked')),
   block_reason      TEXT NOT NULL DEFAULT '',
   error_step        TEXT NOT NULL DEFAULT '',
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS history_entries_user_idx ON history_entries(user_id);
 CREATE INDEX IF NOT EXISTS history_entries_created_idx ON history_entries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_user_created
+  ON history_entries(user_id, created_at DESC);
 
 -- ─── Link hub pages ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS link_hub_pages (
@@ -238,6 +287,8 @@ CREATE TABLE IF NOT EXISTS link_hub_pages (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'link_hub_pages_updated_at') THEN
   CREATE TRIGGER link_hub_pages_updated_at BEFORE UPDATE ON link_hub_pages FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_link_hub_pages_user_id
+  ON link_hub_pages(user_id);
 
 -- ─── Shopee automations ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS shopee_automations (
@@ -269,6 +320,8 @@ CREATE TABLE IF NOT EXISTS shopee_automations (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'shopee_automations_updated_at') THEN
   CREATE TRIGGER shopee_automations_updated_at BEFORE UPDATE ON shopee_automations FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_shopee_automations_user_id
+  ON shopee_automations(user_id);
 
 -- ─── MeLi sessions ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS meli_sessions (
@@ -277,7 +330,7 @@ CREATE TABLE IF NOT EXISTS meli_sessions (
   name            TEXT NOT NULL DEFAULT '',
   account_name    TEXT NOT NULL DEFAULT '',
   ml_user_id      TEXT NOT NULL DEFAULT '',
-  status          TEXT NOT NULL DEFAULT 'active',
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','error')),
   last_checked_at TIMESTAMPTZ,
   error_message   TEXT NOT NULL DEFAULT '',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -286,6 +339,8 @@ CREATE TABLE IF NOT EXISTS meli_sessions (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'meli_sessions_updated_at') THEN
   CREATE TRIGGER meli_sessions_updated_at BEFORE UPDATE ON meli_sessions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_meli_sessions_user_id
+  ON meli_sessions(user_id);
 
 -- ─── API credentials ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS api_credentials (
@@ -312,7 +367,12 @@ CREATE TABLE IF NOT EXISTS admin_audit_logs (
   details         JSONB NOT NULL DEFAULT '{}',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS admin_audit_logs_created_idx ON admin_audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created
+  ON admin_audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id
+  ON admin_audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target_user_id
+  ON admin_audit_logs(target_user_id);
 
 -- ─── System announcements ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS system_announcements (
@@ -350,6 +410,10 @@ CREATE TABLE IF NOT EXISTS user_notifications (
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'user_notifications_updated_at') THEN
   CREATE TRIGGER user_notifications_updated_at BEFORE UPDATE ON user_notifications FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 END IF; END $$;
+CREATE INDEX IF NOT EXISTS idx_notif_user_status
+  ON user_notifications(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_notif_announcement
+  ON user_notifications(announcement_id);
 
 -- ─── App runtime flags ────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS app_runtime_flags (

@@ -74,7 +74,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           code: "ML_TAB_REQUIRED",
-          message: "Abra uma pagina do Mercado Livre e faça login nela antes de capturar os cookies."
+          message: "Abra uma pagina do Mercado Livre e faca login nela antes de capturar os cookies."
         });
         return;
       }
@@ -95,7 +95,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           code: "ML_LOGIN_REQUIRED",
-          message: "Cookies encontrados, mas sem sinal de sessao autenticada. Faça login no Mercado Livre e tente novamente."
+          message: "Cookies encontrados, mas sem sinal de sessao autenticada. Faca login no Mercado Livre e tente novamente."
         });
         return;
       }

@@ -1,7 +1,8 @@
 AutoLinks - Sistema de icones da extensao
 
 Fonte oficial:
-- icon-source.svg
+- icon-source.png (preferencial)
+- icon-source.svg (fallback legado)
 
 Arquivos gerados para o manifest:
 - icon-16.png

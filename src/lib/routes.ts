@@ -3,6 +3,8 @@ export const ROUTES = {
   home: "/home",
   hubPublic: "/hub/:slug",
   maintenance: "/maintenance",
+  termos: "/termos-de-uso",
+  privacidade: "/privacidade",
   auth: {
     login: "/auth/login",
     cadastro: "/auth/cadastro",

@@ -164,17 +164,17 @@ export default function ShopeeAutomacoes() {
   };
 
   const handleSubmit = async () => {
-    if (!form.name.trim()) { toast.error("Nome é obrigatório"); return; }
-    if (!form.sessionId) { toast.error("Selecione uma sessão de envio"); return; }
-    if (!form.templateId) { toast.error("Selecione um template de mensagem"); return; }
+    if (!form.name.trim()) { toast.error("Dê um nome pra automação"); return; }
+    if (!form.sessionId) { toast.error("Escolha a sessão de envio"); return; }
+    if (!form.templateId) { toast.error("Escolha um template de mensagem"); return; }
     if (form.destinationGroupIds.length === 0 && form.masterGroupIds.length === 0) {
-      toast.error("Selecione ao menos um grupo de destino"); return;
+      toast.error("Escolha pelo menos um grupo de destino"); return;
     }
 
     const normalizedStart = normalizeScheduleTime(form.activeHoursStart);
     const normalizedEnd = normalizeScheduleTime(form.activeHoursEnd);
     if (!normalizedStart || !normalizedEnd) {
-      toast.error("Horário inválido. Use o formato 24h (HH:mm)");
+      toast.error("Horário inválido. Use o formato HH:mm (ex: 09:30)");
       return;
     }
 
@@ -246,8 +246,8 @@ export default function ShopeeAutomacoes() {
   if (credLoading) return null;
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6">
-      <PageHeader title="Piloto automático" description="Configure envio automático de ofertas da Shopee">
+    <div className="ds-page">
+      <PageHeader title="Piloto automático" description="Envie ofertas da Shopee automaticamente pros seus grupos">
         <div className="flex w-full flex-wrap items-center justify-center gap-2.5">
           <Button
             size="sm"
@@ -363,19 +363,19 @@ export default function ShopeeAutomacoes() {
           })}
         </div>
       ) : (
-        <EmptyState icon={Bot} title="Nenhuma automação ativa" description="Crie automações para enviar ofertas automaticamente." actionLabel="Criar automação" onAction={openCreate} />
+        <EmptyState icon={Bot} title="Nenhuma automação ainda" description="Crie automações pra enviar ofertas da Shopee sem precisar fazer nada." actionLabel="Criar automação" onAction={openCreate} />
       )}
 
       {/* Delete confirmation */}
       <AlertDialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Excluir automação?</AlertDialogTitle>
-            <AlertDialogDescription>A automação <strong>{automations.find((a) => a.id === deleteId)?.name}</strong> será excluída permanentemente.</AlertDialogDescription>
+            <AlertDialogTitle>Apagar automação?</AlertDialogTitle>
+            <AlertDialogDescription>A automação <strong>{automations.find((a) => a.id === deleteId)?.name}</strong> vai ser apagada e não tem como desfazer.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteId) deleteAutomation(deleteId); setDeleteId(null); }}>Excluir</AlertDialogAction>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteId) deleteAutomation(deleteId); setDeleteId(null); }}>Apagar</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -384,7 +384,7 @@ export default function ShopeeAutomacoes() {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className="max-w-3xl max-h-[90dvh] overflow-y-auto px-6 py-5">
           <DialogHeader>
-            <DialogTitle>{editingId ? "Editar automação" : "Nova automação inteligente"}</DialogTitle>
+            <DialogTitle>{editingId ? "Editar automação" : "Nova automação"}</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-5">
@@ -401,7 +401,7 @@ export default function ShopeeAutomacoes() {
             <div className="grid gap-4 md:grid-cols-2">
               {/* 2. Horário de funcionamento */}
               <div className="space-y-2 rounded-lg border bg-muted/20 p-4">
-                <Label>Horário de funcionamento (fuso do sistema)</Label>
+                <Label>Horário que funciona (fuso do sistema)</Label>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <span className="text-xs text-muted-foreground">Início</span>
@@ -443,20 +443,20 @@ export default function ShopeeAutomacoes() {
 
               {/* 3. Intervalo */}
               <div className="space-y-2 rounded-lg border bg-muted/20 p-4">
-                <Label>Intervalo entre envios (minutos) *</Label>
+                <Label>Tempo entre envios (minutos) *</Label>
                 <Input
                   type="number"
                   min="5"
                   value={form.intervalMinutes}
                   onChange={(e) => setForm({ ...form, intervalMinutes: e.target.value })}
                 />
-                <span className="text-xs text-muted-foreground">A cada {form.intervalMinutes || "30"} minutos uma oferta é enviada</span>
+                <span className="text-xs text-muted-foreground">Uma oferta vai ser enviada a cada {form.intervalMinutes || "30"} minutos</span>
               </div>
             </div>
 
             {/* 4. Filtros opcionais */}
             <div className="space-y-2">
-              <Label>Filtros de oferta <span className="text-muted-foreground font-normal">(opcionais)</span></Label>
+              <Label>Filtros de oferta <span className="text-muted-foreground font-normal">(não precisa preencher)</span></Label>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="space-y-1">
                   <span className="text-xs text-muted-foreground">Desconto min (%)</span>
@@ -483,7 +483,7 @@ export default function ShopeeAutomacoes() {
               <CategoryMultiSelect
                 value={form.categories}
                 onChange={(categoryIds) => setForm({ ...form, categories: categoryIds })}
-                placeholder="Selecione categorias..."
+                placeholder="Escolha as categorias..."
               />
             </div>
 
@@ -494,8 +494,8 @@ export default function ShopeeAutomacoes() {
                 value={form.sessionId}
                 onValueChange={handleSessionChange}
                 sessions={connectedSessions}
-                placeholder="Selecione uma sessão..."
-                emptyLabel="Nenhuma sessão online"
+                placeholder="Escolha uma sessão..."
+                emptyLabel="Nenhuma sessão conectada"
               />
             </div>
 
@@ -503,7 +503,7 @@ export default function ShopeeAutomacoes() {
             {form.sessionId && (
               <>
                 <div className="space-y-2">
-                  <Label>Grupos destino</Label>
+                  <Label>Grupos</Label>
                   <MultiOptionDropdown
                     value={form.destinationGroupIds}
                     onChange={(ids) => setForm((prev) => ({ ...prev, destinationGroupIds: ids }))}
@@ -512,10 +512,10 @@ export default function ShopeeAutomacoes() {
                       label: group.name,
                       meta: `${group.memberCount}`,
                     }))}
-                    placeholder="Selecionar grupos destino"
-                    selectedLabel={(count) => `${count} grupo(s) selecionado(s)`}
-                    emptyMessage="Nenhum grupo associado a esta sessão"
-                    title="Grupos individuais"
+                    placeholder="Escolha os grupos"
+                    selectedLabel={(count) => `${count} grupo(s)`}
+                    emptyMessage="Nenhum grupo nessa sessão"
+                    title="Grupos"
                   />
                 </div>
 
@@ -530,9 +530,9 @@ export default function ShopeeAutomacoes() {
                         label: masterGroup.name,
                         meta: `${masterGroup.groupIds.length} grupos`,
                       }))}
-                      placeholder="Selecionar grupos mestre"
-                      selectedLabel={(count) => `${count} grupo(s) mestre selecionado(s)`}
-                      emptyMessage="Nenhum grupo mestre associado a esta sessão"
+                      placeholder="Escolher grupos mestres"
+                      selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                      emptyMessage="Nenhum grupo mestre nessa sessão"
                       title="Grupos mestre"
                     />
                   </div>
@@ -542,9 +542,9 @@ export default function ShopeeAutomacoes() {
 
             {/* 8. Template (obrigatório) */}
             <div className="space-y-2">
-              <Label>Template de mensagem *</Label>
+              <Label>Template *</Label>
               <Select value={form.templateId} onValueChange={(v) => setForm({ ...form, templateId: v })}>
-                <SelectTrigger><SelectValue placeholder="Selecione um template..." /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
                 <SelectContent>
                   {templates.length === 0 && (
                     <SelectItem value="_none" disabled>Nenhum template criado</SelectItem>
@@ -560,7 +560,7 @@ export default function ShopeeAutomacoes() {
           <DialogFooter className="pt-2">
             <Button variant="outline" onClick={() => setShowModal(false)}>Cancelar</Button>
             <Button onClick={handleSubmit} disabled={submitting}>
-              {submitting ? "Salvando..." : editingId ? "Salvar alterações" : "Criar Automação"}
+              {submitting ? "Salvando..." : editingId ? "Salvar" : "Criar automação"}
             </Button>
           </DialogFooter>
         </DialogContent>

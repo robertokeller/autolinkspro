@@ -1,5 +1,4 @@
-const TARGET_PATH = "/mercadolivre/configuracoes";
-const TRUSTED_PANEL_ORIGINS = [
+const DEFAULT_API_ORIGINS = [
   "https://autolinks.pro",
   "https://www.autolinks.pro",
   "https://app.autolinks.pro",
@@ -8,49 +7,37 @@ const TRUSTED_PANEL_ORIGINS = [
   "http://127.0.0.1:5173",
   "http://127.0.0.1:5175",
   "http://localhost:4173",
-  "http://127.0.0.1:4173"
+  "http://127.0.0.1:4173",
 ];
+
+const STORAGE_KEY_AUTH = "autolinksExtensionAuth";
+
 const STATUS = {
   info: "info",
   success: "success",
-  error: "error"
+  error: "error",
 };
 
 const emailInput = document.getElementById("email");
 const passwordInput = document.getElementById("password");
 const loginBtn = document.getElementById("loginBtn");
 const captureBtn = document.getElementById("captureBtn");
+const logoutBtn = document.getElementById("logoutBtn");
 const statusEl = document.getElementById("status");
 const stepLogin = document.getElementById("stepLogin");
 const stepCapture = document.getElementById("stepCapture");
-let extensionAuthVerified = false;
-let bridgeToken = "";
+
+let extensionAuth = null;
 
 function setStatus(kind, message) {
   statusEl.className = `status ${kind}`;
   statusEl.textContent = message;
 }
 
-function toFriendlyErrorMessage(error) {
-  const raw = String(error?.message || error || "");
-  if (raw.includes("Could not establish connection") || raw.includes("Receiving end does not exist")) {
-    return "Nao consegui falar com a pagina do Autolinks. Abra Configuracoes ML no painel e tente novamente.";
-  }
-  if (raw.toLowerCase().includes("tempo esgotado aguardando resposta")) {
-    return "Conexao iniciada, mas a pagina nao respondeu a tempo. Reabra Configuracoes ML e tente novamente.";
-  }
-  if (raw.toLowerCase().includes("permission")) {
-    return "Permissao do navegador bloqueada. Reinstale a extensao e autorize novamente.";
-  }
-  if (raw.toLowerCase().includes("configuracoes ml") || raw.toLowerCase().includes("painel")) {
-    return raw;
-  }
-  return raw || "Ocorreu um erro inesperado. Tente novamente.";
-}
-
 function setBusy(isBusy) {
   loginBtn.disabled = isBusy;
   captureBtn.disabled = isBusy;
+  if (logoutBtn) logoutBtn.disabled = isBusy;
 }
 
 function setAuthenticated(isAuthenticated) {
@@ -63,30 +50,96 @@ function setAuthenticated(isAuthenticated) {
   }
 }
 
-function isTrustedPanelUrl(url) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeOrigin(raw) {
   try {
-    const parsed = new URL(String(url || ""));
-    return TRUSTED_PANEL_ORIGINS.includes(parsed.origin);
+    const parsed = new URL(String(raw || ""));
+    return parsed.origin;
   } catch {
-    return false;
+    return "";
   }
 }
 
-async function sendToTab(tabId, message) {
-  return chrome.tabs.sendMessage(tabId, message);
+function unique(values) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
-async function pingTab(tab) {
-  if (!tab || typeof tab.id !== "number") return null;
-  try {
-    const response = await sendToTab(tab.id, { type: "AUTOLINKS_PING" });
-    if (response?.ok && response?.payload?.bridgeToken) {
-      bridgeToken = String(response.payload.bridgeToken);
-    }
-    return response?.ok ? response : null;
-  } catch {
-    return null;
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function emailsMatch(a, b) {
+  const left = normalizeEmail(a);
+  const right = normalizeEmail(b);
+  return !!left && !!right && left === right;
+}
+
+function isLikelyJwt(value) {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(value || ""));
+}
+
+function extractErrorMessage(payload, fallback) {
+  if (payload && typeof payload === "object") {
+    const asRecord = payload;
+    const fromErrorObject =
+      asRecord.error && typeof asRecord.error === "object"
+        ? String(asRecord.error.message || "")
+        : "";
+    const fromErrorString = typeof asRecord.error === "string" ? asRecord.error : "";
+    const fromMessage = typeof asRecord.message === "string" ? asRecord.message : "";
+    return (fromErrorObject || fromErrorString || fromMessage || fallback || "").trim();
   }
+  return String(fallback || "").trim();
+}
+
+function isCredentialError(message) {
+  const raw = String(message || "").toLowerCase();
+  return (
+    raw.includes("senha") ||
+    raw.includes("credenciais") ||
+    raw.includes("email ou senha") ||
+    raw.includes("e-mail ainda") ||
+    raw.includes("conta bloqueada")
+  );
+}
+
+function toFriendlyErrorMessage(error) {
+  const raw = String(error?.message || error || "");
+  const lower = raw.toLowerCase();
+
+  if (lower.includes("nao autenticado")) {
+    return "Sua sessao expirou. Faca login novamente.";
+  }
+  if (lower.includes("email ou senha") || lower.includes("credenciais")) {
+    return "E-mail ou senha incorretos.";
+  }
+  if (lower.includes("e-mail ainda nao confirmado")) {
+    return "Seu e-mail ainda nao foi confirmado.";
+  }
+  if (lower.includes("tempo esgotado") || lower.includes("timeout")) {
+    return "Tempo esgotado ao conectar com o Autolinks. Tente novamente.";
+  }
+  if (lower.includes("cookie bloqueado")) {
+    return "Nao consegui salvar sua sessao. Verifique bloqueio de cookies no navegador.";
+  }
+  if (lower.includes("servico api offline")) {
+    return "O servico do Autolinks esta offline no momento.";
+  }
+  return raw || "Ocorreu um erro inesperado. Tente novamente.";
+}
+
+function buildSessionId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const randomNibble = Math.floor(Math.random() * 16);
+    const value = char === "x" ? randomNibble : ((randomNibble & 0x3) | 0x8);
+    return value.toString(16);
+  });
 }
 
 async function listHttpTabs() {
@@ -97,74 +150,301 @@ async function listHttpTabs() {
   });
 }
 
-async function ensureBridgeToken(tabId) {
-  if (bridgeToken) return bridgeToken;
-  const ping = await sendToTab(tabId, { type: "AUTOLINKS_PING" });
-  if (ping?.ok && ping?.payload?.bridgeToken) {
-    bridgeToken = String(ping.payload.bridgeToken);
-    return bridgeToken;
-  }
-  throw new Error("Falha ao validar canal seguro com o painel. Reabra Configuracoes ML e tente novamente.");
+async function getCandidateApiOrigins() {
+  const tabs = await listHttpTabs();
+  const fromTabs = tabs
+    .map((tab) => normalizeOrigin(tab.url))
+    .filter((origin) => origin.includes("autolinks.pro"));
+
+  const current = normalizeOrigin(extensionAuth?.apiOrigin || "");
+  return unique([current, ...fromTabs, ...DEFAULT_API_ORIGINS]);
 }
 
-async function ensureBridgeTab() {
-  const tabs = await listHttpTabs();
-  const isTargetUrl = (url) => {
-    const str = String(url || "");
-    return str.toLowerCase().includes(TARGET_PATH) && isTrustedPanelUrl(str);
+async function readAuthTokenFromCookies(origin) {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return "";
+
+  const cookies = await chrome.cookies.getAll({ url: normalized });
+  if (!Array.isArray(cookies) || cookies.length === 0) return "";
+
+  const decodeValue = (value) => {
+    try {
+      return decodeURIComponent(String(value || ""));
+    } catch {
+      return String(value || "");
+    }
   };
 
-  const existingTargetTab = tabs.find((tab) => isTargetUrl(tab.url));
-  if (existingTargetTab && typeof existingTargetTab.id === "number") {
-    await chrome.tabs.update(existingTargetTab.id, { active: true });
-    return existingTargetTab;
+  const preferredNames = ["autolinks_at", "autolinks_auth", "autolinks_token"];
+  for (const name of preferredNames) {
+    const found = cookies.find((cookie) => String(cookie?.name || "").toLowerCase() === name);
+    const token = decodeValue(found?.value || "");
+    if (isLikelyJwt(token)) return token;
   }
 
-  const candidateOrigins = [...TRUSTED_PANEL_ORIGINS];
-
-  for (const candidateOrigin of candidateOrigins) {
-    const targetUrl = `${candidateOrigin}${TARGET_PATH}`;
-    const created = await chrome.tabs.create({ url: targetUrl, active: true });
-
-    for (let i = 0; i < 15; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      const tab = await chrome.tabs.get(created.id);
-      const currentUrl = String(tab.url || "").toLowerCase();
-
-      if (currentUrl.includes("/auth/login") || currentUrl.includes("/auth/")) {
-        throw new Error("Painel encontrado, mas voce esta na tela de login. Entre no AutoLinks no navegador e tente novamente.");
-      }
-
-      if (isTargetUrl(currentUrl)) {
-        const ping = await pingTab(tab);
-        if (ping?.ok) return tab;
-      }
-    }
-  }
-
-  throw new Error("Nao consegui conectar com Configuracoes ML. Abra o painel Autolinks e tente novamente.");
-}
-
-async function findExistingBridgeTab() {
-  const tabs = await listHttpTabs();
-  const targetTabs = tabs.filter((tab) => {
-    const url = String(tab.url || "");
-    return url.toLowerCase().includes(TARGET_PATH) && isTrustedPanelUrl(url);
+  const fallback = cookies.find((cookie) => {
+    const token = decodeValue(cookie?.value || "");
+    const name = String(cookie?.name || "").toLowerCase();
+    return isLikelyJwt(token) && (name.includes("autolinks") || name.includes("auth") || name.includes("token"));
   });
 
-  for (const tab of targetTabs) {
-    const ping = await pingTab(tab);
-    if (ping?.ok && typeof tab.id === "number") {
-      return tab;
-    }
-  }
-
-  return null;
+  const fallbackToken = decodeValue(fallback?.value || "");
+  return isLikelyJwt(fallbackToken) ? fallbackToken : "";
 }
 
-async function checkAuth(tabId) {
-  const token = await ensureBridgeToken(tabId);
-  return sendToTab(tabId, { type: "AUTOLINKS_CHECK_AUTH", payload: { bridgeToken: token } });
+async function resolveRuntimeAccessToken(auth) {
+  const origin = normalizeOrigin(auth?.apiOrigin || "");
+  if (!origin) return "";
+  const cookieToken = await readAuthTokenFromCookies(origin);
+  if (cookieToken) return cookieToken;
+  return String(auth?.accessToken || "").trim();
+}
+
+async function apiRequest(origin, path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const timeoutMs = typeof options.timeoutMs === "number" ? options.timeoutMs : 15000;
+  const body = options.body;
+  const token = String(options.token || "");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const headers = { Accept: "application/json" };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const response = await fetch(`${origin}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "include",
+      signal: controller.signal,
+    });
+
+    const text = await response.text();
+    let payload = {};
+    if (text && text.trim()) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        throw new Error("Resposta invalida do servidor.");
+      }
+    }
+
+    if (!response.ok) {
+      throw new Error(extractErrorMessage(payload, `Falha ao conectar (HTTP ${response.status}).`));
+    }
+
+    return payload;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Tempo esgotado ao conectar com o Autolinks.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function rpcRequest(auth, name, body = {}) {
+  if (!auth?.apiOrigin) {
+    throw new Error("Sessao da extensao invalida. Faca login novamente.");
+  }
+
+  const runtimeToken = await resolveRuntimeAccessToken(auth);
+  if (!runtimeToken) {
+    throw new Error("Sessao da extensao invalida. Faca login novamente.");
+  }
+
+  const response = await apiRequest(auth.apiOrigin, "/functions/v1/rpc", {
+    method: "POST",
+    token: runtimeToken,
+    body: { name, ...body },
+    timeoutMs: 45000,
+  });
+
+  if (response?.error) {
+    throw new Error(extractErrorMessage(response, `Falha ao executar ${name}.`));
+  }
+
+  const payload = response?.data;
+  if (payload && typeof payload === "object" && payload.error) {
+    throw new Error(extractErrorMessage(payload, `Falha ao executar ${name}.`));
+  }
+
+  return payload;
+}
+
+async function loadAuthFromStorage() {
+  const data = await chrome.storage.local.get(STORAGE_KEY_AUTH);
+  const raw = data?.[STORAGE_KEY_AUTH];
+  if (!raw || typeof raw !== "object") {
+    extensionAuth = null;
+    return null;
+  }
+
+  extensionAuth = {
+    apiOrigin: normalizeOrigin(raw.apiOrigin || ""),
+    accessToken: "",
+    userId: String(raw.userId || ""),
+    email: String(raw.email || ""),
+    expiresAt: Number(raw.expiresAt || 0),
+  };
+
+  if (!extensionAuth.apiOrigin) {
+    extensionAuth = null;
+    return null;
+  }
+
+  return extensionAuth;
+}
+
+async function saveAuthToStorage(auth) {
+  extensionAuth = {
+    apiOrigin: normalizeOrigin(auth.apiOrigin || ""),
+    accessToken: String(auth.accessToken || ""),
+    userId: String(auth.userId || ""),
+    email: String(auth.email || ""),
+    expiresAt: Number(auth.expiresAt || 0),
+  };
+  await chrome.storage.local.set({
+    [STORAGE_KEY_AUTH]: {
+      apiOrigin: extensionAuth.apiOrigin,
+      userId: extensionAuth.userId,
+      email: extensionAuth.email,
+      expiresAt: extensionAuth.expiresAt,
+    },
+  });
+}
+
+async function clearStoredAuth() {
+  extensionAuth = null;
+  await chrome.storage.local.remove(STORAGE_KEY_AUTH);
+}
+
+async function signOutApi(auth) {
+  const origin = normalizeOrigin(auth?.apiOrigin || "");
+  if (!origin) return;
+  const runtimeToken = await resolveRuntimeAccessToken(auth);
+
+  try {
+    await apiRequest(origin, "/auth/signout", {
+      method: "POST",
+      token: runtimeToken,
+      timeoutMs: 12000,
+    });
+  } catch {
+    // Best effort logout.
+  }
+}
+
+async function validateAuthSession(auth) {
+  const origin = normalizeOrigin(auth?.apiOrigin || "");
+  if (!origin) {
+    return { ok: false, message: "Origem da API invalida." };
+  }
+
+  let token = await readAuthTokenFromCookies(origin);
+  if (!token && auth?.accessToken) token = String(auth.accessToken || "");
+  if (!token) {
+    await sleep(200);
+    token = await readAuthTokenFromCookies(origin);
+  }
+  if (!token) {
+    return { ok: false, message: "Nao foi possivel validar a sessao da extensao." };
+  }
+
+  const sessionResult = await apiRequest(origin, "/auth/session", {
+    method: "GET",
+    token,
+    timeoutMs: 12000,
+  });
+
+  if (sessionResult?.error) {
+    return { ok: false, message: extractErrorMessage(sessionResult, "Sessao invalida.") };
+  }
+
+  const session = sessionResult?.data?.session;
+  const user = session?.user;
+  if (!user?.id) {
+    return { ok: false, message: "Sessao invalida ou expirada." };
+  }
+
+  return {
+    ok: true,
+    auth: {
+      apiOrigin: origin,
+      accessToken: token,
+      userId: String(user.id || ""),
+      email: String(user.email || ""),
+      expiresAt: Number(session?.expires_at || 0),
+    },
+  };
+}
+
+async function refreshAuthFromStorage() {
+  await loadAuthFromStorage();
+  if (!extensionAuth) return false;
+
+  try {
+    const validation = await validateAuthSession(extensionAuth);
+    if (!validation?.ok || !validation.auth) {
+      await clearStoredAuth();
+      return false;
+    }
+    await saveAuthToStorage(validation.auth);
+    return true;
+  } catch {
+    await clearStoredAuth();
+    return false;
+  }
+}
+
+async function loginAtOrigin(origin, email, password) {
+  const signIn = await apiRequest(origin, "/auth/signin", {
+    method: "POST",
+    body: { email, password },
+    timeoutMs: 15000,
+  });
+
+  if (signIn?.error) {
+    const message = extractErrorMessage(signIn, "Nao foi possivel validar login.");
+    return { ok: false, message, credentialIssue: isCredentialError(message) };
+  }
+
+  const signInEmail = normalizeEmail(signIn?.data?.user?.email || signIn?.data?.session?.user?.email);
+  if (signInEmail && !emailsMatch(signInEmail, email)) {
+    await signOutApi({ apiOrigin: origin });
+    return {
+      ok: false,
+      message: "O login retornou uma conta diferente do e-mail informado. Tente novamente.",
+      credentialIssue: true,
+    };
+  }
+
+  const validation = await validateAuthSession({ apiOrigin: origin });
+  if (!validation?.ok || !validation.auth) {
+    const message = validation?.message || "Login realizado, mas a sessao nao foi validada.";
+    return { ok: false, message, credentialIssue: false };
+  }
+
+  if (!emailsMatch(validation.auth.email, email)) {
+    await signOutApi(validation.auth);
+    return {
+      ok: false,
+      message: "Sessao invalida: o e-mail autenticado nao corresponde ao informado.",
+      credentialIssue: true,
+    };
+  }
+
+  return { ok: true, auth: validation.auth };
+}
+
+function extractMlUserId(cookies) {
+  const list = Array.isArray(cookies) ? cookies : [];
+  const found = list.find((cookie) => String(cookie?.name || "").toLowerCase() === "orguseridp");
+  return String(found?.value || "").trim();
 }
 
 async function loginAndValidate() {
@@ -177,38 +457,39 @@ async function loginAndValidate() {
   }
 
   setBusy(true);
-  setStatus(STATUS.info, "Conectando ao painel para validar login...");
+  setStatus(STATUS.info, "Validando seu login...");
 
   try {
-    const tab = await findExistingBridgeTab();
-    if (!tab || typeof tab.id !== "number") {
-      extensionAuthVerified = false;
-      setAuthenticated(false);
-      setStatus(STATUS.error, "Abra o painel em /mercadolivre/configuracoes e tente entrar novamente.");
+    const candidates = await getCandidateApiOrigins();
+    if (candidates.length === 0) {
+      setStatus(STATUS.error, "Nao encontrei uma URL valida do painel Autolinks.");
       return;
     }
 
-    const result = await sendToTab(tab.id, {
-      type: "AUTOLINKS_EXTENSION_LOGIN",
-      payload: {
-        email,
-        password,
-        bridgeToken: await ensureBridgeToken(tab.id)
+    let lastError = "";
+    for (const origin of candidates) {
+      try {
+        const result = await loginAtOrigin(origin, email, password);
+        if (result?.ok && result.auth) {
+          await saveAuthToStorage(result.auth);
+          setAuthenticated(true);
+          passwordInput.value = "";
+          setStatus(STATUS.success, `Login confirmado para ${result.auth.email || email}.`);
+          return;
+        }
+
+        lastError = result?.message || lastError;
+        if (result?.credentialIssue) break;
+      } catch (error) {
+        lastError = toFriendlyErrorMessage(error);
       }
-    });
-
-    if (!result?.ok) {
-      extensionAuthVerified = false;
-      setAuthenticated(false);
-      setStatus(STATUS.error, result?.message || "Nao foi possivel validar login.");
-      return;
     }
 
-    extensionAuthVerified = true;
-    setAuthenticated(true);
-    setStatus(STATUS.success, result.message || "Login confirmado com sucesso.");
+    await clearStoredAuth();
+    setAuthenticated(false);
+    setStatus(STATUS.error, lastError || "Nao foi possivel validar login. Tente novamente.");
   } catch (error) {
-    extensionAuthVerified = false;
+    await clearStoredAuth();
     setAuthenticated(false);
     setStatus(STATUS.error, toFriendlyErrorMessage(error));
   } finally {
@@ -217,48 +498,63 @@ async function loginAndValidate() {
 }
 
 async function captureAndSendCookies() {
-  if (!extensionAuthVerified) {
-    setAuthenticated(false);
-    setStatus(STATUS.error, "Login obrigatorio: clique em 'Entrar e validar' antes de capturar cookies.");
-    return;
-  }
-
   setBusy(true);
-  setStatus(STATUS.info, "Preparando envio de cookies...");
+  setStatus(STATUS.info, "Validando sua sessao...");
 
   try {
-    const tab = await ensureBridgeTab();
-    const auth = await checkAuth(tab.id);
-    if (!auth?.ok) {
-      extensionAuthVerified = false;
+    const isLogged = await refreshAuthFromStorage();
+    if (!isLogged || !extensionAuth) {
       setAuthenticated(false);
-      setStatus(STATUS.error, auth?.message || "Sessao nao autenticada. Faca login novamente.");
+      setStatus(STATUS.error, "Login obrigatorio: faca login antes de capturar cookies.");
       return;
     }
 
+    setAuthenticated(true);
     setStatus(STATUS.info, "Capturando cookies do Mercado Livre...");
+
     const capture = await chrome.runtime.sendMessage({ type: "GET_ML_COOKIES" });
     if (!capture?.ok) {
       setStatus(STATUS.error, capture?.message || "Nao foi possivel capturar cookies.");
       return;
     }
 
-    setStatus(STATUS.info, "Enviando cookies para sua conta no painel...");
-    const result = await sendToTab(tab.id, {
-      type: "AUTOLINKS_PUSH_COOKIES",
-      payload: {
-        bridgeToken: await ensureBridgeToken(tab.id),
-        cookies: { cookies: capture.payload.cookies },
-        suggestedName: "Conta principal"
-      }
-    });
-
-    if (!result?.ok) {
-      setStatus(STATUS.error, result?.message || "Falha ao salvar cookies no painel.");
+    const capturedCookies = Array.isArray(capture?.payload?.cookies) ? capture.payload.cookies : [];
+    if (!capturedCookies.length) {
+      setStatus(STATUS.error, "Nenhum cookie valido foi capturado.");
       return;
     }
 
-    setStatus(STATUS.success, result.message || "Cookies enviados com sucesso.");
+    setStatus(STATUS.info, "Validando conta Mercado Livre...");
+    const listed = await rpcRequest(extensionAuth, "meli-list-sessions", {});
+    const sessions = Array.isArray(listed?.sessions) ? listed.sessions : [];
+    const existingSession = sessions[0] || null;
+
+    const incomingMlUserId = extractMlUserId(capturedCookies);
+    const existingMlUserId = String(existingSession?.ml_user_id || "").trim();
+    if (existingMlUserId && incomingMlUserId && existingMlUserId !== incomingMlUserId) {
+      setStatus(
+        STATUS.error,
+        "Os cookies parecem ser de outra conta Mercado Livre. Remova a sessao atual antes de conectar outra conta.",
+      );
+      return;
+    }
+
+    const sessionId = String(existingSession?.id || buildSessionId());
+    const sessionName = String(existingSession?.name || "Conta principal");
+
+    setStatus(STATUS.info, "Enviando cookies para sua conta...");
+    const saved = await rpcRequest(extensionAuth, "meli-save-session", {
+      sessionId,
+      name: sessionName,
+      cookies: { cookies: capturedCookies },
+    });
+
+    const accountName = String(saved?.accountName || "").trim();
+    if (accountName) {
+      setStatus(STATUS.success, `Cookies enviados com sucesso (${accountName}).`);
+    } else {
+      setStatus(STATUS.success, "Cookies enviados com sucesso.");
+    }
   } catch (error) {
     setStatus(STATUS.error, toFriendlyErrorMessage(error));
   } finally {
@@ -268,29 +564,22 @@ async function captureAndSendCookies() {
 
 async function bootstrap() {
   setBusy(true);
-  extensionAuthVerified = false;
   setAuthenticated(false);
-  setStatus(STATUS.info, "Verificando painel aberto...");
+  setStatus(STATUS.info, "Verificando login salvo...");
 
   try {
-    const tab = await findExistingBridgeTab();
-    if (!tab) {
-      setAuthenticated(false);
-      setStatus(STATUS.info, "Abra o painel em /mercadolivre/configuracoes e depois volte para a extensao.");
+    const isLogged = await refreshAuthFromStorage();
+    if (isLogged && extensionAuth) {
+      setAuthenticated(true);
+      setStatus(STATUS.success, `Sessao ativa para ${extensionAuth.email || "usuario"}.`);
       return;
     }
 
-    const auth = await checkAuth(tab.id);
-    if (auth?.ok) {
-      setAuthenticated(false);
-      setStatus(STATUS.info, "Painel conectado. Agora faca login na extensao para liberar a captura.");
-    } else {
-      setAuthenticated(false);
-      setStatus(STATUS.info, "Faca login para liberar a captura de cookies.");
-    }
+    setAuthenticated(false);
+    setStatus(STATUS.info, "Faca login para liberar a captura de cookies.");
   } catch {
     setAuthenticated(false);
-    setStatus(STATUS.info, "Abra o painel em /mercadolivre/configuracoes e mantenha uma aba do Mercado Livre logada.");
+    setStatus(STATUS.info, "Faca login para liberar a captura de cookies.");
   } finally {
     setBusy(false);
   }
@@ -303,5 +592,24 @@ loginBtn.addEventListener("click", () => {
 captureBtn.addEventListener("click", () => {
   void captureAndSendCookies();
 });
+
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", () => {
+    void (async () => {
+      setBusy(true);
+      try {
+        if (extensionAuth?.apiOrigin) {
+          await signOutApi(extensionAuth);
+        }
+        await clearStoredAuth();
+        setAuthenticated(false);
+        passwordInput.value = "";
+        setStatus(STATUS.info, "Voce saiu da conta. Faca login novamente.");
+      } finally {
+        setBusy(false);
+      }
+    })();
+  });
+}
 
 void bootstrap();

@@ -13,12 +13,12 @@ export default function NotFound() {
         <div className="space-y-2">
           <h1 className="text-4xl font-bold tracking-tight">404</h1>
           <p className="text-lg text-muted-foreground">Página não encontrada</p>
-          <p className="text-sm text-muted-foreground">A página que você está procurando não existe ou foi movida.</p>
+          <p className="text-sm text-muted-foreground">Essa página não existe ou foi movida pra outro lugar.</p>
         </div>
         <Button asChild>
           <Link to={ROUTES.app.dashboard}>
             <ArrowLeft className="mr-1.5 h-4 w-4" />
-            Voltar ao Dashboard
+            Voltar pro painel
           </Link>
         </Button>
       </div>

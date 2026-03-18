@@ -39,15 +39,15 @@ export default function ShopeeConversor() {
 
   const convertMeliLink = async (url: string, sessionId: string): Promise<MercadoLivreLinkConversion | null> => {
     if (!user) {
-      toast.error("Usuário não autenticado");
+      toast.error("Você precisa estar logado");
       return null;
     }
     if (!url.trim()) {
-      toast.error("Informe a URL do produto");
+      toast.error("Cole o link do produto");
       return null;
     }
     if (!sessionId) {
-      toast.error("Selecione uma conta Mercado Livre");
+      toast.error("Escolha uma conta Mercado Livre");
       return null;
     }
 
@@ -70,7 +70,7 @@ export default function ShopeeConversor() {
       }
       return conversion;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Falha ao converter link";
+      const message = error instanceof Error ? error.message : "Não deu pra converter o link";
       toast.error("Erro na conversão", { description: message });
       return null;
     } finally {
@@ -81,7 +81,7 @@ export default function ShopeeConversor() {
   const handleConvert = async () => {
     const input = converterInput.trim();
     if (!input) {
-      toast.error("Cole um link para converter");
+      toast.error("Cole um link pra converter");
       return;
     }
 
@@ -90,14 +90,14 @@ export default function ShopeeConversor() {
     const isShopeeUrl = normalized.includes("shopee");
 
     if (!isMeliUrl && !isShopeeUrl) {
-      toast.error("URL não suportada. Use links da Shopee ou Mercado Livre.");
+      toast.error("Link não suportado. Use links da Shopee ou Mercado Livre.");
       return;
     }
 
     if (isMeliUrl) {
       const sessionId = activeMeliSessions[0]?.id;
       if (!sessionId) {
-        toast.error("Nenhuma sessão Mercado Livre ativa. Conecte uma conta em Configurações ML.");
+        toast.error("Nenhuma conta do Mercado Livre ativa. Conecte uma em Configurações ML.");
         return;
       }
 
@@ -111,7 +111,7 @@ export default function ShopeeConversor() {
     }
 
     if (!isConfigured) {
-      toast.error("Configure a Shopee para converter links.");
+      toast.error("Configure a Shopee primeiro pra converter links.");
       return;
     }
 
@@ -130,7 +130,7 @@ export default function ShopeeConversor() {
         toast.warning("Link Shopee convertido em fallback.");
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao converter link");
+      toast.error(error instanceof Error ? error.message : "Não deu pra converter o link");
     } finally {
       setConvertingShopee(false);
     }
@@ -147,10 +147,11 @@ export default function ShopeeConversor() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-4xl space-y-6">
+    <div className="ds-page">
+      <div className="mx-auto w-full max-w-4xl space-y-6">
       <PageHeader
-        title="Conversor de links de afiliado"
-        description="Cole um link de produto da Shopee ou Mercado Livre e gere sua URL pronta para compartilhar."
+        title="Conversor de links"
+        description="Cole um link da Shopee ou Mercado Livre e gere seu link de afiliado pronto pra compartilhar."
       />
       {!isConfigured && <ShopeeCredentialsBanner />}
 
@@ -168,12 +169,12 @@ export default function ShopeeConversor() {
           </div>
           <CardTitle className="text-base">Conversão rápida</CardTitle>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            O sistema identifica automaticamente a plataforma do link e aplica a conversão com sua conta conectada.
+            O sistema detecta a loja do link e converte com a conta que você conectou.
           </p>
         </CardHeader>
         <CardContent className="space-y-5">
           <div className="space-y-2">
-            <Label className="text-sm text-muted-foreground">URL do produto</Label>
+            <Label className="text-sm text-muted-foreground">Link do produto</Label>
             <div className="flex flex-col gap-2.5 sm:flex-row">
               <Input
                 placeholder="https://... (Shopee ou Mercado Livre)"
@@ -188,16 +189,16 @@ export default function ShopeeConversor() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              Dica: pressione Enter para converter sem clicar no botão.
+              Dica: aperte Enter pra converter sem clicar no botão.
             </p>
           </div>
 
           <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
             <div className="rounded-md border border-border/70 bg-background/40 p-3">
-              Shopee: usa sua configuração de afiliado para gerar o link final.
+              Shopee: usa suas credenciais de afiliado pra gerar o link.
             </div>
             <div className="rounded-md border border-border/70 bg-background/40 p-3">
-              Mercado Livre: usa a primeira sessão ativa conectada no módulo de configurações.
+              Mercado Livre: usa a primeira conta ativa conectada nas configurações.
             </div>
           </div>
 
@@ -243,6 +244,7 @@ export default function ShopeeConversor() {
           </CardContent>
         </Card>
       )}
+      </div>
     </div>
   );
 }

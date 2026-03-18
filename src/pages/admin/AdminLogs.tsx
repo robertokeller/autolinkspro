@@ -84,7 +84,7 @@ function mapAdminSummary(action: string, details: unknown): string {
     if (safe.plan_id) parts.push(`plano: ${String(safe.plan_id)}`);
     if (safe.role) parts.push(`perfil: ${String(safe.role)}`);
     if (safe.account_status) parts.push(`status: ${String(safe.account_status)}`);
-    return parts.length > 0 ? parts.join(" | ") : "Dados do usuário atualizados";
+    return parts.length > 0 ? parts.join(" | ") : "Dados atualizados";
   }
   if (action === "update_plan") return `Plano: ${String(safe.plan_id || "-")}`;
   if (action === "set_role") return `Nova role: ${String(safe.role || "user")}`;
@@ -110,7 +110,7 @@ function mapAdminSummary(action: string, details: unknown): string {
     const ok = safe.ok === true;
     return `${service} | ${operation} | ${ok ? "sucesso" : "falha"}`;
   }
-  return "Ação administrativa executada";
+  return "Ação admin feita";
 }
 
 function mapHistorySummary(row: Tables<"history_entries">): string {
@@ -167,8 +167,8 @@ export default function AdminLogs() {
         backend.from("history_entries").select("*").order("created_at", { ascending: false }).limit(800),
       ]);
 
-      if (auditRes.error) throw new Error(auditRes.error.message || "Falha ao carregar logs admin");
-      if (historyRes.error) throw new Error(historyRes.error.message || "Falha ao carregar logs de usuários");
+      if (auditRes.error) throw new Error(auditRes.error.message || "Não deu pra carregar logs admin");
+      if (historyRes.error) throw new Error(historyRes.error.message || "Não deu pra carregar logs de usuários");
 
       const userMap = new Map(users.map((row) => [row.user_id, row]));
       const fallbackUser: AdminUserRow = {
@@ -222,7 +222,7 @@ export default function AdminLogs() {
       const merged = [...adminLogs, ...userActivityLogs].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       setAllLogs(merged);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao carregar logs");
+      toast.error(err instanceof Error ? err.message : "Não deu pra carregar os logs");
       setAllLogs([]);
     } finally {
       setLoading(false);
@@ -290,19 +290,19 @@ export default function AdminLogs() {
     <div className="admin-page">
       <PageHeader
         title="Logs do Sistema"
-        description="Veja, em texto simples, o que cada usuário e admin fez e o horário de cada ação"
+        description="Veja o que cada pessoa fez e quando"
       />
 
       <Card className="admin-card">
         <CardHeader className="pb-2">
           <CardTitle className="admin-card-title flex items-center justify-center gap-2 sm:justify-start">
             <Filter className="h-4 w-4" />
-            Filtros Simples
+            Filtros
           </CardTitle>
         </CardHeader>
         <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <Input
-            placeholder="Buscar por quem fez, o que foi feito ou alvo"
+            placeholder="Buscar por nome, ação ou alvo"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="xl:col-span-2"
@@ -314,8 +314,8 @@ export default function AdminLogs() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os Atores</SelectItem>
-              <SelectItem value="admin">Somente Admins</SelectItem>
-              <SelectItem value="user">Somente Usuários</SelectItem>
+              <SelectItem value="admin">Só Admins</SelectItem>
+              <SelectItem value="user">Só Usuários</SelectItem>
             </SelectContent>
           </Select>
 
@@ -325,8 +325,8 @@ export default function AdminLogs() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os Tipos</SelectItem>
-              <SelectItem value="admin_action">Ações Administrativas</SelectItem>
-              <SelectItem value="user_activity">Atividades de Usuários</SelectItem>
+              <SelectItem value="admin_action">Ações Admin</SelectItem>
+              <SelectItem value="user_activity">Atividade dos Usuários</SelectItem>
             </SelectContent>
           </Select>
 
@@ -373,7 +373,7 @@ export default function AdminLogs() {
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" onClick={clearFilters} className="gap-2 text-muted-foreground xl:col-span-1">
               <X className="h-3.5 w-3.5" />
-              Limpar Filtros
+              Limpar
             </Button>
           )}
         </CardContent>
@@ -383,20 +383,20 @@ export default function AdminLogs() {
         <Badge variant="outline" className="admin-chip">{filteredLogs.length} registro(s)</Badge>
         <Badge variant="outline" className="admin-chip">{allLogs.filter((row) => row.category === "admin_action").length} admin</Badge>
         <Badge variant="outline" className="admin-chip">{allLogs.filter((row) => row.category === "user_activity").length} usuários</Badge>
-        <span className="text-xs text-muted-foreground">Exibindo até 400 logs admin e 800 de usuários (mais recentes)</span>
+        <span className="text-xs text-muted-foreground">Mostrando até 400 admin e 800 de usuários (mais recentes)</span>
       </div>
 
       <Card className="admin-card">
         <CardContent className="p-0">
           {loading ? (
             <div className="p-6">
-              <RoutePendingState label="Carregando logs..." />
+              <RoutePendingState label="Carregando..." />
             </div>
           ) : filteredLogs.length === 0 ? (
             <EmptyState
               icon={ScrollText}
-              title="Nenhum Log Encontrado"
-              description="Ajuste os filtros para visualizar os registros de atividade."
+              title="Nada encontrado"
+              description="Tenta mudar os filtros."
             />
           ) : (
             <div className="divide-y">
@@ -411,7 +411,7 @@ export default function AdminLogs() {
                         {row.actorRole === "admin" ? "Admin" : "Usuário"}
                       </Badge>
                       <Badge variant="outline" className="text-xs">
-                        {row.category === "admin_action" ? "Painel Admin" : "Atividade do App"}
+                        {row.category === "admin_action" ? "Admin" : "App"}
                       </Badge>
                       <Badge variant={STATUS_BADGE_VARIANT[row.status]} className="text-xs">
                         {STATUS_LABELS[row.status]}

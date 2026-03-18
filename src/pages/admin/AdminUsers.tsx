@@ -152,8 +152,8 @@ export default function AdminUsers() {
 
   const getAccessLevelNameFromPlan = (planId: string) => {
     const plan = planCatalog.find((item) => item.id === planId);
-    if (!plan) return "Nível não encontrado";
-    return controlPlane.accessLevels.find((level) => level.id === plan.accessLevelId)?.name || "Nível não encontrado";
+    if (!plan) return "Nível não achado";
+    return controlPlane.accessLevels.find((level) => level.id === plan.accessLevelId)?.name || "Nível não achado";
   };
 
   const loadData = useCallback(async () => {
@@ -183,7 +183,7 @@ export default function AdminUsers() {
         errors24h: Number(global?.errors24h || 0),
       });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao carregar painel admin");
+      toast.error(err instanceof Error ? err.message : "Não deu pra carregar os dados");
     } finally {
       setLoading(false);
     }
@@ -256,7 +256,7 @@ export default function AdminUsers() {
       setEditUser(null);
       await loadData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao atualizar usuário");
+      toast.error(err instanceof Error ? err.message : "Não deu pra atualizar o usuário");
     } finally {
       setSavingEdit(false);
     }
@@ -268,7 +268,7 @@ export default function AdminUsers() {
     if (editRole === "user") {
       const allowedPlanIds = new Set(resolveAssignablePlans(editUser.plan_id).map((plan) => plan.id));
       if (!allowedPlanIds.has(editPlan)) {
-        toast.error("Usuário cliente precisa ter um plano válido para manter o nível de acesso.");
+        toast.error("Usuário precisa ter um plano válido.");
         return;
       }
     }
@@ -283,7 +283,7 @@ export default function AdminUsers() {
 
   const handleCreateUser = async () => {
     if (!createEmail || !createPassword) {
-      toast.error("Informe e-mail e senha");
+      toast.error("Coloca e-mail e senha");
       return;
     }
     const createPasswordError = getPasswordPolicyError(createPassword.trim());
@@ -307,7 +307,7 @@ export default function AdminUsers() {
       if (created && roleOk && statusOk) {
         toast.success(`Usuário ${createEmail} criado com perfil ${createRole === "admin" ? "Administrador" : "Comum"}`);
       } else {
-        toast.warning("Usuário criado, mas sem confirmação completa de perfil. Revise os dados na lista.");
+        toast.warning("Criado, mas confere os dados na lista.");
       }
 
       setOpenCreate(false);
@@ -317,7 +317,7 @@ export default function AdminUsers() {
       setCreateRole("user");
       await loadData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao criar usuário");
+      toast.error(err instanceof Error ? err.message : "Não deu pra criar o usuário");
     } finally {
       setSavingCreate(false);
     }
@@ -332,14 +332,14 @@ export default function AdminUsers() {
       toast.success("Usuário bloqueado");
       await loadData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao bloquear usuário");
+      toast.error(err instanceof Error ? err.message : "Não deu pra bloquear");
     }
   };
 
   const runUserLifecycleAction = async (user: AdminUserRow, action: "activate" | "inactivate" | "block" | "archive" | "restore") => {
     if (action === "block") {
       if (user.user_id === currentUser?.id) {
-        toast.error("Você não pode bloquear sua própria conta");
+        toast.error("Você não pode bloquear a si mesmo");
         return;
       }
       setBlockTarget(user);
@@ -359,7 +359,7 @@ export default function AdminUsers() {
       }
       await loadData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao executar ação de usuário");
+      toast.error(err instanceof Error ? err.message : "Não deu pra fazer essa ação");
     }
   };
 
@@ -372,7 +372,7 @@ export default function AdminUsers() {
       setExtendPlanTarget(null);
       await loadData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao renovar plano");
+      toast.error(err instanceof Error ? err.message : "Não deu pra renovar o plano");
     } finally {
       setExtendingPlan(false);
     }
@@ -381,11 +381,11 @@ export default function AdminUsers() {
   const handleSaveBillingNote = async () => {
     if (!billingNoteUser || savingBillingNote) return;
     if (!billingNoteReason.trim()) {
-      toast.error("Informe o motivo");
+      toast.error("Coloca o motivo");
       return;
     }
     if ((billingNoteType === "refund" || billingNoteType === "credit") && Number(billingNoteAmount) <= 0) {
-      toast.error("Informe um valor maior que zero");
+      toast.error("Coloca um valor maior que zero");
       return;
     }
     setSavingBillingNote(true);
@@ -404,7 +404,7 @@ export default function AdminUsers() {
       setBillingNoteReason("");
       setBillingNoteType("refund");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao registrar nota");
+      toast.error(err instanceof Error ? err.message : "Não deu pra registrar");
     } finally {
       setSavingBillingNote(false);
     }
@@ -419,7 +419,7 @@ export default function AdminUsers() {
       setDeleteTarget(null);
       await loadData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao apagar usuário");
+      toast.error(err instanceof Error ? err.message : "Não deu pra apagar");
     } finally {
       setDeletingUser(false);
     }
@@ -486,14 +486,14 @@ export default function AdminUsers() {
           return;
         }
         await invokeAdmin({ action: "reset_password", user_id: planManagerUser.user_id, password: pmNewPassword.trim() });
-        toast.success("Senha redefinida com sucesso");
+        toast.success("Senha trocada!");
       }
 
       toast.success(`Plano de ${planManagerUser.email} atualizado`);
       setPlanManagerUser(null);
       await loadData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao salvar alterações");
+      toast.error(err instanceof Error ? err.message : "Não deu pra salvar");
     } finally {
       setSavingPlanManager(false);
     }
@@ -506,7 +506,7 @@ export default function AdminUsers() {
 
   return (
     <div className="admin-page">
-      <PageHeader title="Usuários" description="Gerencie usuários, plano atribuído e ciclo de vida da conta" />
+      <PageHeader title="Usuários" description="Gerencie usuários, planos e status das contas" />
 
       <div className="admin-toolbar border-primary/30 bg-primary/5 text-center text-xs text-primary sm:text-left">
         Plano Padrão de Cadastro: <strong>{defaultSignupPlan?.name || "Não definido"}</strong>
@@ -517,7 +517,7 @@ export default function AdminUsers() {
         <div className="relative max-w-sm flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Buscar por nome, e-mail, plano, perfil ou status..."
+            placeholder="Buscar usuário..."
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="pl-9"
@@ -555,7 +555,7 @@ export default function AdminUsers() {
           <div className="divide-y">
             {loading && (
               <div className="p-6">
-                <RoutePendingState label="Carregando usuários..." />
+                <RoutePendingState label="Carregando..." />
               </div>
             )}
             {!loading && filtered.map((user) => (
@@ -696,7 +696,7 @@ export default function AdminUsers() {
             ))}
 
             {!loading && filtered.length === 0 && (
-              <div className="p-8 text-center text-sm text-muted-foreground">Nenhum Usuário Encontrado</div>
+              <div className="p-8 text-center text-sm text-muted-foreground">Nenhum usuário encontrado</div>
             )}
           </div>
         </CardContent>
@@ -736,26 +736,26 @@ export default function AdminUsers() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Nível de acesso do usuário: {getAccessLevelNameFromPlan(editPlan)}
+                  Nível: {getAccessLevelNameFromPlan(editPlan)}
                 </p>
               </div>
               <div className="space-y-2">
-                <Label>Permissão Administrativa</Label>
+                <Label>Permissão</Label>
                 <Select value={editRole} onValueChange={(value) => setEditRole(value as UserRole)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="user">Usuário Comum</SelectItem>
+                    <SelectItem value="user">Comum</SelectItem>
                     <SelectItem value="admin">Administrador</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Esta permissão controla apenas acesso ao painel admin. As funções do sistema seguem o nível definido no plano.
+                  Isso só controla acesso ao painel admin. O resto segue o nível do plano.
                 </p>
               </div>
               <div className="space-y-2">
-                <Label>Status da Conta</Label>
+                <Label>Status</Label>
                 <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)}>
                   <SelectTrigger>
                     <SelectValue />
@@ -774,13 +774,13 @@ export default function AdminUsers() {
                   <div className="rounded-md border bg-muted/30 p-3 space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
-                        <p className="text-xs font-medium">Validade da Assinatura</p>
+                        <p className="text-xs font-medium">Validade</p>
                         {expiry ? (
                           <p className={`text-xs ${
                             expiry.expired ? "font-semibold text-destructive" : expiry.urgent ? "font-semibold text-amber-600 dark:text-amber-400" : "text-muted-foreground"
                           }`}>{expiry.label}</p>
                         ) : (
-                          <p className="text-xs text-muted-foreground">Sem data de expiração definida</p>
+                          <p className="text-xs text-muted-foreground">Sem data de vencimento</p>
                         )}
                       </div>
                       <Button
@@ -800,7 +800,7 @@ export default function AdminUsers() {
                       onClick={() => { setBillingNoteUser(editUser); }}
                     >
                       <FileText className="h-3.5 w-3.5" />
-                      Registrar Reembolso / Nota de Cobrança
+                      Reembolso / Nota
                     </Button>
                   </div>
                 );
@@ -821,7 +821,7 @@ export default function AdminUsers() {
           <AlertDialogHeader>
             <AlertDialogTitle>Apagar Usuário?</AlertDialogTitle>
             <AlertDialogDescription>
-              Esta ação remove permanentemente a conta de <strong>{deleteTarget?.email}</strong> e não pode ser desfeita.
+              Isso apaga a conta de <strong>{deleteTarget?.email}</strong> de vez. Não dá pra desfazer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -840,9 +840,9 @@ export default function AdminUsers() {
       <AlertDialog open={showAdminPromotionConfirm} onOpenChange={setShowAdminPromotionConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Promover a Administrador?</AlertDialogTitle>
+            <AlertDialogTitle>Promover pra Admin?</AlertDialogTitle>
             <AlertDialogDescription>
-              <strong>{editUser?.email}</strong> terá acesso completo ao painel admin, incluindo gestão de usuários e configurações globais. Confirme apenas se tem certeza.
+              <strong>{editUser?.email}</strong> vai ter acesso total ao painel admin, incluindo gerenciar usuários e configurações. Só confirme se tiver certeza.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -854,7 +854,7 @@ export default function AdminUsers() {
                 void doActualSave();
               }}
             >
-              Confirmar Promoção
+              Promover
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -863,9 +863,9 @@ export default function AdminUsers() {
       <AlertDialog open={!!blockTarget} onOpenChange={(open) => !open && setBlockTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Bloquear Usuário?</AlertDialogTitle>
+            <AlertDialogTitle>Bloquear?</AlertDialogTitle>
             <AlertDialogDescription>
-              <strong>{blockTarget?.email}</strong> será bloqueado e não poderá mais acessar o sistema. Você pode desfazer isso a qualquer momento.
+              <strong>{blockTarget?.email}</strong> vai ser bloqueado e perde o acesso. Você pode desbloquear depois.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -885,11 +885,11 @@ export default function AdminUsers() {
           <AlertDialogHeader>
             <AlertDialogTitle>Renovar Plano?</AlertDialogTitle>
             <AlertDialogDescription>
-              O plano de <strong>{extendPlanTarget?.email}</strong> será estendido por mais um período completo
+              O plano de <strong>{extendPlanTarget?.email}</strong> vai ganhar mais um período
               {(() => {
                 const expiry = formatExpiry(extendPlanTarget?.plan_expires_at ?? null);
                 if (!expiry || expiry.expired) return " a partir de hoje.";
-                return ` a partir da data de vencimento atual.`;
+                return ` a partir do vencimento atual.`;
               })()}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -897,7 +897,7 @@ export default function AdminUsers() {
             <AlertDialogCancel disabled={extendingPlan}>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={() => void handleExtendPlan()} disabled={extendingPlan}>
               <CalendarCheck className="mr-2 h-4 w-4" />
-              {extendingPlan ? "Renovando..." : "Confirmar Renovação"}
+              {extendingPlan ? "Renovando..." : "Renovar"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -906,7 +906,7 @@ export default function AdminUsers() {
       <Dialog open={!!billingNoteUser} onOpenChange={(open) => { if (!open && !savingBillingNote) { setBillingNoteUser(null); setBillingNoteAmount(""); setBillingNoteReason(""); setBillingNoteType("refund"); } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Registrar Nota de Cobrança</DialogTitle>
+            <DialogTitle>Nota de Cobrança</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
@@ -939,13 +939,13 @@ export default function AdminUsers() {
             <div className="space-y-2">
               <Label>Motivo / Descrição</Label>
               <Input
-                placeholder={billingNoteType === "refund" ? "Ex: cancelamento solicitado pelo cliente" : "Descreva o motivo"}
+                placeholder={billingNoteType === "refund" ? "Ex: cancelamento pedido pelo cliente" : "Descreva o motivo"}
                 value={billingNoteReason}
                 onChange={(e) => setBillingNoteReason(e.target.value)}
               />
             </div>
             <p className="text-xs text-muted-foreground">
-              Esta entrada será registrada no histórico de auditoria. Para reembolsos reais, processe também pelo painel do fornecedor de pagamentos.
+              Isso fica registrado no histórico. Pra reembolsos de verdade, processe também no painel de pagamentos.
             </p>
           </div>
           <DialogFooter>
@@ -960,7 +960,7 @@ export default function AdminUsers() {
       <Dialog open={openCreate} onOpenChange={setOpenCreate}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Criar Novo Usuário</DialogTitle>
+            <DialogTitle>Criar Usuário</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -986,21 +986,21 @@ export default function AdminUsers() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Plano Inicial (automático)</Label>
+              <Label>Plano automático</Label>
               <div className="rounded-md border bg-muted/30 px-3 py-2">
-                <p className="text-sm font-medium">{defaultSignupPlan?.name || "Plano padrão não encontrado"}</p>
+                <p className="text-sm font-medium">{defaultSignupPlan?.name || "Plano padrão não achado"}</p>
                 <p className="text-xs text-muted-foreground">
                   {defaultSignupPlan
-                    ? `Nível atribuído: ${getAccessLevelNameFromPlan(defaultSignupPlan.id)}`
-                    : "Defina um plano padrão em Planos para novos cadastros."}
+                    ? `Nível: ${getAccessLevelNameFromPlan(defaultSignupPlan.id)}`
+                    : "Defina um plano pra novos cadastros na aba Planos."}
                 </p>
               </div>
               <p className="text-xs text-muted-foreground">
-                Novo usuário cliente recebe automaticamente o plano padrão de cadastro e o nível vinculado a esse plano.
+                Novo usuário recebe o plano padrão e o nível dele.
               </p>
             </div>
             <div className="space-y-2">
-              <Label>Permissão Administrativa</Label>
+              <Label>Permissão</Label>
               <Select value={createRole} onValueChange={(value) => setCreateRole(value as UserRole)}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1009,7 +1009,7 @@ export default function AdminUsers() {
                   <SelectItem value="user">
                     <div className="flex items-center gap-2">
                       <Users className="h-3.5 w-3.5" />
-                      Usuário Comum
+                      Comum
                     </div>
                   </SelectItem>
                   <SelectItem value="admin">
@@ -1021,7 +1021,7 @@ export default function AdminUsers() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Atribua Administrador apenas para quem pode gerenciar o painel admin.
+                Só dê admin pra quem for gerenciar o sistema.
               </p>
             </div>
           </div>
@@ -1077,7 +1077,7 @@ export default function AdminUsers() {
 
               {/* Expiry date */}
               <div className="space-y-2">
-                <Label>Data de Vencimento</Label>
+                <Label>Vencimento</Label>
                 <Input
                   type="date"
                   value={pmExpiryDate}
@@ -1153,7 +1153,7 @@ export default function AdminUsers() {
                     })()}
                   </p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">Acesso sem data de expiração</p>
+                  <p className="text-xs text-muted-foreground">Sem vencimento</p>
                 )}
               </div>
 
@@ -1161,7 +1161,7 @@ export default function AdminUsers() {
               <div className="space-y-2 border-t pt-4">
                 <Label className="flex items-center gap-1.5">
                   <Key className="h-3.5 w-3.5" />
-                  Redefinir senha (opcional)
+                  Nova senha (opcional)
                 </Label>
                 <div className="flex gap-2">
                   <Input
@@ -1182,7 +1182,7 @@ export default function AdminUsers() {
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Deixe em branco para não alterar a senha.
+                  Deixe vazio pra não mudar a senha.
                 </p>
               </div>
             </div>

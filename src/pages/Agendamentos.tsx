@@ -38,14 +38,14 @@ const statusStyle: Record<string, string> = {
   failed: "bg-destructive/10 text-destructive", cancelled: "bg-muted text-muted-foreground",
 };
 const statusLabel: Record<string, string> = {
-  scheduled: "Agendado",
-  pending: "Agendado",
-  processing: "Processando",
+  scheduled: "Na fila",
+  pending: "Na fila",
+  processing: "Enviando",
   sent: "Enviado",
-  failed: "Falhou",
+  failed: "Deu erro",
   cancelled: "Cancelado",
 };
-const recurrenceLabel: Record<string, string> = { none: "Único", once: "Único", daily: "Diário", weekly: "Semanal" };
+const recurrenceLabel: Record<string, string> = { none: "Uma vez", once: "Uma vez", daily: "Todo dia", weekly: "Toda semana" };
 const typeIcon: Record<MessageType, typeof MessageSquare> = { text: MessageSquare, offer: ShoppingBag, coupon: Tag };
 type DestinationMode = "individual" | "master";
 
@@ -201,12 +201,12 @@ export default function Schedules() {
 
     const parsed = agendamentoSchema.safeParse({ content: draft.content, scheduledAt: effectiveScheduledAt });
     if (!parsed.success) { toast.error(parsed.error.errors[0].message); return; }
-    if (!draft.name.trim()) { toast.error("Defina um nome para o agendamento"); return; }
-    if (!draft.sessionId) { toast.error("Selecione a sessão de envio"); return; }
-    if (destinationMode === "individual" && draft.destinationGroupIds.length === 0) { toast.error("Selecione ao menos um grupo de destino"); return; }
-    if (destinationMode === "master" && draft.masterGroupIds.length === 0) { toast.error("Selecione ao menos um master group"); return; }
-    if (recurrence !== "none" && draft.recurrenceTimes.length === 0) { toast.error("Defina ao menos um horário para recorrência"); return; }
-    if (recurrence === "weekly" && draft.weekDays.length === 0) { toast.error("Selecione ao menos um dia da semana"); return; }
+    if (!draft.name.trim()) { toast.error("Dê um nome pro agendamento"); return; }
+    if (!draft.sessionId) { toast.error("Escolha a sessão de envio"); return; }
+    if (destinationMode === "individual" && draft.destinationGroupIds.length === 0) { toast.error("Escolha pelo menos um grupo de destino"); return; }
+    if (destinationMode === "master" && draft.masterGroupIds.length === 0) { toast.error("Escolha pelo menos um grupo mestre"); return; }
+    if (recurrence !== "none" && draft.recurrenceTimes.length === 0) { toast.error("Coloque pelo menos um horário"); return; }
+    if (recurrence === "weekly" && draft.weekDays.length === 0) { toast.error("Escolha pelo menos um dia da semana"); return; }
 
     let contentToSend = draft.content;
     let links = extractMarketplaceLinks(contentToSend);
@@ -220,7 +220,7 @@ export default function Schedules() {
         contentToSend = conversionResult.convertedContent;
         links = extractMarketplaceLinks(contentToSend);
       } catch {
-        toast.warning("Não foi possível converter links Shopee neste agendamento. Mantendo links originais.");
+        toast.warning("Não deu pra converter os links Shopee desse agendamento. Os links originais foram mantidos.");
       }
     }
 
@@ -250,11 +250,11 @@ export default function Schedules() {
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      toast.error("Selecione um arquivo de imagem válido");
+      toast.error("Escolha um arquivo de imagem");
       return;
     }
     if (file.size > MAX_SCHEDULE_IMAGE_BYTES) {
-      toast.error("Imagem muito grande. Limite de 8MB");
+      toast.error("Imagem grande demais. Máximo 8MB");
       return;
     }
 
@@ -273,9 +273,9 @@ export default function Schedules() {
           fileName: file.name || "schedule_image.jpg",
         },
       }));
-      toast.success("Imagem anexada ao agendamento");
+      toast.success("Imagem adicionada");
     } catch {
-      toast.error("Erro ao processar imagem");
+      toast.error("Não deu pra processar a imagem");
     } finally {
       setUploadingImage(false);
     }
@@ -291,7 +291,7 @@ export default function Schedules() {
   const addRecurrenceTime = () => {
     const normalized = normalizeScheduleTime(recurrenceTimeInput);
     if (!normalized) {
-      toast.error("Horário inválido. Use HH:mm");
+      toast.error("Horário inválido. Use o formato HH:mm (ex: 09:30)");
       return;
     }
     setDraft((d) => {
@@ -426,7 +426,7 @@ export default function Schedules() {
   if (isLoading) {
     return (
       <div className="ds-page">
-        <PageHeader title="Agendamentos" description="Programe envios para datas e horários específicos" />
+        <PageHeader title="Agendamentos" description="Agende mensagens pra enviar na hora certa" />
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => (<Card key={i} className="glass"><CardContent className="py-4"><Skeleton className="h-16 w-full" /></CardContent></Card>))}</div>
       </div>
     );
@@ -434,17 +434,17 @@ export default function Schedules() {
 
   return (
     <div className="ds-page">
-      <PageHeader title="Agendamentos" description="Programe envios para datas e horários específicos">
+      <PageHeader title="Agendamentos" description="Agende mensagens pra enviar na hora certa">
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1.5" />Novo agendamento</Button>
         </div>
       </PageHeader>
 
       {posts.length > 0 ? (
-        <div className="mx-auto max-w-5xl space-y-4">
+        <div className="space-y-4">
           <Card className="glass border-info/30">
             <CardContent className="py-3 text-xs text-muted-foreground text-center">
-              Fila ativa: <span className="font-medium text-foreground">{queuePosts.length}</span> agendamento(s) pendente(s), ordenados por envio mais próximo.
+              Na fila: <span className="font-medium text-foreground">{queuePosts.length}</span> agendamento(s) esperando envio, do mais próximo pro mais longe.
             </CardContent>
           </Card>
 
@@ -456,55 +456,71 @@ export default function Schedules() {
 
           {archivedPosts.length > 0 && (
             <div className="space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide text-center">Salvos (enviados/cancelados/falhos)</p>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide text-center">Já enviados, cancelados ou com erro</p>
               {archivedPosts.map((post) => renderPostCard(post))}
             </div>
           )}
         </div>
       ) : (
-        <EmptyState icon={CalendarDays} title="Nenhum agendamento" description="Crie agendamentos para enviar mensagens em datas específicas." actionLabel="Novo agendamento" onAction={openNew} />
+        <EmptyState icon={CalendarDays} title="Nenhum agendamento ainda" description="Agende mensagens pra enviar na data e hora que você escolher." actionLabel="Criar agendamento" onAction={openNew} />
       )}
 
       {/* Delete confirmation */}
       <AlertDialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Excluir agendamento?</AlertDialogTitle>
-            <AlertDialogDescription>O agendamento "{(deleteTarget?.name || deleteTarget?.content || "").slice(0, 50)}..." será excluído permanentemente.</AlertDialogDescription>
+            <AlertDialogTitle>Apagar agendamento?</AlertDialogTitle>
+            <AlertDialogDescription>O agendamento "{(deleteTarget?.name || deleteTarget?.content || "").slice(0, 50)}..." vai ser apagado e não tem como desfazer.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteId) deletePost(deleteId); setDeleteId(null); }}>Excluir</AlertDialogAction>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteId) deletePost(deleteId); setDeleteId(null); }}>Apagar</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       {/* Single-screen create/edit modal */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="sm:max-w-2xl max-h-[92dvh] overflow-hidden p-0">
-          <div className="flex max-h-[92dvh] flex-col">
-            <DialogHeader className="space-y-1.5 border-b px-5 pt-5 pb-4 sm:px-6 sm:pt-6 sm:pb-5">
-              <DialogTitle>{editingId ? "Editar agendamento" : "Novo agendamento"}</DialogTitle>
+        <DialogContent className="sm:max-w-3xl max-h-[94dvh] overflow-hidden p-0">
+          <div className="flex max-h-[94dvh] flex-col">
+            <DialogHeader className="space-y-2 border-b bg-muted/25 px-5 pt-5 pb-4 sm:px-6 sm:pt-6 sm:pb-5">
+              <div className="flex items-center justify-between gap-2">
+                <DialogTitle>{editingId ? "Editar agendamento" : "Novo agendamento"}</DialogTitle>
+                <Badge variant="outline" className="text-xs">
+                  {isRecurring ? "Recorrente" : "Pontual"}
+                </Badge>
+              </div>
               <DialogDescription>
-                Configure conteúdo, programação e destinos da sua mensagem.
+                Escreva a mensagem, escolha quando enviar e pra quais grupos.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="overflow-y-auto px-5 py-4 max-h-[calc(92dvh-170px)] sm:px-6 sm:py-5">
-              <div className="space-y-4">
-                <Card className="bg-muted/30 border-dashed">
-                  <CardContent className="p-3 text-xs text-muted-foreground text-center">
-                    <span className="font-medium text-foreground">Resumo:</span> {isRecurring ? "recorrente" : "pontual"} • {totalDestinations} destino(s) selecionado(s)
+            <div className="overflow-y-auto px-5 py-4 max-h-[calc(94dvh-170px)] sm:px-6 sm:py-5">
+              <div className="space-y-4 pb-1">
+                <Card className="border-dashed bg-muted/30">
+                  <CardContent className="grid gap-2 p-3 text-xs sm:grid-cols-3">
+                    <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2 text-center">
+                      <p className="text-muted-foreground">Modo</p>
+                      <p className="font-semibold text-foreground">{isRecurring ? "Recorrente" : "Pontual"}</p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2 text-center">
+                      <p className="text-muted-foreground">Destinos</p>
+                      <p className="font-semibold text-foreground">{totalDestinations}</p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2 text-center">
+                      <p className="text-muted-foreground">Links encontrados</p>
+                      <p className="font-semibold text-foreground">{detectedLinks.length}</p>
+                    </div>
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card className="border-border/60 shadow-sm">
                   <CardContent className="space-y-4 p-4">
                 <Label className="text-xs uppercase tracking-wide text-muted-foreground">Conteúdo</Label>
                 <div className="space-y-2">
-                  <Label>Nome do agendamento *</Label>
+                  <Label>Nome *</Label>
                   <Input
-                    placeholder="Ex: Oferta iPhone para grupos VIP"
+                    placeholder="Ex: Oferta iPhone pra grupos VIP"
                     value={draft.name}
                     onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                   />
@@ -539,26 +555,26 @@ export default function Schedules() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Conteúdo da mensagem *</Label>
-                  <Textarea placeholder="Digite a mensagem ou cole um link de marketplace..." value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} className="min-h-[80px]" />
+                  <Label>Mensagem *</Label>
+                  <Textarea placeholder="Escreva a mensagem ou cole um link de loja..." value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} className="min-h-[80px]" />
                   {hasLinks && (
                     <div className="flex flex-wrap gap-1.5">
                       {detectedLinks.map((l, i) => (<Badge key={i} variant="outline" className="text-xs gap-1"><Link2 className="h-3 w-3" />{getMarketplaceLabel(l.marketplace)}</Badge>))}
-                      <span className="text-xs text-muted-foreground ml-1">Links serão convertidos automaticamente</span>
+                      <span className="text-xs text-muted-foreground ml-1">Os links vão ser convertidos na hora do envio</span>
                     </div>
                   )}
                 </div>
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card className="border-border/60 shadow-sm">
                   <CardContent className="space-y-4 p-4">
-                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Programação</Label>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Quando enviar</Label>
                 <div className="space-y-2">
-                  <Label>Recorrência</Label>
+                  <Label>Repetir envio</Label>
                   <div className="flex items-center gap-2">
                     <Switch id="is-recurring" checked={isRecurring} onCheckedChange={toggleRecurrence} />
-                    <Label htmlFor="is-recurring">Ativar recorrência</Label>
+                    <Label htmlFor="is-recurring">Repetir automaticamente</Label>
                   </div>
                 </div>
 
@@ -587,7 +603,7 @@ export default function Schedules() {
 
                 {isRecurring && (
                   <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
-                    <Label>Horários da recorrência *</Label>
+                    <Label>Horários de envio *</Label>
                     <div className="flex items-center gap-2">
                       <Input
                         type="time"
@@ -611,27 +627,27 @@ export default function Schedules() {
 
                 {isRecurring && (
                   <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">Quando ativada, a data/hora fixa deixa de ser usada e o envio segue os dias e horários selecionados.</Label>
+                    <Label className="text-xs text-muted-foreground">Com a repetição ligada, o envio vai acontecer nos dias e horários que você escolheu acima.</Label>
                   </div>
                 )}
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card className="border-border/60 shadow-sm">
                   <CardContent className="space-y-4 p-4">
-                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Destino</Label>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Pra onde enviar</Label>
                 <div className="space-y-2">
-                  <Label>Sessão de envio *</Label>
+                  <Label>Sessão *</Label>
                   <SessionSelect
                     value={draft.sessionId}
                     onValueChange={changeSession}
                     sessions={allSessions}
-                    placeholder="Selecione uma sessão..."
-                    emptyLabel="Nenhuma sessão disponível"
+                    placeholder="Escolha uma sessão..."
+                    emptyLabel="Nenhuma sessão conectada"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Tipo de destino</Label>
+                  <Label>Enviar pra</Label>
                   <Select
                     value={destinationMode}
                     onValueChange={(value: DestinationMode) => {
@@ -644,20 +660,20 @@ export default function Schedules() {
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="individual">Grupos individuais</SelectItem>
-                      <SelectItem value="master">Master Groups</SelectItem>
+                      <SelectItem value="master">Grupos mestres</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 {!draft.sessionId && (
                   <div className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
-                    Selecione a sessão de envio para carregar os destinos disponíveis.
+                    Escolha uma sessão pra ver os grupos disponíveis.
                   </div>
                 )}
 
                 {draft.sessionId && destinationMode === "individual" && (
                   <div className="space-y-2">
-                    <Label>Grupos destino *</Label>
+                    <Label>Grupos *</Label>
                     {filteredGroups.length > 0 ? (
                       <MultiOptionDropdown
                         value={draft.destinationGroupIds}
@@ -667,20 +683,20 @@ export default function Schedules() {
                           label: group.name,
                           meta: `${group.memberCount}`,
                         }))}
-                        placeholder="Selecionar grupos individuais"
-                        selectedLabel={(count) => `${count} grupo(s) selecionado(s)`}
-                        emptyMessage="Nenhum grupo associado a esta sessão"
-                        title="Grupos de destino"
+                        placeholder="Escolha os grupos"
+                        selectedLabel={(count) => `${count} grupo(s)`}
+                        emptyMessage="Nenhum grupo nessa sessão"
+                        title="Grupos"
                       />
                     ) : (
-                      <span className="text-xs text-muted-foreground">Nenhum grupo associado a esta sessão</span>
+                      <span className="text-xs text-muted-foreground">Nenhum grupo nessa sessão</span>
                     )}
                   </div>
                 )}
 
                 {draft.sessionId && destinationMode === "master" && (
                   <div className="space-y-2">
-                    <Label>Master Groups *</Label>
+                    <Label>Grupos mestres *</Label>
                     {filteredMasterGroups.length > 0 ? (
                       <MultiOptionDropdown
                         value={draft.masterGroupIds}
@@ -690,13 +706,13 @@ export default function Schedules() {
                           label: masterGroup.name,
                           meta: `${masterGroup.groupIds.filter((groupId) => filteredGroupIds.has(groupId)).length} grupos`,
                         }))}
-                        placeholder="Selecionar master groups"
-                        selectedLabel={(count) => `${count} master group(s) selecionado(s)`}
-                        emptyMessage="Nenhum master group associado a esta sessão"
-                        title="Grupos mestre"
+                        placeholder="Escolha os grupos mestres"
+                        selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                        emptyMessage="Nenhum grupo mestre nessa sessão"
+                        title="Grupos mestres"
                       />
                     ) : (
-                      <span className="text-xs text-muted-foreground">Nenhum master group associado a esta sessão</span>
+                      <span className="text-xs text-muted-foreground">Nenhum grupo mestre nessa sessão</span>
                     )}
                   </div>
                 )}
@@ -704,12 +720,12 @@ export default function Schedules() {
                 </Card>
 
                 {totalDestinations > 0 && (
-                  <div className="text-xs text-muted-foreground flex items-center justify-center gap-1 p-2 rounded-lg bg-muted/30 text-center"><Send className="h-3 w-3" /> {totalDestinations} grupo(s) receberão a mensagem</div>
+                  <div className="text-xs text-muted-foreground flex items-center justify-center gap-1 p-2 rounded-lg bg-muted/30 text-center"><Send className="h-3 w-3" /> {totalDestinations} grupo(s) vão receber a mensagem</div>
                 )}
               </div>
             </div>
 
-            <DialogFooter className="border-t px-5 py-4 sm:px-6">
+            <DialogFooter className="border-t bg-background/90 px-5 py-4 sm:px-6">
               <Button variant="outline" onClick={() => setShowModal(false)}>Cancelar</Button>
               <Button onClick={savePost}>{editingId ? "Salvar" : "Criar agendamento"}</Button>
             </DialogFooter>
@@ -719,5 +735,4 @@ export default function Schedules() {
     </div>
   );
 }
-
 

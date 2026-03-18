@@ -3,22 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AutoLinks - Mercado Livre</title>
+    <title>Auto Links - Mercado Livre</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="app">
       <div class="brand">
-        <img src="icons/icon-48.png" alt="AutoLinks" class="brand-icon" />
+        <div class="brand-icon" aria-hidden="true">
+          <img src="icons/icon-48.png" alt="" width="40" height="40" />
+        </div>
         <div class="brand-copy">
-          <h1>AutoLinks - Mercado Livre</h1>
+          <h1>Auto Links - Mercado Livre</h1>
           <p class="subtitle">Conecte sua conta e envie cookies do Mercado Livre em 1 clique.</p>
         </div>
       </div>
 
       <div id="stepLogin" class="card">
         <h2>1. Entrar na conta</h2>
-        <p class="copy">Use seu login do Autolinks para validar o envio com isolamento por usuário.</p>
+        <p class="copy">Use seu login do Auto Links para liberar o envio, sem precisar abrir o painel.</p>
 
         <label for="email">E-mail</label>
         <input id="email" type="email" placeholder="seu@email.com" autocomplete="email" />
@@ -26,14 +28,15 @@
         <label for="password">Senha</label>
         <input id="password" type="password" placeholder="********" autocomplete="current-password" />
 
-        <button id="loginBtn" type="button" class="primary">Entrar e validar</button>
+        <button id="loginBtn" type="button" class="primary">Entrar</button>
       </div>
 
       <div id="stepCapture" class="card hidden">
         <h2>2. Capturar e enviar</h2>
-        <p class="copy">Login confirmado. Agora envie os cookies para sua sessão no painel.</p>
-        <p class="copy"><strong>Aviso:</strong> esta etapa so funciona com uma pagina do Mercado Livre aberta e logada no navegador.</p>
+        <p class="copy">Login confirmado. Agora envie os cookies para sua conta.</p>
+        <p class="copy"><strong>Aviso:</strong> mantenha uma pagina do Mercado Livre aberta e logada no navegador.</p>
         <button id="captureBtn" type="button" class="primary">Capturar e enviar cookies</button>
+        <button id="logoutBtn" type="button" class="secondary">Sair da conta</button>
       </div>
 
       <div id="status" class="status info">Pronto para conectar.</div>

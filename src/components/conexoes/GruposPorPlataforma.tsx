@@ -84,9 +84,9 @@ export function GruposPorPlataforma({
     try {
       await onSyncSession(sessionId);
       onRefresh();
-      toast.success("Grupos sincronizados");
+      toast.success("Grupos atualizados");
     } catch {
-      toast.error("Erro ao sincronizar grupos desta sessão");
+      toast.error("Não deu pra sincronizar os grupos dessa sessão");
     } finally {
       setSyncingSessionId(null);
     }
@@ -94,7 +94,7 @@ export function GruposPorPlataforma({
 
   const handleSyncAllOnline = async () => {
     if (onlineSessions.length === 0) {
-      toast.error(`Nenhuma sessão ${platformLabel} online para sincronizar.`);
+      toast.error(`Nenhuma conta ${platformLabel} online pra sincronizar.`);
       return;
     }
 
@@ -106,9 +106,9 @@ export function GruposPorPlataforma({
       onRefresh();
       const failed = results.filter((r) => r.status === "rejected").length;
       if (failed === 0) {
-        toast.success(`Grupos sincronizados de ${onlineSessions.length} sessão(ões).`);
+        toast.success(`Grupos atualizados de ${onlineSessions.length} conta(s).`);
       } else {
-        toast.warning(`Sincronização parcial: ${onlineSessions.length - failed} ok, ${failed} falha(s).`);
+        toast.warning(`Sincronização parcial: ${onlineSessions.length - failed} ok, ${failed} com erro.`);
       }
     } finally {
       setSyncingAll(false);
@@ -140,7 +140,7 @@ export function GruposPorPlataforma({
           </div>
 
           {sessions.length === 0 ? (
-            <p className="text-xs text-muted-foreground">Nenhuma sessão cadastrada.</p>
+            <p className="text-xs text-muted-foreground">Nenhuma conta conectada.</p>
           ) : (
             <div className="space-y-2">
               {sessions.map((session) => {
@@ -219,7 +219,7 @@ export function GruposPorPlataforma({
             <EmptyState
               icon={Users}
               title={`Nenhum grupo ${platformLabel}`}
-              description={`Clique em "Sincronizar grupos" para importar os grupos das sessões online.`}
+              description={`Clique em "Sincronizar grupos" pra puxar os grupos das contas online.`}
               actionLabel="Sincronizar grupos"
               onAction={handleSyncAllOnline}
             />
@@ -227,7 +227,7 @@ export function GruposPorPlataforma({
             <EmptyState
               icon={Search}
               title="Nenhum resultado"
-              description="Ajuste a busca ou o filtro de sessão."
+              description="Mude a busca ou o filtro de sessão."
             />
           ) : (
             <div className="space-y-2">
@@ -240,7 +240,7 @@ export function GruposPorPlataforma({
                   <Card
                     key={group.id}
                     className={cn(
-                      "overflow-hidden border-border/60",
+                      "glass overflow-hidden border-border/60",
                       isOrphan && "border-warning/30 bg-warning/5",
                     )}
                   >

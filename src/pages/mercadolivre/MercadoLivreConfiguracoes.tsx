@@ -54,8 +54,8 @@ function statusBadge(status: MeliSessionStatus) {
   switch (status) {
     case "active": return <Badge className="bg-green-500 text-white"><CheckCircle2 className="mr-1 h-3 w-3" />Ativa</Badge>;
     case "expired": return <Badge variant="destructive"><AlertCircle className="mr-1 h-3 w-3" />Expirada</Badge>;
-    case "untested": return <Badge variant="secondary"><Clock className="mr-1 h-3 w-3" />Não testada</Badge>;
-    case "no_affiliate": return <Badge className="bg-orange-500 text-white"><AlertCircle className="mr-1 h-3 w-3" />Sem programa afiliado</Badge>;
+    case "untested": return <Badge variant="secondary"><Clock className="mr-1 h-3 w-3" />Ainda não testada</Badge>;
+    case "no_affiliate": return <Badge className="bg-orange-500 text-white"><AlertCircle className="mr-1 h-3 w-3" />Sem afiliado ativo</Badge>;
     default: return <Badge variant="destructive"><AlertCircle className="mr-1 h-3 w-3" />Erro</Badge>;
   }
 }
@@ -68,7 +68,7 @@ function SessionCard({ session, onDelete }: {
 
   return (
     <>
-      <Card>
+      <Card className="glass">
         <CardContent className="pt-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 space-y-1">
@@ -104,14 +104,14 @@ function SessionCard({ session, onDelete }: {
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remover sessão?</AlertDialogTitle>
+            <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
             <AlertDialogDescription>
-              A sessão <strong>{session.name}</strong> e seus cookies salvos serão removidos permanentemente.
+              A conta <strong>{session.name}</strong> e os cookies salvos vão ser apagados. Não tem como desfazer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setConfirmDelete(false); onDelete(); }} className="bg-destructive">Remover</AlertDialogAction>
+            <AlertDialogAction onClick={() => { setConfirmDelete(false); onDelete(); }} className="bg-destructive">Apagar</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -159,13 +159,13 @@ export default function MercadoLivreConfiguracoes() {
     try {
       const status = await refreshHealth();
       if (!status?.online) {
-        toast.error(status?.error || "Serviço Mercado Livre indisponível");
+        toast.error(status?.error || "Serviço Mercado Livre fora do ar");
         return;
       }
 
       if (sessions.length === 0) {
         toast.error("Conexão incompleta", {
-          description: "Serviço online, mas não há sessão de cookies disponível. Adicione uma sessão para concluir o teste.",
+          description: "Serviço online, mas não tem nenhuma conta de cookies. Adicione uma pra continuar.",
         });
         return;
       }
@@ -177,8 +177,8 @@ export default function MercadoLivreConfiguracoes() {
 
       if (activeCount === 0) {
         const details = noAffiliateCount > 0
-          ? "Sessão encontrada, mas sem acesso ao programa de afiliados."
-          : "Sessão de cookies encontrada, mas não está utilizável.";
+          ? "Conta encontrada, mas sem acesso ao programa de afiliados."
+          : "Conta de cookies encontrada, mas não está funcionando.";
         toast.error("Conexão incompleta", {
           description: `${details} Atualize os cookies em Configurações ML.`,
         });
@@ -194,18 +194,18 @@ export default function MercadoLivreConfiguracoes() {
           description: `${activeCount} ativa(s), ${noAffiliateCount} sem programa de afiliados.`,
         });
       } else {
-        toast.success("Conexão validada com sucesso", {
-          description: `${activeCount} sessão(ões) ativa(s).`,
+        toast.success("Conexão OK!", {
+          description: `${activeCount} conta(s) ativa(s).`,
         });
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao testar conexão");
+      toast.error(error instanceof Error ? error.message : "Não deu pra testar a conexão");
     }
   };
 
   const handleCreateSession = async () => {
     if (!sessionName.trim()) {
-      toast.error("Informe o nome da sessão");
+      toast.error("Dê um nome pra conta");
       return;
     }
     if (!cookiesJson.trim()) {
@@ -220,11 +220,11 @@ export default function MercadoLivreConfiguracoes() {
         name: sessionName.trim(),
         cookies: cookiesJson.trim(),
       });
-      toast.success("Sessão adicionada com sucesso");
+      toast.success("Conta adicionada!");
       setIsCreateOpen(false);
       resetCreateForm();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao adicionar sessão");
+      toast.error(error instanceof Error ? error.message : "Não deu pra adicionar a conta");
     } finally {
       setIsCreating(false);
     }
@@ -406,7 +406,7 @@ export default function MercadoLivreConfiguracoes() {
     <div className="ds-page">
       <PageHeader
         title="Configurações ML"
-        description="Conecte e gerencie sua conta do Mercado Livre"
+        description="Conecte e veja sua conta do Mercado Livre"
       >
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => void handleTestConnection()} disabled={isHealthRefreshing}>
@@ -417,14 +417,14 @@ export default function MercadoLivreConfiguracoes() {
       </PageHeader>
 
       {health && !health.online && health.error ? (
-        <Card className="border-destructive/30">
+        <Card className="glass border-destructive/30">
           <CardContent className="pt-6">
             <p className="text-sm text-destructive">{health.error}</p>
           </CardContent>
         </Card>
       ) : null}
 
-      <Card className="border-primary/30 bg-primary/5">
+      <Card className="glass border-primary/30 bg-primary/5">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="space-y-1">
@@ -433,7 +433,7 @@ export default function MercadoLivreConfiguracoes() {
                 Extensão AutoLinks - Mercado Livre
               </CardTitle>
               <CardDescription>
-                Capture os cookies automaticamente e envie direto para esta página, sem copiar e colar JSON.
+                Faça login na extensão e envie os cookies direto pra sua conta, sem copiar e colar JSON.
               </CardDescription>
             </div>
             <Button asChild>
@@ -445,20 +445,20 @@ export default function MercadoLivreConfiguracoes() {
           </div>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p><strong>Como usar (2 minutos):</strong></p>
+          <p><strong>Como usar (leva 2 minutos):</strong></p>
           <p>1. Baixe o arquivo .zip e extraia em uma pasta do seu computador.</p>
           <p>2. Abra <strong>chrome://extensions</strong> e ative o <strong>Modo do desenvolvedor</strong>.</p>
           <p>3. Clique em <strong>Carregar sem compactação</strong> e selecione a pasta da extensão.</p>
-          <p>4. Com esta página de Configurações ML aberta e logada, clique no ícone da extensão.</p>
-          <p>5. Na extensão, use <strong>Entrar e validar</strong> e depois <strong>Capturar e enviar cookies</strong>.</p>
+          <p>4. Abra uma aba do Mercado Livre e faça login na conta que deseja conectar.</p>
+          <p>5. Na extensão, use <strong>Entrar</strong> e depois <strong>Capturar e enviar cookies</strong>.</p>
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="glass">
         <CardHeader>
           <div>
             <CardTitle>Contas</CardTitle>
-            <CardDescription>Apenas 1 conta ativa por vez</CardDescription>
+            <CardDescription>Só pode ter 1 conta ativa por vez</CardDescription>
           </div>
         </CardHeader>
         <CardContent>
@@ -468,7 +468,7 @@ export default function MercadoLivreConfiguracoes() {
             <div className="flex flex-col items-center gap-3 py-10 text-center text-muted-foreground">
               <ShoppingCart className="h-10 w-10 opacity-40" />
               <p className="text-sm">Nenhuma conta conectada</p>
-              <p className="text-xs">Use a extensão AutoLinks para conectar sua conta.</p>
+              <p className="text-xs">Use a extensão AutoLinks pra conectar sua conta.</p>
             </div>
           ) : (
             <div className="space-y-3">

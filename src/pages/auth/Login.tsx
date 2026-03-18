@@ -81,7 +81,7 @@ export default function Login() {
         }
 
         if (isApiUnavailableMessage(msg)) {
-          toast.error("API indisponível no momento. Verifique se os serviços estão rodando.");
+          toast.error("API fora do ar. Confira se os serviços estão rodando.");
           return;
         }
 
@@ -90,13 +90,13 @@ export default function Login() {
       }
 
       if (!result?.data?.session) {
-        toast.error("API indisponível no momento. Verifique se os serviços estão rodando.");
+        toast.error("API fora do ar. Confira se os serviços estão rodando.");
         return;
       }
 
       navigate(ROUTES.app.dashboard);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Falha inesperada ao tentar entrar";
+      const message = err instanceof Error ? err.message : "Algo deu errado ao tentar entrar";
       toast.error(message);
     } finally {
       setLoading(false);
@@ -104,7 +104,7 @@ export default function Login() {
   };
 
   return (
-    <AuthCard title="Entrar no Auto Links" description="Acesse sua conta para continuar">
+    <AuthCard title="Entrar no Auto Links" description="Faça login pra acessar sua conta">
       <form onSubmit={handleLogin}>
         <CardContent className="space-y-4">
           <div className="space-y-2">

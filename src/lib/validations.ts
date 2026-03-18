@@ -5,7 +5,6 @@ export const rotaSchema = z.object({
   sourceGroupId: z.string().min(1, "Selecione um grupo de origem"),
 });
 
-
 export const templateSchema = z.object({
   name: z.string().trim().min(1, "Nome é obrigatório").max(100, "Máximo 100 caracteres"),
   content: z.string().trim().min(1, "Conteúdo é obrigatório").max(4000, "Máximo 4000 caracteres"),
@@ -19,5 +18,7 @@ export const perfilSchema = z.object({
 
 export const agendamentoSchema = z.object({
   content: z.string().trim().min(1, "Conteúdo é obrigatório").max(4000, "Máximo 4000 caracteres"),
-  scheduledAt: z.string().min(1, "Defina a data/hora"),
+  scheduledAt: z.string()
+    .min(1, "Defina a data/hora")
+    .refine((value) => !Number.isNaN(new Date(value).getTime()), "Data/hora inválida"),
 });

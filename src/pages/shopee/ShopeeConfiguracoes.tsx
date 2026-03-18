@@ -61,11 +61,11 @@ const TUTORIAL_STEPS = [
 type CombinedStatus = "testing" | "service_offline" | "connected" | "error" | "unknown";
 
 const CONNECTION_CARD_BY_STATUS = {
-  connected: { barClass: "bg-success", iconWrapClass: "bg-success/10 text-success", icon: CheckCircle, title: "API conectada e funcionando" },
-  error: { barClass: "bg-destructive", iconWrapClass: "bg-destructive/10 text-destructive", icon: XCircle, title: "Falha na conexão" },
-  testing: { barClass: "bg-primary animate-pulse", iconWrapClass: "bg-primary/10 text-primary", icon: Loader2, title: "Testando conexão..." },
-  unknown: { barClass: "bg-muted-foreground/30", iconWrapClass: "bg-muted text-muted-foreground", icon: Wifi, title: "Conexão não verificada" },
-  service_offline: { barClass: "bg-destructive", iconWrapClass: "bg-destructive/10 text-destructive", icon: WifiOff, title: "Microsserviço indisponível" },
+  connected: { barClass: "bg-success", iconWrapClass: "bg-success/10 text-success", icon: CheckCircle, title: "Tudo certo! API conectada" },
+  error: { barClass: "bg-destructive", iconWrapClass: "bg-destructive/10 text-destructive", icon: XCircle, title: "Não conseguiu conectar" },
+  testing: { barClass: "bg-primary animate-pulse", iconWrapClass: "bg-primary/10 text-primary", icon: Loader2, title: "Testando..." },
+  unknown: { barClass: "bg-muted-foreground/30", iconWrapClass: "bg-muted text-muted-foreground", icon: Wifi, title: "Ainda não testou a conexão" },
+  service_offline: { barClass: "bg-destructive", iconWrapClass: "bg-destructive/10 text-destructive", icon: WifiOff, title: "Serviço Shopee fora do ar" },
 } as const;
 
 export default function ShopeeConfiguracoes() {
@@ -86,27 +86,27 @@ export default function ShopeeConfiguracoes() {
 
   const handleSave = async () => {
     if (!form.appId.trim()) {
-      toast.error("Preencha o App ID");
+      toast.error("Coloque o App ID");
       return;
     }
     if (!form.secret.trim()) {
-      toast.error(isConfigured ? "Preencha o Secret Key para atualizar" : "Preencha o Secret Key");
+      toast.error(isConfigured ? "Coloque o Secret Key pra atualizar" : "Coloque o Secret Key");
       return;
     }
     setSaving(true);
     try {
       await save({ appId: form.appId.trim(), secret: form.secret.trim() });
-      toast.success("Credenciais salvas com sucesso!");
+      toast.success("Credenciais salvas!");
       setForm((prev) => ({ ...prev, secret: "" }));
       const ok = await testConnection();
       if (ok) {
-        toast.success("Conexão verificada - tudo certo!");
+        toast.success("Conexão OK!");
       } else {
-        toast.error("Credenciais salvas, mas a conexão falhou - verifique os dados");
+        toast.error("Credenciais salvas, mas a conexão falhou — confira os dados");
       }
     } catch (err) {
       console.error("Erro ao salvar credenciais:", err);
-      const message = err instanceof Error ? err.message : "Erro ao salvar credenciais";
+      const message = err instanceof Error ? err.message : "Não deu pra salvar as credenciais";
       toast.error(message);
     } finally {
       setSaving(false);
@@ -117,17 +117,17 @@ export default function ShopeeConfiguracoes() {
     try {
       const status = await refreshServiceHealth();
       if (!status?.online) {
-        toast.error(status?.error || "Serviço Shopee indisponível");
+        toast.error(status?.error || "Serviço Shopee fora do ar");
         return;
       }
       const ok = await testConnection();
       if (ok) {
-        toast.success("Conexão verificada - tudo certo!");
+        toast.success("Conexão OK!");
       } else {
-        toast.error("Credenciais inválidas - verifique os dados");
+        toast.error("Credenciais inválidas — confira os dados");
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao testar conexão");
+      toast.error(error instanceof Error ? error.message : "Não deu pra testar a conexão");
     }
   };
 
@@ -143,12 +143,9 @@ export default function ShopeeConfiguracoes() {
   const CardStatusIcon = cardConfig.icon;
 
   return (
-    <div className="ds-page space-y-8">
-      <div className="mx-auto w-full max-w-3xl">
-        <PageHeader title="Configurações Shopee" description="Configure sua integração com a API oficial de afiliados" />
-      </div>
-
+    <div className="ds-page">
       <div className="mx-auto w-full max-w-3xl space-y-6">
+        <PageHeader title="Configurações Shopee" description="Conecte sua conta de afiliado da Shopee" />
         {/* Connection Status - unified card */}
         <Card className="glass overflow-hidden">
           <div className={`h-1 w-full ${cardConfig.barClass}`} />
@@ -192,11 +189,11 @@ export default function ShopeeConfiguracoes() {
                 <Key className="h-4 w-4" />
               </div>
               <div>
-                <CardTitle className="text-base">Credenciais da API</CardTitle>
+                <CardTitle className="text-base">Suas credenciais</CardTitle>
                 <CardDescription className="text-sm leading-relaxed">
                   {isConfigured
-                    ? "Preencha novamente apenas se quiser atualizar."
-                    : "Insira suas credenciais da API Oficial Shopee Affiliate."}
+                    ? "Só preencha de novo se quiser trocar."
+                    : "Cole aqui o App ID e Secret da API Shopee Affiliate."}
                 </CardDescription>
               </div>
             </div>
@@ -257,9 +254,9 @@ export default function ShopeeConfiguracoes() {
                       <Info className="h-4 w-4" />
                     </div>
                     <div>
-                      <CardTitle className="text-base">Como obter suas credenciais</CardTitle>
+                      <CardTitle className="text-base">Como conseguir suas credenciais</CardTitle>
                       <CardDescription className="text-xs">
-                        Passo a passo para solicitar acesso à API
+                        Passo a passo pra pedir acesso à API
                       </CardDescription>
                     </div>
                   </div>

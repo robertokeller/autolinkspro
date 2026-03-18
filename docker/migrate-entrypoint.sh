@@ -4,6 +4,7 @@
 set -e
 
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/migrations}"
+APPLY_SEED_MIGRATIONS="$(echo "${APPLY_SEED_MIGRATIONS:-false}" | tr '[:upper:]' '[:lower:]')"
 export PGPASSWORD="$POSTGRES_PASSWORD"
 
 PSQL="psql -h ${POSTGRES_HOST:-postgres} -p ${POSTGRES_PORT:-5432} \
@@ -22,6 +23,13 @@ echo "[migrate] Scanning $MIGRATIONS_DIR ..."
 
 for file in $(ls "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort); do
   version=$(basename "$file" .sql)
+  version_lower=$(echo "$version" | tr '[:upper:]' '[:lower:]')
+
+  if [ "$APPLY_SEED_MIGRATIONS" != "true" ] && echo "$version_lower" | grep -q "seed"; then
+    echo "[migrate] Skipped:  $version (seed migration blocked; set APPLY_SEED_MIGRATIONS=true to apply)"
+    continue
+  fi
+
   exists=$($PSQL -tAc "SELECT COUNT(*) FROM schema_migrations WHERE version = '$version'")
 
   if [ "$exists" = "0" ]; then

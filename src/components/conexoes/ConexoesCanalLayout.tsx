@@ -26,7 +26,7 @@ export function ConexoesCanalLayout({
   const contentMaxWidth = centered ? "max-w-4xl" : "max-w-5xl";
 
   return (
-    <div className="space-y-6">
+    <div className="ds-page">
       {centered ? (
         <header className="mx-auto flex w-full max-w-4xl flex-col items-center gap-3 text-center">
           <div className="space-y-1">

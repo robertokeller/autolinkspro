@@ -49,7 +49,7 @@ export default function ConexoesWhatsApp() {
   return (
     <ConexoesCanalLayout
       title="WhatsApp"
-      description="Gerencie suas sessões WhatsApp"
+      description="Conecte e veja suas contas do WhatsApp"
       centered
       headerActions={null}
       activeTab={subTab}

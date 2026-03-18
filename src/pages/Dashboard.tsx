@@ -227,7 +227,7 @@ export default function Dashboard() {
   const shopeeServiceOnline = shopeeHealth?.online === true;
   const meliServiceOnline = meliHealth?.online === true;
   const formatUptime = (uptimeSec: number | null | undefined) => {
-    if (!uptimeSec || uptimeSec <= 0) return "Uptime indisponível";
+    if (!uptimeSec || uptimeSec <= 0) return "Tempo online indisponível";
     if (uptimeSec < 60) return `${uptimeSec}s online`;
     if (uptimeSec < 3600) return `${Math.floor(uptimeSec / 60)}min online`;
     if (uptimeSec < 86400) return `${Math.floor(uptimeSec / 3600)}h online`;
@@ -249,44 +249,44 @@ export default function Dashboard() {
   const metricCards = useMemo<MetricCard[]>(() => {
     return [
       {
-        label: "Operações (24h)",
+        label: "Envios nas últimas 24h",
         value: String(analytics.operations24h),
-        help: `${analytics.success24h} sucesso(s) / ${analytics.errors24h} falha(s)`,
+        help: `${analytics.success24h} ok / ${analytics.errors24h} com erro`,
         icon: MessageSquare,
         accent: "primary",
       },
       {
-        label: "Taxa de sucesso (24h)",
+        label: "Acertos nas últimas 24h",
         value: analytics.successRate24h === null ? "-" : `${analytics.successRate24h}%`,
-        help: "Baseado no histórico recente",
+        help: "De tudo que foi enviado",
         icon: BarChart3,
         accent: analytics.successRate24h !== null && analytics.successRate24h < 70 ? "warning" : "success",
       },
       {
-        label: "Links convertidos (7d)",
+        label: "Links convertidos (7 dias)",
         value: String(analytics.convertedLinks7d),
         help: "Shopee e Mercado Livre",
         icon: LinkIcon,
         accent: "info",
       },
       {
-        label: "Rotas ativas",
+        label: "Rotas ligadas",
         value: String(analytics.routeActive),
-        help: `${analytics.routePaused} pausada(s) / ${analytics.routeError} em erro`,
+        help: `${analytics.routePaused} pausada(s) / ${analytics.routeError} com erro`,
         icon: Route,
         accent: analytics.routeError > 0 ? "warning" : "success",
       },
       {
-        label: "Fila de agendamentos",
+        label: "Na fila pra enviar",
         value: String(analytics.pendingSchedules),
-        help: `${analytics.dueNext24h} para as próximas 24h`,
+        help: `${analytics.dueNext24h} saem nas próximas 24h`,
         icon: Calendar,
         accent: "warning",
       },
       {
-        label: "Automações ativas",
+        label: "Automações ligadas",
         value: String(analytics.activeAutomations),
-        help: `${automationList.length} automação(ões) cadastrada(s)`,
+        help: `${automationList.length} criada(s) no total`,
         icon: Bot,
         accent: analytics.activeAutomations > 0 ? "success" : "info",
       },
@@ -299,21 +299,21 @@ export default function Dashboard() {
   const quickActions = [
     {
       label: "Converter link",
-      desc: shopeeConfigured ? "Shopee configurado" : "Configure suas credenciais da Shopee",
+      desc: shopeeConfigured ? "Shopee pronto" : "Preencha suas credenciais da Shopee",
       icon: LinkIcon,
       href: ROUTES.app.shopeeConversor,
       accent: "primary" as const,
     },
     {
       label: "Pesquisar ofertas",
-      desc: "Encontrar produtos para divulgar",
+      desc: "Achar produtos pra divulgar",
       icon: Search,
       href: ROUTES.app.shopeePesquisa,
       accent: "success" as const,
     },
     {
       label: "Criar rota",
-      desc: `${analytics.routeActive} rota(s) ativa(s)`,
+      desc: `${analytics.routeActive} rota(s) ligada(s)`,
       icon: Route,
       href: ROUTES.app.routes,
       accent: "info" as const,
@@ -337,17 +337,17 @@ export default function Dashboard() {
       title: "WhatsApp",
       details:
         waSessions.length === 0
-          ? "Nenhuma sessão conectada"
+          ? "Nenhuma sessão"
           : waServiceOnline
-            ? `${waOnline}/${waSessions.length} sessões online`
-            : waError || `${waOnline}/${waSessions.length} sessões online`,
+            ? `${waOnline}/${waSessions.length} sessões conectadas`
+            : waError || `${waOnline}/${waSessions.length} sessões conectadas`,
       statusText:
         waSessions.length === 0
-          ? "Não configurado"
+          ? "Não configurou ainda"
           : !waServiceOnline
-            ? "Serviço offline"
+            ? "Fora do ar"
             : waOnline === 0
-              ? "Sem sessão online"
+              ? "Sem sessão conectada"
               : formatUptime(channelHealth?.whatsapp.uptimeSec),
       statusTone:
         waSessions.length === 0
@@ -366,17 +366,17 @@ export default function Dashboard() {
       title: "Telegram",
       details:
         tgSessions.length === 0
-          ? "Nenhuma sessão conectada"
+          ? "Nenhuma sessão"
           : tgServiceOnline
-            ? `${tgOnline}/${tgSessions.length} sessões online`
-            : tgError || `${tgOnline}/${tgSessions.length} sessões online`,
+            ? `${tgOnline}/${tgSessions.length} sessões conectadas`
+            : tgError || `${tgOnline}/${tgSessions.length} sessões conectadas`,
       statusText:
         tgSessions.length === 0
-          ? "Não configurado"
+          ? "Não configurou ainda"
           : !tgServiceOnline
-            ? "Serviço offline"
+            ? "Fora do ar"
             : tgOnline === 0
-              ? "Sem sessão online"
+              ? "Sem sessão conectada"
               : formatUptime(channelHealth?.telegram.uptimeSec),
       statusTone:
         tgSessions.length === 0
@@ -394,15 +394,15 @@ export default function Dashboard() {
       id: "shopee",
       title: "Shopee",
       details: !shopeeConfigured
-        ? "Credenciais da API não configuradas"
+        ? "Credenciais da API não preenchidas"
         : shopeeServiceOnline
-          ? "Credenciais configuradas e serviço respondendo"
-          : shopeeError || "Serviço não respondeu ao health check",
+          ? "Tudo certo, serviço funcionando"
+          : shopeeError || "Serviço não respondeu",
       statusText: !shopeeConfigured
-        ? "Não configurado"
+        ? "Não configurou ainda"
         : shopeeServiceOnline
           ? formatUptime(shopeeHealth?.uptimeSec)
-          : "Serviço offline",
+          : "Fora do ar",
       statusTone: !shopeeConfigured ? "warning" : shopeeServiceOnline ? "success" : "destructive",
       icon: ShoppingBag,
       iconColorClass: "text-primary",
@@ -414,14 +414,14 @@ export default function Dashboard() {
       details: meliSessions.length === 0
         ? "Nenhuma sessão cadastrada"
         : meliServiceOnline
-          ? `${analytics.meliActive}/${meliSessions.length} sessões ativas`
-          : meliError || `${analytics.meliActive}/${meliSessions.length} sessões ativas`,
+          ? `${analytics.meliActive}/${meliSessions.length} sessões funcionando`
+          : meliError || `${analytics.meliActive}/${meliSessions.length} sessões funcionando`,
       statusText: meliSessions.length === 0
-        ? "Não configurado"
+        ? "Não configurou ainda"
         : !meliServiceOnline
-          ? "Serviço offline"
+          ? "Fora do ar"
           : analytics.meliActive === 0
-            ? "Sem sessão ativa"
+            ? "Sem sessão funcionando"
             : formatUptime(meliHealth?.uptimeSec),
       statusTone: meliSessions.length === 0
         ? "warning"
@@ -438,7 +438,7 @@ export default function Dashboard() {
 
   return (
     <div className="ds-page">
-      <PageHeader title="Dashboard" description={`Visão geral • ${nowBRT("EEEE, d 'de' MMMM")}`} />
+      <PageHeader title="Painel geral" description={`Resumo do dia • ${nowBRT("EEEE, d 'de' MMMM")}`} />
 
       {!isLoading && (
         <OnboardingChecklist
@@ -479,7 +479,7 @@ export default function Dashboard() {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
-              Atividade dos últimos 7 dias
+              Últimos 7 dias
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -520,9 +520,9 @@ export default function Dashboard() {
                   </AreaChart>
                 </ResponsiveContainer>
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs">
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />Operações</span>
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Convertidos</span>
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-destructive" />Falhas</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />Envios</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Sucesso</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-destructive" />Erros</span>
                 </div>
               </>
             )}
@@ -534,7 +534,7 @@ export default function Dashboard() {
             <CardTitle className="text-sm font-semibold flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <Wifi className="h-4 w-4 text-muted-foreground" />
-                Saúde operacional
+                Saúde dos serviços
               </span>
             </CardTitle>
           </CardHeader>
@@ -606,8 +606,8 @@ export default function Dashboard() {
             ) : recentActivity.length === 0 ? (
               <div className="text-center py-8">
                 <MessageSquare className="h-8 w-8 text-muted-foreground/20 mx-auto mb-2" />
-                <p className="text-xs text-muted-foreground">Nenhuma atividade registrada</p>
-                <p className="text-xs text-muted-foreground/60 mt-0.5">As ações do sistema aparecerão aqui</p>
+                <p className="text-xs text-muted-foreground">Nada por aqui ainda</p>
+                <p className="text-xs text-muted-foreground/60 mt-0.5">Quando você usar o sistema, a atividade aparece aqui</p>
               </div>
             ) : (
               <div className="space-y-1.5">
@@ -630,7 +630,7 @@ export default function Dashboard() {
             )}
 
             <div className="pt-3 flex items-center justify-between text-xs text-muted-foreground">
-              <span>{analytics.dueNext24h} agendamento(s) nas próximas 24h</span>
+              <span>{analytics.dueNext24h} agendamento(s) saem nas próximas 24h</span>
               <Link to={ROUTES.app.schedules} className="inline-flex items-center hover:text-foreground transition-colors">
                 Abrir agenda <ArrowRight className="h-3 w-3 ml-1" />
               </Link>

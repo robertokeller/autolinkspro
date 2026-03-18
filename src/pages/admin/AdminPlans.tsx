@@ -165,29 +165,29 @@ export default function AdminPlans() {
   const createPlan = () => {
     const name = newPlan.name.trim();
     if (!name) {
-      toast.error("Informe o nome do plano");
+      toast.error("Coloca o nome do plano");
       return;
     }
 
     if (!Number.isFinite(newPlan.price) || newPlan.price < 0) {
-      toast.error("Informe um preço válido");
+      toast.error("Coloca um preço válido");
       return;
     }
 
     if (!Number.isFinite(newPlan.periodDays) || newPlan.periodDays < 1) {
-      toast.error("Informe a duração em dias (mínimo 1)");
+      toast.error("Coloca a duração em dias (mínimo 1)");
       return;
     }
 
     if (!state.accessLevels.some((level) => level.id === newPlan.accessLevelId)) {
-      toast.error("Selecione um nível de acesso válido");
+      toast.error("Escolha um nível de acesso válido");
       return;
     }
 
     const id = buildUniquePlanId(name);
     const baselinePlan = draftPlans.find((plan) => plan.id === draftDefaultSignupPlanId) || draftPlans[0];
     if (!baselinePlan) {
-      toast.error("Não foi possível criar o plano");
+      toast.error("Não deu pra criar o plano");
       return;
     }
 
@@ -207,9 +207,9 @@ export default function AdminPlans() {
       visibleInAccount: newPlan.visibleInAccount,
       homeTitle: name,
       accountTitle: name,
-      homeDescription: "Recursos incluídos no plano.",
+      homeDescription: "O que vem no plano.",
       homeFeatureHighlights: parseFeatureHighlightsText(newPlan.homeFeatureHighlightsText),
-      accountDescription: "Recursos incluídos no plano.",
+      accountDescription: "O que vem no plano.",
       homeCtaText: Number(newPlan.price || 0) === 0 ? "Começar grátis" : `Assinar ${name}`,
       sortOrder: draftPlans.length,
     };
@@ -236,7 +236,7 @@ export default function AdminPlans() {
       visibleOnHome: true,
       visibleInAccount: true,
     });
-    toast.success("Plano adicionado ao rascunho");
+    toast.success("Plano adicionado!");
   };
 
   const savePlans = async () => {
@@ -249,7 +249,7 @@ export default function AdminPlans() {
     });
 
     if (invalidPlan) {
-      toast.error(`Plano inválido: ${invalidPlan.name}. Revise preço, duração e nível de acesso.`);
+      toast.error(`Plano inválido: ${invalidPlan.name}. Confira preço, duração e nível.`);
       return;
     }
 
@@ -270,8 +270,8 @@ export default function AdminPlans() {
         homeTitle: plan.name,
         accountTitle: plan.name,
         // Preserve admin-written descriptions; fall back only when empty.
-        homeDescription: plan.homeDescription?.trim() || "Recursos incluídos no plano.",
-        accountDescription: plan.accountDescription?.trim() || plan.homeDescription?.trim() || "Recursos incluídos no plano.",
+        homeDescription: plan.homeDescription?.trim() || "O que vem no plano.",
+        accountDescription: plan.accountDescription?.trim() || plan.homeDescription?.trim() || "O que vem no plano.",
         homeCtaText: plan.price === 0 ? "Começar grátis" : `Assinar ${plan.name}`,
         sortOrder: index,
       })),
@@ -291,12 +291,12 @@ export default function AdminPlans() {
       // Audit log should not block the main save operation.
     }
 
-    toast.success("Planos atualizados");
+    toast.success("Planos salvos!");
   };
 
   const removePlan = (planId: string) => {
     if (draftPlans.length <= 1) {
-      toast.error("Necessário manter ao menos um plano");
+      toast.error("Precisa ter pelo menos um plano");
       return;
     }
     const targetPlan = draftPlans.find((plan) => plan.id === planId);
@@ -310,7 +310,7 @@ export default function AdminPlans() {
 
     const nextPlans = draftPlans.filter((plan) => plan.id !== planId);
     if (nextPlans.length === 0) {
-      toast.error("Necessário manter ao menos um plano");
+      toast.error("Precisa ter pelo menos um plano");
       setDeletePlanTarget(null);
       return;
     }
@@ -322,31 +322,31 @@ export default function AdminPlans() {
 
     if (draftDefaultSignupPlanId === planId) {
       setDraftDefaultSignupPlanId(nextPlans[0].id);
-      toast.success("Plano removido. Plano inicial ajustado automaticamente.");
+      toast.success("Plano removido! O plano inicial foi ajustado.");
       return;
     }
 
-    toast.success("Plano removido do rascunho");
+    toast.success("Plano removido!");
   };
 
   return (
     <div className="admin-page">
       <PageHeader
         title="Planos"
-        description="Defina período total, preço cobrado e visibilidade. Recursos e limites são importados do nível de acesso."
+        description="Defina o preço, duração e onde aparece. Os limites vêm do nível de acesso."
       />
 
       <Card className="admin-card">
         <CardHeader className="pb-3">
-          <CardTitle className="admin-card-title">Plano Padrão de Cadastro</CardTitle>
+          <CardTitle className="admin-card-title">Plano Inicial</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            Todo novo usuário criado via cadastro receberá automaticamente este plano inicial.
+            Todo novo usuário recebe esse plano na hora do cadastro.
           </p>
           <Select value={draftDefaultSignupPlanId} onValueChange={setDraftDefaultSignupPlanId}>
             <SelectTrigger className="max-w-sm">
-              <SelectValue placeholder="Selecione o plano padrão" />
+              <SelectValue placeholder="Escolha o plano inicial" />
             </SelectTrigger>
             <SelectContent>
               {draftPlans.map((plan) => (
@@ -357,7 +357,7 @@ export default function AdminPlans() {
             </SelectContent>
           </Select>
           <p className="text-xs text-primary">
-            Plano selecionado: {draftPlans.find((plan) => plan.id === draftDefaultSignupPlanId)?.name || "-"}
+            Plano escolhido: {draftPlans.find((plan) => plan.id === draftDefaultSignupPlanId)?.name || "-"}
           </p>
         </CardContent>
       </Card>
@@ -457,7 +457,7 @@ export default function AdminPlans() {
             <div className="space-y-4">
               {activePlan.id === draftDefaultSignupPlanId ? (
                 <div className="rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs text-primary">
-                  Este é o plano inicial padrão para novos cadastros.
+                  Esse é o plano que novos usuários recebem.
                 </div>
               ) : (
                 <Button
@@ -467,13 +467,13 @@ export default function AdminPlans() {
                   className="w-fit"
                   onClick={() => setDraftDefaultSignupPlanId(activePlan.id)}
                 >
-                  Definir como Plano Inicial
+                  Usar como padrão
                 </Button>
               )}
 
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="admin-card-title">Dados Comerciais</CardTitle>
+                  <CardTitle className="admin-card-title">Info do Plano</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="grid gap-3 sm:grid-cols-3">
@@ -485,7 +485,7 @@ export default function AdminPlans() {
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label>Preço Cobrado na Assinatura</Label>
+                      <Label>Preço</Label>
                       <Input
                         type="number"
                         step="0.01"
@@ -497,7 +497,7 @@ export default function AdminPlans() {
 
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <Label>Período Total do Plano (dias)</Label>
+                      <Label>Duração (dias)</Label>
                       <Input
                         type="number"
                         min={1}
@@ -530,7 +530,7 @@ export default function AdminPlans() {
 
                   {(activePlan.billingPeriod ?? "monthly") === "annual" && (
                     <div className="space-y-1">
-                      <Label>Preço Mensal Equivalente (exibido no card)</Label>
+                      <Label>Equivalente mensal (mostrado no card)</Label>
                       <Input
                         type="number"
                         step="0.01"
@@ -591,11 +591,11 @@ export default function AdminPlans() {
 
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="admin-card-title">Textos Exibidos ao Cliente</CardTitle>
+                  <CardTitle className="admin-card-title">Textos pro Cliente</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-1">
-                    <Label>Descrição do Plano (exibida na Home e na área do cliente)</Label>
+                    <Label>Descrição (aparece na Home e na área do cliente)</Label>
                     <Textarea
                       rows={2}
                       placeholder="Ex: Ideal para quem está começando a automatizar suas vendas."
@@ -608,7 +608,7 @@ export default function AdminPlans() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label>Itens de Recursos (Home e área do cliente, 1 por linha)</Label>
+                    <Label>Lista de recursos (1 por linha)</Label>
                     <Textarea
                       rows={6}
                       value={(activePlan.homeFeatureHighlights || []).join("\n")}
@@ -642,7 +642,7 @@ export default function AdminPlans() {
                 <Input value={newPlan.name} onChange={(event) => setNewPlan((prev) => ({ ...prev, name: event.target.value }))} />
               </div>
               <div className="space-y-1">
-                <Label>Preço Cobrado na Assinatura</Label>
+                <Label>Preço</Label>
                 <Input
                   type="number"
                   step="0.01"
@@ -654,7 +654,7 @@ export default function AdminPlans() {
 
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="space-y-1">
-                <Label>Período Total do Plano (dias)</Label>
+                <Label>Duração (dias)</Label>
                 <Input
                   type="number"
                   min={1}
@@ -727,14 +727,14 @@ export default function AdminPlans() {
             </div>
 
             <div className="space-y-1">
-              <Label>Itens de recursos (Home e área do cliente, 1 por linha)</Label>
+              <Label>Lista de recursos (1 por linha)</Label>
               <Textarea
                 rows={6}
                 value={newPlan.homeFeatureHighlightsText}
                 onChange={(event) => setNewPlan((prev) => ({ ...prev, homeFeatureHighlightsText: event.target.value }))}
               />
               {newPlan.homeFeatureHighlightsText.split(/\r?\n/).filter(Boolean).length > 10 && (
-                <p className="text-xs text-amber-500">Máximo de 10 itens. Os excedentes serão descartados ao salvar.</p>
+                <p className="text-xs text-amber-500">Máximo 10 itens. O que passar disso será cortado.</p>
               )}
             </div>
           </div>
@@ -749,9 +749,9 @@ export default function AdminPlans() {
       <AlertDialog open={!!deletePlanTarget} onOpenChange={(open) => !open && setDeletePlanTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Excluir Plano?</AlertDialogTitle>
+            <AlertDialogTitle>Apagar plano?</AlertDialogTitle>
             <AlertDialogDescription>
-              O plano <strong>{deletePlanTarget?.name}</strong> será removido do rascunho. Esta ação não afeta usuários já vinculados até que você salve as alterações.
+              O plano <strong>{deletePlanTarget?.name}</strong> vai sair do rascunho. Só afeta os usuários quando você salvar.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -4,19 +4,19 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Flame, ShoppingBag, ShoppingCart, Route, Clock, ArrowRight, Check, X, Users, Star, LayoutDashboard, Zap } from "lucide-react";
+import { ShoppingBag, ShoppingCart, Route, Clock, ArrowRight, Check, X, Users, Star, LayoutDashboard, Zap } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAdminControlPlane } from "@/hooks/useAdminControlPlane";
 import { ROUTES } from "@/lib/routes";
 import { WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
 
 const features = [
-  { icon: WhatsAppIcon, title: "Multi-Sessão WhatsApp & Telegram", description: "Conecte várias sessões ao mesmo tempo e gerencie tudo no mesmo painel, de forma simples." },
-  { icon: ShoppingBag, title: "Shopee", description: "Você filtra somente as melhores comissões dos produtos que realmente vendem, tudo no automático." },
-  { icon: ShoppingCart, title: "Mercado Livre", description: "Automatize a conversão de ofertas do Mercado Livre com poucos cliques, sem nenhuma burocracia." },
-  { icon: Users, title: "Master Groups", description: "Tenha controle automático de tudo o que acontece nos seus grupos com organização centralizada." },
-  { icon: Clock, title: "Agendamentos", description: "Programe mensagens para quando quiser e o sistema cuida do resto pra você." },
-  { icon: Route, title: "Rotas Inteligentes", description: "Copie as ofertas dos maiores players do mercado no automático, sem precisar fazer nada manualmente." },
+  { icon: WhatsAppIcon, title: "WhatsApp & Telegram juntos", description: "Conecte várias contas ao mesmo tempo e controle tudo num lugar só." },
+  { icon: ShoppingBag, title: "Shopee", description: "Filtre só as melhores comissões e deixe o sistema enviar sozinho." },
+  { icon: ShoppingCart, title: "Mercado Livre", description: "Converta ofertas do Mercado Livre em poucos cliques, sem complicação." },
+  { icon: Users, title: "Grupos mestres", description: "Organize seus grupos num só lugar e o sistema cuida do resto." },
+  { icon: Clock, title: "Agendamentos", description: "Programe suas mensagens pra qualquer horário e esqueça." },
+  { icon: Route, title: "Rotas automáticas", description: "Copie as ofertas dos maiores afiliados no automático, sem mexer um dedo." },
 ];
 
 const testimonials = [
@@ -26,21 +26,21 @@ const testimonials = [
 ];
 
 const withoutAutoLinks = [
-  "Fica o dia todo postando ofertas manualmente, uma por uma",
-  "Perde as melhores promoções porque não viu a tempo",
-  "WhatsApp e Telegram gerenciados em apps separados, fora do controle",
-  "Os grupos ficam parados enquanto você dorme ou descansa",
-  "Não sabe o que os maiores afiliados do mercado estão divulgando",
-  "Link de afiliado precisa ser gerado manualmente em cada oferta",
+  "Posta ofertas na mão, uma por uma, o dia inteiro",
+  "Perde promoção boa porque não viu a tempo",
+  "WhatsApp e Telegram separados, sem controle",
+  "Grupos param quando você dorme ou sai",
+  "Não sabe o que os maiores afiliados estão divulgando",
+  "Gera link de afiliado na mão, um por um",
 ];
 
 const withAutoLinks = [
-  "Zero minutos de trabalho — as rotas postam 24h por dia sozinhas",
-  "Captura automática de ofertas das fontes monitoradas em segundos",
-  "WhatsApp e Telegram integrados num único painel centralizado",
-  "Os grupos continuam vendendo mesmo quando você está dormindo",
-  "Monitoramento em tempo real das principais fontes do mercado",
-  "Link afiliado gerado e disparado automaticamente ao detectar a oferta",
+  "Zero trabalho — as rotas postam 24h por dia sozinhas",
+  "Ofertas capturadas em segundos das fontes que você escolheu",
+  "WhatsApp e Telegram num painel só",
+  "Seus grupos vendem mesmo enquanto você dorme",
+  "Você vê o que os concorrentes estão postando em tempo real",
+  "Link de afiliado gerado e enviado sozinho ao detectar a oferta",
 ];
 
 const faqs = [
@@ -109,7 +109,7 @@ export default function Index() {
       <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-xl">
         <div className="container flex h-14 items-center justify-between">
           <Link to={ROUTES.home} className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-primary-foreground"><Flame className="h-3.5 w-3.5" /></div>
+            <img src="/brand/icon-64.png" alt="Auto Links" className="h-7 w-7 rounded-lg object-contain" loading="lazy" />
             <span className="font-bold text-sm">Auto Links</span>
           </Link>
           <div className="flex items-center gap-3">
@@ -130,7 +130,8 @@ export default function Index() {
       <section className="container py-20 md:py-32 text-center">
         <motion.div {...fadeUp} className="max-w-3xl mx-auto space-y-6">
           <div className="inline-flex items-center gap-1.5 rounded-full border bg-secondary/50 px-3 py-1 text-xs font-medium text-muted-foreground">
-            <Flame className="h-3 w-3 text-primary" />Sistema Nº1 para afiliados Shopee e Mercado Livre
+            <img src="/brand/logo-chama-64.png" alt="" className="h-3 w-3 object-contain" loading="lazy" />
+            Sistema Nº1 para afiliados Shopee e Mercado Livre
           </div>
           <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight leading-[1.1]">
             Automatize suas divulgações. <span className="text-gradient">Escale seus resultados.</span>
@@ -377,44 +378,21 @@ export default function Index() {
       </section>
 
       {/* Footer */}
-      <footer className="border-t py-12">
+      <footer className="border-t py-8">
         <div className="container">
-          <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4 mb-8">
-            <div>
-              <div className="flex items-center gap-2 mb-3"><Flame className="h-4 w-4 text-primary" /><span className="font-bold text-sm">Auto Links</span></div>
-              <p className="text-xs text-muted-foreground leading-relaxed">Sistema Nº1 para afiliados Shopee e Mercado Livre</p>
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <img src="/brand/icon-64.png" alt="Auto Links" className="h-4 w-4 rounded object-contain" loading="lazy" />
+              <span className="font-semibold text-foreground">Auto Links</span>
+              <span className="hidden sm:inline">·</span>
+              <span>© 2026 Todos os direitos reservados.</span>
             </div>
-            <div>
-              <h4 className="text-sm font-semibold mb-3">Produto</h4>
-              <ul className="space-y-2 text-xs text-muted-foreground">
-                <li><a href="#features" className="hover:text-foreground transition-colors">Funcionalidades</a></li>
-                <li><a href="#pricing" className="hover:text-foreground transition-colors">Preços</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Roadmap</a></li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold mb-3">Empresa</h4>
-              <ul className="space-y-2 text-xs text-muted-foreground">
-                <li><a href="#" className="hover:text-foreground transition-colors">Sobre</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Blog</a></li>
-                <li><a href="mailto:suporte@autolinks.pro" className="hover:text-foreground transition-colors">Contato</a></li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold mb-3">Suporte</h4>
-              <ul className="space-y-2 text-xs text-muted-foreground">
-                <li><a href="mailto:suporte@autolinks.pro" className="hover:text-foreground transition-colors">Central de Ajuda</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Termos de Uso</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Privacidade</a></li>
-                <li><a href="mailto:suporte@autolinks.pro" className="hover:text-foreground transition-colors">suporte@autolinks.pro</a></li>
-              </ul>
-            </div>
-          </div>
-          <div className="border-t pt-6 flex items-center justify-between text-xs text-muted-foreground">
-            <span>© 2026 Auto Links. Todos os direitos reservados.</span>
-            <div className="flex gap-4">
-              <a href="#" className="hover:text-foreground transition-colors">Termos</a>
-              <a href="#" className="hover:text-foreground transition-colors">Privacidade</a>
+            <div className="flex items-center gap-4">
+              <a href="mailto:suporte@autolinks.pro" className="hover:text-foreground transition-colors">suporte@autolinks.pro</a>
+              <span>·</span>
+              <Link to={ROUTES.termos} className="hover:text-foreground transition-colors">Termos de Uso</Link>
+              <span>·</span>
+              <Link to={ROUTES.privacidade} className="hover:text-foreground transition-colors">Privacidade</Link>
             </div>
           </div>
         </div>
@@ -422,4 +400,3 @@ export default function Index() {
     </div>
   );
 }
-

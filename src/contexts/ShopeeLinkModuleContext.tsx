@@ -90,7 +90,7 @@ export function ShopeeLinkModuleProvider({ children }: PropsWithChildren) {
 
     const ok = await testConnection();
     if (!ok && strict) {
-      throw new Error("Não foi possível validar conexão com a Shopee no momento.");
+      throw new Error("Não deu pra validar a conexão com a Shopee agora.");
     }
 
     return ok;

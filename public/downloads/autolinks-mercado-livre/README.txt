@@ -8,17 +8,18 @@ Como instalar (Chrome):
 5) Selecione a pasta autolinks-mercado-livre.
 
 Como usar:
-1) Abra o painel Autolinks (a extensao tentara abrir Configuracoes ML automaticamente).
-2) Clique no icone da extensao.
-3) Faça login na extensao com seu e-mail e senha do Autolinks.
-4) Depois do login validado, clique em Capturar e enviar cookies.
+1) Clique no icone da extensao.
+2) Faca login na extensao com seu e-mail e senha do Auto Links.
+3) Abra uma aba do Mercado Livre e faca login nela.
+4) Volte para a extensao e clique em Capturar e enviar cookies.
 
 Observacao:
-- A URL do painel fica interna e nao eh editavel pelo cliente.
+- A extensao tenta conectar automaticamente com a URL correta do Auto Links.
 - A extensao captura apenas cookies de dominios Mercado Livre.
 
 Sistema de icones:
-- Fonte oficial: icons/icon-source.svg
+- Fonte oficial: icons/icon-source.png (preferencial)
+- Fallback legado: icons/icon-source.svg
 - Manifest usa: icons/icon-16.png, icons/icon-32.png, icons/icon-48.png, icons/icon-128.png
 - Variacoes monocromaticas: icons/icon-mono-16.png, icons/icon-mono-32.png, icons/icon-mono-48.png, icons/icon-mono-128.png
 - Para regenerar os PNGs: npm run ext:icons:build

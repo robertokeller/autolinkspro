@@ -139,7 +139,7 @@ export function SessoesTelegram({
     for (const session of sessions) {
       const previous = previousStatusRef.current[session.id];
       if (previous === "online" && ["warning", "offline"].includes(session.status)) {
-        toast.warning(`Sessão ${session.name} perdeu conexão. Verifique a autenticação.`);
+        toast.warning(`Sessão ${session.name} desconectou. Confira se está tudo certo.`);
       }
       previousStatusRef.current[session.id] = session.status;
     }
@@ -240,7 +240,7 @@ export function SessoesTelegram({
     if (!editSession) return;
     const nextName = editSessionName.trim();
     if (!nextName) {
-      toast.error("Informe um nome válido");
+      toast.error("Coloque um nome válido");
       return;
     }
     if (nextName === editSession.name) {
@@ -280,9 +280,9 @@ export function SessoesTelegram({
             <CheckCircle2 className="h-10 w-10 text-success" />
           </div>
           <div className="text-center">
-            <p className="text-lg font-semibold">Sessão conectada!</p>
+            <p className="text-lg font-semibold">Tudo certo!</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {authSession.name} está autenticada e monitorada automaticamente.
+              {authSession.name} está conectada e funcionando.
             </p>
             {authSession.connectedAt && (
               <p className="mt-2 flex items-center justify-center gap-1 text-xs text-muted-foreground">
@@ -302,9 +302,9 @@ export function SessoesTelegram({
             <AlertTriangle className="h-8 w-8 text-warning" />
           </div>
           <div className="text-center">
-            <p className="font-semibold">Não foi possível iniciar a autenticação</p>
+            <p className="font-semibold">Não deu pra conectar</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Verifique se o número está correto e tente novamente.
+              Confira se o número está certo e tente de novo.
             </p>
           </div>
         </div>
@@ -319,9 +319,9 @@ export function SessoesTelegram({
           </div>
           <div className="w-full space-y-3">
             <div className="text-center">
-              <p className="font-semibold">Código enviado via SMS / Telegram</p>
+              <p className="font-semibold">Código enviado por SMS / Telegram</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Verifique suas mensagens e cole o código abaixo.
+                Olhe suas mensagens e cole o código aqui.
               </p>
             </div>
             <div className="space-y-2">
@@ -351,7 +351,7 @@ export function SessoesTelegram({
             <div className="text-center">
               <p className="font-semibold">Verificação em duas etapas</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Sua conta tem 2FA ativado. Informe a senha para concluir.
+                Sua conta tem 2FA. Coloque a senha pra concluir.
               </p>
             </div>
             <div className="space-y-2">
@@ -377,9 +377,9 @@ export function SessoesTelegram({
       <div className="flex flex-col items-center gap-4 py-8">
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
         <div className="text-center">
-          <p className="font-semibold">Enviando código via SMS…</p>
+          <p className="font-semibold">Enviando código por SMS…</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Aguardando resposta do Telegram. Isso pode levar alguns segundos.
+            Esperando resposta do Telegram. Pode levar alguns segundos.
           </p>
         </div>
       </div>
@@ -392,7 +392,7 @@ export function SessoesTelegram({
       {/* Header bar */}
       <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[70%]">
-          Conecte sessões Telegram por SMS/código. Se sua conta tiver 2FA, o campo de senha aparece automaticamente.
+          Conecte contas Telegram por SMS/código. Se tiver 2FA, o campo de senha aparece na hora.
         </p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={onRefresh}>
@@ -408,16 +408,16 @@ export function SessoesTelegram({
 
       {/* Loading */}
       {isLoading && (
-        <InlineLoadingState label="Carregando sessões Telegram..." />
+        <InlineLoadingState label="Carregando contas Telegram..." />
       )}
 
       {/* Empty */}
       {!isLoading && sessions.length === 0 && (
         <EmptyState
           icon={MessageSquareText}
-          title="Nenhuma sessão Telegram"
-          description="Crie uma sessão para autenticar por código SMS e 2FA (quando habilitado)."
-          actionLabel="Nova Sessão"
+          title="Nenhuma conta Telegram"
+          description="Crie uma conta e conecte por código SMS."
+          actionLabel="Nova conta"
           onAction={openCreateFlow}
         />
       )}
@@ -433,7 +433,7 @@ export function SessoesTelegram({
               <Card
                 key={session.id}
                 className={cn(
-                  "overflow-hidden border-border/70 bg-card/90 transition-all",
+                  "glass overflow-hidden transition-all",
                   isOnline && "ring-1 ring-success/30",
                 )}
               >
@@ -572,9 +572,9 @@ export function SessoesTelegram({
           {sessionFlowStep === "form" ? (
             <>
               <DialogHeader>
-                <DialogTitle>Nova sessão Telegram</DialogTitle>
+                <DialogTitle>Nova conta Telegram</DialogTitle>
                 <DialogDescription>
-                  Informe o nome e o número de telefone. Um código será enviado via SMS para autenticação.
+                  Coloque o nome e o número de telefone. Um código vai chegar por SMS.
                 </DialogDescription>
               </DialogHeader>
 
@@ -632,17 +632,17 @@ export function SessoesTelegram({
               <DialogHeader>
                 <DialogTitle>
                   {authSession?.status === "online"
-                    ? "Sessão conectada com sucesso"
+                    ? "Conta conectada!"
                     : authSession?.status === "awaiting_password"
                       ? "Verificação em duas etapas"
-                      : "Autentique sua conta"}
+                      : "Conecte sua conta"}
                 </DialogTitle>
                 <DialogDescription>
                   {authSession?.status === "online"
-                    ? `${authSession.name} está pronta para uso.`
+                    ? `${authSession.name} está pronta.`
                     : authSession?.status === "awaiting_password"
-                      ? "Informe a senha do 2FA para concluir a conexão."
-                      : "Cole o código recebido via SMS ou pelo aplicativo Telegram."}
+                      ? "Coloque a senha do 2FA pra concluir."
+                      : "Cole o código que chegou por SMS ou pelo app do Telegram."}
                 </DialogDescription>
               </DialogHeader>
 
@@ -748,7 +748,7 @@ export function SessoesTelegram({
           <DialogHeader>
             <DialogTitle>Editar sessão</DialogTitle>
             <DialogDescription>
-              Apenas o nome pode ser editado para não quebrar a autenticação.
+              Só dá pra mudar o nome. O resto fica do jeito que está pra não perder a conexão.
             </DialogDescription>
           </DialogHeader>
 
@@ -791,9 +791,9 @@ export function SessoesTelegram({
       <AlertDialog open={!!deleteSession} onOpenChange={(open) => !open && setDeleteSessionId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apagar sessão?</AlertDialogTitle>
+            <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
             <AlertDialogDescription>
-              A sessão <strong>{deleteSession?.name}</strong> será removida junto com os grupos vinculados. Esta ação não pode ser desfeita.
+              A conta <strong>{deleteSession?.name}</strong> e os grupos dela vão ser removidos. Não tem como desfazer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

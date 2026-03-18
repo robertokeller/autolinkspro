@@ -19,6 +19,8 @@ export function PublicRoutes() {
       <Route path={ROUTES.auth.verificacaoEmail} element={<Pages.VerificacaoEmail />} />
 
       <Route path={ROUTES.maintenance} element={<Pages.Maintenance />} />
+      <Route path={ROUTES.termos} element={<Pages.TermosDeUso />} />
+      <Route path={ROUTES.privacidade} element={<Pages.PoliticaPrivacidade />} />
 
       <Route element={<RouteGuard />}>
         <Route path={ROUTES.hubPublic} element={<Pages.LinkHubPublicPage />} />

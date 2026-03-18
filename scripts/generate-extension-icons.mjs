@@ -1,35 +1,37 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
 const rootDir = process.cwd();
 const iconDir = path.join(rootDir, "public", "downloads", "autolinks-mercado-livre", "icons");
+const sourcePngPath = path.join(iconDir, "icon-source.png");
 const sourceSvgPath = path.join(iconDir, "icon-source.svg");
 
 const outputTargets = [16, 32, 48, 128];
 
-const svgBuffer = await readFile(sourceSvgPath);
+let sourcePath = sourcePngPath;
+try {
+  await access(sourcePngPath);
+} catch {
+  sourcePath = sourceSvgPath;
+}
 
 await Promise.all(
   outputTargets.map(async (size) => {
     const outPath = path.join(iconDir, `icon-${size}.png`);
-    await sharp(svgBuffer)
+    await sharp(sourcePath)
       .resize(size, size)
       .png({ compressionLevel: 9, palette: true })
       .toFile(outPath);
   }),
 );
 
-const monochromeSvg = String(svgBuffer)
-  .replace("url(#autolinksGradient)", "#161921")
-  .replace("url(#autolinksGlow)", "transparent")
-  .replace("#FFE7D6", "#EEF1F7");
-
 await Promise.all(
   outputTargets.map(async (size) => {
     const outPath = path.join(iconDir, `icon-mono-${size}.png`);
-    await sharp(Buffer.from(monochromeSvg))
+    await sharp(sourcePath)
       .resize(size, size)
+      .grayscale()
       .png({ compressionLevel: 9, palette: true })
       .toFile(outPath);
   }),
@@ -42,7 +44,8 @@ await writeFile(
     "AutoLinks - Sistema de icones da extensao",
     "",
     "Fonte oficial:",
-    "- icon-source.svg",
+    "- icon-source.png (preferencial)",
+    "- icon-source.svg (fallback legado)",
     "",
     "Arquivos gerados para o manifest:",
     "- icon-16.png",

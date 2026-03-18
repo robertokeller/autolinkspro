@@ -45,7 +45,7 @@
     "system:bootstrap": "concurrently -k -n OPS,WEB -c cyan,green --restart-tries 50 --restart-after 2000 \"npm run svc:ops:dev\" \"npm run preview:safe\"",
     "svc:api:build": "npm --prefix services/api run build",
     "svc:api:start": "npm --prefix services/api run start",
-    "svc:api:dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:POSTGRES_HOST='localhost'; $env:POSTGRES_PORT='5432'; $env:POSTGRES_DB='autolinks'; $env:POSTGRES_USER='autolinks'; $env:POSTGRES_PASSWORD='autolinks'; $env:JWT_SECRET='dev-jwt-secret-local-only-32chars!!'; $env:SERVICE_TOKEN='dev-service-token-local-only'; $env:CORS_ORIGIN='*'; $env:OPS_CONTROL_URL='http://127.0.0.1:3115'; $env:ADMIN_EMAIL='robertokellercontato@gmail.com'; $env:ADMIN_PASSWORD='abacate1'; npm --prefix services/api run dev\"",
+    "svc:api:dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:POSTGRES_HOST='localhost'; $env:POSTGRES_PORT='5432'; $env:POSTGRES_DB='autolinks'; $env:POSTGRES_USER='autolinks'; $env:POSTGRES_PASSWORD='autolinks'; $env:JWT_SECRET='dev-jwt-secret-local-only-32chars!!'; $env:SERVICE_TOKEN='dev-service-token-local-only'; $env:CORS_ORIGIN='*'; $env:OPS_CONTROL_URL='http://127.0.0.1:3115'; $env:ADMIN_EMAIL='admin@local.autolinks'; $env:ADMIN_PASSWORD='dev-admin-change-me'; npm --prefix services/api run dev\"",
     "svc:all:build": "npm run svc:wa:build && npm run svc:tg:build && npm run svc:shopee:build && npm run svc:meli:build",
     "svc:all:start": "npm run svc:wa:start & npm run svc:tg:start & npm run svc:shopee:start & npm run svc:meli:start & npm run svc:ops:start",
     "prod:build": "npm run build && npm run svc:all:build",

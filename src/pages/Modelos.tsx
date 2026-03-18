@@ -58,12 +58,12 @@ const DEFAULT_TEMPLATE_CONTENT = "**{titulo}**\nDe R$ {preco_original} por R$ {p
 
 const PLACEHOLDER_LEGEND: Array<{ key: string; description: string }> = [
   { key: "{titulo}", description: "Nome do produto" },
-  { key: "{preco}", description: "Preço atual" },
-  { key: "{preco_original}", description: "Preço original (sem desconto)" },
-  { key: "{desconto}", description: "% de desconto" },
-  { key: "{link}", description: "Link de afiliado" },
-  { key: "{imagem}", description: "Imagem em anexo (não vira URL no texto)" },
-  { key: "{avaliacao}", description: "Nota de avaliação" },
+  { key: "{preco}", description: "Preço com desconto" },
+  { key: "{preco_original}", description: "Preço cheio (sem desconto)" },
+  { key: "{desconto}", description: "Quanto economiza (%)" },
+  { key: "{link}", description: "Seu link de afiliado" },
+  { key: "{imagem}", description: "Imagem do produto (vai como anexo)" },
+  { key: "{avaliacao}", description: "Nota dos compradores" },
 ];
 
 // Preview rendered with sample data so the user sees a live render while editing
@@ -178,11 +178,11 @@ export default function Templates() {
   const handleConvert = async () => {
     const link = converterLink.trim();
     if (!link) {
-      toast.error("Cole um link da Shopee");
+      toast.error("Cole um link da Shopee primeiro");
       return;
     }
     if (!isConfigured) {
-      toast.error("Configure as credenciais da Shopee antes de converter");
+      toast.error("Preencha as credenciais da Shopee antes de converter");
       return;
     }
 
@@ -192,7 +192,7 @@ export default function Templates() {
       templates[0]?.id;
     const template = templates.find((t) => t.id === effectiveId);
     if (!template) {
-      toast.error("Selecione um template");
+      toast.error("Escolha um template primeiro");
       return;
     }
 
@@ -204,7 +204,7 @@ export default function Templates() {
       const data = buildTemplatePlaceholderData(conversion.product, affiliateLink);
       setConverterResult(applyPlaceholders(template.content, data));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao converter link");
+      toast.error(error instanceof Error ? error.message : "Não deu pra converter o link");
     } finally {
       setConverting(false);
     }
@@ -226,8 +226,8 @@ export default function Templates() {
   return (
     <div className="ds-page">
       <PageHeader
-        title="Templates Shopee"
-        description="Crie modelos de mensagem com placeholders e gere ofertas com dados reais da Shopee"
+        title="Templates"
+        description="Monte modelos de mensagem e gere ofertas com dados reais da Shopee"
       >
         <Button size="sm" onClick={openNew}>
           <Plus className="h-4 w-4 mr-1.5" />
@@ -243,15 +243,15 @@ export default function Templates() {
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
               <Link2 className="h-4 w-4 text-primary" />
-              Gerar Oferta a partir de Link
+              Gerar oferta a partir de um link
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-12 lg:items-end 2xl:grid-cols-1">
               <div className="space-y-1.5 lg:col-span-7 2xl:col-span-1">
-                <Label className="text-xs text-muted-foreground">Link do produto Shopee</Label>
+                <Label className="text-xs text-muted-foreground">Link do produto</Label>
                 <Input
-                  placeholder="Cole um link do produto Shopee (https://shopee.com.br/... ou https://shope.ee/...)"
+                  placeholder="Cole o link do produto Shopee aqui"
                   value={converterLink}
                   onChange={(e) => setConverterLink(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleConvert()}
@@ -403,8 +403,8 @@ export default function Templates() {
           ) : (
             <EmptyState
               icon={FileText}
-              title="Nenhum template criado"
-              description='Crie templates com placeholders como {titulo}, {preco} e {link} para gerar ofertas automaticamente.'
+              title="Nenhum template ainda"
+              description='Crie templates com campos como {titulo}, {preco} e {link} pra gerar ofertas automáticas.'
               actionLabel="Criar template"
               onAction={openNew}
             />
@@ -459,7 +459,7 @@ export default function Templates() {
                     S
                   </button>
                   <span className="text-2xs text-muted-foreground ml-1">
-                    Selecione texto e clique para formatar
+                    Selecione o texto e clique pra formatar
                   </span>
                 </div>
                 <Textarea
@@ -473,7 +473,7 @@ export default function Templates() {
 
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground">
-                  Placeholders disponíveis — clique para inserir no cursor
+                  Campos disponíveis — clique pra inserir onde o cursor está
                 </Label>
                 <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
                   <div className="flex flex-wrap gap-1.5">
@@ -547,7 +547,7 @@ export default function Templates() {
           <AlertDialogHeader>
             <AlertDialogTitle>Excluir template?</AlertDialogTitle>
             <AlertDialogDescription>
-              O template <strong>{deleteTarget?.name}</strong> será excluído permanentemente.
+              O template <strong>{deleteTarget?.name}</strong> vai ser apagado de vez.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

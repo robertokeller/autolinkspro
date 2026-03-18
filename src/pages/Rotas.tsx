@@ -87,9 +87,9 @@ export default function RoutesPage() {
 
   const totalSteps = 3;
   const stepDescriptions: Record<number, string> = {
-    1: "Defina o nome, a sessão de captura e o grupo que será monitorado.",
-    2: "Escolha a sessão de envio e para onde as ofertas serão encaminhadas.",
-    3: "Configure a conversão de links, templates e filtros de mensagem.",
+    1: "Dê um nome, escolha a sessão e o grupo que vai ser monitorado.",
+    2: "Escolha pra onde as ofertas vão ser enviadas.",
+    3: "Ajuste a conversão de links, templates e filtros.",
   };
   const connectedSessions = allSessions.filter((s) => s.status === "online");
   const defaultMeliSession = meliSessions.find((session) => session.status === "active" || session.status === "untested") || null;
@@ -176,7 +176,7 @@ export default function RoutesPage() {
     try {
       const hasConnectedSession = allSessions.some((session) => session.status === "online");
       if (!hasConnectedSession) {
-        toast.error("Nenhuma sessão WhatsApp/Telegram conectada para atualizar as rotas.");
+        toast.error("Nenhuma sessão conectada pra atualizar as rotas.");
         return;
       }
 
@@ -220,7 +220,7 @@ export default function RoutesPage() {
         blockers.push("Mercado Livre offline");
       }
       if (usesMeli && !hasAnyActiveMeliSession) {
-        blockers.push("Sessão do Mercado Livre não configurada");
+        blockers.push("Sessão do Mercado Livre não está pronta");
       }
 
       for (const route of activeRoutes) {
@@ -229,17 +229,17 @@ export default function RoutesPage() {
         const destinationSession = route.rules.sessionId ? sessionsById.get(route.rules.sessionId) : null;
 
         if (!sourceSession || sourceSession.status !== "online") {
-          blockers.push(`Rota \"${route.name}\": sessão de captura offline`);
+          blockers.push(`Rota "${route.name}": sessão de captura offline`);
         }
 
         if (!destinationSession || destinationSession.status !== "online") {
-          blockers.push(`Rota \"${route.name}\": sessão de envio offline`);
+          blockers.push(`Rota "${route.name}": sessão de envio offline`);
         }
       }
 
       if (blockers.length > 0) {
         const uniqueBlockers = Array.from(new Set(blockers));
-        toast.error(`Atualização cancelada: pipeline com falhas (${uniqueBlockers.length}).`);
+        toast.error(`Não deu pra atualizar: ${uniqueBlockers.length} problema(s).`);
         toast.error(uniqueBlockers.slice(0, 3).join(" | "));
         return;
       }
@@ -253,9 +253,9 @@ export default function RoutesPage() {
       const telegramStatus = latestChannelHealth?.telegram.online === true ? "Telegram online" : "Telegram offline";
       const shopeeStatus = shopeeHealthResult?.online === true ? "Shopee online" : "Shopee offline";
       const meliStatus = meliHealthResult?.online === true ? "Mercado Livre online" : "Mercado Livre offline";
-      toast.success(`Atualização concluída. ${whatsappStatus} | ${telegramStatus} | ${shopeeStatus} | ${meliStatus}`);
+      toast.success(`Tudo atualizado! ${whatsappStatus} | ${telegramStatus} | ${shopeeStatus} | ${meliStatus}`);
     } catch {
-      toast.error("Erro ao atualizar");
+      toast.error("Não deu pra atualizar");
     } finally {
       setIsSyncing(false);
     }
@@ -280,13 +280,13 @@ export default function RoutesPage() {
 
     if (nr.destinationType === "groups" && normalizedDestinationGroupIds.length === 0) {
       setNr(normalizedNr);
-      toast.error("Selecione ao menos um grupo de destino válido para a sessão de envio.");
+      toast.error("Escolha pelo menos um grupo de destino pra essa sessão.");
       return;
     }
 
     if (nr.destinationType === "master" && normalizedMasterGroupIds.length === 0) {
       setNr(normalizedNr);
-      toast.error("Selecione ao menos um grupo mestre válido para a sessão de envio.");
+      toast.error("Escolha pelo menos um grupo mestre pra essa sessão.");
       return;
     }
 
@@ -356,7 +356,7 @@ export default function RoutesPage() {
   const allPaused = routes.length > 0 && routes.every((route) => route.status !== "active");
   const handleRefreshRoute = (routeId: string, currentStatus: AppRoute["status"]) => {
     if (currentStatus !== "active") {
-      toast.info("Apenas rotas ativas podem ser atualizadas. Retome a rota para reiniciar.");
+      toast.info("Só rotas ligadas podem ser atualizadas. Ligue a rota primeiro.");
       return;
     }
 
@@ -370,8 +370,8 @@ export default function RoutesPage() {
 
   return (
     <div className="ds-page">
-      <div className="sticky top-0 z-20 rounded-xl border border-border/60 bg-background/95 px-3 pt-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
-        <PageHeader title="Rotas automáticas" description="Configure e controle o encaminhamento automático entre grupos e plataformas">
+      <div className="sticky top-0 z-20 rounded-xl border border-border/60 bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
+        <PageHeader title="Rotas" description="Monte rotas pra copiar ofertas de um grupo e enviar pra outros no automático">
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               size="sm"
@@ -402,7 +402,7 @@ export default function RoutesPage() {
       </div>
 
       {/* Route list */}
-      <div className="mx-auto max-w-5xl">
+      <div>
         {routes.length > 0 ? (
           <div className="space-y-3">
             {routes.map((route) => {
@@ -546,7 +546,7 @@ export default function RoutesPage() {
             })}
           </div>
         ) : (
-          <EmptyState icon={Route} title="Nenhuma rota configurada" description="Crie uma rota para encaminhar ofertas automaticamente entre seus grupos." actionLabel="Criar primeira rota" onAction={openNewRoute} />
+          <EmptyState icon={Route} title="Nenhuma rota criada" description="Crie uma rota pra copiar ofertas de um grupo e enviar pros seus." actionLabel="Criar rota" onAction={openNewRoute} />
         )}
       </div>
 
@@ -556,7 +556,7 @@ export default function RoutesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Excluir rota?</AlertDialogTitle>
             <AlertDialogDescription>
-              A rota <strong>{deleteRouteObj?.name}</strong> será excluída permanentemente. Nenhuma mensagem será mais encaminhada por ela.
+              A rota <strong>{deleteRouteObj?.name}</strong> vai ser apagada de vez. Nenhuma mensagem vai mais ser encaminhada por ela.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -612,9 +612,9 @@ export default function RoutesPage() {
                       value={nr.sourceSessionId}
                       onValueChange={(v) => setNr({ ...nr, sourceSessionId: v, sourceGroupId: "" })}
                       sessions={isEditing ? allSessions : connectedSessions}
-                      placeholder="Selecione a sessão de captura..."
+                      placeholder="Escolha a sessão de captura..."
                     />
-                    <p className="text-xs text-muted-foreground">A sessão que irá monitorar e capturar as mensagens/ofertas do grupo de origem.</p>
+                    <p className="text-xs text-muted-foreground">A sessão que vai monitorar e capturar as mensagens do grupo de origem.</p>
                   </>
                 )}
               </div>
@@ -624,15 +624,15 @@ export default function RoutesPage() {
                   <Label>Grupo de Origem (monitorado)</Label>
                   {!sourceSessionConnected && (
                     <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                      Sessão offline — exibindo grupos do último estado sincronizado. A rota não capturará mensagens enquanto esta sessão estiver desconectada.
+                      Sessão offline — mostrando grupos do último estado. A rota não vai capturar mensagens enquanto a sessão estiver desconectada.
                     </p>
                   )}
                   {sourceGroups.length === 0 ? (
-                    <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">Nenhum grupo sincronizado para esta sessão. Sincronize seus grupos primeiro.</p>
+                    <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">Nenhum grupo sincronizado pra essa sessão. Sincronize os grupos primeiro.</p>
                   ) : (
                     <>
                       <Select value={nr.sourceGroupId} onValueChange={(v) => setNr({ ...nr, sourceGroupId: v })}>
-                        <SelectTrigger><SelectValue placeholder="Selecione o grupo de origem..." /></SelectTrigger>
+                        <SelectTrigger><SelectValue placeholder="Escolha o grupo de origem..." /></SelectTrigger>
                         <SelectContent>
                           {sourceGroups.map((g) => (
                             <SelectItem key={g.id} value={g.id}>
@@ -644,7 +644,7 @@ export default function RoutesPage() {
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">As mensagens recebidas neste grupo serão processadas pela rota.</p>
+                      <p className="text-xs text-muted-foreground">As mensagens que chegarem nesse grupo vão ser processadas pela rota.</p>
                     </>
                   )}
                 </div>
@@ -662,10 +662,10 @@ export default function RoutesPage() {
                   value={nr.destSessionId}
                   onValueChange={(v) => setNr({ ...nr, destSessionId: v, destinationGroupIds: [], masterGroupIds: [] })}
                   sessions={isEditing ? allSessions : connectedSessions}
-                  placeholder="Selecione a sessão de envio..."
+                  placeholder="Escolha a sessão de envio..."
                 />
                 <p className="text-xs text-muted-foreground">
-                  As mensagens serão enviadas através desta sessão. Pode ser diferente da sessão de captura.
+                  As mensagens vão ser enviadas por essa sessão. Pode ser diferente da sessão de captura.
                 </p>
               </div>
 
@@ -673,7 +673,7 @@ export default function RoutesPage() {
               {nr.destSessionId && (destSessionConnected || isEditing) && (
                 !destSessionConnected && (
                   <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                    Sessão de envio offline — exibindo grupos do último estado sincronizado. As mensagens não serão enviadas enquanto esta sessão estiver desconectada.
+                    Sessão de envio offline — mostrando grupos do último estado. As mensagens não vão ser enviadas enquanto a sessão estiver desconectada.
                   </p>
                 )
               )}
@@ -692,7 +692,7 @@ export default function RoutesPage() {
                         <Users className={cn("h-5 w-5", nr.destinationType === "groups" ? "text-primary" : "text-muted-foreground")} />
                         <div className="text-center">
                           <p className="text-xs font-medium">Grupos Individuais</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">Selecione um ou vários grupos</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">Escolha um ou vários grupos</p>
                         </div>
                       </button>
                       <button
@@ -727,20 +727,20 @@ export default function RoutesPage() {
                             label: m.name,
                             meta: `${m.linkedGroups.length} grupos`,
                           }))}
-                          placeholder="Selecionar grupos mestre"
-                          selectedLabel={(count) => `${count} grupo(s) mestre selecionado(s)`}
-                          emptyMessage="Nenhum grupo mestre disponível"
+                          placeholder="Escolher grupos mestre"
+                          selectedLabel={(count) => `${count} grupo(s) mestre`}
+                          emptyMessage="Nenhum grupo mestre"
                           title="Grupos mestre"
                         />
                       )}
-                      <p className="text-xs text-muted-foreground">A mensagem será enviada para os grupos vinculados aos grupos mestre selecionados.</p>
+                      <p className="text-xs text-muted-foreground">A mensagem vai ser enviada pros grupos dos grupos mestre que você escolher.</p>
                     </div>
                   ) : (
                     <div className="space-y-2">
                       <Label>Grupos de Destino</Label>
                       {destGroups.length === 0 ? (
                         <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">
-                          Nenhum grupo disponível para a sessão {destSession?.label}. Sincronize seus grupos primeiro.
+                          Nenhum grupo disponível pra sessão {destSession?.label}. Sincronize os grupos primeiro.
                         </p>
                       ) : (
                         <MultiOptionDropdown
@@ -751,9 +751,9 @@ export default function RoutesPage() {
                             label: g.name,
                             meta: `${g.memberCount}`,
                           }))}
-                          placeholder="Selecionar grupos de destino"
-                          selectedLabel={(count) => `${count} grupo(s) selecionado(s)`}
-                          emptyMessage="Nenhum grupo disponível para esta sessão"
+                          placeholder="Escolher grupos"
+                          selectedLabel={(count) => `${count} grupo(s)`}
+                          emptyMessage="Nenhum grupo pra essa sessão"
                           title="Grupos de destino"
                         />
                       )}
@@ -778,7 +778,7 @@ export default function RoutesPage() {
                       <LinkIcon className="h-4 w-4 text-primary" />
                       <div>
                         <Label className="text-sm">Conversão Shopee</Label>
-                        <p className="text-xs text-muted-foreground">Os links serão copiados e convertidos como seus link's de afiliado.</p>
+                        <p className="text-xs text-muted-foreground">Os links vão ser convertidos pro seu link de afiliado.</p>
                       </div>
                     </div>
                     <Switch
@@ -797,7 +797,7 @@ export default function RoutesPage() {
                     <div className="space-y-3">
                       <div className="space-y-2">
                         <Label className="text-xs">Template Shopee</Label>
-                        <p className="text-xs text-muted-foreground">Escolha como a mensagem será montada após a conversão da Shopee.</p>
+                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão da Shopee.</p>
                         <Select value={nr.templateId || "original"} onValueChange={(v) => setNr({ ...nr, templateId: v })}>
                           <SelectTrigger><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -816,7 +816,7 @@ export default function RoutesPage() {
                       <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
                         <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
                         <p className="text-xs text-muted-foreground">
-                          Se marcar "Manter mensagem original", apenas o link será convertido para afiliado.
+                          Se marcar "Manter mensagem original", só o link vai ser convertido pra afiliado.
                         </p>
                       </div>
                     </div>
@@ -827,7 +827,7 @@ export default function RoutesPage() {
                       <LinkIcon className="h-4 w-4 text-primary" />
                       <div>
                         <Label className="text-sm">Conversão Mercado Livre</Label>
-                        <p className="text-xs text-muted-foreground">Os links serão copiados e convertidos como seus link's de afiliado.</p>
+                        <p className="text-xs text-muted-foreground">Os links do Mercado Livre vão ser convertidos pro seu link de afiliado.</p>
                       </div>
                     </div>
                     <Switch
@@ -850,12 +850,12 @@ export default function RoutesPage() {
                           {activeMeliSession ? `${activeMeliSession.name} (${activeMeliSession.status})` : "Nenhuma sessão disponível"}
                         </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          Sessão definida automaticamente pelo sistema.
+                          Sessão definida automaticamente.
                         </p>
                       </div>
                       {!hasMeliSessionSelected && (
                         <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                          Nenhuma sessão Mercado Livre disponível no momento. Conecte uma sessão para usar a conversão.
+                          Nenhuma sessão Mercado Livre no momento. Conecte uma sessão pra usar a conversão.
                         </p>
                       )}
                     </div>
@@ -887,7 +887,7 @@ export default function RoutesPage() {
                       onChange={(e) => setNr({ ...nr, positiveKeywords: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Separe por vírgula. A mensagem só passa se encontrar pelo menos uma palavra positiva; se não encontrar, ela é descartada.
+                          Separe por vírgula. A mensagem só passa se tiver pelo menos uma palavra positiva. Se não tiver, ela é descartada.
                     </p>
                   </div>
 
@@ -903,7 +903,7 @@ export default function RoutesPage() {
                       onChange={(e) => setNr({ ...nr, negativeKeywords: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Separe por vírgula. Se encontrar qualquer palavra negativa, descarta a mensagem; se não encontrar, ela continua no fluxo.
+                          Separe por vírgula. Se tiver qualquer palavra negativa, a mensagem é descartada.
                     </p>
                   </div>
                 </CardContent>
@@ -936,6 +936,5 @@ export default function RoutesPage() {
     </div>
   );
 }
-
 
 

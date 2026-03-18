@@ -228,10 +228,10 @@ export default function SettingsPage() {
       .eq("user_id", user.id);
     setSavingProfile(false);
     if (error) {
-      toast.error("Erro ao salvar perfil");
+      toast.error("Não deu pra salvar o perfil");
       return;
     }
-    toast.success("Perfil salvo com sucesso");
+    toast.success("Perfil salvo");
   };
 
   const saveNotifications = async () => {
@@ -243,19 +243,19 @@ export default function SettingsPage() {
       .eq("user_id", user.id);
     setSavingNotifs(false);
     if (error) {
-      toast.error("Erro ao salvar preferências");
+      toast.error("Não deu pra salvar os avisos");
       return;
     }
-    toast.success("Preferências salvas");
+    toast.success("Avisos salvos");
   };
 
   const updatePassword = async () => {
     if (!passwordForm.currentPassword) {
-      toast.error("Informe sua senha atual");
+      toast.error("Coloque sua senha atual");
       return;
     }
     if (!passwordForm.newPassword || !passwordForm.confirmPassword) {
-      toast.error("Preencha e confirme a nova senha");
+      toast.error("Preencha a nova senha nos dois campos");
       return;
     }
     const passwordPolicyError = getPasswordPolicyError(passwordForm.newPassword);
@@ -264,7 +264,7 @@ export default function SettingsPage() {
       return;
     }
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      toast.error("As senhas não conferem");
+      toast.error("As senhas estão diferentes");
       return;
     }
 
@@ -273,12 +273,12 @@ export default function SettingsPage() {
     setSavingPassword(false);
 
     if (error) {
-      toast.error(error.message ?? "Erro ao atualizar senha");
+      toast.error(error.message ?? "Não deu pra trocar a senha");
       return;
     }
 
     setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
-    toast.success("Senha atualizada com sucesso");
+    toast.success("Senha trocada");
   };
 
   const exportAccountData = () => {
@@ -316,14 +316,14 @@ export default function SettingsPage() {
     }
 
     if (targetPlanId === planId) {
-      toast.info("Este já é o seu plano atual.");
+      toast.info("Você já está nesse plano.");
       return;
     }
 
     const targetLimits = resolveEffectiveLimitsByPlanId(targetPlanId);
     const targetOperational = resolveEffectiveOperationalLimitsByPlanId(targetPlanId);
     if (!targetLimits || !targetOperational) {
-      toast.error("Não foi possível validar os limites do plano selecionado.");
+      toast.error("Não deu pra checar os limites desse plano.");
       return;
     }
 
@@ -341,7 +341,7 @@ export default function SettingsPage() {
       .map((item) => `${item.label} (${item.used}/${item.max})`);
 
     if (exceeded.length > 0) {
-      toast.error(`Não foi possível trocar de plano: limite excedido em ${exceeded.join(", ")}.`);
+      toast.error(`Não dá pra trocar: você passa do limite em ${exceeded.join(", ")}.`);
       return;
     }
 
@@ -352,11 +352,11 @@ export default function SettingsPage() {
           plan_id: targetPlanId,
         },
       });
-      toast.success("Plano atualizado com sucesso.");
+      toast.success("Plano atualizado!");
       setPlansModalOpen(false);
       await fetchAll();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao trocar de plano");
+      toast.error(error instanceof Error ? error.message : "Não deu pra trocar o plano");
     }
   };
 
@@ -377,12 +377,12 @@ export default function SettingsPage() {
   ];
 
   const notifItems = [
-    { key: "routeErrors" as const, label: "Erros de rota", desc: "Alerta quando uma rota falhar no processamento", icon: AlertTriangle },
-    { key: "automationComplete" as const, label: "Automação concluída", desc: "Notificar quando uma automação Shopee finalizar", icon: CheckCircle2 },
-    { key: "sessionDisconnected" as const, label: "Sessão desconectada", desc: "Alerta quando WhatsApp ou Telegram desconectar", icon: WhatsAppIcon },
-    { key: "dailyReport" as const, label: "Relatório diário", desc: "Resumo diário com métricas por email", icon: Bell },
-    { key: "lowQuotaAlert" as const, label: "Limites quase esgotados", desc: "Avisar quando o uso ultrapassar 80% do plano", icon: CreditCard },
-    { key: "weeklyPerformanceDigest" as const, label: "Resumo semanal", desc: "Receber resumo consolidado da semana", icon: FileText },
+    { key: "routeErrors" as const, label: "Erros nas rotas", desc: "Avisa quando uma rota der problema", icon: AlertTriangle },
+    { key: "automationComplete" as const, label: "Automação terminou", desc: "Avisa quando uma automação Shopee acabar", icon: CheckCircle2 },
+    { key: "sessionDisconnected" as const, label: "Sessão caiu", desc: "Avisa quando WhatsApp ou Telegram desconectar", icon: WhatsAppIcon },
+    { key: "dailyReport" as const, label: "Resumo do dia", desc: "Receba um resumo diário por e-mail", icon: Bell },
+    { key: "lowQuotaAlert" as const, label: "Limite quase no teto", desc: "Avisa quando você usar mais de 80% do plano", icon: CreditCard },
+    { key: "weeklyPerformanceDigest" as const, label: "Resumo da semana", desc: "Receba um resumo semanal", icon: FileText },
   ];
 
   const nearLimitItems = usageItems.filter((item) => item.max !== -1 && item.max > 0 && (item.used / item.max) * 100 >= 80);
@@ -390,7 +390,7 @@ export default function SettingsPage() {
   if (loading) {
     return (
       <div className="ds-page">
-        <div className="w-full max-w-4xl space-y-6">
+        <div className="mx-auto w-full max-w-4xl space-y-6">
           <Skeleton className="h-10 w-48" />
           <Skeleton className="h-64 w-full rounded-xl" />
           <Skeleton className="h-48 w-full rounded-xl" />
@@ -400,22 +400,22 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <div className="w-full max-w-4xl space-y-8">
+    <div className="ds-page">
+      <div className="mx-auto w-full max-w-4xl space-y-6">
         <PageHeader
           title="Minha conta"
-          description="Centralize perfil, segurança, preferências e limites operacionais da sua conta"
+          description="Seu perfil, segurança e configurações num lugar só"
         />
 
         <Tabs defaultValue="conta" className="space-y-5">
           <TabsList className="w-full justify-start overflow-x-auto">
             <TabsTrigger value="conta">Conta</TabsTrigger>
-            <TabsTrigger value="preferencias">Preferências</TabsTrigger>
-            <TabsTrigger value="plano">Plano & Uso</TabsTrigger>
+            <TabsTrigger value="preferencias">Avisos</TabsTrigger>
+            <TabsTrigger value="plano">Plano</TabsTrigger>
           </TabsList>
 
           <TabsContent value="conta" className="space-y-5">
-            <Card>
+            <Card className="glass">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -423,7 +423,7 @@ export default function SettingsPage() {
                   </div>
                   <div>
                     <CardTitle className="text-base">Perfil</CardTitle>
-                    <CardDescription>Informações essenciais para identificação da conta</CardDescription>
+                    <CardDescription>Seus dados básicos</CardDescription>
                   </div>
               </div>
               </CardHeader>
@@ -458,7 +458,7 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="glass">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -466,7 +466,7 @@ export default function SettingsPage() {
                   </div>
                   <div>
                     <CardTitle className="text-base">Segurança</CardTitle>
-                    <CardDescription>Proteja seu acesso e mantenha sua conta segura</CardDescription>
+                    <CardDescription>Troque sua senha aqui</CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -529,22 +529,22 @@ export default function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="preferencias" className="space-y-5">
-            <Card>
+            <Card className="glass">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                     <Bell className="h-5 w-5" />
                   </div>
                   <div>
-                    <CardTitle className="text-base">Alertas e notificações</CardTitle>
-                    <CardDescription>Receba avisos realmente importantes para sua operação</CardDescription>
+                    <CardTitle className="text-base">Avisos e notificações</CardTitle>
+                    <CardDescription>Escolha o que você quer receber</CardDescription>
                   </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-1">
                 <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground/70">
                   <AlertTriangle className="h-3 w-3" />
-                  Ative pelo menos alertas de erro de rota e sessão desconectada para evitar perdas de envio.
+                  Deixe ligado pelo menos os alertas de erro e sessão desconectada pra não perder envios.
                 </p>
                 {notifItems.map((item, idx) => (
                   <div key={item.key}>
@@ -567,7 +567,7 @@ export default function SettingsPage() {
 
                 {!hasCriticalAlertsEnabled && (
                   <p className="rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
-                    Recomendado: manter alertas críticos ligados para reduzir falhas silenciosas.
+                    Recomendado: manter os alertas importantes ligados pra evitar erros silenciosos.
                   </p>
                 )}
 
@@ -580,7 +580,7 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="glass">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -588,7 +588,7 @@ export default function SettingsPage() {
                   </div>
                   <div>
                     <CardTitle className="text-base">Interface</CardTitle>
-                    <CardDescription>Preferências de visualização para o seu ambiente</CardDescription>
+                    <CardDescription>Como você quer ver o painel</CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -611,7 +611,7 @@ export default function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="plano" className="space-y-5">
-            <Card>
+            <Card className="glass">
               <CardHeader className="pb-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -631,11 +631,11 @@ export default function SettingsPage() {
               <CardContent className="space-y-5">
                 {isPlanExpired && (
                   <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
-                    <p className="text-sm font-semibold text-destructive">Seu plano expirou</p>
+                    <p className="text-sm font-semibold text-destructive">Seu plano venceu</p>
                     <p className="text-xs text-muted-foreground">
                       {planExpiryLabel
-                        ? `A assinatura venceu em ${planExpiryLabel}. Para continuar com acesso total, renove agora escolhendo um plano abaixo.`
-                        : "A assinatura venceu. Para continuar com acesso total, renove agora escolhendo um plano abaixo."}
+                        ? `Venceu em ${planExpiryLabel}. Escolha um plano pra voltar a usar tudo.`
+                        : "Venceu. Escolha um plano pra voltar a usar tudo."}
                     </p>
                     <Button
                       size="sm"
@@ -649,11 +649,11 @@ export default function SettingsPage() {
 
                 {isPlanExpiringSoon && (
                   <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-                    <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">Seu plano está perto de vencer</p>
+                    <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">Seu plano vence logo</p>
                     <p className="text-xs text-muted-foreground">
                       {planExpiryLabel
-                        ? `A assinatura vence em ${planExpiryLabel}. Escolha um plano para renovar e evitar bloqueios.`
-                        : "A assinatura vence em breve. Escolha um plano para renovar e evitar bloqueios."}
+                        ? `Vence em ${planExpiryLabel}. Renove antes pra não ficar sem acesso.`
+                        : "Vence em breve. Renove antes pra não ficar sem acesso."}
                     </p>
                     <Button
                       size="sm"
@@ -679,7 +679,7 @@ export default function SettingsPage() {
 
                 {planFeatureItems.length > 0 && (
                   <div className="space-y-2 rounded-lg border p-3">
-                    <p className="text-xs font-semibold">Recursos do plano</p>
+                    <p className="text-xs font-semibold">O que vem no plano</p>
                     <ul className="space-y-1 text-xs text-muted-foreground">
                       {planFeatureItems.map((feature) => (
                         <li key={feature} className="flex items-start gap-2">
@@ -693,9 +693,9 @@ export default function SettingsPage() {
 
                 {nearLimitItems.length > 0 && (
                   <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Atenção a limites próximos</p>
+                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Atenção: quase no limite</p>
                     <p className="text-xs text-muted-foreground">
-                      {nearLimitItems.map((item) => item.label).join(", ")} já ultrapassou 80% do limite do plano.
+                      {nearLimitItems.map((item) => item.label).join(", ")} já passou de 80% do limite.
                     </p>
                   </div>
                 )}
@@ -740,7 +740,7 @@ export default function SettingsPage() {
             <DialogHeader>
               <DialogTitle>Escolha seu plano</DialogTitle>
               <p className="text-sm text-muted-foreground">
-                Valores e recursos abaixo já refletem as regras reais do Controle de Acesso para sua conta.
+                Os valores e recursos abaixo são os que valem pra sua conta.
               </p>
             </DialogHeader>
 

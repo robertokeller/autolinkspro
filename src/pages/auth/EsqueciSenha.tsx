@@ -47,8 +47,8 @@ export default function EsqueciSenha() {
       title="Esqueci minha senha"
       description={
         sent
-          ? "Verifique seu e-mail para o link de redefinição."
-          : "Digite seu e-mail para receber o link de redefinição."
+          ? "Olhe seu e-mail — enviamos o link pra redefinir a senha."
+          : "Coloque seu e-mail e a gente manda um link pra redefinir."
       }
     >
       {!sent ? (

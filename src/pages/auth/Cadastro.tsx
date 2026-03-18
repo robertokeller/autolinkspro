@@ -57,22 +57,22 @@ export default function Cadastro() {
     }
 
     if (data.session) {
-      toast.success("Conta criada e login realizado com sucesso!");
+      toast.success("Conta criada e login feito!");
       navigate(ROUTES.app.dashboard);
       return;
     }
 
     const verificationEmailSent = (data as { verification_email_sent?: boolean } | null)?.verification_email_sent !== false;
     if (verificationEmailSent) {
-      toast.success("Conta criada! Verifique seu e-mail para confirmar o acesso.");
+      toast.success("Conta criada! Olhe seu e-mail pra confirmar o acesso.");
     } else {
-      toast.success("Conta criada! Faça login e clique em reenviar verificacao de e-mail.");
+      toast.success("Conta criada! Faça login e clique em reenviar verificação de e-mail.");
     }
     navigate(ROUTES.auth.login);
   };
 
   return (
-    <AuthCard title="Criar conta" description="Comece a usar o Auto Links gratuitamente">
+    <AuthCard title="Criar conta" description="Comece a usar o Auto Links de graça">
       <form onSubmit={handleSignUp}>
         <CardContent className="space-y-4">
           <div className="space-y-2">

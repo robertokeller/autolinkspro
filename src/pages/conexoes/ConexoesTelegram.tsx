@@ -48,7 +48,7 @@ export default function ConexoesTelegram() {
   return (
     <ConexoesCanalLayout
       title="Telegram"
-      description="Gerencie suas sessões Telegram"
+      description="Conecte e veja suas contas do Telegram"
       headerActions={null}
       activeTab={subTab}
       onTabChange={setSubTab}

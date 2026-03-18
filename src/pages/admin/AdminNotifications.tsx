@@ -97,7 +97,7 @@ interface AnnouncementFormState {
 const DEFAULT_MAINTENANCE: MaintenanceState = {
   maintenance_enabled: false,
   maintenance_title: "Sistema em manutenção",
-  maintenance_message: "Estamos realizando melhorias. Tente novamente em alguns minutos.",
+  maintenance_message: "Estamos fazendo melhorias. Tenta de novo em alguns minutos.",
   maintenance_eta: null,
   allow_admin_bypass: true,
 };
@@ -229,8 +229,8 @@ function buildPeriodPayload(form: AnnouncementFormState) {
 }
 
 function periodLabel(item: AnnouncementRow) {
-  if (!item.starts_at && !item.ends_at) return "Sem período definido";
-  if (item.starts_at && !item.ends_at) return "Indeterminado (até desativar)";
+  if (!item.starts_at && !item.ends_at) return "Sem período";
+  if (item.starts_at && !item.ends_at) return "Até desativar";
 
   const start = Date.parse(String(item.starts_at || ""));
   const end = Date.parse(String(item.ends_at || ""));
@@ -310,7 +310,7 @@ export default function AdminNotifications() {
     try {
       await Promise.all([loadUsers(), loadAnnouncements(), loadMaintenance()]);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao carregar painel de notificações");
+      toast.error(error instanceof Error ? error.message : "Não deu pra carregar as notificações");
     } finally {
       setIsBusy(false);
     }
@@ -357,7 +357,7 @@ export default function AdminNotifications() {
       });
       setPreviewCount(Number(result.count || 0));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao calcular alcance");
+      toast.error(error instanceof Error ? error.message : "Não deu pra calcular o alcance");
     } finally {
       setIsBusy(false);
     }
@@ -365,13 +365,13 @@ export default function AdminNotifications() {
 
   const saveAnnouncement = async () => {
     if (!form.title.trim() || !form.message.trim()) {
-      toast.error("Informe título e mensagem");
+      toast.error("Coloca título e mensagem");
       return;
     }
 
     const period = buildPeriodPayload(form);
     if (period.starts_at && period.ends_at && new Date(period.ends_at) <= new Date(period.starts_at)) {
-      toast.error("Data final deve ser posterior à data inicial");
+      toast.error("A data final tem que ser depois da inicial");
       return;
     }
     setIsBusy(true);
@@ -392,7 +392,7 @@ export default function AdminNotifications() {
             redeliver: false,
           },
         });
-        toast.success("Notificação atualizada");
+        toast.success("Notificação salva!");
       } else {
         await invokeBackendRpc("admin-announcements", {
           body: {
@@ -409,7 +409,7 @@ export default function AdminNotifications() {
             deliver_now: true,
           },
         });
-        toast.success("Notificação criada e entregue");
+        toast.success("Notificação criada e enviada!");
       }
 
       setIsModalOpen(false);
@@ -417,7 +417,7 @@ export default function AdminNotifications() {
       setPreviewCount(null);
       await loadAnnouncements();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao salvar notificação");
+      toast.error(error instanceof Error ? error.message : "Não deu pra salvar a notificação");
     } finally {
       setIsBusy(false);
     }
@@ -427,10 +427,10 @@ export default function AdminNotifications() {
     setIsBusy(true);
     try {
       await invokeBackendRpc("admin-announcements", { body: { action: "deliver_now", id } });
-      toast.success("Entrega disparada");
+      toast.success("Enviada!");
       await loadAnnouncements();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao reenviar notificação");
+      toast.error(error instanceof Error ? error.message : "Não deu pra reenviar");
     } finally {
       setIsBusy(false);
     }
@@ -440,10 +440,10 @@ export default function AdminNotifications() {
     setIsBusy(true);
     try {
       await invokeBackendRpc("admin-announcements", { body: { action: "deactivate", id } });
-      toast.success("Notificação desativada");
+      toast.success("Desativada!");
       await loadAnnouncements();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao desativar notificação");
+      toast.error(error instanceof Error ? error.message : "Não deu pra desativar");
     } finally {
       setIsBusy(false);
     }
@@ -453,10 +453,10 @@ export default function AdminNotifications() {
     setIsBusy(true);
     try {
       await invokeBackendRpc("admin-announcements", { body: { action: "delete", id } });
-      toast.success("Notificação apagada");
+      toast.success("Apagada!");
       await loadAnnouncements();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao apagar notificação");
+      toast.error(error instanceof Error ? error.message : "Não deu pra apagar");
     } finally {
       setIsBusy(false);
     }
@@ -475,10 +475,10 @@ export default function AdminNotifications() {
           allow_admin_bypass: maintenance.allow_admin_bypass,
         },
       });
-      toast.success("Modo de manutenção atualizado");
+      toast.success("Manutenção salva!");
       await loadMaintenance();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Falha ao atualizar manutenção");
+      toast.error(error instanceof Error ? error.message : "Não deu pra salvar a manutenção");
     } finally {
       setIsBusy(false);
     }
@@ -487,8 +487,8 @@ export default function AdminNotifications() {
   return (
     <div className="admin-page">
       <PageHeader
-        title="Central de Notificações"
-        description="Gerencie notificações para usuários e modo de manutenção global"
+        title="Notificações"
+        description="Envie avisos pros usuários e controle o modo de manutenção"
       >
         <Button variant="outline" className="gap-2" onClick={() => void loadAll()} disabled={isBusy}>
           <RefreshCw className="h-4 w-4" />
@@ -504,7 +504,7 @@ export default function AdminNotifications() {
           </TabsTrigger>
           <TabsTrigger value="maintenance" className="gap-2">
             <Wrench className="h-4 w-4" />
-            Modo de Manutenção
+            Manutenção
           </TabsTrigger>
         </TabsList>
 
@@ -523,7 +523,7 @@ export default function AdminNotifications() {
             <CardContent className="space-y-3">
               {announcements.length === 0 && (
                 <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                  Nenhuma notificação criada ainda.
+                  Nenhuma notificação criada.
                 </div>
               )}
 
@@ -599,7 +599,7 @@ export default function AdminNotifications() {
             <CardHeader>
               <CardTitle className="admin-card-title flex items-center gap-2">
                 <Wrench className="h-4 w-4" />
-                Modo de Manutenção Global
+                Manutenção Global
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -608,19 +608,19 @@ export default function AdminNotifications() {
                   checked={maintenance.maintenance_enabled}
                   onCheckedChange={(checked) => setMaintenance((prev) => ({ ...prev, maintenance_enabled: checked }))}
                 />
-                <span className="text-sm">Ativar manutenção (bloqueia uso do painel cliente)</span>
+                <span className="text-sm">Ativar manutenção (bloqueia o acesso dos clientes)</span>
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>Título da Manutenção</Label>
+                  <Label>Título</Label>
                   <Input
                     value={maintenance.maintenance_title}
                     onChange={(event) => setMaintenance((prev) => ({ ...prev, maintenance_title: event.target.value }))}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>ETA (texto livre)</Label>
+                  <Label>Previsão de volta</Label>
                   <Input
                     value={maintenance.maintenance_eta || ""}
                     onChange={(event) => setMaintenance((prev) => ({
@@ -633,7 +633,7 @@ export default function AdminNotifications() {
               </div>
 
               <div className="space-y-2">
-                  <Label>Mensagem da Manutenção</Label>
+                  <Label>Mensagem</Label>
                 <Textarea
                   rows={3}
                   value={maintenance.maintenance_message}
@@ -646,12 +646,12 @@ export default function AdminNotifications() {
                   checked={maintenance.allow_admin_bypass}
                   onCheckedChange={(checked) => setMaintenance((prev) => ({ ...prev, allow_admin_bypass: checked }))}
                 />
-                <span className="text-sm">Permitir bypass para administradores</span>
+                <span className="text-sm">Admins podem acessar mesmo em manutenção</span>
               </div>
 
               <div className="flex justify-end">
                 <Button onClick={() => void saveMaintenance()} disabled={isBusy}>
-                  Salvar Manutenção
+                  Salvar
                 </Button>
               </div>
             </CardContent>
@@ -664,7 +664,7 @@ export default function AdminNotifications() {
           <DialogHeader>
             <DialogTitle>{form.id ? "Editar Notificação" : "Criar Notificação"}</DialogTitle>
             <DialogDescription>
-              Configure alcance, período de exibição e comportamento da notificação para os usuários.
+              Configure quem vai ver, por quanto tempo e como a notificação aparece.
             </DialogDescription>
           </DialogHeader>
 
@@ -705,38 +705,38 @@ export default function AdminNotifications() {
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label>Canal de Exibição</Label>
+                <Label>Onde aparece</Label>
                 <Select value={form.channel} onValueChange={(value) => setForm((prev) => ({ ...prev, channel: value as "bell" | "modal" | "both" }))}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="bell">Somente sino</SelectItem>
-                    <SelectItem value="modal">Somente modal</SelectItem>
+                    <SelectItem value="bell">Só sino</SelectItem>
+                    <SelectItem value="modal">Só modal</SelectItem>
                     <SelectItem value="both">Sino + modal</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Modo de Filtro</Label>
+                <Label>Filtro de alcance</Label>
                 <Select value={form.matchMode} onValueChange={(value) => setForm((prev) => ({ ...prev, matchMode: value as "any" | "all" }))}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="any">Qualquer critério (ANY)</SelectItem>
-                    <SelectItem value="all">Todos os critérios (ALL)</SelectItem>
+                    <SelectItem value="any">Pelo menos um (ANY)</SelectItem>
+                    <SelectItem value="all">Todos juntos (ALL)</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  <strong>Qualquer (ANY):</strong> notifica quem atende pelo menos um critério selecionado.
-                  {" "}<strong>Todos (ALL):</strong> notifica somente quem atende todos os critérios ao mesmo tempo.
+                  <strong>Pelo menos um (ANY):</strong> avisa quem bater em qualquer critério.
+                  {" "}<strong>Todos (ALL):</strong> só avisa quem bater em todos ao mesmo tempo.
                 </p>
               </div>
             </div>
 
             <div className="space-y-2 rounded-lg border p-3">
-              <Label className="text-sm">Período de Exibição</Label>
+              <Label className="text-sm">Por quanto tempo</Label>
               <div className="grid gap-2 md:grid-cols-3">
                 <Button
                   type="button"
@@ -763,7 +763,7 @@ export default function AdminNotifications() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>Início da Vigência</Label>
+                  <Label>Começa em</Label>
                   <Input
                     type="datetime-local"
                     value={form.startsAt}
@@ -773,7 +773,7 @@ export default function AdminNotifications() {
 
                 {form.periodMode === "once" && (
                   <div className="space-y-2">
-                    <Label>Fim da Vigência (opcional)</Label>
+                    <Label>Termina em</Label>
                     <Input
                       type="datetime-local"
                       value={form.endsAt}
@@ -784,7 +784,7 @@ export default function AdminNotifications() {
 
                 {form.periodMode === "days" && (
                   <div className="space-y-2">
-                    <Label>Visível por quantos dias</Label>
+                    <Label>Quantos dias</Label>
                     <Input
                       type="number"
                       min={1}
@@ -805,7 +805,7 @@ export default function AdminNotifications() {
                 checked={form.autoPopup}
                 onCheckedChange={(checked) => setForm((prev) => ({ ...prev, autoPopup: checked }))}
               />
-              <span className="text-sm">Abrir popup automaticamente no login</span>
+              <span className="text-sm">Mostrar popup no login</span>
             </div>
 
             <div className="grid gap-6 md:grid-cols-2">
@@ -848,7 +848,7 @@ export default function AdminNotifications() {
 
             <div className="grid gap-6 md:grid-cols-2">
               <div className="space-y-3 rounded-lg border p-3">
-                <Label>Perfil de Acesso</Label>
+                <Label>Tipo de usuário</Label>
                 <div className="space-y-2">
                   <label className="flex items-center gap-2 text-sm">
                     <Checkbox
@@ -862,7 +862,7 @@ export default function AdminNotifications() {
                         });
                       }}
                     />
-                    Usuários comuns
+                    Usuários
                   </label>
                   <label className="flex items-center gap-2 text-sm">
                     <Checkbox
@@ -876,13 +876,13 @@ export default function AdminNotifications() {
                         });
                       }}
                     />
-                    Administradores
+                    Admins
                   </label>
                 </div>
               </div>
 
               <div className="space-y-3 rounded-lg border p-3">
-                <Label>Usuários Específicos</Label>
+                <Label>Escolher usuários</Label>
                 <div className="max-h-44 space-y-2 overflow-auto pr-1">
                   {activeUsers.map((user) => (
                     <label key={user.user_id} className="flex items-center gap-2 text-sm">
@@ -904,7 +904,7 @@ export default function AdminNotifications() {
           <DialogFooter>
             <div className="mr-auto flex items-center gap-2">
               <Button type="button" variant="outline" onClick={() => void previewRecipients()} disabled={isBusy}>
-                Pré-visualizar Alcance
+                Ver alcance
               </Button>
               {previewCount != null && <Badge variant="secondary">{previewCount} destinatário(s)</Badge>}
             </div>
@@ -923,7 +923,7 @@ export default function AdminNotifications() {
           <AlertDialogHeader>
             <AlertDialogTitle>Apagar notificação?</AlertDialogTitle>
             <AlertDialogDescription>
-              Esta ação remove a notificação permanentemente e limpa os registros dela na central dos usuários.
+              Isso apaga a notificação de vez e tira ela da central dos usuários.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="rounded-md border bg-muted/30 p-3 text-sm">
@@ -945,7 +945,7 @@ export default function AdminNotifications() {
               }}
               disabled={isBusy}
             >
-              Confirmar exclusão
+              Apagar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

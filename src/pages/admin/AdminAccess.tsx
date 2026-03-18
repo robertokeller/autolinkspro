@@ -70,7 +70,7 @@ const RESOURCE_LIMIT_SECTIONS: Array<{
   },
   {
     heading: "Grupos de destino",
-    subtext: "Cota total de grupos somados entre TODAS as automações ou rotas do usuário (não é por item). O limite de cadastro de grupos é derivado automaticamente do maior valor entre os dois.",
+    subtext: "Total de grupos somando todas as automações ou rotas do usuário (não é por item). O limite de cadastro vem do maior valor entre os dois.",
     cols: 2,
     fields: [
       {
@@ -100,7 +100,7 @@ function buildFeatureRules(mode: FeatureAccessMode): FeatureAccessMap {
   return FEATURE_OPTIONS.reduce((acc, feature) => {
     acc[feature.id] = {
       mode,
-      blockedMessage: "Este recurso não está disponível no seu nível de acesso atual. Solicite ajuste de nível para liberar o acesso.",
+      blockedMessage: "Esse recurso não tá liberado pro seu nível. Peça pra mudar o nível pra ter acesso.",
     };
     return acc;
   }, {} as FeatureAccessMap);
@@ -203,7 +203,7 @@ export default function AdminAccess() {
 
   const removeLevel = (levelId: string) => {
     if (draftLevels.length <= 1) {
-      toast.error("Necessário manter ao menos um nível de acesso");
+      toast.error("Precisa ter pelo menos um nível");
       return;
     }
     const target = draftLevels.find((level) => level.id === levelId);
@@ -215,7 +215,7 @@ export default function AdminAccess() {
     setDraftLevels((prev) => prev.filter((level) => level.id !== deleteLevelTarget.id));
     if (activeLevelId === deleteLevelTarget.id) setActiveLevelId(null);
     setDeleteLevelTarget(null);
-    toast.success("Nível removido. Planos vinculados serão realocados ao salvar.");
+    toast.success("Nível removido! Os planos ligados a ele vão mudar quando salvar.");
   };
 
   const saveLevels = async () => {
@@ -277,7 +277,7 @@ export default function AdminAccess() {
       // Audit log should not block the main save operation.
     }
 
-    toast.success("Níveis de acesso atualizados");
+    toast.success("Níveis salvos!");
   };
 
   const summarizeLevel = (level: AccessLevel) => {
@@ -292,7 +292,7 @@ export default function AdminAccess() {
     <div className="admin-page">
       <PageHeader
         title="Controle de Acesso"
-        description="Aqui você define recursos e limites de cada nível. Na aba Planos, apenas vincule o nível a cada plano."
+        description="Defina o que cada nível pode fazer e seus limites. Na aba Planos, é só vincular o nível."
       />
 
       <div className="admin-toolbar justify-center sm:justify-start">
@@ -371,7 +371,7 @@ export default function AdminAccess() {
       <Dialog open={!!activeLevel} onOpenChange={(open) => !open && setActiveLevelId(null)}>
         <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Configurar Nível de Acesso</DialogTitle>
+            <DialogTitle>Ajustar Nível de Acesso</DialogTitle>
           </DialogHeader>
           {activeLevel && (
             <div className="space-y-4">
@@ -387,8 +387,8 @@ export default function AdminAccess() {
               {/* Limites de recurso */}
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="admin-card-title">Limites de Recurso</CardTitle>
-                  <p className="text-xs text-muted-foreground">Use <strong>-1</strong> para ilimitado · <strong>0</strong> bloqueia o recurso. O valor aplicado ao usuário é o menor entre o base do plano e o override aqui.</p>
+                  <CardTitle className="admin-card-title">Limites</CardTitle>
+                  <p className="text-xs text-muted-foreground">Use <strong>-1</strong> pra ilimitado · <strong>0</strong> bloqueia. O sistema usa o menor valor entre o plano e o que tá aqui.</p>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   {RESOURCE_LIMIT_SECTIONS.map((section) => (
@@ -452,12 +452,12 @@ export default function AdminAccess() {
 
                         {rule.mode === "blocked" && (
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Mensagem de Bloqueio</Label>
+                            <Label className="text-xs text-muted-foreground">Aviso de bloqueio</Label>
                             <Textarea
                               rows={2}
                               value={rule.blockedMessage}
                               onChange={(event) => setFeatureBlockedMessage(activeLevel.id, feature.id, event.target.value)}
-                              placeholder="Ex: Solicite ajuste de nível para liberar este recurso."
+                              placeholder="Ex: Peça pra mudar o nível pra liberar isso."
                             />
                           </div>
                         )}
@@ -478,15 +478,15 @@ export default function AdminAccess() {
       <AlertDialog open={!!deleteLevelTarget} onOpenChange={(open) => !open && setDeleteLevelTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remover Nível de Acesso?</AlertDialogTitle>
+            <AlertDialogTitle>Apagar nível?</AlertDialogTitle>
             <AlertDialogDescription>
-              O nível <strong>{deleteLevelTarget?.name}</strong> será removido.
+              O nível <strong>{deleteLevelTarget?.name}</strong> vai ser removido.
               {(() => {
                 const affected = state.plans.filter((plan) => plan.accessLevelId === deleteLevelTarget?.id);
-                if (affected.length === 0) return " Nenhum plano vinculado a este nível.";
+                if (affected.length === 0) return " Nenhum plano ligado a esse nível.";
                 return (
                   <span>
-                    {" "}Os seguintes planos serão realocados ao primeiro nível disponível ao salvar:{" "}
+                    {" "}Esses planos vão pro primeiro nível disponível quando salvar:{" "}
                     <strong>{affected.map((plan) => plan.name).join(", ")}</strong>.
                   </span>
                 );
@@ -499,7 +499,7 @@ export default function AdminAccess() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={confirmRemoveLevel}
             >
-              Remover nível
+              Apagar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

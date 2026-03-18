@@ -552,6 +552,24 @@ function resolveUserName(metadata: Record<string, unknown> | null | undefined, e
   const value = typeof metadata?.name === "string" ? metadata.name.trim() : "";
   return value || email.split("@")[0] || "Usuario";
 }
+function maskEmailForLog(value: string) {
+  const normalized = String(value || "").toLowerCase().trim();
+  const [local = "", domain = ""] = normalized.split("@");
+  if (!local || !domain) return "invalid_email";
+
+  const localMasked = local.length <= 2
+    ? `${local.slice(0, 1)}*`
+    : `${local.slice(0, 2)}***`;
+
+  const domainParts = domain.split(".");
+  const root = domainParts[0] || "";
+  const suffix = domainParts.length > 1 ? `.${domainParts.slice(1).join(".")}` : "";
+  const rootMasked = root.length <= 2
+    ? `${root.slice(0, 1)}*`
+    : `${root.slice(0, 2)}***`;
+
+  return `${localMasked}@${rootMasked}${suffix}`;
+}
 
 function buildVerificationRedirectUrl(status: "success" | "invalid" | "error") {
   return buildAppUrl(EMAIL_VERIFY_ROUTE, { status });
@@ -770,34 +788,34 @@ authRouter.post("/signin", async (req, res) => {
   try {
     const { email, password } = req.body as { email: string; password: string };
     if (!email || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email e senha obrigatórios" } }); return; }
-
+    const emailForLog = maskEmailForLog(email);
     const user = await queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string; email_confirmed_at: string | null }>(
       "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM users WHERE email = $1", [email.toLowerCase().trim()]
     );
     if (!user) {
       await bcrypt.compare(password, SIGNIN_DUMMY_HASH); // constant-time — prevents email enumeration via timing oracle
       const rid = (req as { rid?: string }).rid ?? "-";
-      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "user_not_found", email: email.toLowerCase().trim(), ip: req.ip ?? "-", rid }));
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "user_not_found", email: emailForLog, ip: req.ip ?? "-", rid }));
       res.json({ data: { user: null, session: null }, error: { message: "Email ou senha inválidos" } }); return;
     }
 
     const meta = user.metadata ?? {};
     if (meta.account_status === "blocked" || meta.account_status === "archived") {
       const rid = (req as { rid?: string }).rid ?? "-";
-      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "account_blocked", email: email.toLowerCase().trim(), ip: req.ip ?? "-", rid }));
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "account_blocked", email: emailForLog, ip: req.ip ?? "-", rid }));
       res.json({ data: { user: null, session: null }, error: { message: "Conta bloqueada ou arquivada" } }); return;
     }
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       const rid = (req as { rid?: string }).rid ?? "-";
-      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "wrong_password", email: email.toLowerCase().trim(), ip: req.ip ?? "-", rid }));
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "wrong_password", email: emailForLog, ip: req.ip ?? "-", rid }));
       res.json({ data: { user: null, session: null }, error: { message: "Email ou senha inválidos" } }); return;
     }
 
     if (!user.email_confirmed_at) {
       const rid = (req as { rid?: string }).rid ?? "-";
-      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "email_not_confirmed", email: email.toLowerCase().trim(), ip: req.ip ?? "-", rid }));
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "email_not_confirmed", email: emailForLog, ip: req.ip ?? "-", rid }));
       res.json({ data: { user: null, session: null }, error: { message: "E-mail ainda nao confirmado. Verifique sua caixa de entrada." } }); return;
     }
 
