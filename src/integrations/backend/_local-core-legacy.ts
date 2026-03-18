@@ -83,6 +83,7 @@ const LEGACY_REMOVED_EMAILS = [
 ];
 
 const ADMIN_ROLE = "admin";
+const ADMIN_PANEL_PLAN_ID = "admin";
 const DEFAULT_NOTIFICATION_PREFS = {
   routeErrors: true,
   automationComplete: true,
@@ -366,6 +367,8 @@ function resolveDefaultSignupPlanIdFromControlPlane(): string {
 }
 
 function resolveValidPlanIdFromControlPlane(candidate: string): string {
+  const normalized = candidate.trim();
+  if (normalized === ADMIN_PANEL_PLAN_ID) return ADMIN_PANEL_PLAN_ID;
   const fallback = resolveDefaultSignupPlanIdFromControlPlane();
   const parsed = getAdminConfigRaw();
   if (!parsed) return fallback;
@@ -380,7 +383,6 @@ function resolveValidPlanIdFromControlPlane(candidate: string): string {
       .filter(Boolean),
   );
 
-  const normalized = candidate.trim();
   if (normalized && validPlanIds.has(normalized)) return normalized;
   return fallback;
 }
@@ -554,19 +556,31 @@ function ensureTables(db: LocalDatabase) {
 }
 
 function ensureUserDefaults(db: LocalDatabase, user: AuthUserRecord, role: "admin" | "user" = "user", planId = "plan-starter") {
-  if (!db.tables.profiles.some((row) => row.user_id === user.id)) {
-    const planExpiresAt = resolvePlanExpirationIsoFromControlPlane(planId);
+  const existingProfile = db.tables.profiles.find((row) => row.user_id === user.id);
+  if (!existingProfile) {
+    const effectivePlanId = role === "admin" ? ADMIN_PANEL_PLAN_ID : planId;
+    const planExpiresAt = role === "admin" ? null : resolvePlanExpirationIsoFromControlPlane(effectivePlanId);
     db.tables.profiles.push({
       id: randomId("profile"),
       user_id: user.id,
       name: String(user.user_metadata?.name || "Usuário"),
       email: user.email,
-      plan_id: planId,
+      plan_id: effectivePlanId,
       plan_expires_at: planExpiresAt,
       notification_prefs: { ...DEFAULT_NOTIFICATION_PREFS },
       created_at: nowIso(),
       updated_at: nowIso(),
     });
+  } else {
+    existingProfile.email = user.email;
+    if (role === "admin") {
+      existingProfile.plan_id = ADMIN_PANEL_PLAN_ID;
+      existingProfile.plan_expires_at = null;
+    } else if (!existingProfile.plan_id || String(existingProfile.plan_id).trim() === ADMIN_PANEL_PLAN_ID) {
+      existingProfile.plan_id = planId;
+      existingProfile.plan_expires_at = resolvePlanExpirationIsoFromControlPlane(planId);
+    }
+    existingProfile.updated_at = nowIso();
   }
 
   for (let i = db.tables.user_roles.length - 1; i >= 0; i -= 1) {
@@ -947,7 +961,7 @@ function migrateDb(raw: LocalDatabase | null): LocalDatabase {
       email: ROBERTO_ADMIN_EMAIL,
       password: ROBERTO_ADMIN_PASSWORD,
       name: ROBERTO_ADMIN_NAME,
-    }, "admin", "plan-pro");
+    }, "admin", ADMIN_PANEL_PLAN_ID);
   } else if (!isHashed(robertoUser.password)) {
     // Only sync seed password when it is still plaintext (user has never logged in
     // or upgraded the hash). Once the password is hashed via login or UI, the user-
@@ -1042,17 +1056,17 @@ function migrateDb(raw: LocalDatabase | null): LocalDatabase {
   for (const user of db.auth.users) {
     const admin = isAdminEmail(user.email);
     if (!db.tables.user_roles.some((row) => row.user_id === user.id)) {
-      ensureUserDefaults(db, user, admin ? "admin" : "user", admin ? "plan-pro" : "plan-starter");
+      ensureUserDefaults(db, user, admin ? "admin" : "user", admin ? ADMIN_PANEL_PLAN_ID : "plan-starter");
       continue;
     }
 
-    ensureProfileForUser(db, user, admin ? "plan-pro" : "plan-starter");
+    ensureProfileForUser(db, user, admin ? ADMIN_PANEL_PLAN_ID : "plan-starter");
   }
 
   // Ensure known admin emails keep admin role even if an older role row already exists.
   for (const user of db.auth.users) {
     if (!isAdminEmail(user.email)) continue;
-    ensureUserDefaults(db, user, "admin", "plan-pro");
+    ensureUserDefaults(db, user, "admin", ADMIN_PANEL_PLAN_ID);
   }
 
   if (db.auth.session) {
@@ -1612,7 +1626,7 @@ export const authApi = {
         email: ROBERTO_ADMIN_EMAIL,
         password: ROBERTO_ADMIN_PASSWORD,
         name: ROBERTO_ADMIN_NAME,
-      }, "admin", "plan-pro");
+      }, "admin", ADMIN_PANEL_PLAN_ID);
     }
     if (!userRecord) {
       recordLoginFailure(email);
@@ -1770,7 +1784,7 @@ export const authApi = {
     return { data: { sent: true }, error: null };
   },
 
-  async updateUser(input: { password?: string }) {
+  async updateUser(input: { password?: string; email?: string; data?: Record<string, unknown> }) {
     const db = loadDb();
     const current = db.auth.session;
 
@@ -1800,6 +1814,40 @@ export const authApi = {
     if (!userRecord) {
       return { data: { user: null }, error: { message: "Not authenticated" } as LocalAuthError };
     }
+
+    if (typeof input.email === "string") {
+      const normalizedEmail = normalizeEmail(input.email);
+      if (!normalizedEmail) {
+        return { data: { user: null }, error: { message: "E-mail inválido" } as LocalAuthError };
+      }
+      const duplicated = db.auth.users.find((row) => row.id !== userRecord.id && normalizeEmail(row.email) === normalizedEmail);
+      if (duplicated) {
+        return { data: { user: null }, error: { message: "Este e-mail já está em uso" } as LocalAuthError };
+      }
+      userRecord.email = normalizedEmail;
+      const profileRow = db.tables.profiles.find((row) => row.user_id === userRecord.id);
+      if (profileRow) {
+        profileRow.email = normalizedEmail;
+        profileRow.updated_at = nowIso();
+      }
+    }
+
+    if (input.data && typeof input.data === "object") {
+      const metadataPatch = input.data;
+      userRecord.metadata = {
+        ...(userRecord.metadata || {}),
+        ...metadataPatch,
+      };
+      const profileName = typeof metadataPatch.name === "string" ? metadataPatch.name.trim() : "";
+      if (profileName) {
+        const profileRow = db.tables.profiles.find((row) => row.user_id === userRecord.id);
+        if (profileRow) {
+          profileRow.name = profileName;
+          profileRow.updated_at = nowIso();
+        }
+      }
+    }
+
     if (input.password) {
       userRecord.password = await hashPassword(input.password);
     }

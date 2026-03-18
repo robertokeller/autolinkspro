@@ -264,7 +264,7 @@ async function seedAdminIfEmpty() {
   );
   await execute("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,'admin')", [uuid(), id]);
   await execute(
-    "INSERT INTO profiles (id, user_id, name, email, plan_id) VALUES ($1,$2,'Admin',$3,'plan-pro')",
+    "INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at) VALUES ($1,$2,'Admin',$3,'admin',NULL)",
     [uuid(), id, adminEmail],
   );
   console.log(`[api] Admin user seeded: ${adminEmail}`);

@@ -17,7 +17,7 @@ import {
   Bot,
 } from "lucide-react";
 import { subDays, startOfDay } from "date-fns";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 import { PageHeader } from "@/components/PageHeader";
@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAccessControl } from "@/hooks/useAccessControl";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useGrupos } from "@/hooks/useGrupos";
 import { useHistorico } from "@/hooks/useHistorico";
@@ -59,6 +60,7 @@ type HealthBadgeTone = "success" | "warning" | "destructive" | "muted";
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { canAccess, getFeaturePolicy, isCheckingAccess } = useAccessControl();
   const { entries, isLoading: histLoading } = useHistorico();
   const { waSessions, tgSessions, isLoading: sessLoading } = useSessoes();
   const { sessions: meliSessions, isLoading: meliLoading } = useMercadoLivreSessions({ enableAutoMonitor: false });
@@ -146,7 +148,7 @@ export default function Dashboard() {
   }, [automationList, entries, linkHubPages, meliSessions, posts, routes]);
 
   const chartData = useMemo(() => {
-    const realEntries = entries.filter((entry) => entry.isFinalOutcome || ["success", "error"].includes(entry.status));
+    const sentEntries = entries.filter((entry) => entry.processingStatus === "sent");
     const now = new Date();
 
     return Array.from({ length: 7 }).map((_, i) => {
@@ -155,19 +157,36 @@ export default function Dashboard() {
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
 
-      const dayEntries = realEntries.filter((entry) => {
+      const dayEntries = sentEntries.filter((entry) => {
         const createdAt = new Date(entry.createdAt);
         return createdAt >= dayStart && createdAt < dayEnd;
       });
 
+      const automacoes = dayEntries.filter((entry) => entry.mechanism === "smart_automation").length;
+      const rotas = dayEntries.filter((entry) => entry.mechanism === "automatic_routes").length;
+      const agendamentos = dayEntries.filter((entry) => entry.mechanism === "schedule").length;
+
       return {
         day: dayLabels[date.getDay()],
-        operacoes: dayEntries.length,
-        convertidos: dayEntries.filter((entry) => entry.status === "success" || entry.processingStatus === "sent").length,
-        falhas: dayEntries.filter((entry) => entry.status === "error" || entry.processingStatus === "failed").length,
+        totalEnvios: automacoes + rotas + agendamentos,
+        automacoes,
+        rotas,
+        agendamentos,
       };
     });
   }, [entries]);
+
+  const usage7d = useMemo(() => {
+    return chartData.reduce(
+      (acc, row) => ({
+        totalEnvios: acc.totalEnvios + row.totalEnvios,
+        automacoes: acc.automacoes + row.automacoes,
+        rotas: acc.rotas + row.rotas,
+        agendamentos: acc.agendamentos + row.agendamentos,
+      }),
+      { totalEnvios: 0, automacoes: 0, rotas: 0, agendamentos: 0 },
+    );
+  }, [chartData]);
 
   const recentActivity = useMemo(() => {
     return entries.slice(0, 6).map((entry) => {
@@ -294,7 +313,7 @@ export default function Dashboard() {
   }, [analytics, automationList.length]);
 
   const isLoading = histLoading || sessLoading || routesLoading || groupsLoading || postsLoading || linkHubLoading || automationsLoading || meliLoading;
-  const isHealthLoading = channelHealthLoading || shopeeHealthLoading || meliHealthLoading;
+  const isHealthLoading = channelHealthLoading || shopeeHealthLoading || meliHealthLoading || isCheckingAccess;
 
   const quickActions = [
     {
@@ -436,6 +455,55 @@ export default function Dashboard() {
     },
   ] as const;
 
+  const serviceFeatureAccess = useMemo(() => {
+    const resolve = (feature: "telegramConnections" | "shopeeAutomations" | "mercadoLivre") => {
+      if (canAccess(feature)) return { enabled: true, note: "" };
+      const policy = getFeaturePolicy(feature);
+      const blockedMessage = sanitizeError(policy.blockedMessage);
+      if (policy.mode === "hidden") {
+        return { enabled: false, note: "Nao faz parte do seu plano atual." };
+      }
+      return {
+        enabled: false,
+        note: blockedMessage || "Nao faz parte do seu plano atual.",
+      };
+    };
+
+    return {
+      tg: resolve("telegramConnections"),
+      shopee: resolve("shopeeAutomations"),
+      meli: resolve("mercadoLivre"),
+    };
+  }, [canAccess, getFeaturePolicy]);
+
+  const visibleHealthCards = healthCards.map((card) => {
+    if (card.id === "tg" && !serviceFeatureAccess.tg.enabled) {
+      return {
+        ...card,
+        details: serviceFeatureAccess.tg.note,
+        statusText: "Nao incluido no plano",
+        statusTone: "muted" as HealthBadgeTone,
+      };
+    }
+    if (card.id === "shopee" && !serviceFeatureAccess.shopee.enabled) {
+      return {
+        ...card,
+        details: serviceFeatureAccess.shopee.note,
+        statusText: "Nao incluido no plano",
+        statusTone: "muted" as HealthBadgeTone,
+      };
+    }
+    if (card.id === "meli" && !serviceFeatureAccess.meli.enabled) {
+      return {
+        ...card,
+        details: serviceFeatureAccess.meli.note,
+        statusText: "Nao incluido no plano",
+        statusTone: "muted" as HealthBadgeTone,
+      };
+    }
+    return card;
+  });
+
   return (
     <div className="ds-page">
       <PageHeader title="Painel geral" description={`Resumo do dia • ${nowBRT("EEEE, d 'de' MMMM")}`} />
@@ -479,8 +547,13 @@ export default function Dashboard() {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
-              Últimos 7 dias
+              Uso do sistema (7 dias)
             </CardTitle>
+            {!isLoading && (
+              <p className="text-xs text-muted-foreground">
+                {usage7d.totalEnvios} envio(s) no período • {usage7d.automacoes} automação(ões) • {usage7d.rotas} rota(s) • {usage7d.agendamentos} agendamento(s)
+              </p>
+            )}
           </CardHeader>
           <CardContent>
             {isLoading ? (
@@ -488,25 +561,20 @@ export default function Dashboard() {
             ) : (
               <>
                 <ResponsiveContainer width="100%" height={220}>
-                  <AreaChart data={chartData}>
-                    <defs>
-                      <linearGradient id="gradOps" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.25} />
-                        <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="gradConv" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.25} />
-                        <stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="gradErr" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="hsl(var(--destructive))" stopOpacity={0.2} />
-                        <stop offset="95%" stopColor="hsl(var(--destructive))" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
+                  <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
                     <XAxis dataKey="day" tick={{ fontSize: 11 }} className="fill-muted-foreground" />
                     <YAxis tick={{ fontSize: 11 }} className="fill-muted-foreground" allowDecimals={false} />
                     <Tooltip
+                      formatter={(value: number, key: string) => {
+                        const labels: Record<string, string> = {
+                          totalEnvios: "Envios totais",
+                          automacoes: "Automacoes",
+                          rotas: "Rotas",
+                          agendamentos: "Agendamentos",
+                        };
+                        return [value, labels[key] || key];
+                      }}
                       contentStyle={{
                         backgroundColor: "hsl(var(--card))",
                         border: "1px solid hsl(var(--border))",
@@ -514,15 +582,17 @@ export default function Dashboard() {
                         fontSize: "11px",
                       }}
                     />
-                    <Area type="monotone" dataKey="operacoes" stroke="hsl(var(--primary))" fillOpacity={1} fill="url(#gradOps)" strokeWidth={2} />
-                    <Area type="monotone" dataKey="convertidos" stroke="hsl(var(--success))" fillOpacity={1} fill="url(#gradConv)" strokeWidth={2} />
-                    <Area type="monotone" dataKey="falhas" stroke="hsl(var(--destructive))" fillOpacity={1} fill="url(#gradErr)" strokeWidth={2} />
-                  </AreaChart>
+                    <Line type="monotone" dataKey="totalEnvios" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
+                    <Line type="monotone" dataKey="automacoes" stroke="hsl(var(--success))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="rotas" stroke="hsl(var(--info))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="agendamentos" stroke="hsl(var(--warning))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                  </LineChart>
                 </ResponsiveContainer>
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs">
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />Envios</span>
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Sucesso</span>
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-destructive" />Erros</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />Envios totais</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Automações</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-info" />Rotas</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-warning" />Agendamentos</span>
                 </div>
               </>
             )}
@@ -542,7 +612,7 @@ export default function Dashboard() {
             {isLoading || isHealthLoading ? (
               <Skeleton className="h-40 w-full" />
             ) : (
-              healthCards.map((card) => (
+              visibleHealthCards.map((card) => (
                 <div key={card.id} className="flex items-center gap-3 p-3 rounded-xl bg-secondary/50">
                   <div className={cn("h-9 w-9 rounded-lg flex items-center justify-center", card.iconBgClass)}>
                     <card.icon className={cn("h-4 w-4", card.iconColorClass)} />

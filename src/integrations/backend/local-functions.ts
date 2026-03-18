@@ -46,6 +46,11 @@ const PLAN_EXPIRY_ALLOWED_FUNCTIONS = new Set([
   "user-notifications",
   "admin-maintenance",
 ]);
+const ADMIN_PANEL_PLAN_ID = "admin";
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
 
 type RecurrenceMode = "none" | "daily" | "weekly";
 
@@ -506,7 +511,9 @@ function deliverAnnouncementToInbox(
     const roleRow = db.tables.user_roles.find((row) => row.user_id === userId);
     const role: "admin" | "user" = roleRow?.role === "admin" ? "admin" : "user";
     const profile = db.tables.profiles.find((row) => row.user_id === userId);
-    const planId = String(profile?.plan_id || "plan-starter").trim() || "plan-starter";
+    const planId = role === "admin"
+      ? ADMIN_PANEL_PLAN_ID
+      : (String(profile?.plan_id || "plan-starter").trim() || "plan-starter");
     const accessLevelId = planToAccessLevel.get(planId) || "";
 
     if (!userMatchesAnnouncementFilter({ userId, planId, role, accessLevelId }, filter)) {
@@ -793,13 +800,14 @@ function buildAdminObservabilitySnapshot(db: ReturnType<typeof loadDb>) {
     const roleRow = db.tables.user_roles.find((row) => row.user_id === authUser.id) || null;
     const usage = summarizeUserUsage(db, authUser.id);
 
+    const role: "admin" | "user" = roleRow?.role === "admin" ? "admin" : "user";
     return {
       user_id: String(authUser.id || ""),
       email: String(authUser.email || ""),
       name: String(profile?.name || authUser.user_metadata?.name || "Usuario"),
-      role: roleRow?.role === "admin" ? "admin" : "user",
+      role,
       account_status: String(authUser.user_metadata?.account_status || "active"),
-      plan_id: String(profile?.plan_id || "plan-starter"),
+      plan_id: role === "admin" ? ADMIN_PANEL_PLAN_ID : String(profile?.plan_id || "plan-starter"),
       created_at: String(profile?.created_at || authUser.created_at || nowIso()),
       usage,
     };
@@ -1583,14 +1591,64 @@ function shopeeCategoriesToKeywords(value: unknown): string[] {
 
 type ShopeeAutomationQueryPlan = {
   id: string;
+  type: "search" | "products";
   params: Record<string, unknown>;
   fallbackKeyword: string;
 };
 
-function buildShopeeAutomationQueryPlans(value: unknown): ShopeeAutomationQueryPlan[] {
+type ShopeeAutomationOfferSourceMode = "search" | "vitrine";
+
+const SHOPEE_AUTOMATION_VITRINE_QUERY_PRESETS: Record<string, { listType: number; sortBy: string }> = {
+  sales: { listType: 0, sortBy: "sales" },
+  commission: { listType: 0, sortBy: "commission" },
+  discount: { listType: 0, sortBy: "discount" },
+  rating: { listType: 0, sortBy: "rating" },
+  top: { listType: 2, sortBy: "sales" },
+};
+
+function normalizeShopeeAutomationOfferSourceMode(value: unknown): ShopeeAutomationOfferSourceMode {
+  return String(value || "").trim().toLowerCase() === "vitrine" ? "vitrine" : "search";
+}
+
+function normalizeShopeeAutomationVitrineTabs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const tabs: string[] = [];
+  for (const raw of value) {
+    const tab = String(raw || "").trim().toLowerCase();
+    if (!tab || !SHOPEE_AUTOMATION_VITRINE_QUERY_PRESETS[tab] || seen.has(tab)) continue;
+    seen.add(tab);
+    tabs.push(tab);
+  }
+  return tabs;
+}
+
+function buildShopeeAutomationQueryPlans(
+  value: unknown,
+  options?: { sourceMode?: unknown; vitrineTabs?: unknown },
+): ShopeeAutomationQueryPlan[] {
+  const sourceMode = normalizeShopeeAutomationOfferSourceMode(options?.sourceMode);
+  if (sourceMode === "vitrine") {
+    const tabs = normalizeShopeeAutomationVitrineTabs(options?.vitrineTabs);
+    const selectedTabs = tabs.length > 0 ? tabs : ["sales"];
+    const plans: ShopeeAutomationQueryPlan[] = [];
+    for (const tab of selectedTabs) {
+      const preset = SHOPEE_AUTOMATION_VITRINE_QUERY_PRESETS[tab];
+      if (!preset) continue;
+      plans.push({
+        id: `vitrine_${tab}`,
+        type: "products",
+        params: { sortBy: preset.sortBy, listType: preset.listType, limit: 20, page: 1 },
+        fallbackKeyword: "",
+      });
+    }
+    if (plans.length > 0) return plans;
+  }
+
   if (!Array.isArray(value) || value.length === 0) {
     return [{
       id: "cat_0",
+      type: "search",
       params: { keyword: "oferta", sortBy: "sales", limit: 20, page: 1 },
       fallbackKeyword: "oferta",
     }];
@@ -1611,6 +1669,7 @@ function buildShopeeAutomationQueryPlans(value: unknown): ShopeeAutomationQueryP
       if (parentCat) {
         plans.push({
           id: nextId,
+          type: "search",
           params: { keyword: parentCat.label, sortBy: "sales", limit: 20, page: 1 },
           fallbackKeyword: parentCat.label,
         });
@@ -1625,6 +1684,7 @@ function buildShopeeAutomationQueryPlans(value: unknown): ShopeeAutomationQueryP
         const kw = `${cat.label} ${sub.label}`.trim();
         plans.push({
           id: nextId,
+          type: "search",
           params: { keyword: kw, sortBy: "sales", limit: 20, page: 1 },
           fallbackKeyword: kw,
         });
@@ -1639,6 +1699,7 @@ function buildShopeeAutomationQueryPlans(value: unknown): ShopeeAutomationQueryP
     if (legacyKeywords?.length) {
       plans.push({
         id: nextId,
+        type: "search",
         params: { keyword: legacyKeywords[0], sortBy: "sales", limit: 20, page: 1 },
         fallbackKeyword: legacyKeywords[0],
       });
@@ -1648,6 +1709,7 @@ function buildShopeeAutomationQueryPlans(value: unknown): ShopeeAutomationQueryP
   if (plans.length === 0) {
     plans.push({
       id: "cat_0",
+      type: "search",
       params: { keyword: "oferta", sortBy: "sales", limit: 20, page: 1 },
       fallbackKeyword: "oferta",
     });
@@ -5081,6 +5143,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       const automationConfig = latestAutomation.config && typeof latestAutomation.config === "object" && !Array.isArray(latestAutomation.config)
         ? (latestAutomation.config as Record<string, unknown>)
         : {};
+      const offerSourceMode = normalizeShopeeAutomationOfferSourceMode(automationConfig.offerSourceMode);
+      const vitrineTabs = normalizeShopeeAutomationVitrineTabs(automationConfig.vitrineTabs);
       const positiveKeywords = toKeywordList(automationConfig.positiveKeywords);
       const negativeKeywords = toKeywordList(automationConfig.negativeKeywords);
       const recentOfferTitles = getRecentOfferTitleSet(latestAutomation);
@@ -5092,10 +5156,13 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       try {
         // Mirror ShopeePesquisa lookup strategy: category (matchId/listType) first,
         // and fallback to keyword when category endpoints are unstable.
-        const queryPlans = buildShopeeAutomationQueryPlans(latestAutomation.categories);
+        const queryPlans = buildShopeeAutomationQueryPlans(latestAutomation.categories, {
+          sourceMode: offerSourceMode,
+          vitrineTabs,
+        });
         const queries = queryPlans.map((plan) => ({
           id: plan.id,
-          type: "search",
+          type: plan.type,
           params: plan.params,
         }));
 
@@ -6803,9 +6870,12 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         const users = db.auth.users.map((authUser) => {
           const profile = db.tables.profiles.find((row) => row.user_id === authUser.id) || {};
           const roleRow = db.tables.user_roles.find((row) => row.user_id === authUser.id);
+          const role: "admin" | "user" = roleRow?.role === "admin" ? "admin" : "user";
           const status = String(authUser.user_metadata?.account_status || "active");
           const rawPlanId = String(profile.plan_id || "").trim();
-          const safePlanId = rawPlanId && validPlanIds.has(rawPlanId) ? rawPlanId : fallbackPlanId;
+          const safePlanId = role === "admin"
+            ? ADMIN_PANEL_PLAN_ID
+            : (rawPlanId && validPlanIds.has(rawPlanId) ? rawPlanId : fallbackPlanId);
           return {
             id: String(profile.id || authUser.id),
             user_id: authUser.id,
@@ -6813,9 +6883,9 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
             email: authUser.email,
             plan_id: safePlanId,
             created_at: String(profile.created_at || authUser.created_at),
-            role: roleRow?.role === "admin" ? "admin" : "user",
+            role,
             account_status: status,
-            plan_expires_at: typeof (profile as Record<string, unknown>).plan_expires_at === "string"
+            plan_expires_at: role !== "admin" && typeof (profile as Record<string, unknown>).plan_expires_at === "string"
               ? String((profile as Record<string, unknown>).plan_expires_at)
               : null,
           };
@@ -6832,6 +6902,11 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
 
       if (action === "update_plan") {
         const targetUserId = String(body.user_id || "");
+        if (!targetUserId) return fail("Usuário alvo obrigatório");
+        const targetRole = db.tables.user_roles.find((row) => row.user_id === targetUserId)?.role === "admin" ? "admin" : "user";
+        if (targetRole === "admin") {
+          return fail("Admins não possuem plano. Mude a permissão para usuário para aplicar plano.");
+        }
         const planId = String(body.plan_id || "").trim();
         if (!planId || !validPlanIds.has(planId)) {
           return fail("Plano invalido para este ambiente");
@@ -6852,17 +6927,29 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       if (action === "set_role") {
         const targetUserId = String(body.user_id || "");
         const role = String(body.role || "user") === "admin" ? "admin" : "user";
+        if (!targetUserId) return fail("Usuário alvo obrigatório");
+        if (targetUserId === userId && role !== "admin") {
+          return fail("Nao e permitido remover a propria permissao admin");
+        }
+        const profile = db.tables.profiles.find((row) => row.user_id === targetUserId);
+        if (!profile) return fail("Perfil nao encontrado");
 
         if (role === "user") {
-          const profile = db.tables.profiles.find((row) => row.user_id === targetUserId);
-          if (!profile) return fail("Perfil nao encontrado");
-
           const planId = String(profile.plan_id || "").trim();
-          if (!planId || !validPlanIds.has(planId)) {
+          const hasExpiry = typeof profile.plan_expires_at === "string"
+            && Number.isFinite(Date.parse(profile.plan_expires_at));
+          if (!planId || planId === ADMIN_PANEL_PLAN_ID || !validPlanIds.has(planId)) {
             profile.plan_id = fallbackPlanId;
             profile.plan_expires_at = resolvePlanExpirationIsoFromControlPlane(fallbackPlanId);
             profile.updated_at = nowIso();
+          } else if (!hasExpiry) {
+            profile.plan_expires_at = resolvePlanExpirationIsoFromControlPlane(planId);
+            profile.updated_at = nowIso();
           }
+        } else {
+          profile.plan_id = ADMIN_PANEL_PLAN_ID;
+          profile.plan_expires_at = null;
+          profile.updated_at = nowIso();
         }
 
         for (let i = db.tables.user_roles.length - 1; i >= 0; i -= 1) {
@@ -6989,11 +7076,11 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         const name = String(body.name || "Usuário").trim() || "Usuário";
         const role = String(body.role || "user") === "admin" ? "admin" : "user";
         const requestedPlanId = String(body.plan_id || "").trim();
-        const planId = role === "user"
-          ? fallbackPlanId
+        const planId = role === "admin"
+          ? ADMIN_PANEL_PLAN_ID
           : (requestedPlanId && validPlanIds.has(requestedPlanId) ? requestedPlanId : fallbackPlanId);
 
-        if (!email || rawPassword.length < 6) {
+        if (!email || !isValidEmail(email) || rawPassword.length < 6) {
           return fail("Informe email válido e senha com no mínimo 6 caracteres");
         }
 
@@ -7039,7 +7126,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       if (action === "update_user") {
         const targetUserId = String(body.user_id || "");
         if (!targetUserId) return fail("Usuario alvo obrigatorio");
-        if (targetUserId === userId && String(body.role || "user") !== "admin") {
+        const role = String(body.role || "user") === "admin" ? "admin" : "user";
+        if (targetUserId === userId && role !== "admin") {
           return fail("Nao e permitido remover a propria permissao admin");
         }
 
@@ -7049,21 +7137,56 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         const profile = db.tables.profiles.find((row) => row.user_id === targetUserId);
         if (!profile) return fail("Perfil nao encontrado");
 
-        // Name
+        const emailProvided = body.email !== undefined;
+        const email = normalizeEmail(String(body.email || ""));
+        if (emailProvided) {
+          if (!email || !isValidEmail(email)) return fail("Email invalido");
+          const duplicate = db.auth.users.find((row) => row.id !== targetUserId && normalizeEmail(row.email) === email);
+          if (duplicate) return fail("Email ja cadastrado");
+        }
+
+        const accountStatusRaw = String(body.account_status || "").trim();
+        const hasAccountStatus = accountStatusRaw.length > 0;
+        if (hasAccountStatus && !["active", "inactive", "blocked", "archived"].includes(accountStatusRaw)) {
+          return fail("Status de conta invalido");
+        }
+        if (hasAccountStatus && targetUserId === userId && accountStatusRaw !== "active") {
+          return fail("Nao e permitido inativar, bloquear ou arquivar o proprio usuario admin");
+        }
+
+        // Name / email
         const nextName = String(body.name || "").trim();
         if (nextName) {
           target.user_metadata = { ...target.user_metadata, name: nextName, updated_at: nowIso() };
           profile.name = nextName;
           profile.updated_at = nowIso();
         }
+        if (emailProvided) {
+          target.email = email;
+          profile.email = email;
+          profile.updated_at = nowIso();
+        }
 
-        // Plan
-        const planId = String(body.plan_id || "").trim();
-        const role = String(body.role || "user") === "admin" ? "admin" : "user";
-        if (role === "user" && planId) {
-          if (!validPlanIds.has(planId)) return fail("Plano invalido para este ambiente");
-          profile.plan_id = planId;
-          profile.plan_expires_at = resolvePlanExpirationIsoFromControlPlane(planId);
+        // Plan / expiry
+        const requestedPlanId = String(body.plan_id || "").trim();
+        const rawCurrentPlanId = String(profile.plan_id || "").trim();
+        const rawCurrentExpiry = typeof profile.plan_expires_at === "string" ? profile.plan_expires_at : null;
+        if (role === "admin") {
+          profile.plan_id = ADMIN_PANEL_PLAN_ID;
+          profile.plan_expires_at = null;
+          profile.updated_at = nowIso();
+        } else {
+          if (requestedPlanId) {
+            if (!validPlanIds.has(requestedPlanId)) return fail("Plano invalido para este ambiente");
+            profile.plan_id = requestedPlanId;
+            profile.plan_expires_at = resolvePlanExpirationIsoFromControlPlane(requestedPlanId);
+          } else if (!rawCurrentPlanId || rawCurrentPlanId === ADMIN_PANEL_PLAN_ID || !validPlanIds.has(rawCurrentPlanId)) {
+            profile.plan_id = fallbackPlanId;
+            profile.plan_expires_at = resolvePlanExpirationIsoFromControlPlane(fallbackPlanId);
+          } else {
+            profile.plan_id = rawCurrentPlanId;
+            profile.plan_expires_at = rawCurrentExpiry || resolvePlanExpirationIsoFromControlPlane(rawCurrentPlanId);
+          }
           profile.updated_at = nowIso();
         }
 
@@ -7076,19 +7199,16 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         db.tables.user_roles.push({ id: randomId("role"), user_id: targetUserId, role, created_at: nowIso() });
 
         // Status
-        const accountStatus = String(body.account_status || "active");
-        if (["active", "inactive", "blocked", "archived"].includes(accountStatus)) {
-          if (targetUserId === userId && accountStatus !== "active") {
-            return fail("Nao e permitido inativar, bloquear ou arquivar o proprio usuario admin");
-          }
-          target.user_metadata = { ...target.user_metadata, account_status: accountStatus, status_updated_at: nowIso() };
+        if (hasAccountStatus) {
+          target.user_metadata = { ...target.user_metadata, account_status: accountStatusRaw, status_updated_at: nowIso() };
         }
 
         appendAudit(db, "update_user", userId, targetUserId, {
           name: nextName || undefined,
-          plan_id: planId || undefined,
+          email: emailProvided ? email : undefined,
+          plan_id: String(profile.plan_id || "") || undefined,
           role,
-          account_status: accountStatus,
+          account_status: hasAccountStatus ? accountStatusRaw : undefined,
         });
         return { data: { success: true }, error: null };
       }
@@ -7096,6 +7216,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       if (action === "extend_plan") {
         const targetUserId = String(body.user_id || "");
         if (!targetUserId) return fail("Usuário alvo obrigatório");
+        const targetRole = db.tables.user_roles.find((row) => row.user_id === targetUserId)?.role === "admin" ? "admin" : "user";
+        if (targetRole === "admin") return fail("Admins não possuem plano para renovação");
 
         const profile = db.tables.profiles.find((row) => row.user_id === targetUserId);
         if (!profile) return fail("Perfil não encontrado");
@@ -7129,6 +7251,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       if (action === "set_plan_expiry") {
         const targetUserId = String(body.user_id || "");
         if (!targetUserId) return fail("Usuário alvo obrigatório");
+        const targetRole = db.tables.user_roles.find((row) => row.user_id === targetUserId)?.role === "admin" ? "admin" : "user";
+        if (targetRole === "admin") return fail("Admins não possuem vencimento de plano");
 
         const profile = db.tables.profiles.find((row) => row.user_id === targetUserId);
         if (!profile) return fail("Perfil não encontrado");
@@ -7243,7 +7367,9 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
           const profile = db.tables.profiles.find((row) => row.user_id === localUserId);
           const roleRow = db.tables.user_roles.find((row) => row.user_id === localUserId);
           const role: "admin" | "user" = roleRow?.role === "admin" ? "admin" : "user";
-          const planId = String(profile?.plan_id || "plan-starter").trim() || "plan-starter";
+          const planId = role === "admin"
+            ? ADMIN_PANEL_PLAN_ID
+            : (String(profile?.plan_id || "plan-starter").trim() || "plan-starter");
           const accessLevelId = planToAccessLevel.get(planId) || "";
 
           if (!userMatchesAnnouncementFilter({ userId: localUserId, planId, role, accessLevelId }, filter)) {
@@ -7627,6 +7753,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
 
     if (name === "account-plan") {
       if (!currentUser || !userId) return fail("Usuário não autenticado");
+      if (userIsAdmin(db, userId)) return fail("Conta admin não possui plano de assinatura");
 
       const action = String(body.action || "");
       if (action !== "change_plan") {

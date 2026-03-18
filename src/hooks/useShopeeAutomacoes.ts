@@ -6,8 +6,10 @@ import { toast } from "sonner";
 import type { Tables } from "@/integrations/backend/types";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
 import {
+  mergeAutomationOfferSourceConfig,
   mergeAutomationKeywordFilters,
   normalizeKeywordList,
+  readAutomationOfferSourceConfig,
   readAutomationKeywordFilters,
 } from "@/lib/automation-keywords";
 
@@ -29,6 +31,8 @@ export interface CreateAutomationInput {
   activeHoursEnd?: string;
   positiveKeywords?: string[];
   negativeKeywords?: string[];
+  offerSourceMode?: "search" | "vitrine";
+  vitrineTabs?: string[];
 }
 
 export function useShopeeAutomacoes() {
@@ -82,6 +86,11 @@ export function useShopeeAutomacoes() {
 
       const positiveKeywords = normalizeKeywordList(input.positiveKeywords || []);
       const negativeKeywords = normalizeKeywordList(input.negativeKeywords || []);
+      let config = mergeAutomationKeywordFilters({}, { positiveKeywords, negativeKeywords });
+      config = mergeAutomationOfferSourceConfig(config, {
+        offerSourceMode: input.offerSourceMode,
+        vitrineTabs: input.vitrineTabs,
+      });
       const { error } = await backend.from("shopee_automations").insert({
         name: input.name,
         interval_minutes: input.intervalMinutes,
@@ -96,7 +105,7 @@ export function useShopeeAutomacoes() {
         session_id: input.sessionId || null,
         active_hours_start: input.activeHoursStart || "08:00",
         active_hours_end: input.activeHoursEnd || "20:00",
-        config: mergeAutomationKeywordFilters({}, { positiveKeywords, negativeKeywords }),
+        config,
       });
       if (error) throw error;
     },
@@ -146,16 +155,30 @@ export function useShopeeAutomacoes() {
       if (input.sessionId !== undefined) updates.session_id = input.sessionId || null;
       if (input.activeHoursStart !== undefined) updates.active_hours_start = input.activeHoursStart;
       if (input.activeHoursEnd !== undefined) updates.active_hours_end = input.activeHoursEnd;
-      if (input.positiveKeywords !== undefined || input.negativeKeywords !== undefined) {
+      if (
+        input.positiveKeywords !== undefined
+        || input.negativeKeywords !== undefined
+        || input.offerSourceMode !== undefined
+        || input.vitrineTabs !== undefined
+      ) {
         const currentAutomation = automations.find((item) => item.id === id);
         const currentFilters = readAutomationKeywordFilters(currentAutomation?.config);
+        const currentSource = readAutomationOfferSourceConfig(currentAutomation?.config);
         const positiveKeywords = input.positiveKeywords !== undefined
           ? normalizeKeywordList(input.positiveKeywords)
           : currentFilters.positiveKeywords;
         const negativeKeywords = input.negativeKeywords !== undefined
           ? normalizeKeywordList(input.negativeKeywords)
           : currentFilters.negativeKeywords;
-        updates.config = mergeAutomationKeywordFilters(currentAutomation?.config, { positiveKeywords, negativeKeywords });
+        const offerSourceMode = input.offerSourceMode !== undefined
+          ? input.offerSourceMode
+          : currentSource.offerSourceMode;
+        const vitrineTabs = input.vitrineTabs !== undefined
+          ? input.vitrineTabs
+          : currentSource.vitrineTabs;
+        let config = mergeAutomationKeywordFilters(currentAutomation?.config, { positiveKeywords, negativeKeywords });
+        config = mergeAutomationOfferSourceConfig(config, { offerSourceMode, vitrineTabs });
+        updates.config = config;
       }
 
       const { error } = await backend
@@ -210,6 +233,7 @@ export function useShopeeAutomacoes() {
   const duplicateAutomation = async (auto: ShopeeAutomationRow) => {
     if (!user) return;
     const filters = readAutomationKeywordFilters(auto.config);
+    const sourceConfig = readAutomationOfferSourceConfig(auto.config);
     await createMutation.mutateAsync({
       name: `Copia de ${auto.name}`,
       intervalMinutes: auto.interval_minutes,
@@ -226,6 +250,8 @@ export function useShopeeAutomacoes() {
       activeHoursEnd: auto.active_hours_end,
       positiveKeywords: filters.positiveKeywords,
       negativeKeywords: filters.negativeKeywords,
+      offerSourceMode: sourceConfig.offerSourceMode,
+      vitrineTabs: sourceConfig.vitrineTabs,
     });
   };
 

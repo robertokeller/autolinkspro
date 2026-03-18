@@ -875,7 +875,12 @@ authRouter.get("/session", requireAuth, async (req, res) => {
 // POST /auth/update-user
 authRouter.post("/update-user", requireAuth, async (req, res) => {
   try {
-    const { password, current_password, data: metadata } = req.body as { password?: string; current_password?: string; data?: Record<string, unknown> };
+    const { password, current_password, data: metadata, email } = req.body as {
+      password?: string;
+      current_password?: string;
+      data?: Record<string, unknown>;
+      email?: string;
+    };
     const userId = req.currentUser!.sub;
 
     if (password) {
@@ -891,6 +896,32 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
       // Update password and immediately invalidate all existing tokens (including stolen ones)
       await execute("UPDATE users SET password_hash = $1, token_invalidated_before = NOW(), updated_at = NOW() WHERE id = $2", [hash, userId]);
     }
+
+    if (email !== undefined) {
+      const normalizedEmail = String(email || "").toLowerCase().trim();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!normalizedEmail || !emailRegex.test(normalizedEmail)) {
+        res.json({ data: { user: null }, error: { message: "E-mail inválido" } }); return;
+      }
+
+      const duplicated = await queryOne<{ id: string }>(
+        "SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1",
+        [normalizedEmail, userId],
+      );
+      if (duplicated) {
+        res.json({ data: { user: null }, error: { message: "Este e-mail já está em uso" } }); return;
+      }
+
+      await execute(
+        "UPDATE users SET email = $1, updated_at = NOW() WHERE id = $2",
+        [normalizedEmail, userId],
+      );
+      await execute(
+        "UPDATE profiles SET email = $1, updated_at = NOW() WHERE user_id = $2",
+        [normalizedEmail, userId],
+      );
+    }
+
     if (metadata && typeof metadata === "object") {
       // Block admin-only fields from being set via self-service
       const ADMIN_ONLY_METADATA = new Set(["account_status", "archived_at", "status_updated_at"]);
@@ -902,6 +933,14 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
           "UPDATE users SET metadata = metadata || $1::jsonb, updated_at = NOW() WHERE id = $2",
           [JSON.stringify(safeMeta), userId]
         );
+
+        const profileName = typeof safeMeta.name === "string" ? safeMeta.name.trim() : "";
+        if (profileName) {
+          await execute(
+            "UPDATE profiles SET name = $1, updated_at = NOW() WHERE user_id = $2",
+            [profileName, userId],
+          );
+        }
       }
     }
 

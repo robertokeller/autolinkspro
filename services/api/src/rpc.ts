@@ -171,6 +171,33 @@ function hasLetters(value: string): boolean {
   return /[a-zA-Z\u00C0-\u024F]/.test(value);
 }
 
+type AutomationOfferSourceMode = "search" | "vitrine";
+
+const AUTOMATION_VITRINE_QUERY_PRESETS: Record<string, { listType: number; sortBy: string }> = {
+  sales: { listType: 0, sortBy: "sales" },
+  commission: { listType: 0, sortBy: "commission" },
+  discount: { listType: 0, sortBy: "discount" },
+  rating: { listType: 0, sortBy: "rating" },
+  top: { listType: 2, sortBy: "sales" },
+};
+
+function normalizeAutomationOfferSourceMode(value: unknown): AutomationOfferSourceMode {
+  return String(value || "").trim().toLowerCase() === "vitrine" ? "vitrine" : "search";
+}
+
+function normalizeAutomationVitrineTabs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of value) {
+    const normalized = String(raw || "").trim().toLowerCase();
+    if (!normalized || !AUTOMATION_VITRINE_QUERY_PRESETS[normalized] || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
 function extractAutomationSearchKeywords(input: {
   categories: unknown;
   automationName: string;
@@ -202,10 +229,33 @@ function extractAutomationSearchKeywords(input: {
 function buildShopeeAutomationQueries(input: {
   categories: unknown;
   automationName: string;
-}): Array<{ id: string; params: Record<string, unknown> }> {
+  sourceMode: AutomationOfferSourceMode;
+  vitrineTabs: string[];
+}): Array<{ id: string; type: "search" | "products"; params: Record<string, unknown> }> {
+  if (input.sourceMode === "vitrine") {
+    const tabs = input.vitrineTabs.length > 0 ? input.vitrineTabs : ["sales"];
+    const queries: Array<{ id: string; type: "search" | "products"; params: Record<string, unknown> }> = [];
+    for (const tabKey of tabs) {
+      const preset = AUTOMATION_VITRINE_QUERY_PRESETS[tabKey];
+      if (!preset) continue;
+      queries.push({
+        id: `vitrine_${tabKey}`,
+        type: "products",
+        params: {
+          sortBy: preset.sortBy,
+          listType: preset.listType,
+          limit: 20,
+          page: 1,
+        },
+      });
+    }
+    if (queries.length > 0) return queries;
+  }
+
   const keywords = extractAutomationSearchKeywords(input);
   return keywords.map((keyword, index) => ({
     id: `kw_${index}`,
+    type: "search" as const,
     params: {
       keyword,
       sortBy: "sales",
@@ -1867,6 +1917,7 @@ async function processRouteMessageForUser(input: {
   let dispatched = 0;
   let mediaUsedInSuccessfulDispatch = false;
   for (const route of matching) {
+    let routeDispatched = 0;
     const rules = route.rules && typeof route.rules === "object" && !Array.isArray(route.rules)
       ? route.rules as Record<string, unknown>
       : {};
@@ -2288,12 +2339,36 @@ async function processRouteMessageForUser(input: {
       }
 
       dispatched += 1;
+      routeDispatched += 1;
       if (mediaForDestination) {
         mediaUsedInSuccessfulDispatch = true;
       }
       await execute(
         "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'success',$5,'outbound',$6,'sent','','')",
         [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, platform, routeId: route.id, routeName: route.name, hasMedia: !!mediaForDestination, ...(autoImageSource ? { autoImageSource } : {}) }), mediaForDestination ? "image" : "text"],
+      );
+    }
+
+    if (routeDispatched > 0) {
+      await execute(
+        `UPDATE routes
+           SET rules = jsonb_set(
+                 COALESCE(rules, '{}'::jsonb),
+                 '{messagesForwarded}',
+                 to_jsonb(
+                   (
+                     CASE
+                       WHEN COALESCE(rules->>'messagesForwarded', '') ~ '^[0-9]+$'
+                         THEN (rules->>'messagesForwarded')::bigint
+                       ELSE 0
+                     END
+                   ) + $1::bigint
+                 ),
+                 true
+               ),
+               updated_at = NOW()
+         WHERE id = $2 AND user_id = $3`,
+        [routeDispatched, route.id, userId],
       );
     }
   }
@@ -2435,6 +2510,15 @@ const BUILTIN_PLANS: Array<{ id: string; period: string; isActive: boolean }> = 
   { id: "plan-business-annual",period: "365 dias", isActive: true },
 ];
 const BUILTIN_PLAN_IDS = new Set(BUILTIN_PLANS.map((p) => p.id));
+const ADMIN_PANEL_PLAN_ID = "admin";
+
+function normalizeEmail(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
 
 function getValidPlanIds(cp) {
   const plans = Array.isArray(cp.plans) ? cp.plans : [];
@@ -2491,8 +2575,10 @@ function isAnnouncementActiveNow(row) {
 }
 
 async function appendAudit(action, actorId, targetId, details) {
-  await execute("INSERT INTO admin_audit_logs (id, user_id, action, target_user_id, details) VALUES ($1,$2,$3,$4,$5)",
-    [uuid(), actorId, action, targetId || null, JSON.stringify(details)]);
+  await execute(
+    "INSERT INTO admin_audit_logs (id, user_id, action, target_user_id, details) VALUES ($1,(SELECT id FROM users WHERE id=$2),$3,(SELECT id FROM users WHERE id=$4),$5)",
+    [uuid(), actorId || null, action, targetId || null, JSON.stringify(details)],
+  );
 }
 
 async function isPlanExpired(userId) {
@@ -2506,8 +2592,14 @@ async function listUsersWithMeta() {
   // and frees 2 pool connections per call.
   const rows = await query(`
     SELECT u.id, u.email, u.metadata, u.created_at,
-           COALESCE(p.plan_id, 'plan-starter') AS plan_id,
-           p.plan_expires_at,
+           CASE
+             WHEN COALESCE(r.role, 'user') = 'admin' THEN '${ADMIN_PANEL_PLAN_ID}'
+             ELSE COALESCE(p.plan_id, 'plan-starter')
+           END AS plan_id,
+           CASE
+             WHEN COALESCE(r.role, 'user') = 'admin' THEN NULL
+             ELSE p.plan_expires_at
+           END AS plan_expires_at,
            p.name AS profile_name,
            COALESCE(r.role, 'user') AS role
     FROM users u
@@ -3475,6 +3567,12 @@ rpcRouter.post("/rpc", async (req, res) => {
           continue;
         }
 
+        const automationConfig = claimed.config && typeof claimed.config === "object" && !Array.isArray(claimed.config)
+          ? claimed.config as Record<string, unknown>
+          : {};
+        const offerSourceMode = normalizeAutomationOfferSourceMode(automationConfig.offerSourceMode);
+        const vitrineTabs = normalizeAutomationVitrineTabs(automationConfig.vitrineTabs);
+
         const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
         const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
         const template = await queryOne<{ id: string; name: string; content: string; is_default: boolean }>(
@@ -3490,6 +3588,8 @@ rpcRouter.post("/rpc", async (req, res) => {
         const queries = buildShopeeAutomationQueries({
           categories: claimed.categories,
           automationName,
+          sourceMode: offerSourceMode,
+          vitrineTabs,
         });
 
         const batchResult = await proxyMicroservice(
@@ -3533,9 +3633,6 @@ rpcRouter.post("/rpc", async (req, res) => {
         const minPrice = Math.max(0, toNumber(claimed.min_price, 0));
         const maxPriceRaw = Math.max(0, toNumber(claimed.max_price, 999999));
         const maxPrice = maxPriceRaw > 0 ? maxPriceRaw : 999999;
-        const automationConfig = claimed.config && typeof claimed.config === "object" && !Array.isArray(claimed.config)
-          ? claimed.config as Record<string, unknown>
-          : {};
         const positiveKeywords = toRouteKeywordList(automationConfig.positiveKeywords);
         const negativeKeywords = toRouteKeywordList(automationConfig.negativeKeywords);
 
@@ -4383,7 +4480,10 @@ rpcRouter.post("/rpc", async (req, res) => {
                   COALESCE(p.name, u.metadata->>'name', 'Usuario') AS name,
                   COALESCE(r.role, 'user') AS role,
                   COALESCE(u.metadata->>'account_status', 'active') AS account_status,
-                  COALESCE(p.plan_id, 'plan-starter') AS plan_id,
+                  CASE
+                    WHEN COALESCE(r.role, 'user') = 'admin' THEN '${ADMIN_PANEL_PLAN_ID}'
+                    ELSE COALESCE(p.plan_id, 'plan-starter')
+                  END AS plan_id,
                   u.created_at
            FROM users u
            LEFT JOIN profiles p ON p.user_id = u.id
@@ -4521,7 +4621,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           name: String(u.name || "Usuario"),
           role: String(u.role || "user"),
           account_status: String(u.account_status || "active"),
-          plan_id: String(u.plan_id || "plan-starter"),
+          plan_id: String(u.plan_id || ADMIN_PANEL_PLAN_ID),
           created_at: u.created_at,
           usage: {
             routesTotal: toInt(routeRow?.routes_total, 0),
@@ -5024,28 +5124,53 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "update_plan") {
         const tid = String(params.user_id ?? ""); const planId = String(params.plan_id ?? "").trim();
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
+        const roleRow = await queryOne("SELECT role FROM user_roles WHERE user_id=$1", [tid]);
+        const targetRole = String(roleRow?.role ?? "user") === "admin" ? "admin" : "user";
+        if (targetRole === "admin") { fail(res, "Admins não possuem plano. Ajuste a permissão para usuário se quiser aplicar plano."); return; }
         if (!planId || !validPlanIds.has(planId)) { fail(res, "Plano invÃ¡lido"); return; }
         const expiresAt = planExpiresAt(cp, planId);
-        await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [planId, expiresAt, tid]);
+        const upd = await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [planId, expiresAt, tid]);
+        if (upd.rowCount <= 0) { fail(res, "Perfil não encontrado"); return; }
         await appendAudit("update_plan", userId, tid, { plan_id: planId });
         ok(res, { success: true }); return;
       }
       if (action === "set_role") {
         const tid = String(params.user_id ?? ""); const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
-        if (role === "user") {
-          const p = await queryOne("SELECT plan_id FROM profiles WHERE user_id=$1", [tid]);
-          const rawPlan = String(p?.plan_id ?? "").trim();
-          if (!rawPlan || !validPlanIds.has(rawPlan)) await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [fallbackPlan, planExpiresAt(cp, fallbackPlan), tid]);
-        }
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
+        if (tid === userId && role !== "admin") { fail(res, "Não é permitido remover a própria permissão admin"); return; }
+        const profile = await queryOne("SELECT plan_id, plan_expires_at FROM profiles WHERE user_id=$1", [tid]);
+        if (!profile) { fail(res, "Perfil não encontrado"); return; }
+        const rawPlan = String(profile.plan_id ?? "").trim();
+        const shouldReassignUserPlan = !rawPlan || rawPlan === ADMIN_PANEL_PLAN_ID || !validPlanIds.has(rawPlan);
+        const hasValidExpiry = typeof profile.plan_expires_at === "string" && Number.isFinite(Date.parse(profile.plan_expires_at));
+        const nextUserPlan = shouldReassignUserPlan ? fallbackPlan : rawPlan;
+        const nextUserPlanExpiry = (shouldReassignUserPlan || !hasValidExpiry)
+          ? planExpiresAt(cp, nextUserPlan)
+          : (profile.plan_expires_at ?? null);
         // Wrap role change + token invalidation in a transaction â€” DELETE without INSERT leaves user roleless
         await transaction(async (client) => {
+          if (role === "admin") {
+            await client.query(
+              "UPDATE profiles SET plan_id=$1, plan_expires_at=NULL, updated_at=NOW() WHERE user_id=$2",
+              [ADMIN_PANEL_PLAN_ID, tid],
+            );
+          } else if (shouldReassignUserPlan || !hasValidExpiry) {
+            await client.query(
+              "UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3",
+              [nextUserPlan, nextUserPlanExpiry, tid],
+            );
+          }
           await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
           // Invalidate all active tokens for the target user â€” JWT embeds role, so old tokens
           // would otherwise remain valid with the previous role until natural expiry.
           await client.query("UPDATE users SET token_invalidated_before = NOW() WHERE id = $1", [tid]);
         });
-        await appendAudit("set_role", userId, tid, { role });
+        await appendAudit("set_role", userId, tid, {
+          role,
+          plan_id: role === "admin" ? ADMIN_PANEL_PLAN_ID : nextUserPlan,
+        });
         ok(res, { success: true }); return;
       }
       if (action === "set_name") {
@@ -5079,16 +5204,21 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "delete_user") {
         const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (tid === userId) { fail(res, "NÃ£o Ã© permitido apagar o prÃ³prio usuÃ¡rio"); return; }
+        const target = await queryOne("SELECT email FROM users WHERE id=$1", [tid]);
+        if (!target) { fail(res, "UsuÃ¡rio nÃ£o encontrado"); return; }
         await execute("DELETE FROM users WHERE id=$1", [tid]);
-        await appendAudit("delete_user", userId, tid, {});
+        await appendAudit("delete_user", userId, tid, { deleted_user_id: tid, email: target.email ?? null });
         ok(res, { success: true }); return;
       }
       if (action === "create_user") {
-        const email = String(params.email ?? "").trim().toLowerCase(); const password = String(params.password ?? "");
+        const email = normalizeEmail(params.email); const password = String(params.password ?? "");
         const name = String(params.name ?? "UsuÃ¡rio").trim() || "UsuÃ¡rio"; const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
-        const planId = role === "user" ? fallbackPlan : (String(params.plan_id ?? "").trim() || fallbackPlan);
+        const requestedPlanId = String(params.plan_id ?? "").trim();
+        const planId = role === "admin"
+          ? ADMIN_PANEL_PLAN_ID
+          : (requestedPlanId && validPlanIds.has(requestedPlanId) ? requestedPlanId : fallbackPlan);
         const createPasswordError = getPasswordPolicyError(password);
-        if (!email || createPasswordError) { fail(res, createPasswordError ? `Senha invalida: ${createPasswordError}` : "Informe email valido"); return; }
+        if (!email || !isValidEmail(email) || createPasswordError) { fail(res, createPasswordError ? `Senha invalida: ${createPasswordError}` : "Informe email valido"); return; }
         const exists = await queryOne("SELECT id FROM users WHERE email=$1", [email]);
         if (exists) { fail(res, "Email jÃ¡ cadastrado"); return; }
         const hash = await bcrypt.hash(password, 10);
@@ -5097,41 +5227,106 @@ rpcRouter.post("/rpc", async (req, res) => {
         await transaction(async (client) => {
           await client.query("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,NOW())", [newId, email, hash, JSON.stringify({ name, account_status: "active", status_updated_at: nowIso() })]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), newId, role]);
-          await client.query("INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at) VALUES ($1,$2,$3,$4,$5,$6)", [uuid(), newId, name, email, planId, planExpiresAt(cp, planId)]);
+          await client.query(
+            "INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at) VALUES ($1,$2,$3,$4,$5,$6)",
+            [uuid(), newId, name, email, planId, role === "admin" ? null : planExpiresAt(cp, planId)],
+          );
         });
         await appendAudit("create_user", userId, newId, { email, role, plan_id: planId });
-        ok(res, { success: true, created_user: { id: newId, user_id: newId, name, email, plan_id: planId, role } }); return;
+        ok(res, {
+          success: true,
+          created_user: {
+            id: newId,
+            user_id: newId,
+            name,
+            email,
+            plan_id: planId,
+            role,
+            account_status: "active",
+          },
+        }); return;
       }
       if (action === "update_user") {
         const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; }
+        const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
+        if (tid === userId && role !== "admin") { fail(res, "NÃ£o Ã© permitido remover a prÃ³pria permissÃ£o admin"); return; }
+
         const name = String(params.name ?? "").trim();
-        if (name) { await execute("UPDATE users SET metadata = metadata || $1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify({ name }), tid]); await execute("UPDATE profiles SET name=$1, updated_at=NOW() WHERE user_id=$2", [name, tid]); }
-        const planId = String(params.plan_id ?? "").trim(); const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
-        if (role === "user" && planId) {
-          if (!validPlanIds.has(planId)) { fail(res, "Plano invÃ¡lido"); return; }
-          await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [planId, planExpiresAt(cp, planId), tid]);
+        const emailProvided = params.email !== undefined;
+        const email = normalizeEmail(params.email);
+        if (emailProvided) {
+          if (!email || !isValidEmail(email)) { fail(res, "Email invÃ¡lido"); return; }
+          const duplicate = await queryOne("SELECT id FROM users WHERE email=$1 AND id<>$2", [email, tid]);
+          if (duplicate) { fail(res, "Email jÃ¡ cadastrado"); return; }
         }
-        // Wrap DELETE+INSERT in a transaction â€” if process crashes between the two,
-        // the user would have no user_roles row (roleless = no access).
-        const accountStatus = String(params.account_status ?? "active");
-        if (["active","inactive","blocked","archived"].includes(accountStatus)) {
-          if (tid === userId && accountStatus !== "active") { fail(res, "NÃ£o Ã© permitido alterar o prÃ³prio status"); return; }
+
+        const accountStatusRaw = String(params.account_status ?? "").trim();
+        const hasAccountStatus = accountStatusRaw.length > 0;
+        const accountStatus = hasAccountStatus ? accountStatusRaw : null;
+        if (hasAccountStatus) {
+          if (!["active","inactive","blocked","archived"].includes(accountStatusRaw)) { fail(res, "Status invÃ¡lido"); return; }
+          if (tid === userId && accountStatusRaw !== "active") { fail(res, "NÃ£o Ã© permitido alterar o prÃ³prio status"); return; }
         }
+
+        const profile = await queryOne("SELECT plan_id, plan_expires_at FROM profiles WHERE user_id=$1", [tid]);
+        if (!profile) { fail(res, "Perfil nÃ£o encontrado"); return; }
+
+        const requestedPlanId = String(params.plan_id ?? "").trim();
+        let nextPlanId = String(profile.plan_id ?? "").trim();
+        let nextPlanExpiry = profile.plan_expires_at ?? null;
+        if (role === "admin") {
+          nextPlanId = ADMIN_PANEL_PLAN_ID;
+          nextPlanExpiry = null;
+        } else if (requestedPlanId) {
+          if (!validPlanIds.has(requestedPlanId)) { fail(res, "Plano invÃ¡lido"); return; }
+          nextPlanId = requestedPlanId;
+          nextPlanExpiry = planExpiresAt(cp, requestedPlanId);
+        } else if (!nextPlanId || nextPlanId === ADMIN_PANEL_PLAN_ID || !validPlanIds.has(nextPlanId)) {
+          nextPlanId = fallbackPlan;
+          nextPlanExpiry = planExpiresAt(cp, fallbackPlan);
+        } else if (!nextPlanExpiry) {
+          nextPlanExpiry = planExpiresAt(cp, nextPlanId);
+        }
+
+        const metadataPatch: Record<string, unknown> = {};
+        if (name) metadataPatch.name = name;
+        if (hasAccountStatus && accountStatus) {
+          metadataPatch.account_status = accountStatus;
+          metadataPatch.status_updated_at = nowIso();
+        }
+
         await transaction(async (client) => {
+          if (emailProvided) {
+            await client.query("UPDATE users SET email=$1, updated_at=NOW() WHERE id=$2", [email, tid]);
+            await client.query("UPDATE profiles SET email=$1, updated_at=NOW() WHERE user_id=$2", [email, tid]);
+          }
+          if (name) {
+            await client.query("UPDATE profiles SET name=$1, updated_at=NOW() WHERE user_id=$2", [name, tid]);
+          }
+          if (Object.keys(metadataPatch).length > 0) {
+            await client.query("UPDATE users SET metadata = metadata || $1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(metadataPatch), tid]);
+          }
+          await client.query("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [nextPlanId, nextPlanExpiry, tid]);
           await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
           // Always invalidate tokens: role is re-set above (JWT embeds role), so existing tokens must be rotated
-          if (["active","inactive","blocked","archived"].includes(accountStatus)) {
-            await client.query(`UPDATE users SET metadata = metadata || $1::jsonb, token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$2`, [JSON.stringify({ account_status: accountStatus, status_updated_at: nowIso() }), tid]);
-          }
+          await client.query("UPDATE users SET token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$1", [tid]);
         });
-        await appendAudit("update_user", userId, tid, { name, plan_id: planId, role, account_status: accountStatus });
+        await appendAudit("update_user", userId, tid, {
+          name: name || undefined,
+          email: emailProvided ? email : undefined,
+          plan_id: nextPlanId,
+          role,
+          account_status: accountStatus || undefined,
+        });
         ok(res, { success: true }); return;
       }
       if (action === "extend_plan") {
         const tid = String(params.user_id ?? "");
-        const p = await queryOne("SELECT plan_id, plan_expires_at FROM profiles WHERE user_id=$1", [tid]);
+        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; }
+        const p = await queryOne("SELECT p.plan_id, p.plan_expires_at, COALESCE(r.role, 'user') AS role FROM profiles p LEFT JOIN user_roles r ON r.user_id = p.user_id WHERE p.user_id=$1", [tid]);
         if (!p) { fail(res, "Perfil nÃ£o encontrado"); return; }
+        if (String(p.role ?? "user") === "admin") { fail(res, "Admins nÃ£o possuem plano para renovar."); return; }
         const currentPlan = String(p.plan_id ?? "").trim();
         if (!currentPlan || !validPlanIds.has(currentPlan)) { fail(res, "Plano invÃ¡lido"); return; }
         const base = p.plan_expires_at && Date.parse(p.plan_expires_at) > Date.now() ? Date.parse(p.plan_expires_at) : Date.now();
@@ -5142,6 +5337,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "set_plan_expiry") {
         const tid = String(params.user_id ?? ""); const rawDate = params.expires_at;
+        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; }
+        const roleRow = await queryOne("SELECT role FROM user_roles WHERE user_id=$1", [tid]);
+        if (String(roleRow?.role ?? "user") === "admin") { fail(res, "Admins nÃ£o possuem vencimento de plano."); return; }
         let expiresAt = null;
         if (rawDate !== null && rawDate !== undefined && rawDate !== "" && rawDate !== "never") {
           const ms = Date.parse(String(rawDate));
@@ -5176,6 +5374,7 @@ rpcRouter.post("/rpc", async (req, res) => {
     if (funcName === "account-plan") {
       const action = String(params.action ?? "");
       if (action !== "change_plan") { fail(res, "AÃ§Ã£o de conta invÃ¡lida"); return; }
+      if (userIsAdmin) { fail(res, "Conta admin nÃ£o possui plano de assinatura."); return; }
       const nextPlanId = String(params.plan_id ?? "").trim(); if (!nextPlanId) { fail(res, "Plano obrigatÃ³rio"); return; }
       const cp = await loadControlPlane();
       const plans = Array.isArray(cp.plans) ? cp.plans : [];

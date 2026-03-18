@@ -27,6 +27,20 @@ export interface EffectiveOperationalLimits {
   telegramGroups: number;
 }
 
+function resolvePlanFromState(state: ReturnType<typeof loadAdminControlPlaneState>, planId?: string | null) {
+  const allPlans = state.plans;
+  if (allPlans.length === 0) return null;
+
+  const normalizedPlanId = String(planId || "").trim();
+  if (normalizedPlanId) {
+    const exact = allPlans.find((plan) => plan.id === normalizedPlanId);
+    if (exact) return exact;
+  }
+
+  const firstActive = allPlans.find((plan) => plan.isActive);
+  return firstActive || allPlans[0] || null;
+}
+
 function applyOperationalNumericLimit(baseValue: number, overrideValue: number | null | undefined): number {
   if (overrideValue == null) return baseValue;
   if (baseValue === -1) return overrideValue;
@@ -81,9 +95,7 @@ function hasFeatureCapacity(feature: AppFeature, limits: PlanLimits) {
 
 export function resolveEffectiveLimitsByPlanId(planId?: string | null): PlanLimits | null {
   const state = loadAdminControlPlaneState();
-  const activePlans = state.plans.filter((plan) => plan.isActive);
-  const catalog = activePlans.length > 0 ? activePlans : state.plans;
-  const plan = catalog.find((item) => item.id === planId) || catalog[0];
+  const plan = resolvePlanFromState(state, planId);
   if (!plan) return null;
   const accessLevel = state.accessLevels.find((level) => level.id === plan.accessLevelId);
   if (!accessLevel) return plan.limits;
@@ -92,9 +104,7 @@ export function resolveEffectiveLimitsByPlanId(planId?: string | null): PlanLimi
 
 export function resolveEffectiveOperationalLimitsByPlanId(planId?: string | null): EffectiveOperationalLimits | null {
   const state = loadAdminControlPlaneState();
-  const activePlans = state.plans.filter((plan) => plan.isActive);
-  const catalog = activePlans.length > 0 ? activePlans : state.plans;
-  const plan = catalog.find((item) => item.id === planId) || catalog[0];
+  const plan = resolvePlanFromState(state, planId);
   if (!plan) return null;
 
   const accessLevel = state.accessLevels.find((level) => level.id === plan.accessLevelId);
@@ -114,9 +124,7 @@ export function resolveEffectiveOperationalLimitsByPlanId(planId?: string | null
 
 export function resolvePlan(planId?: string | null) {
   const state = loadAdminControlPlaneState();
-  const activePlans = state.plans.filter((plan) => plan.isActive);
-  const catalog = activePlans.length > 0 ? activePlans : state.plans;
-  return catalog.find((plan) => plan.id === planId) || catalog[0];
+  return resolvePlanFromState(state, planId);
 }
 
 export function isFeatureEnabledByPlan(feature: AppFeature, planId?: string | null) {

@@ -30,7 +30,13 @@ import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown"
 import { useAuth } from "@/contexts/AuthContext";
 import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
-import { keywordsToCsv, readAutomationKeywordFilters, splitKeywordCsv } from "@/lib/automation-keywords";
+import {
+  AUTOMATION_VITRINE_TAB_OPTIONS,
+  keywordsToCsv,
+  readAutomationKeywordFilters,
+  readAutomationOfferSourceConfig,
+  splitKeywordCsv,
+} from "@/lib/automation-keywords";
 
 type FormState = {
   name: string;
@@ -48,6 +54,8 @@ type FormState = {
   templateId: string;
   positiveKeywords: string;
   negativeKeywords: string;
+  offerSourceMode: "search" | "vitrine";
+  vitrineTabs: string[];
 };
 
 const EMPTY_FORM: FormState = {
@@ -66,10 +74,13 @@ const EMPTY_FORM: FormState = {
   templateId: "",
   positiveKeywords: "",
   negativeKeywords: "",
+  offerSourceMode: "search",
+  vitrineTabs: ["sales"],
 };
 
 function automationToForm(a: ShopeeAutomationRow): FormState {
   const keywordFilters = readAutomationKeywordFilters(a.config);
+  const sourceConfig = readAutomationOfferSourceConfig(a.config);
   return {
     name: a.name,
     activeHoursStart: a.active_hours_start || "08:00",
@@ -86,6 +97,8 @@ function automationToForm(a: ShopeeAutomationRow): FormState {
     templateId: a.template_id || "",
     positiveKeywords: keywordsToCsv(keywordFilters.positiveKeywords),
     negativeKeywords: keywordsToCsv(keywordFilters.negativeKeywords),
+    offerSourceMode: sourceConfig.offerSourceMode,
+    vitrineTabs: sourceConfig.vitrineTabs,
   };
 }
 
@@ -205,6 +218,8 @@ export default function ShopeeAutomacoes() {
         activeHoursEnd: normalizedEnd,
         positiveKeywords: splitKeywordCsv(form.positiveKeywords),
         negativeKeywords: splitKeywordCsv(form.negativeKeywords),
+        offerSourceMode: form.offerSourceMode,
+        vitrineTabs: form.vitrineTabs,
       };
 
       if (editingId) {
@@ -305,6 +320,8 @@ export default function ShopeeAutomacoes() {
             const activeEnd = auto.active_hours_end || "20:00";
             const groupCount = (auto.destination_group_ids || []).length + (auto.master_group_ids || []).length;
             const keywordFilters = readAutomationKeywordFilters(auto.config);
+            const sourceConfig = readAutomationOfferSourceConfig(auto.config);
+            const vitrineTabsSet = new Set(sourceConfig.vitrineTabs);
 
             return (
               <Card key={auto.id} className="glass">
@@ -346,15 +363,26 @@ export default function ShopeeAutomacoes() {
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {(auto.categories || []).map((cat) => {
-                      const catId = isNaN(Number(cat)) ? cat : Number(cat);
-                      const sc = SHOPEE_CATEGORIES.find((c) => c.id === catId || String(c.id) === cat);
-                      return (
-                        <Badge key={cat} variant="outline" className="text-xs">
-                          {sc ? `${sc.icon} ${sc.label}` : cat}
-                        </Badge>
-                      );
-                    })}
+                    <Badge variant="secondary" className="text-xs">
+                      Origem: {sourceConfig.offerSourceMode === "vitrine" ? "Vitrine de ofertas" : "Pesquisa de ofertas"}
+                    </Badge>
+                    {sourceConfig.offerSourceMode === "vitrine"
+                      ? AUTOMATION_VITRINE_TAB_OPTIONS
+                        .filter((tab) => vitrineTabsSet.has(tab.id))
+                        .map((tab) => (
+                          <Badge key={tab.id} variant="outline" className="text-xs">
+                            {tab.label}
+                          </Badge>
+                        ))
+                      : (auto.categories || []).map((cat) => {
+                        const catId = isNaN(Number(cat)) ? cat : Number(cat);
+                        const sc = SHOPEE_CATEGORIES.find((c) => c.id === catId || String(c.id) === cat);
+                        return (
+                          <Badge key={cat} variant="outline" className="text-xs">
+                            {sc ? `${sc.icon} ${sc.label}` : cat}
+                          </Badge>
+                        );
+                      })}
                     {sessionLabel && <Badge variant="secondary" className="text-xs">Sessão: {sessionLabel}</Badge>}
                     {templateLabel && <Badge variant="secondary" className="text-xs">Template: {templateLabel}</Badge>}
                     {groupCount > 0 && <Badge variant="secondary" className="text-xs">Grupos: {groupCount} grupo(s)</Badge>}
@@ -499,17 +527,61 @@ export default function ShopeeAutomacoes() {
               </div>
             </div>
 
-            {/* 5. Categorias */}
+            {/* 5. Origem das ofertas */}
             <div className="space-y-2">
-              <Label>Categorias</Label>
-              <CategoryMultiSelect
-                value={form.categories}
-                onChange={(categoryIds) => setForm({ ...form, categories: categoryIds })}
-                placeholder="Escolha as categorias..."
-              />
+              <Label>Origem das ofertas</Label>
+              <Select
+                value={form.offerSourceMode}
+                onValueChange={(value: "search" | "vitrine") => {
+                  setForm((prev) => ({
+                    ...prev,
+                    offerSourceMode: value,
+                    vitrineTabs: value === "vitrine" && prev.vitrineTabs.length === 0 ? ["sales"] : prev.vitrineTabs,
+                  }));
+                }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="search">Pesquisa de ofertas</SelectItem>
+                  <SelectItem value="vitrine">Vitrine de ofertas</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {form.offerSourceMode === "vitrine"
+                  ? "Escolha as categorias da vitrine para capturar ofertas."
+                  : "Use as categorias tradicionais da pesquisa de ofertas."}
+              </p>
             </div>
 
-            {/* 6. Palavras-chave opcionais */}
+            {/* 6. Categorias da origem selecionada */}
+            {form.offerSourceMode === "vitrine" ? (
+              <div className="space-y-2">
+                <Label>Categorias da vitrine</Label>
+                <MultiOptionDropdown
+                  value={form.vitrineTabs}
+                  onChange={(ids) => setForm((prev) => ({ ...prev, vitrineTabs: ids }))}
+                  items={AUTOMATION_VITRINE_TAB_OPTIONS.map((tab) => ({
+                    id: tab.id,
+                    label: tab.label,
+                  }))}
+                  placeholder="Escolha as categorias da vitrine..."
+                  selectedLabel={(count) => `${count} categoria(s) da vitrine`}
+                  emptyMessage="Nenhuma categoria disponível"
+                  title="Categorias da vitrine"
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>Categorias</Label>
+                <CategoryMultiSelect
+                  value={form.categories}
+                  onChange={(categoryIds) => setForm({ ...form, categories: categoryIds })}
+                  placeholder="Escolha as categorias..."
+                />
+              </div>
+            )}
+
+            {/* 7. Palavras-chave opcionais */}
             <div className="space-y-2">
               <Label>Palavras-chave de filtro <span className="text-muted-foreground font-normal">(opcional)</span></Label>
               <div className="grid gap-3 md:grid-cols-2">
@@ -546,7 +618,7 @@ export default function ShopeeAutomacoes() {
               </div>
             </div>
 
-            {/* 7. Sessão (obrigatória) */}
+            {/* 8. Sessão (obrigatória) */}
             <div className="space-y-2">
               <Label>Sessão de envio *</Label>
               <SessionSelect
@@ -558,7 +630,7 @@ export default function ShopeeAutomacoes() {
               />
             </div>
 
-            {/* 8. Grupos destino (filtrados pela sessão) */}
+            {/* 9. Grupos destino (filtrados pela sessão) */}
             {form.sessionId && (
               <>
                 <div className="space-y-2">
@@ -599,7 +671,7 @@ export default function ShopeeAutomacoes() {
               </>
             )}
 
-            {/* 9. Template (obrigatório) */}
+            {/* 10. Template (obrigatório) */}
             <div className="space-y-2">
               <Label>Template *</Label>
               <Select value={form.templateId} onValueChange={(v) => setForm({ ...form, templateId: v })}>

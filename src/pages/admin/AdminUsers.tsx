@@ -87,7 +87,7 @@ export default function AdminUsers() {
 
   const [editUser, setEditUser] = useState<AdminUserRow | null>(null);
   const [editName, setEditName] = useState("");
-  const [editPlan, setEditPlan] = useState("");
+  const [editEmail, setEditEmail] = useState("");
   const [editRole, setEditRole] = useState<UserRole>("user");
   const [editStatus, setEditStatus] = useState<AccountStatus>("active");
   const [savingEdit, setSavingEdit] = useState(false);
@@ -234,8 +234,7 @@ export default function AdminUsers() {
   const handleOpenEdit = (user: AdminUserRow) => {
     setEditUser(user);
     setEditName(user.name || "");
-    const fallbackPlanId = defaultSignupPlan?.id || activePlans[0]?.id || "plan-starter";
-    setEditPlan(user.plan_id || fallbackPlanId);
+    setEditEmail(user.email || "");
     setEditRole(user.role);
     setEditStatus(user.account_status || "active");
   };
@@ -248,7 +247,7 @@ export default function AdminUsers() {
         action: "update_user",
         user_id: editUser.user_id,
         name: editName,
-        plan_id: editPlan,
+        email: editEmail,
         role: editRole,
         account_status: editStatus,
       });
@@ -264,13 +263,9 @@ export default function AdminUsers() {
 
   const handleSaveEdit = async () => {
     if (!editUser) return;
-
-    if (editRole === "user") {
-      const allowedPlanIds = new Set(resolveAssignablePlans(editUser.plan_id).map((plan) => plan.id));
-      if (!allowedPlanIds.has(editPlan)) {
-        toast.error("Usuário precisa ter um plano válido.");
-        return;
-      }
+    if (!editEmail.trim()) {
+      toast.error("Coloca um e-mail válido");
+      return;
     }
 
     if (editRole === "admin" && editUser.role !== "admin") {
@@ -365,6 +360,11 @@ export default function AdminUsers() {
 
   const handleExtendPlan = async () => {
     if (!extendPlanTarget || extendingPlan) return;
+    if (extendPlanTarget.role === "admin") {
+      toast.error("Conta admin não possui plano para renovação");
+      setExtendPlanTarget(null);
+      return;
+    }
     setExtendingPlan(true);
     try {
       await invokeAdmin({ action: "extend_plan", user_id: extendPlanTarget.user_id });
@@ -427,10 +427,12 @@ export default function AdminUsers() {
 
   const handleOpenPlanManager = (user: AdminUserRow) => {
     setPlanManagerUser(user);
-    setPmPlanId(user.plan_id);
+    setPmPlanId(user.role === "admin" ? "" : user.plan_id);
     setPmNewPassword("");
     setPmShowPassword(false);
-    if (user.plan_expires_at) {
+    if (user.role === "admin") {
+      setPmExpiryDate("");
+    } else if (user.plan_expires_at) {
       const d = new Date(user.plan_expires_at);
       setPmExpiryDate(Number.isFinite(d.getTime()) ? d.toISOString().split("T")[0] : "");
     } else {
@@ -451,6 +453,7 @@ export default function AdminUsers() {
 
   const pmRenewByPeriod = () => {
     if (!planManagerUser) return;
+    if (planManagerUser.role === "admin") return;
     const currentPlanId = pmPlanId || planManagerUser.plan_id;
     const plan = planCatalog.find((p) => p.id === currentPlanId);
     if (!plan) return;
@@ -463,19 +466,22 @@ export default function AdminUsers() {
     if (!planManagerUser || savingPlanManager) return;
     setSavingPlanManager(true);
     try {
-      const planChanged = pmPlanId && pmPlanId !== planManagerUser.plan_id;
-      if (planChanged) {
-        await invokeAdmin({ action: "update_plan", user_id: planManagerUser.user_id, plan_id: pmPlanId });
-      }
+      if (planManagerUser.role !== "admin") {
+        const targetPlanId = pmPlanId || planManagerUser.plan_id;
+        const planChanged = targetPlanId !== planManagerUser.plan_id;
+        if (planChanged) {
+          await invokeAdmin({ action: "update_plan", user_id: planManagerUser.user_id, plan_id: targetPlanId });
+        }
 
-      const originalExpiry = planManagerUser.plan_expires_at
-        ? new Date(planManagerUser.plan_expires_at).toISOString().split("T")[0]
-        : "";
-      if (pmExpiryDate !== originalExpiry || planChanged) {
-        const expiresAt = pmExpiryDate
-          ? new Date(pmExpiryDate + "T23:59:59").toISOString()
-          : null;
-        await invokeAdmin({ action: "set_plan_expiry", user_id: planManagerUser.user_id, expires_at: expiresAt });
+        const originalExpiry = planManagerUser.plan_expires_at
+          ? new Date(planManagerUser.plan_expires_at).toISOString().split("T")[0]
+          : "";
+        if (pmExpiryDate !== originalExpiry) {
+          const expiresAt = pmExpiryDate
+            ? new Date(pmExpiryDate + "T23:59:59").toISOString()
+            : null;
+          await invokeAdmin({ action: "set_plan_expiry", user_id: planManagerUser.user_id, expires_at: expiresAt });
+        }
       }
 
       if (pmNewPassword.trim()) {
@@ -489,7 +495,7 @@ export default function AdminUsers() {
         toast.success("Senha trocada!");
       }
 
-      toast.success(`Plano de ${planManagerUser.email} atualizado`);
+      toast.success(`Dados de ${planManagerUser.email} atualizados`);
       setPlanManagerUser(null);
       await loadData();
     } catch (err) {
@@ -571,6 +577,13 @@ export default function AdminUsers() {
                   </p>
                   {(() => {
                     const usage = userUsageMap[user.user_id];
+                    if (user.role === "admin") {
+                      return (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Conta administrativa: acesso ao painel admin (sem limites de plano).
+                        </p>
+                      );
+                    }
                     const lim = resolveEffectiveLimitsByPlanId(user.plan_id);
                     const fmt = (used: number, max: number) => max === -1 ? String(used) : `${used}/${max}`;
                     return (
@@ -593,10 +606,12 @@ export default function AdminUsers() {
 
                 <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
                   <Badge variant="outline" className="admin-chip">
-                    {planCatalog.find((plan) => plan.id === user.plan_id)?.name || user.plan_id}
+                    {user.role === "admin"
+                      ? "Sem plano (admin)"
+                      : (planCatalog.find((plan) => plan.id === user.plan_id)?.name || user.plan_id)}
                   </Badge>
                   <Badge variant="secondary" className="admin-chip">
-                    {getAccessLevelNameFromPlan(user.plan_id)}
+                    {user.role === "admin" ? "Painel admin" : getAccessLevelNameFromPlan(user.plan_id)}
                   </Badge>
                   {(() => {
                     const expiry = formatExpiry(user.plan_expires_at ?? null);
@@ -719,25 +734,31 @@ export default function AdminUsers() {
               </div>
               <div>
                 <Label>Email</Label>
-                <p className="text-sm text-muted-foreground">{editUser.email}</p>
+                <Input
+                  type="email"
+                  value={editEmail}
+                  onChange={(event) => setEditEmail(event.target.value)}
+                  placeholder="email@dominio.com"
+                />
               </div>
-              <div className="space-y-2">
-                <Label>Plano</Label>
-                <Select value={editPlan} onValueChange={setEditPlan}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {resolveAssignablePlans(editUser.plan_id).map((plan) => (
-                      <SelectItem key={plan.id} value={plan.id}>
-                        {plan.name} - {plan.price === 0 ? "Grátis" : `R$${plan.price}`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                <p className="text-xs font-medium">Plano e validade</p>
                 <p className="text-xs text-muted-foreground">
-                  Nível: {getAccessLevelNameFromPlan(editPlan)}
+                  Para evitar conflito entre telas, alterações de plano e renovação ficam no modal <strong>Gerenciar plano</strong>.
                 </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => {
+                    setEditUser(null);
+                    handleOpenPlanManager(editUser);
+                  }}
+                >
+                  <Calendar className="h-3.5 w-3.5" />
+                  Abrir Gerenciar Plano
+                </Button>
               </div>
               <div className="space-y-2">
                 <Label>Permissão</Label>
@@ -775,7 +796,9 @@ export default function AdminUsers() {
                     <div className="flex items-center justify-between gap-2">
                       <div>
                         <p className="text-xs font-medium">Validade</p>
-                        {expiry ? (
+                        {editUser.role === "admin" ? (
+                          <p className="text-xs text-muted-foreground">Conta admin sem vencimento de plano</p>
+                        ) : expiry ? (
                           <p className={`text-xs ${
                             expiry.expired ? "font-semibold text-destructive" : expiry.urgent ? "font-semibold text-amber-600 dark:text-amber-400" : "text-muted-foreground"
                           }`}>{expiry.label}</p>
@@ -787,10 +810,13 @@ export default function AdminUsers() {
                         size="sm"
                         variant="outline"
                         className="gap-1.5 shrink-0"
-                        onClick={() => setExtendPlanTarget(editUser)}
+                        onClick={() => {
+                          setEditUser(null);
+                          handleOpenPlanManager(editUser);
+                        }}
                       >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        Renovar Plano
+                        <Calendar className="h-3.5 w-3.5" />
+                        Gerenciar Plano
                       </Button>
                     </div>
                     <Button
@@ -988,15 +1014,23 @@ export default function AdminUsers() {
             <div className="space-y-2">
               <Label>Plano automático</Label>
               <div className="rounded-md border bg-muted/30 px-3 py-2">
-                <p className="text-sm font-medium">{defaultSignupPlan?.name || "Plano padrão não achado"}</p>
+                <p className="text-sm font-medium">
+                  {createRole === "admin"
+                    ? "Sem plano (admin)"
+                    : (defaultSignupPlan?.name || "Plano padrão não achado")}
+                </p>
                 <p className="text-xs text-muted-foreground">
-                  {defaultSignupPlan
-                    ? `Nível: ${getAccessLevelNameFromPlan(defaultSignupPlan.id)}`
-                    : "Defina um plano pra novos cadastros na aba Planos."}
+                  {createRole === "admin"
+                    ? "Admins acessam apenas o painel administrativo."
+                    : (defaultSignupPlan
+                      ? `Nível: ${getAccessLevelNameFromPlan(defaultSignupPlan.id)}`
+                      : "Defina um plano pra novos cadastros na aba Planos.")}
                 </p>
               </div>
               <p className="text-xs text-muted-foreground">
-                Novo usuário recebe o plano padrão e o nível dele.
+                {createRole === "admin"
+                  ? "Conta admin não recebe plano nem vencimento."
+                  : "Novo usuário recebe o plano padrão e o nível dele."}
               </p>
             </div>
             <div className="space-y-2">
@@ -1055,107 +1089,115 @@ export default function AdminUsers() {
                 <p className="text-xs text-muted-foreground">{planManagerUser.email}</p>
               </div>
 
-              {/* Plan selection */}
-              <div className="space-y-2">
-                <Label>Plano</Label>
-                <Select value={pmPlanId} onValueChange={setPmPlanId}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {resolveAssignablePlans(planManagerUser.plan_id).map((plan) => (
-                      <SelectItem key={plan.id} value={plan.id}>
-                        {plan.name}{plan.price === 0 ? " — Grátis" : ` — R$${plan.price}`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Nível: <strong>{getAccessLevelNameFromPlan(pmPlanId)}</strong>
-                </p>
-              </div>
+              {planManagerUser.role === "admin" ? (
+                <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                  Usuário admin não usa plano nem vencimento. Este modal fica disponível apenas para trocar senha.
+                </div>
+              ) : (
+                <>
+                  {/* Plan selection */}
+                  <div className="space-y-2">
+                    <Label>Plano</Label>
+                    <Select value={pmPlanId} onValueChange={setPmPlanId}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {resolveAssignablePlans(planManagerUser.plan_id).map((plan) => (
+                          <SelectItem key={plan.id} value={plan.id}>
+                            {plan.name}{plan.price === 0 ? " — Grátis" : ` — R$${plan.price}`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Nível: <strong>{getAccessLevelNameFromPlan(pmPlanId)}</strong>
+                    </p>
+                  </div>
 
-              {/* Expiry date */}
-              <div className="space-y-2">
-                <Label>Vencimento</Label>
-                <Input
-                  type="date"
-                  value={pmExpiryDate}
-                  onChange={(e) => setPmExpiryDate(e.target.value)}
-                  className="w-full"
-                />
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    { label: "+30d", days: 30 },
-                    { label: "+60d", days: 60 },
-                    { label: "+90d", days: 90 },
-                    { label: "+180d", days: 180 },
-                    { label: "+1 ano", days: 365 },
-                  ].map(({ label, days }) => (
-                    <Button
-                      key={label}
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => pmAddDays(days)}
-                    >
-                      {label}
-                    </Button>
-                  ))}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-7 px-2 text-xs gap-1"
-                    onClick={pmRenewByPeriod}
-                    title="Estender pelo período configurado no plano"
-                  >
-                    <RefreshCw className="h-3 w-3" />
-                    Renovar
-                  </Button>
-                </div>
-                <div className="flex gap-1.5">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 px-2 text-xs gap-1 text-muted-foreground"
-                    onClick={() => {
-                      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-                      setPmExpiryDate(yesterday.toISOString().split("T")[0]);
-                    }}
-                    title="Marcar como já expirado"
-                  >
-                    <CalendarX className="h-3 w-3" />
-                    Expirar agora
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 px-2 text-xs text-muted-foreground"
-                    onClick={() => setPmExpiryDate("")}
-                    title="Remover data de vencimento"
-                  >
-                    Sem vencimento
-                  </Button>
-                </div>
-                {pmExpiryDate ? (
-                  <p className="text-xs text-muted-foreground">
-                    {(() => {
-                      const expiry = formatExpiry(new Date(pmExpiryDate + "T23:59:59").toISOString());
-                      return expiry ? (
-                        <span className={expiry.expired ? "text-destructive font-medium" : expiry.urgent ? "text-amber-600 dark:text-amber-400 font-medium" : ""}>
-                          {expiry.label}
-                        </span>
-                      ) : null;
-                    })()}
-                  </p>
-                ) : (
-                  <p className="text-xs text-muted-foreground">Sem vencimento</p>
-                )}
-              </div>
+                  {/* Expiry date */}
+                  <div className="space-y-2">
+                    <Label>Vencimento</Label>
+                    <Input
+                      type="date"
+                      value={pmExpiryDate}
+                      onChange={(e) => setPmExpiryDate(e.target.value)}
+                      className="w-full"
+                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { label: "+30d", days: 30 },
+                        { label: "+60d", days: 60 },
+                        { label: "+90d", days: 90 },
+                        { label: "+180d", days: 180 },
+                        { label: "+1 ano", days: 365 },
+                      ].map(({ label, days }) => (
+                        <Button
+                          key={label}
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => pmAddDays(days)}
+                        >
+                          {label}
+                        </Button>
+                      ))}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs gap-1"
+                        onClick={pmRenewByPeriod}
+                        title="Estender pelo período configurado no plano"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        Renovar
+                      </Button>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs gap-1 text-muted-foreground"
+                        onClick={() => {
+                          const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+                          setPmExpiryDate(yesterday.toISOString().split("T")[0]);
+                        }}
+                        title="Marcar como já expirado"
+                      >
+                        <CalendarX className="h-3 w-3" />
+                        Expirar agora
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-muted-foreground"
+                        onClick={() => setPmExpiryDate("")}
+                        title="Remover data de vencimento"
+                      >
+                        Sem vencimento
+                      </Button>
+                    </div>
+                    {pmExpiryDate ? (
+                      <p className="text-xs text-muted-foreground">
+                        {(() => {
+                          const expiry = formatExpiry(new Date(pmExpiryDate + "T23:59:59").toISOString());
+                          return expiry ? (
+                            <span className={expiry.expired ? "text-destructive font-medium" : expiry.urgent ? "text-amber-600 dark:text-amber-400 font-medium" : ""}>
+                              {expiry.label}
+                            </span>
+                          ) : null;
+                        })()}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">Sem vencimento</p>
+                    )}
+                  </div>
+                </>
+              )}
 
               {/* Password reset */}
               <div className="space-y-2 border-t pt-4">

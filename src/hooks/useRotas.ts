@@ -9,6 +9,7 @@ import { logHistorico } from "@/lib/log-historico";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
 
 const ROUTE_DESTINATIONS_TABLE_WARNING = "Não foi possível carregar os destinos das rotas. As rotas foram exibidas sem os grupos vinculados.";
+const ROUTE_COUNTERS_HISTORY_WARNING = "Não foi possível carregar o histórico de envios das rotas. O contador pode ficar desatualizado temporariamente.";
 
 type RouteRow = Tables<"routes">;
 type RouteDestRow = Tables<"route_destinations">;
@@ -36,6 +37,10 @@ function parseRules(raw: Json): RulesJson {
 function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
   const dests = destinations.filter((d) => d.route_id === row.id);
   const rules = parseRules(row.rules);
+  const messagesForwardedRaw = Number(rules.messagesForwarded);
+  const messagesForwarded = Number.isFinite(messagesForwardedRaw) && messagesForwardedRaw >= 0
+    ? Math.floor(messagesForwardedRaw)
+    : 0;
    const normalizedMasterGroupIds = Array.isArray(rules.masterGroupIds)
      ? rules.masterGroupIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
      : (rules.masterGroupId ? [rules.masterGroupId] : []);
@@ -59,7 +64,7 @@ function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
       sessionId: rules.sessionId || null,
       masterGroupIds: normalizedMasterGroupIds,
     },
-    messagesForwarded: rules.messagesForwarded || 0, createdAt: row.created_at,
+    messagesForwarded, createdAt: row.created_at,
   };
 }
 
@@ -90,7 +95,38 @@ export function useRotas() {
         console.warn("[useRotas]", ROUTE_DESTINATIONS_TABLE_WARNING, destsRes.error.message);
         return routeRows.map((row) => mapRow(row, []));
       }
-      return routeRows.map((row) => mapRow(row, destsRes.data || []));
+      const mappedRoutes = routeRows.map((row) => mapRow(row, destsRes.data || []));
+      const hasAnyForwardCount = mappedRoutes.some((route) => route.messagesForwarded > 0);
+      if (hasAnyForwardCount) return mappedRoutes;
+
+      const routeIdSet = new Set(routeRows.map((row) => row.id));
+      const historyRes = await backend
+        .from("history_entries")
+        .select("details")
+        .eq("type", "route_forward")
+        .eq("processing_status", "sent")
+        .limit(10000);
+
+      if (historyRes.error) {
+        console.warn("[useRotas]", ROUTE_COUNTERS_HISTORY_WARNING, historyRes.error.message);
+        return mappedRoutes;
+      }
+
+      const countsByRoute = new Map<string, number>();
+      for (const row of historyRes.data || []) {
+        const details = row.details && typeof row.details === "object" && !Array.isArray(row.details)
+          ? row.details as Record<string, unknown>
+          : null;
+        const routeId = details ? String(details.routeId || "").trim() : "";
+        if (!routeId || !routeIdSet.has(routeId)) continue;
+        countsByRoute.set(routeId, (countsByRoute.get(routeId) || 0) + 1);
+      }
+
+      if (countsByRoute.size === 0) return mappedRoutes;
+      return mappedRoutes.map((route) => ({
+        ...route,
+        messagesForwarded: Math.max(route.messagesForwarded, countsByRoute.get(route.id) || 0),
+      }));
     },
     enabled: !!user,
   });
@@ -296,6 +332,61 @@ export function useRotas() {
       }
     }
 
+    const previousRouteRes = await backend
+      .from("routes")
+      .select("name, source_group_id, rules")
+      .eq("id", id)
+      .single();
+
+    if (previousRouteRes.error || !previousRouteRes.data) {
+      toast.error("Não foi possível carregar o estado atual da rota para edição segura.");
+      return null;
+    }
+
+    const previousDestinationsRes = await backend
+      .from("route_destinations")
+      .select("group_id")
+      .eq("route_id", id);
+
+    if (previousDestinationsRes.error) {
+      toast.error(`Falha ao carregar destinos atuais da rota: ${previousDestinationsRes.error.message}`);
+      return null;
+    }
+
+    const previousDestinationGroupIds = Array.from(
+      new Set((previousDestinationsRes.data || []).map((row) => String(row.group_id || "").trim()).filter(Boolean)),
+    );
+    const nextDestinationGroupIds = Array.from(
+      new Set(route.destinationGroupIds.map((value) => String(value || "").trim()).filter(Boolean)),
+    );
+
+    const rollbackRouteAndDestinations = async () => {
+      const restoreRoute = await backend
+        .from("routes")
+        .update({
+          name: previousRouteRes.data.name,
+          source_group_id: previousRouteRes.data.source_group_id,
+          rules: previousRouteRes.data.rules,
+        })
+        .eq("id", id);
+
+      const clearDestinations = await backend
+        .from("route_destinations")
+        .delete()
+        .eq("route_id", id);
+
+      const restoreDestinations = previousDestinationGroupIds.length > 0
+        ? await backend
+          .from("route_destinations")
+          .insert(previousDestinationGroupIds.map((groupId) => ({ route_id: id, group_id: groupId })))
+        : { error: null as unknown as { message?: string } | null };
+
+      if (restoreRoute.error || clearDestinations.error || restoreDestinations.error) {
+        return false;
+      }
+      return true;
+    };
+
     const normalizedMasterGroupIds = Array.isArray(route.masterGroupIds)
       ? route.masterGroupIds.filter((item) => typeof item === "string" && item.trim().length > 0)
       : [];
@@ -308,24 +399,12 @@ export function useRotas() {
       },
     }).eq("id", id);
     if (error) { toast.error("Erro ao atualizar rota"); return null; }
-    // Sync destinations with safer order: insert missing first, delete stale after.
-    // This prevents a route from becoming empty if insertion fails.
-    const currentDestinationsRes = await backend
-      .from("route_destinations")
-      .select("group_id")
-      .eq("route_id", id);
 
-    if (currentDestinationsRes.error) {
-      toast.error(`Falha ao carregar destinos atuais da rota: ${currentDestinationsRes.error.message}`);
-      return null;
-    }
+    const currentSet = new Set(previousDestinationGroupIds);
+    const nextSet = new Set(nextDestinationGroupIds);
 
-    const currentDestinations = (currentDestinationsRes.data || []).map((row) => String(row.group_id || ""));
-    const currentSet = new Set(currentDestinations);
-    const nextSet = new Set(route.destinationGroupIds);
-
-    const toInsert = route.destinationGroupIds.filter((gid) => !currentSet.has(gid));
-    const toDelete = currentDestinations.filter((gid) => !nextSet.has(gid));
+    const toInsert = nextDestinationGroupIds.filter((gid) => !currentSet.has(gid));
+    const toDelete = previousDestinationGroupIds.filter((gid) => !nextSet.has(gid));
 
     if (toInsert.length > 0) {
       const insertDestinations = await backend
@@ -333,7 +412,12 @@ export function useRotas() {
         .insert(toInsert.map((gid) => ({ route_id: id, group_id: gid })));
 
       if (insertDestinations.error) {
-        toast.error(`Falha ao salvar grupos de destino da rota: ${insertDestinations.error.message}`);
+        const rollbackOk = await rollbackRouteAndDestinations();
+        toast.error(
+          rollbackOk
+            ? `Falha ao salvar grupos de destino da rota: ${insertDestinations.error.message}. Alterações revertidas.`
+            : "Falha ao salvar destinos e não foi possível reverter totalmente a rota.",
+        );
         return null;
       }
     }
@@ -346,15 +430,12 @@ export function useRotas() {
         .in("group_id", toDelete);
 
       if (deleteDestinations.error) {
-        // Best-effort rollback of freshly inserted rows to avoid mixed destination sets.
-        if (toInsert.length > 0) {
-          await backend
-            .from("route_destinations")
-            .delete()
-            .eq("route_id", id)
-            .in("group_id", toInsert);
-        }
-        toast.error(`Falha ao remover destinos antigos da rota: ${deleteDestinations.error.message}`);
+        const rollbackOk = await rollbackRouteAndDestinations();
+        toast.error(
+          rollbackOk
+            ? `Falha ao remover destinos antigos da rota: ${deleteDestinations.error.message}. Alterações revertidas.`
+            : "Falha ao atualizar destinos e não foi possível reverter totalmente a rota.",
+        );
         return null;
       }
     }

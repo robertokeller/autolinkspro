@@ -369,7 +369,7 @@ const auth = {
     };
   },
 
-  async updateUser(updates: { password?: string; current_password?: string; data?: Record<string, unknown> }) {
+  async updateUser(updates: { password?: string; current_password?: string; data?: Record<string, unknown>; email?: string }) {
     try {
       const res = await apiFetch("/auth/update-user", { method: "POST", body: JSON.stringify(updates) });
       const user = res.data?.user ?? null;
@@ -437,7 +437,9 @@ function makeChannel(_name: string) {
 // ─── Functions invoker ────────────────────────────────────────────────────────
 const functions = {
   async invoke(name: string, options?: { body?: Record<string, unknown> }) {
-    const body = JSON.stringify({ name, ...(options?.body ?? {}) });
+    // Keep RPC function selector authoritative even when the payload also has
+    // a business field called "name" (for example, "user name" in admin forms).
+    const body = JSON.stringify({ ...(options?.body ?? {}), name });
     const timeoutMs = name === "ops-service-control"
       ? 120_000
       : name === "ops-bootstrap"

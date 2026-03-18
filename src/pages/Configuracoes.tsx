@@ -151,8 +151,14 @@ export default function SettingsPage() {
     ]);
 
     if (profileRes.data) {
-      setProfile({ name: profileRes.data.name, email: profileRes.data.email });
-      setPlanId(profileRes.data.plan_id);
+      const profileName = String(profileRes.data.name || "").trim();
+      const profileEmail = String(profileRes.data.email || "").trim().toLowerCase();
+      const fallbackEmail = String(user.email || "").trim().toLowerCase();
+      setProfile({
+        name: profileName,
+        email: profileEmail || fallbackEmail,
+      });
+      setPlanId(String(profileRes.data.plan_id || "plan-starter"));
       setNotifications(toNotificationPrefs(profileRes.data.notification_prefs));
       setPlanExpiresAt(typeof profileRes.data.plan_expires_at === "string" && profileRes.data.plan_expires_at.trim()
         ? profileRes.data.plan_expires_at
@@ -185,10 +191,10 @@ export default function SettingsPage() {
     });
   }, [fetchAll, user?.id]);
 
-  const fallbackPlan = defaultAdminControlPlaneState().plans[0];
+  const fallbackPlan = adminControlPlane.plans[0] || defaultAdminControlPlaneState().plans[0];
   const currentPlan = adminControlPlane.plans.find((p) => p.id === planId) || fallbackPlan;
-  const effectiveLimits = resolveEffectiveLimitsByPlanId(planId) || currentPlan.limits;
-  const effectiveOperationalLimits = resolveEffectiveOperationalLimitsByPlanId(planId) || {
+  const effectiveLimits = resolveEffectiveLimitsByPlanId(currentPlan.id) || currentPlan.limits;
+  const effectiveOperationalLimits = resolveEffectiveOperationalLimitsByPlanId(currentPlan.id) || {
     whatsappSessions: effectiveLimits.whatsappSessions,
     telegramSessions: effectiveLimits.telegramSessions,
     automations: effectiveLimits.automations,
@@ -221,17 +227,42 @@ export default function SettingsPage() {
       toast.error(parsed.error.errors[0].message);
       return;
     }
+
+    const nextName = parsed.data.name.trim();
+    const nextEmail = parsed.data.email.trim().toLowerCase();
+
     setSavingProfile(true);
-    const { error } = await backend
-      .from("profiles")
-      .update({ name: parsed.data.name, email: parsed.data.email })
-      .eq("user_id", user.id);
-    setSavingProfile(false);
-    if (error) {
-      toast.error("Não deu pra salvar o perfil");
-      return;
+    try {
+      const authUpdate = await backend.auth.updateUser({
+        email: nextEmail,
+        data: { name: nextName },
+      });
+      if (authUpdate.error) {
+        toast.error(authUpdate.error.message || "Não deu pra atualizar os dados de autenticação");
+        return;
+      }
+
+      const profileSave = await backend
+        .from("profiles")
+        .upsert(
+          {
+            user_id: user.id,
+            name: nextName,
+            email: nextEmail,
+          },
+          { onConflict: "user_id" },
+        );
+      if (profileSave.error) {
+        toast.error("Não deu pra salvar o perfil no banco");
+        return;
+      }
+
+      await backend.auth.getUser();
+      await fetchAll();
+      toast.success("Conta atualizada e sincronizada");
+    } finally {
+      setSavingProfile(false);
     }
-    toast.success("Perfil salvo");
   };
 
   const saveNotifications = async () => {
@@ -410,7 +441,6 @@ export default function SettingsPage() {
         <Tabs defaultValue="conta" className="space-y-5">
           <TabsList className="w-full justify-start overflow-x-auto">
             <TabsTrigger value="conta">Conta</TabsTrigger>
-            <TabsTrigger value="preferencias">Avisos</TabsTrigger>
             <TabsTrigger value="plano">Plano</TabsTrigger>
           </TabsList>
 
@@ -528,7 +558,7 @@ export default function SettingsPage() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="preferencias" className="space-y-5">
+          <TabsContent value="conta" className="space-y-5">
             <Card className="glass">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">

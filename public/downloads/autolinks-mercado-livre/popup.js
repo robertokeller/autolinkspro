@@ -221,6 +221,9 @@ function toFriendlyErrorMessage(error) {
   const raw = String(error?.message || error || "");
   const lower = raw.toLowerCase();
 
+  if (lower.includes("funcao nao implementada")) {
+    return "Extensao desatualizada. Atualize o arquivo baixado em Configuracoes ML e tente novamente.";
+  }
   if (lower.includes("nao autenticado")) {
     return "Sua sessao expirou. Faca login novamente.";
   }
@@ -414,7 +417,9 @@ async function rpcRequest(auth, name, body = {}) {
   const response = await apiRequest(auth.apiOrigin, "/functions/v1/rpc", {
     method: "POST",
     token: runtimeToken,
-    body: { name, ...body },
+    // Keep RPC selector authoritative even when the payload also includes
+    // a business field called "name" (session name).
+    body: { ...body, name },
     timeoutMs: 45000,
   });
 
@@ -577,7 +582,14 @@ async function loginAtOrigin(origin, email, password) {
     };
   }
 
-  const validation = await validateAuthSession({ apiOrigin: origin });
+  const signInAccessToken = String(
+    signIn?.data?.session?.access_token || signIn?.data?.session?.accessToken || "",
+  ).trim();
+
+  const validation = await validateAuthSession({
+    apiOrigin: origin,
+    accessToken: signInAccessToken,
+  });
   if (!validation?.ok || !validation.auth) {
     const message = validation?.message || "Login realizado, mas a sessao nao foi validada.";
     return { ok: false, message, credentialIssue: false };

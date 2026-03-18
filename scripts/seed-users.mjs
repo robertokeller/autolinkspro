@@ -12,7 +12,7 @@
  *   POSTGRES_PASSWORD default: autolinks
  *
  * Users seeded:
- *   admin : robertokellercontato@gmail.com  / abacate1  (role=admin, plan=plan-pro)
+ *   admin : robertokellercontato@gmail.com  / abacate1  (role=admin, plan=admin)
  *   normal: aliancaslovely@gmail.com         / abacate1  (role=user,  plan=plan-starter)
  */
 
@@ -37,7 +37,7 @@ const USERS = [
     password: "abacate1",
     name:     "Roberto Keller",
     role:     "admin",
-    plan:     "plan-pro",
+    plan:     "admin",
   },
   {
     email:    "aliancaslovely@gmail.com",

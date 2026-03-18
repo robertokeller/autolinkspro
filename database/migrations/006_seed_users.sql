@@ -1,6 +1,6 @@
 -- Migration 006 — Seed operational users
 -- Upserts:
---   - admin:  robertokellercontato@gmail.com  (role=admin, plan=plan-pro)
+--   - admin:  robertokellercontato@gmail.com  (role=admin, plan=admin)
 --   - normal: aliancaslovely@gmail.com         (role=user, plan=plan-starter)
 --
 -- Passwords are bcrypt(10) hashes of 'abacate1'.
@@ -38,12 +38,13 @@ BEGIN
   VALUES (gen_random_uuid(), admin_id, 'admin')
   ON CONFLICT (user_id) DO UPDATE SET role = 'admin';
 
-  INSERT INTO profiles (id, user_id, name, email, plan_id)
-  VALUES (gen_random_uuid(), admin_id, 'Roberto Keller', 'robertokellercontato@gmail.com', 'plan-pro')
+  INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at)
+  VALUES (gen_random_uuid(), admin_id, 'Roberto Keller', 'robertokellercontato@gmail.com', 'admin', NULL)
   ON CONFLICT (user_id) DO UPDATE SET
-    name     = EXCLUDED.name,
-    email    = EXCLUDED.email,
-    plan_id  = EXCLUDED.plan_id,
+    name           = EXCLUDED.name,
+    email          = EXCLUDED.email,
+    plan_id        = EXCLUDED.plan_id,
+    plan_expires_at = EXCLUDED.plan_expires_at,
     updated_at = NOW();
 
   -- Force fresh login for admin (requires migration 003)
