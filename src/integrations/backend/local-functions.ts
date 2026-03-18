@@ -79,6 +79,26 @@ function parseScheduledImageFromMeta(meta: Record<string, unknown>): OutboundMed
   };
 }
 
+function scheduleRequiresMandatoryImage(meta: Record<string, unknown>): boolean {
+  const policy = String(meta.imagePolicy || "").trim().toLowerCase();
+  if (policy === "required") return true;
+  const source = String(meta.scheduleSource || "").trim().toLowerCase();
+  return source === "shopee_catalog";
+}
+
+function extractScheduleProductImageUrl(meta: Record<string, unknown>): string {
+  const candidates = [
+    meta.productImageUrl,
+    meta.imageUrl,
+    meta.product_image_url,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (/^https?:\/\//i.test(value)) return value;
+  }
+  return "";
+}
+
 function parseScheduleTemplateData(meta: Record<string, unknown>): Record<string, string> {
   const raw = meta.templateData;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -1840,6 +1860,7 @@ function buildShopeeMessageFromTemplate(
     "{link}": affiliateLink,
     // Placeholder {imagem} only flags that media should be attached, never a text URL.
     "{imagem}": "",
+    "{{imagem}}": "",
     "{avaliacao}": String(product.rating || 0),
   });
 }
@@ -2869,7 +2890,7 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
 
     // Auto-download product image when no media is attached
     let effectiveMedia = routeMedia;
-    if (!effectiveMedia && rules.autoDownloadImage !== false) {
+    if (!effectiveMedia) {
       const productImageUrl = primaryProduct?.imageUrl ? String(primaryProduct.imageUrl).trim() : "";
       if (productImageUrl && productImageUrl.startsWith("http")) {
         try {
@@ -2896,6 +2917,29 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
           }
         } catch { /* ignore auto-image failures */ }
       }
+    }
+
+    if (!effectiveMedia) {
+      failed += 1;
+      withDb((db) => {
+        appendRouteHistory(db, {
+          userId: input.userId,
+          source: sourceName,
+          destination: routeName,
+          status: "info",
+          message: finalMessage,
+          processingStatus: "blocked",
+          blockReason: "missing_image_required",
+          routeId: String(route.id),
+          routeName,
+          originPlatform: input.platform,
+          messageData: {
+            reason: "missing_image_required",
+            hasMedia: false,
+          },
+        });
+      });
+      continue;
     }
 
     const routeHasMedia = Boolean(effectiveMedia && effectiveMedia.kind === "image");
@@ -3011,7 +3055,7 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
       });
     }
 
-    if (routeMedia?.sourcePlatform === "whatsapp" && routeMedia.token) {
+    if (routeSentCount > 0 && routeMedia?.sourcePlatform === "whatsapp" && routeMedia.token) {
       await scheduleWhatsAppMediaDeletion(routeMedia.token, input.userId, 120_000);
     }
   }
@@ -3838,12 +3882,13 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       const jid = String(body.jid || "");
       const content = String(body.content || "");
       if (!jid || !content.trim()) return fail("jid e content sao obrigatorios");
+      const outboundContent = formatMessageForPlatform(content, "whatsapp");
 
       try {
         const response = await callService<{ id?: string }>(WHATSAPP_MICROSERVICE_URL, "/api/send-message", {
           method: "POST",
           userId,
-          body: { sessionId, jid, content },
+          body: { sessionId, jid, content: outboundContent },
         });
 
         await pollWhatsappEventsForSession(userId, sessionId).catch(() => 0);
@@ -4104,12 +4149,13 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       const chatId = String(body.chatId || "");
       const message = String(body.message || "");
       if (!chatId || !message.trim()) return fail("chatId e message sao obrigatorios");
+      const outboundMessage = formatMessageForPlatform(message, "telegram");
 
       try {
         const response = await callService<{ id?: string }>(TELEGRAM_MICROSERVICE_URL, "/api/telegram/send-message", {
           method: "POST",
           userId,
-          body: { sessionId, chatId, message },
+          body: { sessionId, chatId, message: outboundMessage },
         });
 
         await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
@@ -4175,13 +4221,25 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
           message = applyPlaceholders(template.content, templateData);
         }
       }
-      const scheduleMedia = parseScheduledImageFromMeta(metadata);
+      let scheduleMedia = parseScheduledImageFromMeta(metadata);
+      const requiresScheduleImage = scheduleRequiresMandatoryImage(metadata);
       const conversionResult = await convertShopeeLinksInContent({
         content: message,
         userId,
         credentials: shopeeCredentials,
       });
       message = conversionResult.convertedContent;
+
+      if (!scheduleMedia && requiresScheduleImage) {
+        const productImageUrl = extractScheduleProductImageUrl(metadata);
+        if (productImageUrl) {
+          try {
+            scheduleMedia = await buildAutomationImageMedia({ imageUrl: productImageUrl });
+          } catch {
+            scheduleMedia = null;
+          }
+        }
+      }
 
       if (conversionResult.conversions.length > 0) {
         withDb((db) => {
@@ -4213,6 +4271,47 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
           row.metadata = markScheduleMediaCleanup(parseScheduleMeta(row.metadata), now);
           schedulePostMediaCleanup(userId, String(row.id), parseScheduleMeta(row.metadata));
           row.updated_at = nowIso();
+        });
+        continue;
+      }
+
+      if (requiresScheduleImage && !scheduleMedia) {
+        failed += 1;
+        skipped += 1;
+        withDb((db) => {
+          const row = db.tables.scheduled_posts.find((item) => item.id === post.id && item.user_id === userId);
+          if (row) {
+            row.status = "cancelled";
+            row.metadata = markScheduleMediaCleanup(parseScheduleMeta(row.metadata), now);
+            schedulePostMediaCleanup(userId, String(row.id), parseScheduleMeta(row.metadata));
+            row.updated_at = nowIso();
+          }
+          appendDispatchFailureHistory(db, {
+            userId,
+            destination: String(post.id),
+            message,
+            reason: "Agendamento cancelado: imagem obrigatória ausente.",
+            platform: "",
+          });
+          db.tables.history_entries.push({
+            id: randomId("hist"),
+            user_id: userId,
+            type: "schedule_sent",
+            source: "Agendamento",
+            destination: String(post.id),
+            status: "warning",
+            details: {
+              message,
+              reason: "missing_image_required",
+              requiresImage: true,
+            },
+            direction: "outbound",
+            message_type: "text",
+            processing_status: "blocked",
+            block_reason: "missing_image_required",
+            error_step: "media_requirements",
+            created_at: nowIso(),
+          });
         });
         continue;
       }
@@ -4282,7 +4381,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
               status: "success",
               details: { message, platform: String(group.platform || "") },
               direction: "outbound",
-              message_type: "text",
+              message_type: scheduleMedia ? "image" : "text",
               processing_status: "sent",
               block_reason: "",
               error_step: "",
@@ -5253,7 +5352,6 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         ? buildShopeeMessageFromTemplate(templateContent, chosenProduct, affiliateLink)
         : `${title}\n${affiliateLink}`;
       const templateExplicitlyRequestsImage = templateRequestsAutomationImage(templateContent);
-      // Smart automation always sends media once; placeholder only signals template intent for observability.
       const shouldAttachAutomationImage = true;
       trace(
         automationName,
@@ -5378,9 +5476,10 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                   source,
                   reason,
                   platform: String(group.platform || ""),
+                  hasMedia: !!automationMedia,
                 },
                 direction: "outbound",
-                message_type: "text",
+                message_type: automationMedia ? "image" : "text",
                 processing_status: "failed",
                 block_reason: reason,
                 error_step: "automation_send",
@@ -5546,9 +5645,10 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                 source,
                 reason,
                 platform: groupPlatform,
+                hasMedia: !!automationMedia,
               },
               direction: "outbound",
-              message_type: "text",
+              message_type: automationMedia ? "image" : "text",
               processing_status: "blocked",
               block_reason: "destination_session_offline",
               error_step: "automation_send",
@@ -5603,9 +5703,10 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                 automationId,
                 source,
                 platform: String(group.platform || ""),
+                hasMedia: !!automationMedia,
               },
               direction: "outbound",
-              message_type: "text",
+              message_type: automationMedia ? "image" : "text",
               processing_status: "sent",
               block_reason: "",
               error_step: "",
@@ -5646,9 +5747,10 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                 source,
                 reason,
                 platform: String(group.platform || ""),
+                hasMedia: !!automationMedia,
               },
               direction: "outbound",
-              message_type: "text",
+              message_type: automationMedia ? "image" : "text",
               processing_status: "failed",
               block_reason: reason,
               error_step: "automation_send",
@@ -6299,6 +6401,39 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         }
 
         const message = typeof metadata.finalContent === "string" ? metadata.finalContent : String(post.content || "");
+        const scheduleMedia = parseScheduledImageFromMeta(metadata);
+        const requiresScheduleImage = scheduleRequiresMandatoryImage(metadata);
+        if (requiresScheduleImage && !scheduleMedia) {
+          failed += 1;
+          skipped += 1;
+          post.status = "cancelled";
+          appendDispatchFailureHistory(db, {
+            userId,
+            destination: String(post.id),
+            message,
+            reason: "Agendamento cancelado: imagem obrigatória ausente.",
+            platform: "",
+          });
+          db.tables.history_entries.push({
+            id: randomId("hist"),
+            user_id: userId,
+            type: "schedule_sent",
+            source: "Agendamento",
+            destination: String(post.id),
+            status: "warning",
+            details: { message, reason: "missing_image_required", requiresImage: true },
+            direction: "outbound",
+            message_type: "text",
+            processing_status: "blocked",
+            block_reason: "missing_image_required",
+            error_step: "media_requirements",
+            created_at: nowIso(),
+          });
+          post.metadata = markScheduleMediaCleanup(parseScheduleMeta(post.metadata), now);
+          schedulePostMediaCleanup(userId, String(post.id), parseScheduleMeta(post.metadata));
+          post.updated_at = nowIso();
+          continue;
+        }
         let postSentCount = 0;
         let postError = "";
 
@@ -6326,7 +6461,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
             status: "success",
             details: { message, platform: String(group.platform || "") },
             direction: "outbound",
-            message_type: "text",
+            message_type: scheduleMedia ? "image" : "text",
             processing_status: "sent",
             block_reason: "",
             error_step: "",

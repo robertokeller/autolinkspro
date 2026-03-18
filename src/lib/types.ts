@@ -118,12 +118,16 @@ export interface ScheduledPost {
   destinationGroupIds: string[];
   masterGroupIds: string[];
   templateId: string | null;
+  templateData?: Record<string, string> | null;
   sessionId: string | null;
   recurrence: RecurrenceType;
   weekDays: WeekDay[];
   messageType: MessageType;
   detectedLinks: string[];
   media: ScheduledMediaAttachment | null;
+  imagePolicy?: string | null;
+  scheduleSource?: string | null;
+  productImageUrl?: string | null;
   status: "pending" | "processing" | "sent" | "failed" | "cancelled";
   createdAt: string;
 }

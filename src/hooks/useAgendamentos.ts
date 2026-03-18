@@ -21,6 +21,9 @@ interface PostMeta {
   detectedLinks?: string[];
   recurrenceTimes?: string[];
   media?: ScheduledMediaAttachment | null;
+  imagePolicy?: string;
+  scheduleSource?: string;
+  productImageUrl?: string;
 }
 
 function parseScheduledMedia(raw: unknown): ScheduledMediaAttachment | null {
@@ -43,6 +46,24 @@ function parseMeta(raw: Json): PostMeta {
   return {};
 }
 
+function parseTemplateData(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const parsed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!key.trim()) continue;
+    if (typeof value === "string") {
+      parsed[key] = value;
+      continue;
+    }
+    if (value == null) {
+      parsed[key] = "";
+      continue;
+    }
+    parsed[key] = String(value);
+  }
+  return Object.keys(parsed).length > 0 ? parsed : null;
+}
+
 function normalizeRecurrence(value: string): RecurrenceType {
   if (value === "daily" || value === "weekly" || value === "none") return value;
   return "none";
@@ -62,11 +83,15 @@ function mapRow(row: PostRow, destinations: PostDestRow[]): ScheduledPost {
       : [],
     destinationGroupIds: dests.map((d) => d.group_id),
     masterGroupIds: meta.masterGroupIds || [], templateId: meta.templateId || null,
+    templateData: parseTemplateData(meta.templateData),
     sessionId: meta.sessionId || null, recurrence: normalizeRecurrence(String(row.recurrence || "none")),
     weekDays: (meta.weekDays || []) as ScheduledPost["weekDays"],
     messageType: (meta.messageType || "text") as ScheduledPost["messageType"],
     detectedLinks: meta.detectedLinks || [], status: row.status as ScheduledPost["status"],
     media: parseScheduledMedia(meta.media),
+    imagePolicy: typeof meta.imagePolicy === "string" ? meta.imagePolicy : null,
+    scheduleSource: typeof meta.scheduleSource === "string" ? meta.scheduleSource : null,
+    productImageUrl: typeof meta.productImageUrl === "string" ? meta.productImageUrl : null,
     createdAt: row.created_at,
   };
 }
@@ -113,6 +138,9 @@ export function useAgendamentos() {
     templateData?: Record<string, string>;
     recurrenceTimes?: string[];
     media?: ScheduledMediaAttachment | null;
+    imagePolicy?: string;
+    scheduleSource?: string;
+    productImageUrl?: string;
   }) => {
     if (!post.content.trim()) { toast.error("Preencha o conteúdo"); return null; }
     if (!post.scheduledAt) { toast.error("Defina a data/hora"); return null; }
@@ -149,6 +177,9 @@ export function useAgendamentos() {
         templateData: post.templateData || null,
         recurrenceTimes: post.recurrenceTimes || [],
         media: post.media || null,
+        imagePolicy: post.imagePolicy || null,
+        scheduleSource: post.scheduleSource || null,
+        productImageUrl: post.productImageUrl || null,
       },
     }).select().single();
     if (error) { toast.error("Erro ao criar agendamento"); return null; }
@@ -180,6 +211,9 @@ export function useAgendamentos() {
     templateData?: Record<string, string>;
     recurrenceTimes?: string[];
     media?: ScheduledMediaAttachment | null;
+    imagePolicy?: string;
+    scheduleSource?: string;
+    productImageUrl?: string;
   }) => {
     const { error } = await backend.from("scheduled_posts").update({
       content: post.content, scheduled_at: new Date(post.scheduledAt).toISOString(),
@@ -193,6 +227,9 @@ export function useAgendamentos() {
         templateData: post.templateData || null,
         recurrenceTimes: post.recurrenceTimes || [],
         media: post.media || null,
+        imagePolicy: post.imagePolicy || null,
+        scheduleSource: post.scheduleSource || null,
+        productImageUrl: post.productImageUrl || null,
       },
     }).eq("id", id);
     if (error) { toast.error("Erro ao atualizar agendamento"); return; }

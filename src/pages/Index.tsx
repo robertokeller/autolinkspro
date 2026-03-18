@@ -164,20 +164,6 @@ export default function Index() {
         </motion.div>
       </section>
 
-      {/* Marketplace Compatibility Strip */}
-      <section className="w-full bg-secondary/30 border-y border-border/50 py-6">
-        <div className="container">
-          <p className="text-center text-xs text-muted-foreground font-medium mb-4">COMPATÍVEL COM OS MAIORES MARKETPLACES</p>
-          <div className="flex items-center justify-center gap-8 flex-wrap">
-            <div className="text-center opacity-75 hover:opacity-100 transition-opacity"><p className="text-sm font-semibold">Shopee</p></div>
-            <div className="w-1 h-6 bg-border/30 hidden sm:block" />
-            <div className="text-center opacity-75 hover:opacity-100 transition-opacity"><p className="text-sm font-semibold">Mercado Livre</p></div>
-            <div className="w-1 h-6 bg-border/30 hidden sm:block" />
-            <div className="text-center opacity-75 hover:opacity-100 transition-opacity"><p className="text-sm font-semibold">Amazon</p></div>
-          </div>
-        </div>
-      </section>
-
       {/* Features */}
       <section id="features" className="container py-20 border-t">
         <motion.div {...fadeUp} className="text-center mb-12">

@@ -229,8 +229,107 @@ function applyPlaceholders(template: string, replacements: Record<string, string
   for (const [key, value] of Object.entries(replacements)) {
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     output = output.replace(new RegExp(escaped, "g"), value);
+    const doubleKey = key.replace("{", "{{").replace("}", "}}");
+    if (doubleKey !== key) {
+      const escapedDouble = doubleKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      output = output.replace(new RegExp(escapedDouble, "g"), value);
+    }
   }
   return output;
+}
+
+function escapeTelegramHtml(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+function formatMessageForPlatform(message: string, platform: "whatsapp" | "telegram"): string {
+  if (platform === "whatsapp") {
+    return message
+      .replace(/\*\*(.+?)\*\*/gs, "*$1*")
+      .replace(/__(.+?)__/gs, "_$1_")
+      .replace(/~~(.+?)~~/gs, "~$1~");
+  }
+
+  const escaped = escapeTelegramHtml(message);
+  return escaped
+    .replace(/\*\*(.+?)\*\*/gs, "<b>$1</b>")
+    .replace(/__(.+?)__/gs, "<i>$1</i>")
+    .replace(/~~(.+?)~~/gs, "<s>$1</s>")
+    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/gs, "<b>$1</b>");
+}
+
+function formatMessageForDestinationPlatform(message: string, platform: string): string {
+  if (platform === "whatsapp" || platform === "telegram") {
+    return formatMessageForPlatform(message, platform);
+  }
+  return message;
+}
+
+function toRouteKeywordList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function routeTextMatchesAnyKeyword(text: string, keywords: string[]): boolean {
+  if (keywords.length === 0) return false;
+  const normalized = String(text || "").toLowerCase();
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function buildRouteTemplatePlaceholderData(
+  product: Record<string, unknown> | null,
+  affiliateLink: string,
+): Record<string, string> {
+  const source = product && typeof product === "object" ? product : {};
+
+  const salePrice = toNumber(source.salePrice ?? source.price, Number.NaN);
+  const originalPriceRaw = toNumber(
+    source.originalPrice
+    ?? source.priceMinBeforeDiscount
+    ?? source.priceBeforeDiscount
+    ?? source.priceMin,
+    Number.NaN,
+  );
+  const originalPrice = Number.isFinite(originalPriceRaw) && originalPriceRaw > 0
+    ? originalPriceRaw
+    : salePrice;
+
+  const formatPrice = (value: number) => (Number.isFinite(value) && value > 0 ? value.toFixed(2) : "");
+
+  const discountFromProduct = toNumber(source.discount ?? source.priceDiscountRate, 0);
+  const discountComputed = Number.isFinite(originalPrice) && Number.isFinite(salePrice) && originalPrice > salePrice
+    ? Math.round((1 - salePrice / originalPrice) * 100)
+    : 0;
+  const discount = Math.max(0, discountFromProduct || discountComputed);
+
+  const title = String(source.title ?? source.productName ?? "").trim();
+  const link = String(
+    affiliateLink
+      || source.affiliateLink
+      || source.offerLink
+      || source.link
+      || source.productLink
+      || "",
+  ).trim();
+  const rating = toNumber(source.rating ?? source.ratingStar, 0);
+
+  return {
+    "{titulo}": title,
+    "{preco}": formatPrice(salePrice),
+    "{preco_original}": formatPrice(originalPrice),
+    "{desconto}": discount > 0 ? String(discount) : "",
+    "{link}": link,
+    "{imagem}": "",
+    "{avaliacao}": rating > 0 ? String(rating) : "",
+  };
 }
 
 function buildShopeeAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
@@ -511,6 +610,29 @@ function parseScheduleMetadata(raw: unknown): Record<string, unknown> {
   return raw as Record<string, unknown>;
 }
 
+function parseScheduleTemplateData(metadata: Record<string, unknown>): Record<string, string> {
+  const raw = metadata.templateData;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+
+  const parsed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof key !== "string" || !key.trim()) continue;
+    if (typeof value === "string") {
+      parsed[key] = value;
+      continue;
+    }
+    if (value == null) {
+      parsed[key] = "";
+      continue;
+    }
+    parsed[key] = String(value);
+  }
+
+  parsed["{imagem}"] = "";
+  parsed["{{imagem}}"] = "";
+  return parsed;
+}
+
 function normalizeScheduleRecurrence(value: unknown): ScheduleRecurrenceMode {
   if (value === "daily" || value === "weekly") return value;
   return "none";
@@ -662,6 +784,102 @@ function computeNextRecurringScheduleAt(post: {
 
 function parseScheduledPostMedia(metadata: Record<string, unknown>): RouteForwardMedia | null {
   return parseRouteForwardMedia(metadata.media);
+}
+
+function scheduleRequiresMandatoryImage(metadata: Record<string, unknown>): boolean {
+  const policy = String(metadata.imagePolicy || "").trim().toLowerCase();
+  if (policy === "required") return true;
+  const source = String(metadata.scheduleSource || "").trim().toLowerCase();
+  return source === "shopee_catalog";
+}
+
+function extractScheduleProductImageUrl(metadata: Record<string, unknown>): string {
+  const candidates = [
+    metadata.productImageUrl,
+    metadata.imageUrl,
+    metadata.product_image_url,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (/^https?:\/\//i.test(value)) return value;
+  }
+  return "";
+}
+
+function markScheduledPostMediaCleanup(metadata: Record<string, unknown>, nowMs: number): Record<string, unknown> {
+  if (!parseScheduledPostMedia(metadata)) return metadata;
+  return {
+    ...metadata,
+    mediaCleanupAt: new Date(nowMs + 120_000).toISOString(),
+  };
+}
+
+const SCHEDULED_POST_MEDIA_CLEANUP_TIMERS = new Map<string, ReturnType<typeof setTimeout>>();
+
+async function cleanupExpiredScheduledPostMedia(userId?: string): Promise<void> {
+  if (userId) {
+    await execute(
+      `UPDATE scheduled_posts
+          SET metadata = metadata - 'media' - 'mediaCleanupAt',
+              updated_at = NOW()
+        WHERE user_id = $1
+          AND status IN ('sent', 'cancelled', 'failed')
+          AND metadata ? 'media'
+          AND COALESCE(metadata->>'mediaCleanupAt', '') <> ''
+          AND metadata->>'mediaCleanupAt' <= $2`,
+      [userId, nowIso()],
+    );
+    return;
+  }
+
+  await execute(
+    `UPDATE scheduled_posts
+        SET metadata = metadata - 'media' - 'mediaCleanupAt',
+            updated_at = NOW()
+      WHERE status IN ('sent', 'cancelled', 'failed')
+        AND metadata ? 'media'
+        AND COALESCE(metadata->>'mediaCleanupAt', '') <> ''
+        AND metadata->>'mediaCleanupAt' <= $1`,
+    [nowIso()],
+  );
+}
+
+function scheduleScheduledPostMediaCleanup(input: {
+  userId: string;
+  postId: string;
+  metadata: Record<string, unknown>;
+}): void {
+  const cleanupAtRaw = typeof input.metadata.mediaCleanupAt === "string"
+    ? input.metadata.mediaCleanupAt
+    : "";
+  const cleanupAtMs = Date.parse(cleanupAtRaw);
+  if (!Number.isFinite(cleanupAtMs)) return;
+
+  const timerKey = `${input.userId}:${input.postId}`;
+  const existing = SCHEDULED_POST_MEDIA_CLEANUP_TIMERS.get(timerKey);
+  if (existing) clearTimeout(existing);
+
+  const delayMs = Math.max(0, cleanupAtMs - Date.now());
+  const handle = setTimeout(() => {
+    void execute(
+      `UPDATE scheduled_posts
+          SET metadata = metadata - 'media' - 'mediaCleanupAt',
+              updated_at = NOW()
+        WHERE id = $1
+          AND user_id = $2
+          AND status IN ('sent', 'cancelled', 'failed')
+          AND metadata ? 'media'
+          AND COALESCE(metadata->>'mediaCleanupAt', '') <> ''
+          AND metadata->>'mediaCleanupAt' <= $3`,
+      [input.postId, input.userId, nowIso()],
+    ).catch(() => {
+      // Best effort cleanup: expiration is also reconciled in dispatch-messages.
+    }).finally(() => {
+      SCHEDULED_POST_MEDIA_CLEANUP_TIMERS.delete(timerKey);
+    });
+  }, delayMs);
+
+  SCHEDULED_POST_MEDIA_CLEANUP_TIMERS.set(timerKey, handle);
 }
 
 async function resolveRouteForwardMediaForPlatform(input: {
@@ -824,6 +1042,77 @@ async function tryAutoDownloadImageFromMessage(text: string): Promise<RouteForwa
     }
   }
   return null;
+}
+
+function extractAutomationImageUrl(product: Record<string, unknown>): string {
+  const candidates = [
+    product.imageUrl,
+    product.image_url,
+    product.image,
+    product.thumbnail,
+    product.imageUri,
+  ];
+
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (/^https?:\/\//i.test(value)) return value;
+  }
+
+  return "";
+}
+
+async function buildAutomationImageMedia(product: Record<string, unknown>): Promise<RouteForwardMedia> {
+  const imageUrl = extractAutomationImageUrl(product);
+  if (!imageUrl) {
+    throw new Error("Envio cancelado: oferta sem imagem valida para anexo.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUTO_IMAGE_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(imageUrl, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Envio cancelado: falha ao baixar imagem da oferta (HTTP ${response.status}).`);
+    }
+
+    const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    if (!isImageMime(mimeType)) {
+      throw new Error("Envio cancelado: URL da oferta nao retornou uma imagem valida.");
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || "0");
+    if (Number.isFinite(contentLength) && contentLength > AUTO_IMAGE_MAX_BYTES) {
+      throw new Error("Envio cancelado: imagem excede o tamanho maximo permitido (8MB).");
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!buffer.length) {
+      throw new Error("Envio cancelado: imagem da oferta esta vazia.");
+    }
+    if (buffer.length > AUTO_IMAGE_MAX_BYTES) {
+      throw new Error("Envio cancelado: imagem excede o tamanho maximo permitido (8MB).");
+    }
+
+    return {
+      kind: "image",
+      base64: buffer.toString("base64"),
+      mimeType: mimeType || "image/jpeg",
+      fileName: "automation_offer.jpg",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Envio cancelado: falha ao anexar imagem.";
+    if (message.toLowerCase().includes("abort")) {
+      throw new Error("Envio cancelado: tempo limite ao baixar imagem da oferta.");
+    }
+    throw new Error(message || "Envio cancelado: falha ao anexar imagem.");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function isNotFoundSessionError(message: string): boolean {
@@ -1405,9 +1694,17 @@ async function processRouteMessageForUser(input: {
     "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id = $1 AND provider = 'shopee'",
     [userId],
   );
-  const shopeeConversionCache = new Map<string, { affiliateLink: string; resolvedUrl: string; ok: boolean; error?: string; productImageUrl?: string }>();
+  const shopeeConversionCache = new Map<string, {
+    affiliateLink: string;
+    resolvedUrl: string;
+    ok: boolean;
+    error?: string;
+    productImageUrl?: string;
+    product?: Record<string, unknown>;
+  }>();
   const meliConversionCache = new Map<string, { affiliateLink: string; ok: boolean; error?: string }>();
   const routeMeliSessionCache = new Map<string, string>();
+  const routeTemplateCache = new Map<string, string | null>();
 
   const sourceCandidates = new Set<string>([sourceExternalId, sessionId].filter(Boolean));
   const sourceGroupRows = await query<{ id: string }>(
@@ -1481,7 +1778,8 @@ async function processRouteMessageForUser(input: {
   for (const route of matching) {
     const direct = Array.isArray(route.dest_ids) ? route.dest_ids : [];
     const fromMaster = (routeMasterGroupIds.get(route.id) ?? []).flatMap((masterId) => linkedByMaster.get(masterId) ?? []);
-    const targetIds = [...new Set([...direct, ...fromMaster])];
+    const targetIds = [...new Set([...direct, ...fromMaster])]
+      .filter((groupId) => !sourceCandidates.has(String(groupId)));
     targetByRoute.set(route.id, targetIds);
     for (const gid of targetIds) allTargetGroupIds.add(gid);
   }
@@ -1500,6 +1798,38 @@ async function processRouteMessageForUser(input: {
     const rules = route.rules && typeof route.rules === "object" && !Array.isArray(route.rules)
       ? route.rules as Record<string, unknown>
       : {};
+
+    const negativeKeywords = toRouteKeywordList(rules.negativeKeywords);
+    if (routeTextMatchesAnyKeyword(message, negativeKeywords)) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'info',$5,'inbound',$6,'blocked','negative_keyword','route_filter')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message,
+          routeId: route.id,
+          routeName: route.name,
+          reason: "negative_keyword",
+          keywords: negativeKeywords,
+          hasMedia: !!media,
+        }), messageType],
+      );
+      continue;
+    }
+
+    const positiveKeywords = toRouteKeywordList(rules.positiveKeywords);
+    if (positiveKeywords.length > 0 && !routeTextMatchesAnyKeyword(message, positiveKeywords)) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'info',$5,'inbound',$6,'blocked','positive_keyword_missing','route_filter')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message,
+          routeId: route.id,
+          routeName: route.name,
+          reason: "positive_keyword_missing",
+          keywords: positiveKeywords,
+          hasMedia: !!media,
+        }), messageType],
+      );
+      continue;
+    }
 
     const shouldResolveBeforeValidate = rules.resolvePartnerLinks !== false;
     const partnerMarketplaces = normalizeRouteMarketplaceList(rules.partnerMarketplaces);
@@ -1566,7 +1896,10 @@ async function processRouteMessageForUser(input: {
     }
 
     let outboundText = message;
+    let primaryLink = partnerLinks[0]?.resolved || partnerLinks[0]?.original || routeLinks[0] || "";
+    let primaryProduct: Record<string, unknown> | null = null;
     let conversionFailure: { reason: string; error: string } | null = null;
+    let linksEligibleForConversion = 0;
     let convertedLinks = 0;
     let conversionProductImageUrl = "";
 
@@ -1575,6 +1908,10 @@ async function processRouteMessageForUser(input: {
       if (!marketplace) continue;
 
       if (marketplace === "shopee") {
+        if (rules.autoConvertShopee === false) {
+          continue;
+        }
+        linksEligibleForConversion += 1;
         if (!SHOPEE_URL) {
           conversionFailure = { reason: "shopee_service_unavailable", error: "Serviço Shopee indisponível para conversão." };
           break;
@@ -1615,6 +1952,7 @@ async function processRouteMessageForUser(input: {
               ok: Boolean(affiliateLink),
               error: affiliateLink ? undefined : "Conversão Shopee retornou link vazio.",
               productImageUrl: productImageUrl || undefined,
+              product: product || undefined,
             };
           }
           shopeeConversionCache.set(cacheKey, conversion);
@@ -1629,6 +1967,12 @@ async function processRouteMessageForUser(input: {
         if (link.resolved && link.resolved !== link.original) {
           outboundText = outboundText.split(link.resolved).join(conversion.affiliateLink);
         }
+        if (!primaryLink || primaryLink === link.original || primaryLink === link.resolved) {
+          primaryLink = conversion.affiliateLink;
+        }
+        if (!primaryProduct && conversion.product) {
+          primaryProduct = conversion.product;
+        }
         if (!conversionProductImageUrl && conversion.productImageUrl) {
           conversionProductImageUrl = conversion.productImageUrl;
         }
@@ -1637,6 +1981,10 @@ async function processRouteMessageForUser(input: {
       }
 
       if (marketplace === "mercadolivre") {
+        if (rules.autoConvertMercadoLivre === false) {
+          continue;
+        }
+        linksEligibleForConversion += 1;
         if (!MELI_URL) {
           conversionFailure = { reason: "meli_service_unavailable", error: "Serviço Mercado Livre indisponível para conversão." };
           break;
@@ -1692,6 +2040,9 @@ async function processRouteMessageForUser(input: {
         if (link.resolved && link.resolved !== link.original) {
           outboundText = outboundText.split(link.resolved).join(conversion.affiliateLink);
         }
+        if (!primaryLink || primaryLink === link.original || primaryLink === link.resolved) {
+          primaryLink = conversion.affiliateLink;
+        }
         convertedLinks += 1;
       }
     }
@@ -1711,7 +2062,7 @@ async function processRouteMessageForUser(input: {
       continue;
     }
 
-    if (partnerLinks.length > 0 && convertedLinks === 0) {
+    if (linksEligibleForConversion > 0 && convertedLinks === 0) {
       await execute(
         "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','conversion_required','conversion')",
         [uuid(), userId, sourceName, route.name, JSON.stringify({
@@ -1725,39 +2076,84 @@ async function processRouteMessageForUser(input: {
       continue;
     }
 
-    // Auto-download image from URLs in message when no media is attached
-    let routeMedia = media;
-    let autoImageSource = "";
-    if (!routeMedia && rules.autoDownloadImage !== false) {
-      // Prefer product image from Shopee/ML conversion response
-      if (conversionProductImageUrl) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), AUTO_IMAGE_FETCH_TIMEOUT_MS);
-        try {
-          routeMedia = await fetchImageBuffer(conversionProductImageUrl, controller.signal);
-          if (routeMedia) autoImageSource = "shopee_product";
-        } catch { /* ignore */ } finally {
-          clearTimeout(timeout);
-        }
+    const rawTemplateId = typeof rules.templateId === "string" ? rules.templateId.trim() : "";
+    const templateId = rawTemplateId && rawTemplateId !== "none" && rawTemplateId !== "original"
+      ? rawTemplateId
+      : "";
+    if (templateId && isUuid(templateId)) {
+      let templateContent = routeTemplateCache.get(templateId);
+      if (templateContent === undefined) {
+        const templateRow = await queryOne<{ content: string }>(
+          "SELECT content FROM templates WHERE user_id = $1 AND id = $2",
+          [userId, templateId],
+        );
+        templateContent = templateRow && typeof templateRow.content === "string"
+          ? templateRow.content
+          : null;
+        routeTemplateCache.set(templateId, templateContent);
       }
-      // Fallback: try to extract image from any URL in the message
-      if (!routeMedia) {
-        routeMedia = await tryAutoDownloadImageFromMessage(outboundText);
-        if (routeMedia) autoImageSource = "url_extraction";
+
+      if (templateContent) {
+        const placeholderData = buildRouteTemplatePlaceholderData(primaryProduct, primaryLink);
+        outboundText = applyPlaceholders(templateContent, placeholderData);
       }
     }
-    const routeMessageType = routeMedia ? "image" : "text";
+
+    let routeMedia = media;
+    let autoImageSource = "";
+    if (!routeMedia && conversionProductImageUrl) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), AUTO_IMAGE_FETCH_TIMEOUT_MS);
+      try {
+        routeMedia = await fetchImageBuffer(conversionProductImageUrl, controller.signal);
+        if (routeMedia) autoImageSource = "shopee_product";
+      } catch { /* ignore */ } finally {
+        clearTimeout(timeout);
+      }
+    }
+    if (!routeMedia) {
+      routeMedia = await tryAutoDownloadImageFromMessage(outboundText);
+      if (routeMedia) autoImageSource = "url_extraction";
+    }
+    if (!routeMedia) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound','text','blocked','missing_image_required','media_requirements')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message: outboundText,
+          routeId: route.id,
+          routeName: route.name,
+          reason: "missing_image_required",
+          hasMedia: false,
+        })],
+      );
+      continue;
+    }
+    const routeMessageType = "image";
 
     const targetIds = targetByRoute.get(route.id) ?? [];
-    if (targetIds.length === 0) {
+    const destinationSessionFilter = typeof rules.sessionId === "string" ? rules.sessionId.trim() : "";
+    const filteredTargetIds = destinationSessionFilter
+      ? targetIds.filter((targetId) => {
+        const group = destGroupMap.get(String(targetId));
+        return !!group && String(group.session_id || "").trim() === destinationSessionFilter;
+      })
+      : targetIds;
+    if (filteredTargetIds.length === 0) {
       await execute(
-        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','no_destination_groups','route_targets')",
-        [uuid(), userId, sourceName, route.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, reason: "no_destination_groups", hasMedia: !!routeMedia }), routeMessageType],
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked',$7,'route_targets')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message: outboundText,
+          routeId: route.id,
+          routeName: route.name,
+          reason: destinationSessionFilter ? "no_destination_groups_for_session" : "no_destination_groups",
+          destinationSessionFilter: destinationSessionFilter || null,
+          hasMedia: !!routeMedia,
+        }), routeMessageType, destinationSessionFilter ? "no_destination_groups_for_session" : "no_destination_groups"],
       );
       continue;
     }
 
-    for (const targetId of targetIds) {
+    for (const targetId of filteredTargetIds) {
       const group = destGroupMap.get(String(targetId));
       if (!group) {
         await execute(
@@ -1780,7 +2176,21 @@ async function processRouteMessageForUser(input: {
 
       const scopedHeaders = buildUserScopedHeaders(userId);
       const mediaForDestination = await resolveRouteForwardMediaForPlatform({ userId, platform, media: routeMedia });
-      const outboundTextSafe = outboundText || " ";
+      if (!mediaForDestination) {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'outbound','text','blocked','missing_image_required','media_requirements')",
+          [uuid(), userId, sourceName, group.name, JSON.stringify({
+            message: outboundText,
+            routeId: route.id,
+            routeName: route.name,
+            platform,
+            reason: "missing_image_required",
+            hasMedia: false,
+          })],
+        );
+        continue;
+      }
+      const outboundTextSafe = formatMessageForDestinationPlatform(outboundText, platform) || " ";
       let result = { data: null as unknown, error: { message: "Plataforma inválida" } as { message: string } | null };
       if (platform === "whatsapp" && WHATSAPP_URL) {
         result = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
@@ -2200,11 +2610,12 @@ rpcRouter.post("/rpc", async (req, res) => {
         const jid = String(params.groupId ?? params.jid ?? "").trim();
         const content = String(params.text ?? params.content ?? "").trim();
         if (!jid || !content) { fail(res, "groupId/jid e text/content são obrigatórios"); return; }
+        const outboundContent = formatMessageForPlatform(content, "whatsapp");
         const waHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
           sessionId,
           jid,
-          content,
+          content: outboundContent,
           media: params.media ?? undefined,
         }, waHeaders);
         if (r.error) { fail(res, r.error.message); return; }
@@ -2327,11 +2738,12 @@ rpcRouter.post("/rpc", async (req, res) => {
         const chatId = String(params.groupId ?? params.chatId ?? "").trim();
         const message = String(params.text ?? params.message ?? "").trim();
         if (!chatId || !message) { fail(res, "groupId/chatId e text/message são obrigatórios"); return; }
+        const outboundMessage = formatMessageForPlatform(message, "telegram");
         const tgHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
           sessionId,
           chatId,
-          message,
+          message: outboundMessage,
           media: params.media ?? undefined,
         }, tgHeaders);
         if (r.error) { fail(res, r.error.message); return; }
@@ -2356,6 +2768,8 @@ rpcRouter.post("/rpc", async (req, res) => {
           count: stuckRows.length, ids: stuckRows.map((r) => r.id),
         }));
       }
+
+      await cleanupExpiredScheduledPostMedia();
 
       const limit = Math.min(Number(params.limit ?? 20), 50);
       // Atomic claim: UPDATE status â†’ 'processing' using FOR UPDATE SKIP LOCKED so that
@@ -2409,6 +2823,35 @@ rpcRouter.post("/rpc", async (req, res) => {
         [k: string]: unknown;
       }>;
       let sent = 0, failed = 0, skipped = 0;
+      const scheduleTemplateCache = new Map<string, string | null>();
+      const insertScheduleFailedHistory = async (input: {
+        userId: string;
+        destination: string;
+        message: string;
+        reason: string;
+        errorStep: string;
+        platform?: string;
+        error?: string;
+        messageType?: "text" | "image";
+      }) => {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'error',$4,'outbound',$5,'failed',$6,$7)",
+          [
+            uuid(),
+            input.userId,
+            input.destination,
+            JSON.stringify({
+              message: input.message,
+              platform: input.platform || "",
+              reason: input.reason,
+              error: input.error || "",
+            }),
+            input.messageType || "text",
+            input.reason,
+            input.errorStep,
+          ],
+        );
+      };
       for (const post of pending) {
         const nowMs = Date.now();
         const meta = parseScheduleMetadata(post.metadata);
@@ -2453,10 +2896,90 @@ rpcRouter.post("/rpc", async (req, res) => {
           linkedIds = links.map((l) => l.group_id);
         }
         const destIds = [...new Set([...directIds, ...linkedIds])];
-        if (destIds.length === 0) { skipped++; await execute("UPDATE scheduled_posts SET status='cancelled', updated_at=NOW() WHERE id=$1", [post.id]); continue; }
-        const message = typeof meta.finalContent === "string" ? meta.finalContent : String(post.content ?? "");
-        const scheduleMedia = parseScheduledPostMedia(meta);
+        let message = typeof meta.finalContent === "string" ? meta.finalContent : String(post.content ?? "");
+        const rawTemplateId = typeof meta.templateId === "string" ? meta.templateId.trim() : "";
+        if (rawTemplateId) {
+          const cacheKey = `${post.user_id}:${rawTemplateId}`;
+          let templateContent = scheduleTemplateCache.get(cacheKey);
+          if (templateContent === undefined) {
+            const templateRow = await queryOne<{ content: string }>(
+              "SELECT content FROM templates WHERE user_id = $1 AND id = $2",
+              [post.user_id, rawTemplateId],
+            );
+            templateContent = templateRow && typeof templateRow.content === "string"
+              ? templateRow.content
+              : null;
+            scheduleTemplateCache.set(cacheKey, templateContent);
+          }
+          const templateData = parseScheduleTemplateData(meta);
+          if (templateContent && Object.keys(templateData).length > 0) {
+            message = applyPlaceholders(templateContent, templateData);
+          }
+        }
+        let scheduleMedia = parseScheduledPostMedia(meta);
+        const requiresScheduleImage = scheduleRequiresMandatoryImage(meta);
+        if (!scheduleMedia && requiresScheduleImage) {
+          const productImageUrl = extractScheduleProductImageUrl(meta);
+          if (productImageUrl) {
+            try {
+              scheduleMedia = await buildAutomationImageMedia({ imageUrl: productImageUrl });
+            } catch {
+              scheduleMedia = null;
+            }
+          }
+        }
+
+        if (destIds.length === 0) {
+          skipped += 1;
+          const cancelledMeta = markScheduledPostMediaCleanup(meta, nowMs);
+          await execute(
+            "UPDATE scheduled_posts SET status='cancelled', metadata=$1::jsonb, updated_at=NOW() WHERE id=$2",
+            [JSON.stringify(cancelledMeta), post.id],
+          );
+          scheduleScheduledPostMediaCleanup({
+            userId: String(post.user_id),
+            postId: String(post.id),
+            metadata: cancelledMeta,
+          });
+          await insertScheduleFailedHistory({
+            userId: String(post.user_id),
+            destination: String(post.id),
+            message,
+            reason: "no_destination_groups",
+            errorStep: "route_targets",
+            error: "Agendamento cancelado: nenhum destino válido.",
+            messageType: scheduleMedia ? "image" : "text",
+          });
+          continue;
+        }
+
+        if (requiresScheduleImage && !scheduleMedia) {
+          failed += 1;
+          skipped += 1;
+          const cancelledMeta = markScheduledPostMediaCleanup(meta, nowMs);
+          await execute(
+            "UPDATE scheduled_posts SET status='cancelled', metadata=$1::jsonb, updated_at=NOW() WHERE id=$2",
+            [JSON.stringify(cancelledMeta), post.id],
+          );
+          scheduleScheduledPostMediaCleanup({
+            userId: String(post.user_id),
+            postId: String(post.id),
+            metadata: cancelledMeta,
+          });
+          await execute(
+            "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'warning',$4,'outbound','text','blocked','missing_image_required','media_requirements')",
+            [uuid(), post.user_id, String(post.id), JSON.stringify({
+              message,
+              reason: "missing_image_required",
+              requiresImage: true,
+              hasMedia: false,
+            })],
+          );
+          continue;
+        }
+
         let ok_ = true;
+        let postSentCount = 0;
         // Batch load all destination groups in one query (avoids N+1)
         const groupRows = destIds.length > 0
           ? await query("SELECT id, name, platform, session_id, external_id FROM groups WHERE id = ANY($1) AND user_id = $2", [destIds, post.user_id])
@@ -2464,12 +2987,39 @@ rpcRouter.post("/rpc", async (req, res) => {
         const groupMap = new Map(groupRows.map((g) => [g.id, g]));
         for (const gid of destIds) {
           const g = groupMap.get(gid);
-          if (!g) { ok_ = false; failed++; break; }
+          if (!g) {
+            ok_ = false;
+            failed += 1;
+            await insertScheduleFailedHistory({
+              userId: String(post.user_id),
+              destination: String(gid),
+              message,
+              reason: "destination_not_found",
+              errorStep: "destination_lookup",
+              error: `Grupo destino não encontrado: ${gid}`,
+              messageType: scheduleMedia ? "image" : "text",
+            });
+            break;
+          }
 
           const platform = String(g.platform ?? "");
           const session = String(g.session_id ?? "");
           const externalId = String(g.external_id ?? "");
-          if (!session || !externalId) { ok_ = false; failed++; break; }
+          if (!session || !externalId) {
+            ok_ = false;
+            failed += 1;
+            await insertScheduleFailedHistory({
+              userId: String(post.user_id),
+              destination: String(g.name || gid),
+              message,
+              platform,
+              reason: "destination_session_offline",
+              errorStep: "destination_validation",
+              error: "Sessão do destino offline ou grupo sem identificador externo.",
+              messageType: scheduleMedia ? "image" : "text",
+            });
+            break;
+          }
 
           const scopedHeaders = buildUserScopedHeaders(String(post.user_id));
           const mediaForDestination = await resolveRouteForwardMediaForPlatform({
@@ -2477,32 +3027,72 @@ rpcRouter.post("/rpc", async (req, res) => {
             platform,
             media: scheduleMedia,
           });
+          if (requiresScheduleImage && !mediaForDestination) {
+            ok_ = false;
+            failed += 1;
+            await execute(
+              "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'warning',$4,'outbound','text','blocked','missing_image_required','media_requirements')",
+              [uuid(), post.user_id, g.name, JSON.stringify({
+                message,
+                platform,
+                reason: "missing_image_required",
+                requiresImage: true,
+                hasMedia: false,
+              })],
+            );
+            break;
+          }
+          const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
           let sentResult = { data: null, error: { message: "Plataforma inválida" } };
           if (platform === "whatsapp" && WHATSAPP_URL) {
             sentResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
               sessionId: session,
               jid: externalId,
-              content: message,
+              content: outboundMessage,
               media: mediaForDestination ?? undefined,
             }, scopedHeaders);
           } else if (platform === "telegram" && TELEGRAM_URL) {
             sentResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
               sessionId: session,
               chatId: externalId,
-              message,
+              message: outboundMessage,
               media: mediaForDestination ?? undefined,
             }, scopedHeaders);
           } else {
             sentResult = { data: null, error: { message: `Serviço ${platform || "desconhecido"} indisponível` } };
           }
-          if (sentResult.error) { ok_ = false; failed++; break; }
+          if (sentResult.error) {
+            ok_ = false;
+            failed += 1;
+            await insertScheduleFailedHistory({
+              userId: String(post.user_id),
+              destination: String(g.name || gid),
+              message,
+              platform,
+              reason: "destination_send_failed",
+              errorStep: "send_message",
+              error: String(sentResult.error.message || "Falha ao enviar para o destino."),
+              messageType: mediaForDestination ? "image" : "text",
+            });
+            break;
+          }
 
           await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'success',$4,'outbound',$5,'sent','','')",
             [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform, hasMedia: !!mediaForDestination }), mediaForDestination ? "image" : "text"]);
           sent++;
+          postSentCount += 1;
         }
         if (!ok_) {
-          await execute("UPDATE scheduled_posts SET status='cancelled', updated_at=NOW() WHERE id=$1", [post.id]);
+          const cancelledMeta = markScheduledPostMediaCleanup(meta, nowMs);
+          await execute(
+            "UPDATE scheduled_posts SET status='cancelled', metadata=$1::jsonb, updated_at=NOW() WHERE id=$2",
+            [JSON.stringify(cancelledMeta), post.id],
+          );
+          scheduleScheduledPostMediaCleanup({
+            userId: String(post.user_id),
+            postId: String(post.id),
+            metadata: cancelledMeta,
+          });
         } else if (recurrence !== "none") {
           const mergedMeta = {
             ...meta,
@@ -2522,7 +3112,24 @@ rpcRouter.post("/rpc", async (req, res) => {
           }
           await execute("UPDATE scheduled_posts SET status='pending', scheduled_at=$1, metadata=$2::jsonb, updated_at=NOW() WHERE id=$3", [nextAt, JSON.stringify(mergedMeta), post.id]);
         } else {
-          await execute("UPDATE scheduled_posts SET status='sent', updated_at=NOW() WHERE id=$1", [post.id]);
+          const sentMeta = markScheduledPostMediaCleanup(meta, nowMs);
+          await execute(
+            "UPDATE scheduled_posts SET status='sent', metadata=$1::jsonb, updated_at=NOW() WHERE id=$2",
+            [JSON.stringify(sentMeta), post.id],
+          );
+          scheduleScheduledPostMediaCleanup({
+            userId: String(post.user_id),
+            postId: String(post.id),
+            metadata: sentMeta,
+          });
+        }
+
+        if (postSentCount > 0) {
+          await scheduleRouteForwardMediaDeletion({
+            userId: String(post.user_id),
+            media: scheduleMedia,
+            delayMs: 120_000,
+          });
         }
       }
       ok(res, { ok: true, source: String(params.source ?? "frontend"), scanned: pending.length, processed: pending.length, sent, failed, skipped }); return;
@@ -2973,6 +3580,39 @@ rpcRouter.post("/rpc", async (req, res) => {
           continue;
         }
 
+        let automationMedia: RouteForwardMedia | null = null;
+        try {
+          automationMedia = await buildAutomationImageMedia(selectedProduct);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Envio cancelado: falha ao anexar imagem.";
+          failed += destinationGroups.length;
+          errors.push(`${automationName}: ${reason}`);
+          for (const group of destinationGroups) {
+            const groupName = String(group.name || group.id || "Grupo");
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "warning",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform: String(group.platform || ""),
+                reason: "missing_image_required",
+                mediaError: reason,
+                product: selectedProduct,
+                hasMedia: false,
+              },
+              blockReason: "missing_image_required",
+              errorStep: "automation_media_failed",
+              messageType: "text",
+            });
+          }
+          continue;
+        }
+
         const waSessionIds = [...new Set(
           destinationGroups
             .filter((group) => String(group.platform || "").trim() === "whatsapp")
@@ -3067,17 +3707,49 @@ rpcRouter.post("/rpc", async (req, res) => {
           }
 
           const scopedHeaders = buildUserScopedHeaders(ownerUserId);
+          const mediaForDestination = await resolveRouteForwardMediaForPlatform({
+            userId: ownerUserId,
+            platform,
+            media: automationMedia,
+          });
+          if (!mediaForDestination) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: imagem obrigatoria ausente`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "warning",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "missing_image_required",
+                product: selectedProduct,
+                hasMedia: false,
+              },
+              blockReason: "missing_image_required",
+              errorStep: "media_requirements",
+              messageType: "text",
+            });
+            continue;
+          }
+          const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
           const sendResult = platform === "whatsapp" && WHATSAPP_URL
             ? await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
                 sessionId,
                 jid: externalId,
-                content: message || " ",
+                content: outboundMessage,
+                media: mediaForDestination,
               }, scopedHeaders)
             : platform === "telegram" && TELEGRAM_URL
               ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
                   sessionId,
                   chatId: externalId,
-                  message: message || " ",
+                  message: outboundMessage,
+                  media: mediaForDestination,
                 }, scopedHeaders)
               : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
 
@@ -3098,9 +3770,11 @@ rpcRouter.post("/rpc", async (req, res) => {
                 reason: "destination_send_failed",
                 error: sendResult.error.message,
                 product: selectedProduct,
+                hasMedia: true,
               },
               blockReason: "destination_send_failed",
               errorStep: "automation_send",
+              messageType: "image",
             });
             continue;
           }
@@ -3119,12 +3793,18 @@ rpcRouter.post("/rpc", async (req, res) => {
               source,
               platform,
               product: selectedProduct,
+              hasMedia: true,
             },
-            messageType: "text",
+            messageType: "image",
           });
         }
 
         if (sentNow > 0) {
+          await scheduleRouteForwardMediaDeletion({
+            userId: ownerUserId,
+            media: automationMedia,
+            delayMs: 120_000,
+          });
           processed += 1;
           await execute(
             "UPDATE shopee_automations SET products_sent = products_sent + $1, updated_at = NOW() WHERE id = $2 AND user_id = $3",

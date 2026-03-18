@@ -40,8 +40,8 @@ import { useAccessControl } from "@/hooks/useAccessControl";
 import { ROUTES } from "@/lib/routes";
 
 const shopeeSubNav = [
-  { title: "Vitrine", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
-  { title: "Pesquisa", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
+  { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
+  { title: "Pesquisa de ofertas", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.shopeeAutomacoes },
   { title: "Templates", icon: FileText, href: ROUTES.app.shopeeTemplates },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.shopeeConfiguracoes },
@@ -212,10 +212,10 @@ export function AppSidebar() {
 
               {featureVisibility.routes && (
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas">
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas automaticas">
                   <Link to={ROUTES.app.routes}>
                     <Route className="h-4 w-4" />
-                    <span>Rotas</span>
+                    <span>Rotas automaticas</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,12 +16,14 @@ import { useSessoes } from "@/hooks/useSessoes";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
-import type { RecurrenceType, WeekDay, ScheduledMediaAttachment } from "@/lib/types";
+import type { RecurrenceType, ScheduledMediaAttachment, ScheduledPost, WeekDay } from "@/lib/types";
 import { toast } from "sonner";
 import { WEEK_DAYS, mergeDateWithScheduleTime, normalizeScheduleTime } from "@/lib/scheduling";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
+import { formatBRT } from "@/lib/timezone";
+import { extractMarketplaceLinks } from "@/lib/marketplace-utils";
 
 interface ScheduleProductModalProps {
   open: boolean;
@@ -37,17 +39,19 @@ interface ScheduleProductModalProps {
     commission?: number;
     shopName?: string;
   };
+  editingPost?: ScheduledPost;
 }
 
 const MAX_SCHEDULE_IMAGE_BYTES = 8 * 1024 * 1024;
 
-function templateRequestsImageAttachment(content: string): boolean {
-  const normalized = String(content || "").toLowerCase();
-  return normalized.includes("{imagem}") || normalized.includes("{{imagem}}");
-}
-
 function dataUrlToBase64(dataUrl: string): string {
   return dataUrl.includes(",") ? dataUrl.split(",")[1] : "";
+}
+
+function getTimeFromDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaAttachment> {
@@ -89,16 +93,17 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
   };
 }
 
-export function ScheduleProductModal({ open, onOpenChange, product }: ScheduleProductModalProps) {
+export function ScheduleProductModal({ open, onOpenChange, product, editingPost }: ScheduleProductModalProps) {
   const { templates, defaultTemplate, applyTemplate } = useTemplateModule();
   const { syncedGroups, masterGroups } = useGrupos();
   const { allSessions } = useSessoes();
-  const { createPost } = useAgendamentos();
+  const { createPost, updatePost } = useAgendamentos();
+  const isEditing = Boolean(editingPost);
 
   const [scheduleName, setScheduleName] = useState("");
   const [messageContent, setMessageContent] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const effectiveTemplateId = selectedTemplateId || defaultTemplate?.id || "";
+  const resolvedTemplateId = selectedTemplateId || (!isEditing ? defaultTemplate?.id || "" : "");
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [selectedMasterGroups, setSelectedMasterGroups] = useState<string[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
@@ -117,13 +122,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
     masterGroups,
   });
 
-  // Reset group selections when session changes
-  const handleSessionChange = (sessionId: string) => {
-    setSelectedSessionId(sessionId);
-    setSelectedGroups([]);
-    setSelectedMasterGroups([]);
-  };
-
+  const fallbackContent = editingPost?.content || product?.affiliateLink || "";
   const placeholderData = useMemo(() => buildTemplatePlaceholderData(
     product ? {
       title: product.title,
@@ -137,33 +136,42 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
     } : null,
     product?.affiliateLink || "",
   ), [product]);
+  const baseTemplateData = useMemo(
+    () => (editingPost?.templateData && Object.keys(editingPost.templateData).length > 0
+      ? editingPost.templateData
+      : placeholderData),
+    [editingPost?.templateData, placeholderData],
+  );
   const scheduleTemplateData = useMemo(
-    () => ({ ...placeholderData, "{imagem}": "", "{{imagem}}": "" }),
-    [placeholderData],
+    () => ({ ...baseTemplateData, "{imagem}": "", "{{imagem}}": "" }),
+    [baseTemplateData],
   );
-  const resolvedTemplate = useMemo(
-    () => ((effectiveTemplateId
-      ? templates.find((item) => item.id === effectiveTemplateId) || null
-      : null)
-      || defaultTemplate
-      || templates[0]
-      || null),
-    [defaultTemplate, effectiveTemplateId, templates],
-  );
-  const requiresImageAttachment = useMemo(
-    () => Boolean(resolvedTemplate && templateRequestsImageAttachment(resolvedTemplate.content)),
-    [resolvedTemplate],
-  );
+  const templateContent = applyTemplate({
+    templateId: resolvedTemplateId,
+    fallbackContent,
+    placeholderData: scheduleTemplateData,
+  });
+
+  const requiresImageAttachment = useMemo(() => {
+    if (product) return true;
+    const policy = String(editingPost?.imagePolicy || "").trim().toLowerCase();
+    const source = String(editingPost?.scheduleSource || "").trim().toLowerCase();
+    return policy === "required" || source === "shopee_catalog";
+  }, [editingPost?.imagePolicy, editingPost?.scheduleSource, product]);
+  const preferredImageUrl = useMemo(() => {
+    const fromProduct = String(product?.imageUrl || "").trim();
+    if (/^https?:\/\//i.test(fromProduct)) return fromProduct;
+    const fromPost = String(editingPost?.productImageUrl || "").trim();
+    if (/^https?:\/\//i.test(fromPost)) return fromPost;
+    return "";
+  }, [editingPost?.productImageUrl, product?.imageUrl]);
 
   const prepareImageAttachment = useCallback(async () => {
-    if (!product?.imageUrl || !requiresImageAttachment) {
-      setImageAttachment(null);
-      return;
-    }
+    if (!preferredImageUrl || !requiresImageAttachment) return;
 
     setPreparingImageAttachment(true);
     try {
-      const media = await fetchImageAsAttachment(product.imageUrl);
+      const media = await fetchImageAsAttachment(preferredImageUrl);
       setImageAttachment(media);
     } catch {
       setImageAttachment(null);
@@ -171,27 +179,40 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
     } finally {
       setPreparingImageAttachment(false);
     }
-  }, [product?.imageUrl, requiresImageAttachment]);
+  }, [preferredImageUrl, requiresImageAttachment]);
+
+  // Reset group selections when session changes.
+  const handleSessionChange = (sessionId: string) => {
+    setSelectedSessionId(sessionId);
+    setSelectedGroups([]);
+    setSelectedMasterGroups([]);
+  };
 
   useEffect(() => {
     if (!open) return;
-    void prepareImageAttachment();
-  }, [open, prepareImageAttachment]);
+    if (!editingPost) return;
 
-  const templateContent = applyTemplate({
-    templateId: effectiveTemplateId,
-    fallbackContent: product?.affiliateLink || "",
-    placeholderData: scheduleTemplateData,
-  });
-
-  const totalDestinations = useMemo(
-    () => selectedGroups.length + selectedMasterGroups.length,
-    [selectedGroups.length, selectedMasterGroups.length],
-  );
+    const recurring = editingPost.recurrence !== "none";
+    setScheduleName(editingPost.name || "");
+    setMessageContent(editingPost.content || "");
+    setSelectedTemplateId(editingPost.templateId || "");
+    setSelectedGroups([...editingPost.destinationGroupIds]);
+    setSelectedMasterGroups([...editingPost.masterGroupIds]);
+    setSelectedSessionId(editingPost.sessionId || "");
+    setScheduledAt(editingPost.scheduledAt ? formatBRT(editingPost.scheduledAt, "yyyy-MM-dd'T'HH:mm") : "");
+    setIsRecurring(recurring);
+    setWeekDays([...editingPost.weekDays]);
+    setRecurrenceTimes(
+      editingPost.recurrenceTimes.length > 0
+        ? [...editingPost.recurrenceTimes]
+        : (recurring ? [getTimeFromDateTime(editingPost.scheduledAt)].filter(Boolean) : []),
+    );
+    setRecurrenceTimeInput("");
+    setImageAttachment(editingPost.media || null);
+  }, [editingPost, open]);
 
   useEffect(() => {
-    if (!open) return;
-    if (!product) return;
+    if (!open || editingPost || !product) return;
 
     const generatedName = product.title
       ? `Oferta: ${product.title.slice(0, 60)}`
@@ -199,7 +220,20 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
 
     setScheduleName(generatedName);
     setMessageContent(templateContent || product.affiliateLink || "");
-  }, [open, product, templateContent]);
+  }, [editingPost, open, product, templateContent]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!requiresImageAttachment) return;
+    if (editingPost?.media) return;
+    if (imageAttachment) return;
+    void prepareImageAttachment();
+  }, [editingPost?.media, imageAttachment, open, prepareImageAttachment, requiresImageAttachment]);
+
+  const totalDestinations = useMemo(
+    () => selectedGroups.length + selectedMasterGroups.length,
+    [selectedGroups.length, selectedMasterGroups.length],
+  );
 
   const handleDialogOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
@@ -212,10 +246,10 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
     setSelectedTemplateId(templateId);
     const nextContent = applyTemplate({
       templateId,
-      fallbackContent: product?.affiliateLink || "",
+      fallbackContent,
       placeholderData: scheduleTemplateData,
     });
-    setMessageContent(nextContent || product?.affiliateLink || "");
+    setMessageContent(nextContent || fallbackContent);
   };
 
   const toggleWeekDay = (day: WeekDay) =>
@@ -276,7 +310,7 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
       return;
     }
     if (requiresImageAttachment && !imageAttachment) {
-      toast.error("O template precisa de uma imagem, mas ela não tá disponível");
+      toast.error("Esse agendamento precisa de imagem e ela não tá disponível");
       return;
     }
 
@@ -288,7 +322,13 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
     setSubmitting(true);
     try {
       const content = messageContent.trim();
-      await createPost({
+      const detectedLinksFromContent = extractMarketplaceLinks(content).map((item) => item.url);
+      const detectedLinks = detectedLinksFromContent.length > 0
+        ? detectedLinksFromContent
+        : (editingPost?.detectedLinks || []);
+      const scheduleSource = editingPost?.scheduleSource || (product ? "shopee_catalog" : "");
+      const imagePolicy = requiresImageAttachment ? "required" : (editingPost?.imagePolicy || "");
+      const payload = {
         name: scheduleName.trim(),
         content,
         finalContent: content,
@@ -296,19 +336,28 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
         recurrence,
         destinationGroupIds: selectedGroups,
         masterGroupIds: selectedMasterGroups,
-        templateId: effectiveTemplateId || undefined,
+        templateId: resolvedTemplateId || undefined,
         sessionId: selectedSessionId || undefined,
         weekDays: recurrence === "weekly" ? weekDays : [],
         recurrenceTimes: recurrence === "weekly" ? recurrenceTimes : [],
-        messageType: "offer",
-        detectedLinks: product?.affiliateLink ? [product.affiliateLink] : [],
+        messageType: detectedLinks.length > 0 || requiresImageAttachment ? "offer" : "text",
+        detectedLinks,
         templateData: scheduleTemplateData,
-        media: requiresImageAttachment ? imageAttachment : null,
-      });
+        media: imageAttachment,
+        imagePolicy: imagePolicy || undefined,
+        scheduleSource: scheduleSource || undefined,
+        productImageUrl: preferredImageUrl || String(editingPost?.productImageUrl || ""),
+      };
+
+      if (editingPost) {
+        await updatePost(editingPost.id, payload);
+      } else {
+        await createPost(payload);
+      }
       onOpenChange(false);
       resetForm();
     } catch {
-      toast.error("Não deu pra criar o agendamento");
+      toast.error(editingPost ? "Não deu pra atualizar o agendamento" : "Não deu pra criar o agendamento");
     } finally {
       setSubmitting(false);
     }
@@ -336,12 +385,11 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <CalendarDays className="h-5 w-5 text-primary" />
-            Agendar envio
+            {isEditing ? "Editar agendamento Shopee" : "Agendar envio"}
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-5">
-          {/* Product preview */}
           {product?.title && (
             <div className="flex gap-3 p-3 rounded-lg bg-secondary/30 border">
               {product.imageUrl && (
@@ -377,10 +425,9 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
             />
           </div>
 
-          {/* Template */}
           <div className="space-y-2">
             <Label>Template</Label>
-            <Select value={effectiveTemplateId} onValueChange={handleTemplateChange}>
+            <Select value={resolvedTemplateId} onValueChange={handleTemplateChange}>
               <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
               <SelectContent>
                 {templates.map((t) => (
@@ -403,7 +450,6 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
             </p>
           </div>
 
-          {/* Date/time + recurrence */}
           <div className="space-y-2">
             <Label>Repetir envio</Label>
             <div className="flex items-center gap-2">
@@ -463,7 +509,6 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
             </div>
           )}
 
-          {/* Session */}
           <div className="space-y-2">
             <Label>Sessão *</Label>
             <SessionSelect
@@ -475,7 +520,6 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
             />
           </div>
 
-          {/* Groups */}
           <div className="space-y-2">
             <Label className="text-xs">Grupos</Label>
             {!selectedSessionId ? (
@@ -499,7 +543,6 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
             )}
           </div>
 
-          {/* Master groups */}
           {selectedSessionId && filteredMasterGroups.length > 0 && (
             <div className="space-y-2">
               <Label className="text-xs">Grupos mestres</Label>
@@ -531,12 +574,10 @@ export function ScheduleProductModal({ open, onOpenChange, product }: SchedulePr
           <Button variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancelar</Button>
           <Button onClick={handleSchedule} disabled={submitting}>
             <Clock className="h-4 w-4 mr-1.5" />
-            {submitting ? "Agendando..." : "Agendar"}
+            {submitting ? (isEditing ? "Salvando..." : "Agendando...") : (isEditing ? "Salvar" : "Agendar")}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
-
-

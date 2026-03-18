@@ -371,7 +371,7 @@ export default function RoutesPage() {
   return (
     <div className="ds-page">
       <div className="sticky top-0 z-20 rounded-xl border border-border/60 bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
-        <PageHeader title="Rotas" description="Monte rotas pra copiar ofertas de um grupo e enviar pra outros no automático">
+        <PageHeader title="Rotas automaticas" description="Monte rotas pra copiar ofertas de um grupo e enviar pra outros no automatico">
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               size="sm"
@@ -936,5 +936,4 @@ export default function RoutesPage() {
     </div>
   );
 }
-
 

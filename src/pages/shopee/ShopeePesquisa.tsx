@@ -303,7 +303,7 @@ export default function ShopeePesquisa() {
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6">
-      <PageHeader title="Pesquisa" description="Navegue por categorias ou busque pelo nome" />
+      <PageHeader title="Pesquisa de ofertas" description="Navegue por categorias ou busque pelo nome" />
       {!isConfigured && <ShopeeCredentialsBanner />}
 
       {isConfigured && (
@@ -507,4 +507,3 @@ export default function ShopeePesquisa() {
     </div>
   );
 }
-

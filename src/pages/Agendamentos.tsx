@@ -31,6 +31,7 @@ import { WEEK_DAYS, mergeDateWithScheduleTime, normalizeScheduleTime } from "@/l
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
+import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
 
 const statusStyle: Record<string, string> = {
   scheduled: "bg-info/10 text-info", pending: "bg-info/10 text-info", sent: "bg-success/10 text-success",
@@ -67,12 +68,21 @@ interface DraftPost {
   sessionId: string; weekDays: WeekDay[];
   recurrenceTimes: string[];
   media: ScheduledMediaAttachment | null;
+  templateId: string | null;
+  templateData: Record<string, string> | null;
+  imagePolicy: string | null;
+  scheduleSource: string | null;
+  productImageUrl: string | null;
+  messageType: MessageType;
+  detectedLinks: string[];
 }
 
 const emptyDraft: DraftPost = {
   name: "",
   content: "", scheduledAt: "", destinationGroupIds: [], masterGroupIds: [],
   sessionId: "", weekDays: [], recurrenceTimes: [], media: null,
+  templateId: null, templateData: null, imagePolicy: null, scheduleSource: null,
+  productImageUrl: null, messageType: "text", detectedLinks: [],
 };
 
 const MAX_SCHEDULE_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -144,6 +154,7 @@ export default function Schedules() {
   const [destinationMode, setDestinationMode] = useState<DestinationMode>("individual");
   const [recurrenceTimeInput, setRecurrenceTimeInput] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingShopeePost, setEditingShopeePost] = useState<ScheduledPost | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const detectedLinks = useMemo(() => extractMarketplaceLinks(draft.content), [draft.content]);
   const hasLinks = detectedLinks.length > 0;
@@ -171,10 +182,18 @@ export default function Schedules() {
     setDestinationMode("individual");
     setRecurrenceTimeInput("");
     setEditingId(null);
+    setEditingShopeePost(null);
     setShowModal(true);
   };
 
   const openEdit = (post: ScheduledPost) => {
+    if (post.scheduleSource === "shopee_catalog") {
+      setShowModal(false);
+      setEditingId(null);
+      setEditingShopeePost(post);
+      return;
+    }
+
     setDraft({
       name: post.name,
       content: post.content,
@@ -183,6 +202,13 @@ export default function Schedules() {
       sessionId: post.sessionId || "",
       weekDays: [...post.weekDays],
       media: post.media,
+      templateId: post.templateId,
+      templateData: post.templateData || null,
+      imagePolicy: post.imagePolicy || null,
+      scheduleSource: post.scheduleSource || null,
+      productImageUrl: post.productImageUrl || null,
+      messageType: post.messageType,
+      detectedLinks: [...post.detectedLinks],
       recurrenceTimes: post.recurrenceTimes.length > 0
         ? [...post.recurrenceTimes]
         : (post.recurrence !== "none" ? [getTimeFromDateTime(post.scheduledAt)].filter(Boolean) : []),
@@ -233,8 +259,14 @@ export default function Schedules() {
       sessionId: draft.sessionId || undefined,
       recurrence, weekDays: recurrence === "weekly" ? draft.weekDays : [],
       recurrenceTimes: recurrence === "none" ? [] : draft.recurrenceTimes,
-      messageType: links.length > 0 ? "offer" : "text",
-      detectedLinks: links.map((l) => l.url), finalContent,
+      templateId: draft.templateId || undefined,
+      templateData: draft.templateData || undefined,
+      messageType: links.length > 0 ? "offer" : draft.messageType,
+      detectedLinks: links.length > 0 ? links.map((l) => l.url) : draft.detectedLinks,
+      imagePolicy: draft.imagePolicy || undefined,
+      scheduleSource: draft.scheduleSource || undefined,
+      productImageUrl: draft.productImageUrl || undefined,
+      finalContent,
       media: draft.media,
     };
 
@@ -325,12 +357,6 @@ export default function Schedules() {
       .slice()
       .sort((a, b) => getNextDispatchAt(a, now).getTime() - getNextDispatchAt(b, now).getTime());
   }, [posts]);
-  const archivedPosts = useMemo(() => {
-    return posts
-      .filter((post) => !queueStatuses.has(String(post.status)))
-      .slice()
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [posts]);
 
   const renderPostCard = (post: ScheduledPost, position?: number) => {
     const TypeIcon = typeIcon[post.messageType] || MessageSquare;
@@ -369,6 +395,9 @@ export default function Schedules() {
               <TypeIcon className="h-4 w-4 text-muted-foreground shrink-0" />
               <p className="text-sm font-semibold tracking-tight truncate">{post.name}</p>
               <Badge variant="secondary" className={`text-xs shrink-0 ${statusStyle[postStatus] || ""}`}>{postStatusLabel}</Badge>
+              {post.scheduleSource === "shopee_catalog" && (
+                <Badge variant="outline" className="text-xs shrink-0">Shopee</Badge>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-muted/35 p-0.5">
               {(statusStr === "pending" || statusStr === "scheduled") && (
@@ -440,30 +469,27 @@ export default function Schedules() {
         </div>
       </PageHeader>
 
-      {posts.length > 0 ? (
-        <div className="space-y-4">
-          <Card className="glass border-info/30">
-            <CardContent className="py-3 text-xs text-muted-foreground text-center">
-              Na fila: <span className="font-medium text-foreground">{queuePosts.length}</span> agendamento(s) esperando envio, do mais próximo pro mais longe.
-            </CardContent>
-          </Card>
+      <div className="space-y-4">
+        <Card className="glass border-info/30">
+          <CardContent className="py-3 text-xs text-muted-foreground text-center">
+            Na fila: <span className="font-medium text-foreground">{queuePosts.length}</span> agendamento(s) esperando envio, do mais próximo pro mais longe.
+          </CardContent>
+        </Card>
 
-          {queuePosts.length > 0 && (
-            <div className="space-y-3">
-              {queuePosts.map((post, index) => renderPostCard(post, index + 1))}
-            </div>
-          )}
-
-          {archivedPosts.length > 0 && (
-            <div className="space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide text-center">Já enviados, cancelados ou com erro</p>
-              {archivedPosts.map((post) => renderPostCard(post))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <EmptyState icon={CalendarDays} title="Nenhum agendamento ainda" description="Agende mensagens pra enviar na data e hora que você escolher." actionLabel="Criar agendamento" onAction={openNew} />
-      )}
+        {queuePosts.length > 0 ? (
+          <div className="space-y-3">
+            {queuePosts.map((post, index) => renderPostCard(post, index + 1))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={CalendarDays}
+            title="Fila de envios vazia"
+            description="Quando um envio for concluído ele sai daqui e fica disponível no histórico."
+            actionLabel="Criar agendamento"
+            onAction={openNew}
+          />
+        )}
+      </div>
 
       {/* Delete confirmation */}
       <AlertDialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
@@ -732,7 +758,12 @@ export default function Schedules() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <ScheduleProductModal
+        open={!!editingShopeePost}
+        onOpenChange={(open) => { if (!open) setEditingShopeePost(null); }}
+        editingPost={editingShopeePost || undefined}
+      />
     </div>
   );
 }
-

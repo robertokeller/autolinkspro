@@ -185,7 +185,7 @@ export default function ShopeeVitrine() {
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6">
-      <PageHeader title="Vitrine" description="Produtos em destaque com links de afiliado">
+      <PageHeader title="Vitrine de ofertas" description="Produtos em destaque com links de afiliado">
         {isConfigured && (
           <Button size="sm" variant="outline" onClick={refreshCurrent} disabled={anyLoading}>
             <RefreshCw className={`h-4 w-4 mr-1.5 ${anyLoading ? "animate-spin" : ""}`} />
