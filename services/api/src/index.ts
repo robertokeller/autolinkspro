@@ -104,7 +104,31 @@ function ensureRequiredEnvVars() {
   }
 }
 
-const corsOriginList = CORS_ORIGIN === "*" ? [] : CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+function normalizeCorsOriginEntry(rawValue: string): string {
+  const trimmed = String(rawValue || "")
+    .trim()
+    .replace(/^["']+|["']+$/g, "");
+  if (!trimmed) return "";
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      return new URL(trimmed).origin;
+    } catch {
+      return "";
+    }
+  }
+
+  return trimmed.replace(/\/+$/, "");
+}
+
+const corsOriginList = CORS_ORIGIN === "*"
+  ? []
+  : CORS_ORIGIN
+    .split(",")
+    .map(normalizeCorsOriginEntry)
+    .filter(Boolean);
+const corsOriginSet = new Set(corsOriginList);
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) { callback(null, true); return; } // server-to-server
@@ -113,7 +137,7 @@ app.use(cors({
       // In development, Vite may fall back to another port (5174, 5175, ...).
       // Allow any localhost origin even when CORS_ORIGIN is pinned.
       if (!IS_PRODUCTION && isLocal) { callback(null, true); return; }
-      callback(null, corsOriginList.includes(origin));
+      callback(null, corsOriginSet.has(normalizeCorsOriginEntry(origin)));
       return;
     }
     callback(null, isLocal);

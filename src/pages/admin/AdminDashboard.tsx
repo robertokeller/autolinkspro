@@ -1057,7 +1057,10 @@ export default function AdminDashboard() {
                 Ops Control indisponível — inicie o serviço de orquestração para reativar os comandos.
               </p>
               <p className="text-xs text-amber-700 dark:text-amber-300">
-                Se o Ops Control não iniciar automaticamente, execute no terminal:
+                Em produção (Coolify), reinicie o container <code>ops-control</code> no painel do Coolify.
+              </p>
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                Em ambiente local (desenvolvimento), execute no terminal:
               </p>
               <div className="flex items-center gap-2">
                 <code className="rounded bg-amber-100 px-2 py-1 text-xs dark:bg-amber-900">npm run svc:ops:dev</code>

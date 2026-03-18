@@ -26,9 +26,9 @@ const AUTH_COOKIE_SAME_SITE = resolveCookieSameSite();
 // Cookie Domain — set to ".seudominio.com" in production so the cookie is
 // shared between app.seudominio.com (frontend) and api.seudominio.com (API).
 // Leave empty for localhost/dev environments.
-const AUTH_COOKIE_DOMAIN = String(process.env.AUTH_COOKIE_DOMAIN || "").trim();
 const APP_PUBLIC_URL = resolvePublicUrl(process.env.APP_PUBLIC_URL || "");
 const API_PUBLIC_URL = resolvePublicUrl(process.env.API_PUBLIC_URL || "");
+const AUTH_COOKIE_DOMAIN = normalizeCookieDomain(process.env.AUTH_COOKIE_DOMAIN || "", API_PUBLIC_URL);
 const EMAIL_VERIFY_ROUTE = "/auth/verificacao-email";
 const PASSWORD_RESET_ROUTE = "/auth/resetar-senha";
 const VERIFY_TOKEN_TTL_MINUTES = normalizeMinutes(process.env.EMAIL_VERIFY_TOKEN_TTL_MINUTES, 24 * 60);
@@ -51,6 +51,70 @@ function resolvePublicUrl(rawValue: unknown) {
   } catch {
     return "";
   }
+}
+
+function normalizeCookieDomain(rawValue: unknown, apiPublicUrl: string) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return "";
+
+  const firstEntry = raw
+    .split(",")
+    .map((part) => part.trim())
+    .find(Boolean) ?? "";
+  if (!firstEntry) return "";
+
+  let candidate = firstEntry
+    .replace(/^["']+|["']+$/g, "")
+    .trim();
+  if (!candidate) return "";
+
+  if (/^https?:\/\//i.test(candidate)) {
+    try {
+      candidate = new URL(candidate).hostname;
+    } catch {
+      console.warn(`[auth] AUTH_COOKIE_DOMAIN='${raw}' is invalid. Falling back to host-only cookie.`);
+      return "";
+    }
+  }
+
+  candidate = candidate
+    .split("/")[0]
+    .split(":")[0]
+    .replace(/^\.+/, "")
+    .toLowerCase()
+    .trim();
+
+  if (!candidate) return "";
+  if (!/^[a-z0-9.-]+$/.test(candidate)) {
+    console.warn(`[auth] AUTH_COOKIE_DOMAIN='${raw}' contains invalid characters. Falling back to host-only cookie.`);
+    return "";
+  }
+
+  if (candidate === "localhost" || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(candidate)) {
+    return "";
+  }
+
+  const apiHost = (() => {
+    if (!apiPublicUrl) return "";
+    try {
+      return new URL(apiPublicUrl).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+
+  if (apiHost && apiHost !== candidate && !apiHost.endsWith(`.${candidate}`)) {
+    console.warn(
+      `[auth] AUTH_COOKIE_DOMAIN='${raw}' is incompatible with API host '${apiHost}'. Falling back to host-only cookie.`,
+    );
+    return "";
+  }
+
+  if (raw !== candidate && raw !== `.${candidate}`) {
+    console.warn(`[auth] AUTH_COOKIE_DOMAIN sanitized from '${raw}' to '${candidate}'.`);
+  }
+
+  return candidate;
 }
 
 function inferRequestOrigin(req: Request) {

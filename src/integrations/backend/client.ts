@@ -233,6 +233,30 @@ const auth = {
       if (!res.error && res.data?.session) {
         passwordRecoveryPending = false;
         setRuntimeSession(res.data.session as Session);
+
+        // Validate that the HttpOnly cookie was actually persisted by the browser.
+        // If cookie/domain/CORS is misconfigured, /auth/signin can return a session
+        // but subsequent authenticated requests fail and user gets bounced to login.
+        try {
+          const sessionCheck = await apiFetch("/auth/session", { method: "GET" });
+          if (sessionCheck.error || !sessionCheck.data?.session) {
+            setRuntimeSession(null);
+            return {
+              data: { user: null, session: null },
+              error: {
+                message: "Login nao persistiu sessao (cookie bloqueado). Verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL no Coolify.",
+              },
+            };
+          }
+        } catch {
+          setRuntimeSession(null);
+          return {
+            data: { user: null, session: null },
+            error: {
+              message: "Login nao persistiu sessao (cookie bloqueado). Verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL no Coolify.",
+            },
+          };
+        }
       }
       return res;
     } catch (e) {

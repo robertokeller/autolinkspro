@@ -194,6 +194,11 @@ services:
       PORT: 3115
       OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      OPS_RUNTIME_MODE: docker
+      WHATSAPP_HEALTH_URL: http://whatsapp:3111/health
+      TELEGRAM_HEALTH_URL: http://telegram:3112/health
+      SHOPEE_HEALTH_URL: http://shopee:3113/health
+      MELI_HEALTH_URL: http://meli:3114/api/meli/health
       ALLOW_INSECURE_NO_TOKEN: "false"
     expose:
       - "3115"

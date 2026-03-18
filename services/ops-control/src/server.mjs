@@ -20,6 +20,8 @@ const SERVICE_HEALTH_SECRET = String(process.env.WEBHOOK_SECRET || process.env.O
 const NODE_ENV = String(process.env.NODE_ENV || "development").toLowerCase();
 const allowInsecureFlag = String(process.env.ALLOW_INSECURE_NO_TOKEN || "").toLowerCase() === "true";
 const ALLOW_INSECURE_NO_TOKEN = allowInsecureFlag || (NODE_ENV !== "production" && !OPS_CONTROL_TOKEN);
+const OPS_RUNTIME_MODE = String(process.env.OPS_RUNTIME_MODE || "local").trim().toLowerCase();
+const IS_DOCKER_MODE = OPS_RUNTIME_MODE === "docker";
 const IS_WINDOWS = process.platform === "win32";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,6 +64,13 @@ const LOCAL_SERVICE_CONFIG = {
   telegram: { serviceCwd: "services/telegram-telegraph", distEntry: "services/telegram-telegraph/dist/server.js", healthPath: "/health", defaultPort: 3112, portEnvKey: "PORT" },
   shopee: { serviceCwd: "services/shopee-affiliate", distEntry: "services/shopee-affiliate/dist/server.js", healthPath: "/health", defaultPort: 3113, portEnvKey: "PORT" },
   meli: { serviceCwd: "services/mercadolivre-rpa", distEntry: "services/mercadolivre-rpa/dist/server.js", healthPath: "/api/meli/health", defaultPort: 3114, portEnvKey: "MELI_RPA_PORT" },
+};
+
+const DOCKER_SERVICE_HEALTH_URLS = {
+  whatsapp: String(process.env.WHATSAPP_HEALTH_URL || "http://whatsapp:3111/health").trim(),
+  telegram: String(process.env.TELEGRAM_HEALTH_URL || "http://telegram:3112/health").trim(),
+  shopee: String(process.env.SHOPEE_HEALTH_URL || "http://shopee:3113/health").trim(),
+  meli: String(process.env.MELI_HEALTH_URL || "http://meli:3114/api/meli/health").trim(),
 };
 
 const OPS_CONFIG_DIR = process.env.OPS_CONFIG_DIR
@@ -115,6 +124,19 @@ function savePortOverrides(next) {
 function getEffectivePort(serviceId) {
   const cfg = LOCAL_SERVICE_CONFIG[serviceId];
   if (!cfg) return null;
+
+  if (IS_DOCKER_MODE) {
+    const healthUrl = DOCKER_SERVICE_HEALTH_URLS[serviceId];
+    if (!healthUrl) return Number(cfg.defaultPort);
+    try {
+      const parsed = new URL(healthUrl);
+      const portRaw = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
+      return isValidPort(portRaw) ? portRaw : Number(cfg.defaultPort);
+    } catch {
+      return Number(cfg.defaultPort);
+    }
+  }
+
   const overrides = loadPortOverrides();
   const override = overrides?.[serviceId];
   if (isValidPort(override)) return Number(override);
@@ -124,6 +146,11 @@ function getEffectivePort(serviceId) {
 function getEffectiveHealthUrl(serviceId) {
   const cfg = LOCAL_SERVICE_CONFIG[serviceId];
   if (!cfg) return "";
+
+  if (IS_DOCKER_MODE) {
+    return DOCKER_SERVICE_HEALTH_URLS[serviceId] || "";
+  }
+
   const port = getEffectivePort(serviceId);
   const p = isValidPort(port) ? port : cfg.defaultPort;
   return `http://127.0.0.1:${p}${cfg.healthPath}`;
@@ -133,10 +160,11 @@ function getEffectivePortsSnapshot() {
   const overrides = loadPortOverrides();
   const out = {};
   for (const [id, cfg] of Object.entries(LOCAL_SERVICE_CONFIG)) {
+    const dockerManaged = IS_DOCKER_MODE;
     out[id] = {
       port: getEffectivePort(id),
       defaultPort: cfg.defaultPort,
-      override: isValidPort(overrides?.[id]) ? Number(overrides[id]) : null,
+      override: dockerManaged ? null : (isValidPort(overrides?.[id]) ? Number(overrides[id]) : null),
       healthUrl: getEffectiveHealthUrl(id),
       portEnvKey: cfg.portEnvKey,
     };
@@ -357,6 +385,29 @@ async function buildLocalSnapshot(serviceId) {
   };
 }
 
+async function buildDockerSnapshot(serviceId) {
+  const appName = SERVICE_APP_MAP[serviceId] || serviceId;
+  const health = await probeServiceHealth(serviceId);
+  const online = health.online === true;
+
+  return {
+    id: serviceId,
+    appName,
+    status: online ? "online" : "offline",
+    online,
+    pid: null,
+    uptimeSec: null,
+    processStatus: online ? "online-docker" : "offline-docker",
+    processOnline: online,
+    componentOnline: online,
+    componentError: health.error,
+    healthUrl: getEffectiveHealthUrl(serviceId),
+    port: getEffectivePort(serviceId),
+    mode: "docker",
+    error: health.error,
+  };
+}
+
 function getPm2ProcessRow(rows, appName) {
   return rows.find((row) => String(row?.name || "") === appName) || null;
 }
@@ -402,6 +453,9 @@ async function buildPm2Snapshot(id, appName, processRow) {
 
 async function buildServiceSnapshot(serviceId, rows = null) {
   const appName = SERVICE_APP_MAP[serviceId] || serviceId;
+  if (IS_DOCKER_MODE) {
+    return buildDockerSnapshot(serviceId);
+  }
   const pm2Available = await isPm2Available();
   if (!pm2Available) {
     return buildLocalSnapshot(serviceId);
@@ -472,6 +526,9 @@ function spawnDetachedService(serviceId) {
   }
 
   const serviceDir = path.join(PROJECT_ROOT, config.serviceCwd);
+  if (!existsSync(serviceDir)) {
+    throw new Error(`Diretorio do servico nao encontrado: ${serviceDir}`);
+  }
 
   const logsDir = path.join(PROJECT_ROOT, "logs", "ops-control");
   try {
@@ -509,6 +566,15 @@ function spawnDetachedService(serviceId) {
     env,
     shell,
     windowsHide: true,
+  });
+
+  child.on("error", (error) => {
+    LOCAL_PROCESS_REGISTRY.delete(serviceId);
+    try {
+      appendFileSync(errLogPath, `[ops-control] spawn error: ${error instanceof Error ? error.message : String(error)}\n`);
+    } catch {
+      // best effort
+    }
   });
 
   try {
@@ -599,6 +665,11 @@ async function killByPort(serviceId) {
 }
 
 async function listServices() {
+  if (IS_DOCKER_MODE) {
+    const serviceIds = Object.keys(SERVICE_APP_MAP);
+    return Promise.all(serviceIds.map((serviceId) => buildDockerSnapshot(serviceId)));
+  }
+
   const pm2Available = await isPm2Available();
   if (!pm2Available) {
     const serviceIds = Object.keys(SERVICE_APP_MAP);
@@ -620,6 +691,41 @@ async function controlService(service, action) {
 
   if (!["start", "stop", "restart"].includes(action)) {
     return { ok: false, error: "Acao invalida" };
+  }
+
+  if (IS_DOCKER_MODE) {
+    const snapshot = await buildDockerSnapshot(service);
+    if (action === "start") {
+      if (snapshot.online) {
+        return {
+          ok: true,
+          service,
+          action,
+          appName,
+          status: snapshot.status,
+          online: true,
+          pid: null,
+          uptimeSec: null,
+          mode: "docker",
+          note: "Servico ja esta sob gerenciamento do Docker/Coolify.",
+        };
+      }
+      return {
+        ok: false,
+        service,
+        action,
+        mode: "docker",
+        error: `Servico ${service} offline no modo Docker. Reinicie o container no Coolify.`,
+      };
+    }
+
+    return {
+      ok: false,
+      service,
+      action,
+      mode: "docker",
+      error: `Acao '${action}' nao suportada via Ops Control no modo Docker. Use o painel do Coolify para gerenciar containers.`,
+    };
   }
 
   const pm2Available = await isPm2Available();
@@ -1028,4 +1134,5 @@ server.on("error", (error) => {
 server.listen(PORT, HOST, () => {
   console.log(`[ops-control] listening on http://${HOST}:${PORT}`);
   console.log(`[ops-control] secured=${ALLOW_INSECURE_NO_TOKEN ? "false (dev)" : "true"}`);
+  console.log(`[ops-control] runtime_mode=${IS_DOCKER_MODE ? "docker" : "local/pm2"}`);
 });
