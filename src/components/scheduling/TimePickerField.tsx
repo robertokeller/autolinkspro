@@ -37,15 +37,15 @@ export function TimePickerField({
   const [open, setOpen] = useState(false);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover modal open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           type="button"
           variant="outline"
-          className={cn("h-11 w-full justify-start bg-background/90 font-medium tabular-nums", className)}
+          className={cn("h-11 w-full min-w-0 justify-start bg-background/90 font-medium tabular-nums", className)}
         >
           <Clock3 className="mr-2 h-4 w-4 text-muted-foreground" />
-          {value || placeholder}
+          <span className="truncate">{value || placeholder}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[220px] p-3">

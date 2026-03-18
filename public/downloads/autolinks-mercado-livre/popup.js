@@ -1,18 +1,9 @@
 const DEFAULT_API_ORIGINS = [
   "https://api.autolinks.pro",
-  "https://autolinks.pro",
-  "https://www.autolinks.pro",
-  "https://app.autolinks.pro",
   "http://localhost:3116",
   "http://127.0.0.1:3116",
   "https://localhost:3116",
   "https://127.0.0.1:3116",
-  "http://localhost:5173",
-  "http://localhost:5175",
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:5175",
-  "http://localhost:4173",
-  "http://127.0.0.1:4173",
 ];
 
 const TRUSTED_PRODUCTION_HOSTS = new Set([
@@ -25,6 +16,7 @@ const TRUSTED_PRODUCTION_HOSTS = new Set([
 const TRUSTED_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
 const STORAGE_KEY_AUTH = "autolinksExtensionAuth";
+const STORAGE_KEY_API_ORIGIN = "autolinksExtensionApiOrigin";
 
 const STATUS = {
   info: "info",
@@ -34,6 +26,7 @@ const STATUS = {
 
 const emailInput = document.getElementById("email");
 const passwordInput = document.getElementById("password");
+const apiOriginInput = document.getElementById("apiOrigin");
 const loginBtn = document.getElementById("loginBtn");
 const captureBtn = document.getElementById("captureBtn");
 const logoutBtn = document.getElementById("logoutBtn");
@@ -146,6 +139,34 @@ function getOriginPriority(origin) {
   }
 }
 
+function normalizeApiOriginInput(rawValue) {
+  const base = normalizeOrigin(String(rawValue || ""));
+  if (!base) return "";
+  try {
+    const parsed = new URL(base);
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (!isTrustedAutolinksHost(host)) return "";
+    return parsed.origin;
+  } catch {
+    return "";
+  }
+}
+
+async function readStoredApiOrigin() {
+  const data = await chrome.storage.local.get(STORAGE_KEY_API_ORIGIN);
+  return normalizeApiOriginInput(data?.[STORAGE_KEY_API_ORIGIN] || "");
+}
+
+async function saveStoredApiOrigin(origin) {
+  const normalized = normalizeApiOriginInput(origin);
+  if (!normalized) {
+    await chrome.storage.local.remove(STORAGE_KEY_API_ORIGIN);
+    return "";
+  }
+  await chrome.storage.local.set({ [STORAGE_KEY_API_ORIGIN]: normalized });
+  return normalized;
+}
+
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -213,7 +234,10 @@ function toFriendlyErrorMessage(error) {
     return "Tempo esgotado ao conectar com o Autolinks. Tente novamente.";
   }
   if (lower.includes("failed to fetch") || lower.includes("networkerror") || lower.includes("load failed")) {
-    return "Falha ao conectar com o Autolinks. Verifique se a API esta online e tente novamente.";
+    return "Falha ao conectar com o Autolinks. Verifique o endpoint da API e tente novamente.";
+  }
+  if (lower.includes("resposta invalida")) {
+    return "A URL informada nao parece ser da API do Auto Links. Confira o endpoint.";
   }
   if (lower.includes("cookie bloqueado")) {
     return "Nao consegui salvar sua sessao. Verifique bloqueio de cookies no navegador.";
@@ -243,7 +267,9 @@ async function listHttpTabs() {
   });
 }
 
-async function getCandidateApiOrigins() {
+async function getCandidateApiOrigins(options = {}) {
+  const manualInputOrigin = normalizeApiOriginInput(options.manualOrigin || "");
+  const storedApiOrigin = await readStoredApiOrigin();
   const tabs = await listHttpTabs();
   const fromTabs = tabs
     .map((tab) => normalizeOrigin(tab.url))
@@ -252,10 +278,16 @@ async function getCandidateApiOrigins() {
   const current = normalizeOrigin(extensionAuth?.apiOrigin || "");
   const safeCurrent = isLikelyAppOrigin(current) ? current : "";
   const derivedFromCurrent = deriveApiOriginsFromOrigin(safeCurrent);
+  const derivedFromManual = deriveApiOriginsFromOrigin(manualInputOrigin);
+  const derivedFromStored = deriveApiOriginsFromOrigin(storedApiOrigin);
   const derivedFromTabs = fromTabs.flatMap((origin) => deriveApiOriginsFromOrigin(origin));
 
   return unique([
+    manualInputOrigin,
+    storedApiOrigin,
     safeCurrent,
+    ...derivedFromManual,
+    ...derivedFromStored,
     ...derivedFromCurrent,
     ...derivedFromTabs,
     ...DEFAULT_API_ORIGINS,
@@ -349,6 +381,23 @@ async function apiRequest(origin, path, options = {}) {
     throw error;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function verifyApiOrigin(origin) {
+  try {
+    const health = await apiRequest(origin, "/health", {
+      method: "GET",
+      timeoutMs: 10000,
+    });
+    const service = String(health?.service || "").toLowerCase();
+    const isApi = Boolean(health?.ok) && service.includes("autolinks-api");
+    if (!isApi) {
+      return { ok: false, message: "Esse endpoint nao parece ser a API do Auto Links." };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: toFriendlyErrorMessage(error) };
   }
 }
 
@@ -555,9 +604,15 @@ function extractMlUserId(cookies) {
 async function loginAndValidate() {
   const email = String(emailInput.value || "").trim();
   const password = String(passwordInput.value || "");
+  const manualOriginRaw = String(apiOriginInput?.value || "").trim();
+  const manualOrigin = normalizeApiOriginInput(manualOriginRaw);
 
   if (!email || !password) {
     setStatus(STATUS.error, "Preencha e-mail e senha para continuar.");
+    return;
+  }
+  if (manualOriginRaw && !manualOrigin) {
+    setStatus(STATUS.error, "Endpoint da API invalido. Use algo como https://api.autolinks.pro");
     return;
   }
 
@@ -565,19 +620,34 @@ async function loginAndValidate() {
   setStatus(STATUS.info, "Validando seu login...");
 
   try {
-    const candidates = await getCandidateApiOrigins();
+    const candidates = await getCandidateApiOrigins({ manualOrigin });
     if (candidates.length === 0) {
-      setStatus(STATUS.error, "Nao encontrei uma URL valida do painel Autolinks.");
+      setStatus(STATUS.error, "Nao encontrei uma API valida. Informe o endpoint da API e tente novamente.");
       return;
     }
 
     let lastError = "";
     let bestError = "";
+    let testedApiEndpoints = 0;
     for (const origin of candidates) {
+      const healthCheck = await verifyApiOrigin(origin);
+      if (!healthCheck.ok) {
+        // Keep manual endpoint errors visible; ignore noisy non-API origins from auto-discovery.
+        if (manualOrigin && origin === manualOrigin && healthCheck.message) {
+          lastError = healthCheck.message;
+          bestError = healthCheck.message;
+        }
+        continue;
+      }
+
+      testedApiEndpoints += 1;
       try {
+        setStatus(STATUS.info, `Conectando em ${origin}...`);
         const result = await loginAtOrigin(origin, email, password);
         if (result?.ok && result.auth) {
           await saveAuthToStorage(result.auth);
+          await saveStoredApiOrigin(origin);
+          if (apiOriginInput) apiOriginInput.value = origin;
           setAuthenticated(true);
           passwordInput.value = "";
           setStatus(STATUS.success, `Login confirmado para ${result.auth.email || email}.`);
@@ -605,6 +675,14 @@ async function loginAndValidate() {
 
     await clearStoredAuth();
     setAuthenticated(false);
+    if (testedApiEndpoints === 0) {
+      setStatus(
+        STATUS.error,
+        bestError ||
+          "Nao consegui acessar uma API valida. Se voce usa dominio proprio, preencha o campo Endpoint da API.",
+      );
+      return;
+    }
     setStatus(STATUS.error, bestError || lastError || "Nao foi possivel validar login. Tente novamente.");
   } catch (error) {
     await clearStoredAuth();
@@ -686,8 +764,16 @@ async function bootstrap() {
   setStatus(STATUS.info, "Verificando login salvo...");
 
   try {
+    const storedApiOrigin = await readStoredApiOrigin();
+    if (apiOriginInput && storedApiOrigin) {
+      apiOriginInput.value = storedApiOrigin;
+    }
+
     const isLogged = await refreshAuthFromStorage();
     if (isLogged && extensionAuth) {
+      if (apiOriginInput) {
+        apiOriginInput.value = normalizeOrigin(extensionAuth.apiOrigin || "") || apiOriginInput.value;
+      }
       setAuthenticated(true);
       setStatus(STATUS.success, `Sessao ativa para ${extensionAuth.email || "usuario"}.`);
       return;

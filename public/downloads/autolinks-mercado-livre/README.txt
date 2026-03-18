@@ -10,11 +10,13 @@ Como instalar (Chrome):
 Como usar:
 1) Clique no icone da extensao.
 2) Faca login na extensao com seu e-mail e senha do Auto Links.
-3) Abra uma aba do Mercado Livre e faca login nela.
-4) Volte para a extensao e clique em Capturar e enviar cookies.
+3) Se voce usa dominio proprio, preencha o campo "Endpoint da API".
+4) Abra uma aba do Mercado Livre e faca login nela.
+5) Volte para a extensao e clique em Capturar e enviar cookies.
 
 Observacao:
 - A extensao tenta conectar automaticamente com a URL correta do Auto Links.
+- Se aparecer "Failed to fetch", confira o endpoint da API no popup.
 - A extensao captura apenas cookies de dominios Mercado Livre.
 
 Sistema de icones:

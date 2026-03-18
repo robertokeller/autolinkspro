@@ -13,14 +13,18 @@
           <img src="icons/icon-48.png" alt="" width="40" height="40" />
         </div>
         <div class="brand-copy">
-          <h1>Auto Links - Mercado Livre</h1>
-          <p class="subtitle">Conecte sua conta e envie cookies do Mercado Livre em 1 clique.</p>
+          <h1>Auto Links + Mercado Livre</h1>
+          <p class="subtitle">Conecte sua conta em poucos passos e sincronize os cookies com seguranca.</p>
         </div>
       </div>
 
       <div id="stepLogin" class="card">
         <h2>1. Entrar na conta</h2>
-        <p class="copy">Faca login com a mesma conta usada no cadastro do sistema.</p>
+        <p class="copy">Use o mesmo e-mail do Auto Links para liberar a sincronizacao.</p>
+
+        <label for="apiOrigin">Endpoint da API (opcional)</label>
+        <input id="apiOrigin" type="url" placeholder="https://api.autolinks.pro" autocomplete="url" />
+        <p class="hint">Se voce usa dominio proprio, informe aqui a URL da sua API.</p>
 
         <label for="email">E-mail</label>
         <input id="email" type="email" placeholder="seu@email.com" autocomplete="email" />
@@ -33,13 +37,13 @@
 
       <div id="stepCapture" class="card hidden">
         <h2>2. Capturar e enviar</h2>
-        <p class="copy">Login confirmado. Agora envie os cookies para sua conta.</p>
-        <p class="copy"><strong>Aviso:</strong> mantenha uma pagina do Mercado Livre aberta e logada no navegador.</p>
+        <p class="copy">Tudo certo com o login. Agora vamos sincronizar seus cookies.</p>
+        <p class="copy"><strong>Dica:</strong> mantenha uma aba do Mercado Livre aberta e logada antes de capturar.</p>
         <button id="captureBtn" type="button" class="primary">Capturar e enviar cookies</button>
         <button id="logoutBtn" type="button" class="secondary">Sair da conta</button>
       </div>
 
-      <div id="status" class="status info">Pronto para conectar.</div>
+      <div id="status" class="status info">Pronto. Faca login para continuar.</div>
     </main>
 
     <script src="popup.js"></script>

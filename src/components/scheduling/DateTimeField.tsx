@@ -110,15 +110,15 @@ export function DateTimeField({
       </Label>
 
       <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-        <div className="grid gap-2 sm:grid-cols-[1fr_136px]">
-          <Popover open={openDatePicker} onOpenChange={setOpenDatePicker}>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,164px)]">
+          <Popover modal open={openDatePicker} onOpenChange={setOpenDatePicker}>
             <PopoverTrigger asChild>
               <Button
                 type="button"
                 variant="outline"
-                className="h-11 w-full justify-start bg-background/90 font-medium"
+                className="h-11 w-full min-w-0 justify-start bg-background/90 font-medium"
               >
-                {dateLabel}
+                <span className="truncate">{dateLabel}</span>
               </Button>
             </PopoverTrigger>
 
@@ -164,7 +164,8 @@ export function DateTimeField({
                       key={dayIso}
                       type="button"
                       variant={isSelected ? "default" : "ghost"}
-                      className={cn("h-8 px-0 text-xs", muted && "text-muted-foreground")}
+                      className={cn("h-8 w-8 min-w-0 p-0 text-xs", muted && "text-muted-foreground")}
+                      onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
                         const resolvedTime = selectedTime || nowTimeLabel();
                         setSelectedDate(dayIso);

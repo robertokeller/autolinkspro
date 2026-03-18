@@ -497,6 +497,21 @@ export default function ShopeeAutomacoes() {
                   <Input type="number" placeholder="Ex: 500" value={form.maxPrice} onChange={(e) => setForm({ ...form, maxPrice: e.target.value })} />
                 </div>
               </div>
+            </div>
+
+            {/* 5. Categorias */}
+            <div className="space-y-2">
+              <Label>Categorias</Label>
+              <CategoryMultiSelect
+                value={form.categories}
+                onChange={(categoryIds) => setForm({ ...form, categories: categoryIds })}
+                placeholder="Escolha as categorias..."
+              />
+            </div>
+
+            {/* 6. Palavras-chave opcionais */}
+            <div className="space-y-2">
+              <Label>Palavras-chave de filtro <span className="text-muted-foreground font-normal">(opcional)</span></Label>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-2 rounded-md border bg-muted/20 p-3">
                   <Label className="text-xs flex items-center gap-1.5">
@@ -531,17 +546,7 @@ export default function ShopeeAutomacoes() {
               </div>
             </div>
 
-            {/* 5. Categorias */}
-            <div className="space-y-2">
-              <Label>Categorias</Label>
-              <CategoryMultiSelect
-                value={form.categories}
-                onChange={(categoryIds) => setForm({ ...form, categories: categoryIds })}
-                placeholder="Escolha as categorias..."
-              />
-            </div>
-
-            {/* 6. Sessão (obrigatória) */}
+            {/* 7. Sessão (obrigatória) */}
             <div className="space-y-2">
               <Label>Sessão de envio *</Label>
               <SessionSelect
@@ -553,7 +558,7 @@ export default function ShopeeAutomacoes() {
               />
             </div>
 
-            {/* 7. Grupos destino (filtrados pela sessão) */}
+            {/* 8. Grupos destino (filtrados pela sessão) */}
             {form.sessionId && (
               <>
                 <div className="space-y-2">
@@ -594,7 +599,7 @@ export default function ShopeeAutomacoes() {
               </>
             )}
 
-            {/* 8. Template (obrigatório) */}
+            {/* 9. Template (obrigatório) */}
             <div className="space-y-2">
               <Label>Template *</Label>
               <Select value={form.templateId} onValueChange={(v) => setForm({ ...form, templateId: v })}>
@@ -622,4 +627,3 @@ export default function ShopeeAutomacoes() {
     </div>
   );
 }
-
