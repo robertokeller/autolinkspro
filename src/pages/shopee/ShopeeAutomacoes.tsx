@@ -78,6 +78,12 @@ const EMPTY_FORM: FormState = {
   vitrineTabs: ["sales"],
 };
 
+function maskScheduleTimeInput(rawValue: string): string {
+  const digits = String(rawValue || "").replace(/\D/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 function automationToForm(a: ShopeeAutomationRow): FormState {
   const keywordFilters = readAutomationKeywordFilters(a.config);
   const sourceConfig = readAutomationOfferSourceConfig(a.config);
@@ -461,7 +467,7 @@ export default function ShopeeAutomacoes() {
                       maxLength={5}
                       placeholder="HH:mm"
                       value={form.activeHoursStart}
-                      onChange={(e) => setForm({ ...form, activeHoursStart: e.target.value })}
+                      onChange={(e) => setForm({ ...form, activeHoursStart: maskScheduleTimeInput(e.target.value) })}
                       onBlur={(e) => {
                         const normalized = normalizeScheduleTime(e.target.value);
                         if (normalized) {
@@ -478,7 +484,7 @@ export default function ShopeeAutomacoes() {
                       maxLength={5}
                       placeholder="HH:mm"
                       value={form.activeHoursEnd}
-                      onChange={(e) => setForm({ ...form, activeHoursEnd: e.target.value })}
+                      onChange={(e) => setForm({ ...form, activeHoursEnd: maskScheduleTimeInput(e.target.value) })}
                       onBlur={(e) => {
                         const normalized = normalizeScheduleTime(e.target.value);
                         if (normalized) {

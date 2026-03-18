@@ -4118,15 +4118,20 @@ rpcRouter.post("/rpc", async (req, res) => {
       const upstreamData: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
         ? (upstream.data as Record<string, unknown>)
         : {};
-      const status = String(upstreamData.status || "untested");
+      const rawStatus = String(upstreamData.status || "untested").trim().toLowerCase();
+      const allowedStatuses = new Set(["active", "expired", "error", "untested", "not_found", "no_affiliate"]);
+      const status = allowedStatuses.has(rawStatus) ? rawStatus : "error";
       const accountName = String(upstreamData.accountName || "");
       const mlUserId = String(upstreamData.mlUserId || "");
       const logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
       const inputName = String(params.name ?? "").trim();
       const fallbackName = `Conta ${sessionId.slice(0, 8)}`;
       const finalName = inputName || String(existingSession?.name || "").trim() || fallbackName;
+      const unknownStatusMessage = rawStatus && !allowedStatuses.has(rawStatus)
+        ? `Status invalido retornado pelo servico Mercado Livre (${rawStatus})`
+        : "";
       const errorMessage = status === "error"
-        ? String((upstreamData as { error?: unknown }).error || "Falha ao salvar cookies")
+        ? String((upstreamData as { error?: unknown }).error || unknownStatusMessage || "Falha ao salvar cookies")
         : "";
 
       await execute(

@@ -63,7 +63,7 @@ END $$;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'meli_sessions_status_check') THEN
     ALTER TABLE meli_sessions ADD CONSTRAINT meli_sessions_status_check
-      CHECK (status IN ('active', 'expired', 'error')) NOT VALID;
+      CHECK (status IN ('active', 'expired', 'error', 'untested', 'not_found', 'no_affiliate')) NOT VALID;
   END IF;
 END $$;
 

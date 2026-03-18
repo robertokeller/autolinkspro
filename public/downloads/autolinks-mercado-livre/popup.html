@@ -20,11 +20,7 @@
 
       <div id="stepLogin" class="card">
         <h2>1. Entrar na conta AutoLinks</h2>
-        <p class="copy">Use o mesmo e-mail do painel para liberar a sincronizacao da extensao.</p>
-
-        <label for="apiOrigin">Endpoint da API (opcional)</label>
-        <input id="apiOrigin" type="url" placeholder="https://api.autolinks.pro" autocomplete="url" />
-        <p class="hint">Use este campo apenas se sua API estiver em dominio proprio.</p>
+        <p class="copy">Use o mesmo e-mail do painel para liberar a sincronizacao da extensao. A conexao com a API e feita automaticamente.</p>
 
         <label for="email">E-mail</label>
         <input id="email" type="email" placeholder="seu@email.com" autocomplete="email" />
@@ -39,11 +35,13 @@
         <h2>2. Capturar e enviar cookies</h2>
         <p class="copy">Login validado. Agora vamos sincronizar seus cookies com sua conta.</p>
         <p class="copy"><strong>Dica:</strong> deixe uma aba do Mercado Livre aberta e logada antes de capturar.</p>
-        <button id="captureBtn" type="button" class="primary">Capturar e enviar cookies</button>
-        <button id="logoutBtn" type="button" class="secondary">Sair da conta</button>
+        <div class="actions">
+          <button id="captureBtn" type="button" class="primary">Capturar e enviar cookies</button>
+          <button id="logoutBtn" type="button" class="secondary">Sair da conta</button>
+        </div>
       </div>
 
-      <div id="status" class="status info">Pronto para comecar. Faca login para continuar.</div>
+      <div id="status" class="status info" aria-live="polite">Pronto para comecar. Faca login para continuar.</div>
     </main>
 
     <script src="popup.js"></script>

@@ -17,7 +17,8 @@
 
 body {
   margin: 0;
-  min-width: 418px;
+  min-width: 400px;
+  width: 420px;
   color: var(--text);
   font-family: "Manrope", "Plus Jakarta Sans", "Segoe UI", sans-serif;
   background:
@@ -27,12 +28,13 @@ body {
 }
 
 .app {
-  padding: 16px;
+  padding: 15px;
+  display: grid;
+  gap: 12px;
 }
 
 .brand {
-  margin-bottom: 12px;
-  padding: 14px;
+  padding: 15px 14px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -65,7 +67,7 @@ body {
 
 h1 {
   margin: 0;
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1.16;
   letter-spacing: 0.01em;
 }
@@ -78,8 +80,7 @@ h1 {
 }
 
 .card {
-  margin-bottom: 12px;
-  padding: 13px;
+  padding: 14px;
   border-radius: 14px;
   border: 1px solid var(--border);
   background:
@@ -92,14 +93,14 @@ h1 {
 }
 
 .card h2 {
-  margin: 0 0 5px;
+  margin: 0 0 6px;
   font-size: 14px;
   line-height: 1.25;
   letter-spacing: 0.01em;
 }
 
 .copy {
-  margin: 0 0 11px;
+  margin: 0 0 10px;
   font-size: 12px;
   line-height: 1.42;
   color: var(--muted);
@@ -107,15 +108,15 @@ h1 {
 
 label {
   display: block;
-  margin: 8px 0 5px;
+  margin: 10px 0 6px;
   font-size: 12px;
   font-weight: 700;
 }
 
 input {
   width: 100%;
-  margin-bottom: 4px;
-  padding: 10px 11px;
+  margin-bottom: 7px;
+  padding: 11px;
   border-radius: 9px;
   border: 1px solid #3b424e;
   background: #0f1217;
@@ -137,18 +138,11 @@ input:focus {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.hint {
-  margin: 0 0 11px;
-  font-size: 11px;
-  line-height: 1.36;
-  color: #94a0b5;
-}
-
 button {
   width: 100%;
   border: 0;
   border-radius: 9px;
-  padding: 11px 12px;
+  padding: 12px;
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
@@ -167,10 +161,15 @@ button.primary {
 }
 
 button.secondary {
-  margin-top: 8px;
   color: #f2f4f8;
   background: #202733;
   border: 1px solid #344153;
+}
+
+.actions {
+  margin-top: 2px;
+  display: grid;
+  gap: 8px;
 }
 
 button:disabled {
@@ -179,7 +178,6 @@ button:disabled {
 }
 
 .status {
-  margin-top: 6px;
   padding: 10px 11px;
   border-radius: 10px;
   border: 1px solid transparent;

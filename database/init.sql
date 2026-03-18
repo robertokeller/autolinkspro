@@ -330,7 +330,7 @@ CREATE TABLE IF NOT EXISTS meli_sessions (
   name            TEXT NOT NULL DEFAULT '',
   account_name    TEXT NOT NULL DEFAULT '',
   ml_user_id      TEXT NOT NULL DEFAULT '',
-  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','error')),
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','error','untested','not_found','no_affiliate')),
   last_checked_at TIMESTAMPTZ,
   error_message   TEXT NOT NULL DEFAULT '',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
