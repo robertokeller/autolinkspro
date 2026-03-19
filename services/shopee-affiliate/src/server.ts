@@ -1,4 +1,4 @@
-import "dotenv/config";
+﻿import "dotenv/config";
 import crypto from "node:crypto";
 import process from "node:process";
 import cors from "cors";
@@ -35,7 +35,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "2mb" }));
 
-// â”€â”€â”€ Security headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Security headers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -44,21 +44,34 @@ app.use((_req, res, next) => {
   next();
 });
 
-// â”€â”€â”€ Rate limiting (in-memory, per IP) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Rate limiting (in-memory, per IP) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_REQUESTS = 300;
 const RATE_LIMIT_WINDOW_MS = 60_000;
+const MAX_SHOPEE_BATCH_QUERIES = 20;
+const MAX_URL_LENGTH = 2048;
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function rateLimitScopeKey(req: Request): string {
+  const userId = String(req.header("x-autolinks-user-id") || "").trim().toLowerCase();
+  if (userId && isUuid(userId)) return `user:${userId}`;
+  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  return `ip:${ip}`;
+}
 
 function rateLimit(req: Request, res: Response, next: NextFunction) {
   if (req.path === "/health") {
     next();
     return;
   }
-  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  const key = rateLimitScopeKey(req);
   const now = Date.now();
-  const entry = rateLimitStore.get(ip);
+  const entry = rateLimitStore.get(key);
   if (!entry || now > entry.resetAt) {
-    rateLimitStore.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    rateLimitStore.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     next();
     return;
   }
@@ -75,8 +88,8 @@ app.use(rateLimit);
 // Evict expired entries every 5 minutes to prevent unbounded Map growth.
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, entry] of rateLimitStore) {
-    if (now > entry.resetAt) rateLimitStore.delete(ip);
+  for (const [key, entry] of rateLimitStore) {
+    if (now > entry.resetAt) rateLimitStore.delete(key);
   }
 }, 5 * 60_000).unref();
 
@@ -134,7 +147,7 @@ if (!WEBHOOK_SECRET && !insecureSecretBypass) {
 }
 
 if (insecureSecretBypass) {
-  console.warn("[shopee] WEBHOOK_SECRET not set â€” insecure development bypass is enabled via ALLOW_INSECURE_NO_SECRET=true.");
+  console.warn("[shopee] WEBHOOK_SECRET not set Ã¢â‚¬â€ insecure development bypass is enabled via ALLOW_INSECURE_NO_SECRET=true.");
 }
 if (WEBHOOK_SECRET && WEBHOOK_SECRET.toLowerCase() === "change-me" && NODE_ENV === "production") {
   throw new Error("WEBHOOK_SECRET is set to the default placeholder 'change-me'. Set a strong secret before running in production.");
@@ -425,32 +438,18 @@ function extractProductIdentifiers(url: string): { shopId: string; itemId: strin
 }
 
 function looksLikeShopeeUrl(url: string): boolean {
-  const input = String(url || "").trim().toLowerCase();
-  if (!input) return false;
-  return (
-    input.includes("shopee.") ||
-    input.includes("shope.ee") ||
-    input.includes("s.shopee.")
-  );
-}
-
-async function resolveRedirectUrl(url: string): Promise<string> {
   const input = String(url || "").trim();
-  if (!/^https?:\/\//i.test(input)) return input;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
+  if (!input) return false;
   try {
-    const response = await fetch(input, {
-      method: "GET",
-      redirect: "follow",
-      signal: controller.signal,
-    });
-    return response.url || input;
+    const parsed = new URL(input);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    return (
+      host.includes("shopee.")
+      || host.endsWith("shope.ee")
+    );
   } catch {
-    return input;
-  } finally {
-    clearTimeout(timeout);
+    return false;
   }
 }
 
@@ -606,16 +605,19 @@ app.post("/api/shopee/convert-link", async (req, res) => {
     res.status(400).json({ error: "URL do produto e obrigatoria" });
     return;
   }
+  if (sourceUrl.length > MAX_URL_LENGTH) {
+    res.status(400).json({ error: "URL do produto excede o tamanho maximo permitido" });
+    return;
+  }
+  if (!looksLikeShopeeUrl(sourceUrl)) {
+    res.status(400).json({ error: "URL informada nao parece ser da Shopee" });
+    return;
+  }
 
   const { credentials } = parsed;
 
   try {
-    const resolvedUrl = await resolveRedirectUrl(sourceUrl);
-    const targetUrl = looksLikeShopeeUrl(resolvedUrl) ? resolvedUrl : sourceUrl;
-    if (!looksLikeShopeeUrl(targetUrl)) {
-      res.status(400).json({ error: "URL informada nÃ£o parece ser da Shopee" });
-      return;
-    }
+    const targetUrl = sourceUrl;
 
     const mutation = `
       mutation GenerateShortLink($input: ShortLinkInput!) {
@@ -632,11 +634,11 @@ app.post("/api/shopee/convert-link", async (req, res) => {
     const linkNode = converted.generateShortLink as Record<string, unknown> | undefined;
     const rawAffiliateLink = String(linkNode?.shortLink || "").trim();
     if (!rawAffiliateLink) {
-      throw new Error("Shopee nÃ£o retornou link de afiliado");
+      throw new Error("Shopee nÃƒÂ£o retornou link de afiliado");
     }
 
     const affiliateLink = stripLpAff(rawAffiliateLink);
-    const ids = extractProductIdentifiers(resolvedUrl) || extractProductIdentifiers(targetUrl);
+    const ids = extractProductIdentifiers(targetUrl);
 
     let product: Record<string, unknown> | null = null;
 
@@ -691,7 +693,7 @@ app.post("/api/shopee/convert-link", async (req, res) => {
     res.json({
       affiliateLink,
       product,
-      resolvedUrl,
+      resolvedUrl: targetUrl,
     });
   } catch (error) {
     res.status(400).json({ error: sanitizeError(error) });
@@ -706,6 +708,10 @@ app.post("/api/shopee/batch", async (req, res) => {
   }
 
   const queries = Array.isArray(req.body?.queries) ? (req.body.queries as BatchQuery[]) : [];
+  if (queries.length > MAX_SHOPEE_BATCH_QUERIES) {
+    res.status(400).json({ error: `Maximo de ${MAX_SHOPEE_BATCH_QUERIES} consultas por lote` });
+    return;
+  }
   const { credentials } = parsed;
   const results: Record<string, unknown> = {};
 
@@ -735,3 +741,4 @@ httpServer.on("error", (error) => {
   logger.error({ error: sanitizeError(error), host: HOST, port: PORT }, "failed to bind shopee service");
   process.exit(1);
 });
+

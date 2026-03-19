@@ -1,4 +1,4 @@
-import { loadRuntimeControl, saveRuntimeControl, subscribeLocalDbChanges } from "@/integrations/backend/local-core";
+import { loadRuntimeControl, subscribeLocalDbChanges } from "@/integrations/backend/local-core";
 
 export interface SystemRuntimeControlState {
   enabled: boolean;
@@ -11,13 +11,6 @@ function nowIso() {
 
 export function loadSystemRuntimeControlState(): SystemRuntimeControlState {
   const { enabled } = loadRuntimeControl();
-  return { enabled, updatedAt: nowIso() };
-}
-
-export async function saveSystemRuntimeControlState(next: Partial<SystemRuntimeControlState>): Promise<SystemRuntimeControlState> {
-  const current = loadRuntimeControl();
-  const enabled = next.enabled !== undefined ? next.enabled : current.enabled;
-  await saveRuntimeControl({ enabled });
   return { enabled, updatedAt: nowIso() };
 }
 

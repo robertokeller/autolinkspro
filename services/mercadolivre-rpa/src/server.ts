@@ -67,12 +67,19 @@ const RATE_LIMIT_REQUESTS = 60;
 const USER_RATE_LIMIT_REQUESTS = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
-function rateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+function rateLimitScopeKey(req: express.Request): string {
+  const userId = String(req.header("x-autolinks-user-id") || "").trim().toLowerCase();
+  if (userId && isUuid(userId)) return `user:${userId}`;
   const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  return `ip:${ip}`;
+}
+
+function rateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const key = rateLimitScopeKey(req);
   const now = Date.now();
-  const entry = rateLimitStore.get(ip);
+  const entry = rateLimitStore.get(key);
   if (!entry || now > entry.resetAt) {
-    rateLimitStore.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    rateLimitStore.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     next();
     return;
   }
@@ -89,8 +96,8 @@ app.use(rateLimit);
 // Evict expired entries every 5 minutes to prevent unbounded Map growth.
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, entry] of rateLimitStore) {
-    if (now > entry.resetAt) rateLimitStore.delete(ip);
+  for (const [key, entry] of rateLimitStore) {
+    if (now > entry.resetAt) rateLimitStore.delete(key);
   }
   for (const [userId, entry] of rateLimitByUser) {
     if (now > entry.resetAt) rateLimitByUser.delete(userId);

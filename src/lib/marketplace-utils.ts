@@ -1,4 +1,4 @@
-type MarketplaceName = "shopee" | "unknown";
+﻿type MarketplaceName = "shopee" | "unknown";
 
 interface MarketplacePattern {
   name: MarketplaceName;
@@ -68,19 +68,6 @@ export function extractMarketplaceLinks(content: string): { url: string; marketp
     .filter((l) => l.marketplace !== "unknown");
 }
 
-
-/** All supported placeholder keys with descriptions.
- * Includes Shopee API fields and derived values used by templates. */
-export const availablePlaceholders: { key: string; description: string }[] = [
-  { key: "{titulo}", description: "Nome do produto" },
-  { key: "{preco}", description: "Preço atual" },
-  { key: "{preco_original}", description: "Preço original (sem desconto)" },
-  { key: "{desconto}", description: "% de desconto" },
-  { key: "{link}", description: "Link de afiliado" },
-  { key: "{imagem}", description: "Imagem em anexo (não vira URL no texto)" },
-  { key: "{avaliacao}", description: "Nota de avaliação" },
-];
-
 /** Apply all placeholders to a template content string */
 export function applyPlaceholders(content: string, data: Record<string, string>): string {
   let result = content;
@@ -92,3 +79,4 @@ export function applyPlaceholders(content: string, data: Record<string, string>)
   }
   return result;
 }
+

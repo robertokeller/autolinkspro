@@ -49,6 +49,8 @@ const shopeeSubNav = [
 
 const meliSubNav = [
   { title: "Vitrine ML", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
+  { title: "Piloto automático", icon: Bot, href: ROUTES.app.automacoesMeli },
+  { title: "Templates Meli", icon: FileText, href: ROUTES.app.templatesMeli },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.mercadolivreConfiguracoes },
 ];
 
@@ -71,7 +73,9 @@ export function AppSidebar() {
   const isActive = (href: string) => location.pathname.startsWith(href);
   const isShopeeActive = location.pathname.startsWith(ROUTES.app.shopeeRoot);
   const isMeliActive = location.pathname.startsWith(ROUTES.app.mercadolivreRoot)
-    || location.pathname === ROUTES.app.vitrineMl;
+    || location.pathname === ROUTES.app.vitrineMl
+    || location.pathname === ROUTES.app.automacoesMeli
+    || location.pathname === ROUTES.app.templatesMeli;
 
   const visibleShopeeSubNav = shopeeSubNav.filter((item) => {
     if (item.href === ROUTES.app.shopeeAutomacoes) return featureVisibility.shopeeAutomations;
@@ -79,7 +83,13 @@ export function AppSidebar() {
     return true;
   });
 
-  const visibleMeliSubNav = featureVisibility.mercadoLivre ? meliSubNav : [];
+  const visibleMeliSubNav = featureVisibility.mercadoLivre
+    ? meliSubNav.filter((item) => {
+      if (item.href === ROUTES.app.automacoesMeli) return featureVisibility.shopeeAutomations;
+      if (item.href === ROUTES.app.templatesMeli) return featureVisibility.templates;
+      return true;
+    })
+    : [];
 
   return (
     <Sidebar collapsible="icon" className="border-r-0">
@@ -204,10 +214,10 @@ export function AppSidebar() {
               )}
 
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.shopeeConversor)} tooltip="Conversor">
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.shopeeConversor)} tooltip="Conversor de links">
                   <Link to={ROUTES.app.shopeeConversor}>
                     <ArrowLeftRight className="h-4 w-4" />
-                    <span>Conversor</span>
+                    <span>Conversor de links</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -293,3 +303,5 @@ export function AppSidebar() {
     </Sidebar>
   );
 }
+
+

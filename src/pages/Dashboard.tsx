@@ -567,10 +567,10 @@ export default function Dashboard() {
                         fontSize: "11px",
                       }}
                     />
-                    <Line type="monotone" dataKey="totalEnvios" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
-                    <Line type="monotone" dataKey="automacoes" stroke="hsl(var(--success))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
-                    <Line type="monotone" dataKey="rotas" stroke="hsl(var(--info))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
-                    <Line type="monotone" dataKey="agendamentos" stroke="hsl(var(--warning))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                    <Line type="linear" dataKey="totalEnvios" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
+                    <Line type="linear" dataKey="automacoes" stroke="hsl(var(--success))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                    <Line type="linear" dataKey="rotas" stroke="hsl(var(--info))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                    <Line type="linear" dataKey="agendamentos" stroke="hsl(var(--warning))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs">
@@ -584,7 +584,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card className="glass lg:col-span-2">
+        <Card className="glass lg:col-span-2 lg:self-start">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -617,26 +617,29 @@ export default function Dashboard() {
       </div>
 
       <div className="ds-card-grid lg:grid-cols-5">
-        <Card className="glass lg:col-span-2">
+        <Card className="glass lg:col-span-2 lg:self-start">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <LinkIcon className="h-4 w-4 text-muted-foreground" />
               Ações rápidas
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="pt-2">
             {isLoading ? (
-              <Skeleton className="h-36 w-full" />
+              <Skeleton className="h-28 w-full" />
             ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 {quickActions.map((action) => (
-                  <Link key={action.label} to={action.href} className="group">
-                    <div className="h-full rounded-xl bg-secondary/50 p-3.5 text-center transition-all hover:bg-secondary hover:ring-1 hover:ring-border">
-                      <div className={cn("mx-auto mb-2.5 flex h-8 w-8 items-center justify-center rounded-lg", accentBg[action.accent])}>
-                        <action.icon className="h-4 w-4" />
+                  <Link key={action.label} to={action.href} className="group h-full">
+                    <div className="flex h-full min-h-[86px] items-center gap-3 rounded-xl bg-secondary/50 p-3 transition-all hover:bg-secondary hover:ring-1 hover:ring-border">
+                      <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg", accentBg[action.accent])}>
+                        <action.icon className="h-3.5 w-3.5" />
                       </div>
-                      <p className="text-xs font-semibold leading-tight">{action.label}</p>
-                      <p className="mt-1 text-xs leading-snug text-muted-foreground">{action.desc}</p>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold leading-tight">{action.label}</p>
+                        <p className="mt-0.5 line-clamp-2 text-xs leading-snug text-muted-foreground">{action.desc}</p>
+                      </div>
+                      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" />
                     </div>
                   </Link>
                 ))}

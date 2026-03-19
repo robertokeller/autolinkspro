@@ -4,43 +4,75 @@ import { load } from "cheerio";
 import { execute, query, queryOne, transaction } from "./db.js";
 
 export type MeliVitrineTabKey =
-  | "all"
-  | "lightning"
-  | "celulares"
-  | "notebooks"
-  | "tenis"
-  | "fones"
-  | "tvs"
-  | "ferramentas"
-  | "smartwatches"
-  | "caixas"
-  | "perfumes"
-  | "moda";
+  | "top_performance"
+  | "mais_vendidos"
+  | "ofertas_quentes"
+  | "melhor_avaliados";
 
 export type MeliVitrineTabConfig = {
   key: MeliVitrineTabKey;
   label: string;
-  sourceUrl: string;
+  sourceUrls: string[];
 };
 
 const MELI_VITRINE_SYNC_INTERVAL_MS = Number.parseInt(process.env.MELI_VITRINE_SYNC_INTERVAL_MS || "7200000", 10);
 const MELI_VITRINE_FETCH_TIMEOUT_MS = Number.parseInt(process.env.MELI_VITRINE_FETCH_TIMEOUT_MS || "20000", 10);
 const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 const MELI_BASE_URL = "https://www.mercadolivre.com.br";
+const DEFAULT_TAB_KEY: MeliVitrineTabKey = "top_performance";
+const PAUSED_AD_MARKERS = ["anuncio pausado", "publicacao pausada"];
+
+const MELI_VITRINE_TAB_ALIAS_MAP: Record<string, MeliVitrineTabKey> = {
+  all: "top_performance",
+  top_performance: "top_performance",
+  mais_vendidos: "mais_vendidos",
+  ofertas_quentes: "ofertas_quentes",
+  melhor_avaliados: "melhor_avaliados",
+  beleza_cuidados: "top_performance",
+  calcados_roupas_bolsas: "top_performance",
+  casa_moveis_decoracao: "top_performance",
+  celulares_telefones: "top_performance",
+  construcao: "top_performance",
+  eletrodomesticos: "top_performance",
+  esportes_fitness: "top_performance",
+  ferramentas: "top_performance",
+  informatica: "top_performance",
+  saude: "top_performance",
+};
 
 export const MELI_VITRINE_TABS: MeliVitrineTabConfig[] = [
-  { key: "all", label: "Todas as ofertas", sourceUrl: "https://www.mercadolivre.com.br/ofertas?container_id=MLB779362-1" },
-  { key: "lightning", label: "Ofertas relâmpago", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?container_id=MLB779362-1&page=1&promotion_type=lightning" },
-  { key: "celulares", label: "Celulares", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB1055&container_id=MLB779362-1" },
-  { key: "notebooks", label: "Notebooks", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB430687&container_id=MLB779362-1" },
-  { key: "tenis", label: "Tênis", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB1276&container_id=MLB779362-1" },
-  { key: "fones", label: "Fones", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB3835&container_id=MLB779362-1" },
-  { key: "tvs", label: "TVs", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB1000&container_id=MLB779362-1" },
-  { key: "ferramentas", label: "Ferramentas", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB263532&container_id=MLB779362-1" },
-  { key: "smartwatches", label: "Smartwatches", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB3937&container_id=MLB779362-1" },
-  { key: "caixas", label: "Caixas de som", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB1182&container_id=MLB779362-1" },
-  { key: "perfumes", label: "Perfumes", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB6284&container_id=MLB779362-1" },
-  { key: "moda", label: "Moda", sourceUrl: "https://www.mercadolivre.com.br/ofertas/?category=MLB1430&container_id=MLB779362-1" },
+  {
+    key: "top_performance",
+    label: "Top Performance",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/promozonevip/lists/bf623a1c-2a1f-43af-ab51-b5155a677a9e",
+      "https://www.mercadolivre.com.br/social/tudonapromo/lists/b07d147c-7750-43cd-bb5a-852967804a73",
+    ],
+  },
+  {
+    key: "mais_vendidos",
+    label: "Mais vendidos",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/ofertasgamer/lists/ffc82d3a-cf5e-436e-a2a8-f92f5ba79379?page=1",
+      "https://www.mercadolivre.com.br/social/ta20250821221208/lists/cf0accd5-df65-4ad9-99be-ddd038ffad54",
+    ],
+  },
+  {
+    key: "ofertas_quentes",
+    label: "Ofertas quentes",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/nn20251114221751/lists/b07d72f6-57d9-4170-9443-f6b07f340e82",
+      "https://www.mercadolivre.com.br/social/fadadoscupons/lists/32815423-27cb-4651-8bb6-985183a5e0d8?page=3",
+    ],
+  },
+  {
+    key: "melhor_avaliados",
+    label: "Melhor Avaliados",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/nn20251114221751/lists/b07d72f6-57d9-4170-9443-f6b07f340e82",
+      "https://www.mercadolivre.com.br/social/rogenevinicius/lists/d62a0a62-343e-4c4a-994e-b92693de660f",
+    ],
+  },
 ];
 
 type ExtractedProduct = {
@@ -120,6 +152,19 @@ function normalizeText(value: string): string {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function normalizeSearchableText(value: string): string {
+  return normalizeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isPausedAdText(value: string): boolean {
+  const normalized = normalizeSearchableText(value);
+  if (!normalized) return false;
+  return PAUSED_AD_MARKERS.some((marker) => normalized.includes(marker));
+}
+
 function parseIntegerDigits(value: string): number {
   const digits = String(value || "").replace(/\D/g, "");
   if (!digits) return 0;
@@ -146,6 +191,53 @@ function parseReviewsCount(value: string): number | null {
   return parsed > 0 ? parsed : null;
 }
 
+function normalizeSeller(value: string): string {
+  const normalized = normalizeText(value);
+  return normalized.replace(/^por\s+/i, "").trim();
+}
+
+function sanitizeDiscountText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  if (/pix/i.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeInstallmentsText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+
+  const match = normalized.match(/(\d{1,2})x\s*R\$\s*([\d.]+(?:,\d{1,2})?)/i);
+  if (!match) {
+    return normalized.replace(/^ou\s+/i, "").trim();
+  }
+
+  const times = Number.parseInt(match[1], 10);
+  const amount = String(match[2] || "").trim();
+  if (!Number.isFinite(times) || times <= 0 || !amount) {
+    return normalized.replace(/^ou\s+/i, "").trim();
+  }
+
+  const suffix = /sem juros/i.test(normalized) ? " sem juros" : "";
+  return `${times}x de R$${amount}${suffix}`.trim();
+}
+
+function sanitizeShippingText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  return normalized
+    .replace(/por\s*ser\s*sua\s*primeira\s*compra/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sanitizeBadgeText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  if (/mais\s*vendid/i.test(normalized)) return "";
+  return normalized;
+}
+
 function toAbsoluteUrl(raw: string): string {
   const value = String(raw || "").trim();
   if (!value) return "";
@@ -169,6 +261,15 @@ function canonicalizeProductUrl(raw: string): string {
   } catch {
     return absolute;
   }
+}
+
+function shuffleArray<T>(input: T[]): T[] {
+  const out = [...input];
+  for (let index = out.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [out[index], out[randomIndex]] = [out[randomIndex], out[index]];
+  }
+  return out;
 }
 
 function buildProductId(tab: MeliVitrineTabKey, productUrl: string): string {
@@ -209,12 +310,20 @@ async function fetchHtml(url: string): Promise<string> {
   return await response.text();
 }
 
-function extractTabProducts(tab: MeliVitrineTabConfig, html: string): ExtractedProduct[] {
+function extractTabProducts(input: {
+  tabKey: MeliVitrineTabKey;
+  sourceUrl: string;
+  html: string;
+}): ExtractedProduct[] {
+  const { tabKey, sourceUrl, html } = input;
   const $ = load(html);
   const cards = $(".poly-card").toArray();
   const dedupe = new Map<string, ExtractedProduct>();
 
   for (const card of cards) {
+    const cardText = normalizeText($(card).text());
+    if (isPausedAdText(cardText)) continue;
+
     const title = normalizeText($(card).find(".poly-component__title").first().text());
     const rawLink = String($(card).find("a.poly-component__title").first().attr("href") || $(card).find("a[href*='/p/']").first().attr("href") || "");
     const productUrl = canonicalizeProductUrl(rawLink);
@@ -233,21 +342,21 @@ function extractTabProducts(tab: MeliVitrineTabConfig, html: string): ExtractedP
     const oldPriceCents = previousFraction ? parseAmountCentsFromNode(previousFraction, previousCents) : 0;
 
     const base: Omit<ExtractedProduct, "payloadHash"> = {
-      id: buildProductId(tab.key, productUrl),
-      tab: tab.key,
-      sourceUrl: tab.sourceUrl,
+      id: buildProductId(tabKey, productUrl),
+      tab: tabKey,
+      sourceUrl,
       productUrl,
       title,
       imageUrl,
       priceCents,
       oldPriceCents: oldPriceCents > 0 ? oldPriceCents : null,
-      discountText: normalizeText($(card).find(".andes-money-amount__discount, .poly-price__disc_label").first().text()),
-      seller: normalizeText($(card).find(".poly-component__seller").first().text()),
+      discountText: sanitizeDiscountText($(card).find(".andes-money-amount__discount, .poly-price__disc_label").first().text()),
+      seller: normalizeSeller($(card).find(".poly-component__seller").first().text()),
       rating: parseRating($(card).find(".poly-reviews__rating").first().text()),
       reviewsCount: parseReviewsCount($(card).find(".poly-reviews__total").first().text()),
-      shippingText: normalizeText($(card).find(".poly-component__shipping").first().text()),
-      installmentsText: normalizeText($(card).find(".poly-price__installments").first().text()),
-      badgeText: normalizeText($(card).find(".poly-component__highlight").first().text()),
+      shippingText: sanitizeShippingText($(card).find(".poly-component__shipping").first().text()),
+      installmentsText: normalizeInstallmentsText($(card).find(".poly-price__installments").first().text()),
+      badgeText: sanitizeBadgeText($(card).find(".poly-component__highlight").first().text()),
     };
 
     const payloadHash = buildPayloadHash(base);
@@ -258,9 +367,11 @@ function extractTabProducts(tab: MeliVitrineTabConfig, html: string): ExtractedP
 }
 
 function normalizeTabKey(value: unknown): MeliVitrineTabKey {
-  const raw = String(value || "").trim().toLowerCase() as MeliVitrineTabKey;
+  const raw = String(value || "").trim().toLowerCase();
+  const mapped = MELI_VITRINE_TAB_ALIAS_MAP[raw];
+  if (mapped) return mapped;
   const found = MELI_VITRINE_TABS.find((tab) => tab.key === raw);
-  return found ? found.key : "all";
+  return found ? found.key : DEFAULT_TAB_KEY;
 }
 
 function getSafePage(value: unknown): number {
@@ -435,13 +546,26 @@ export async function syncMeliVitrine(input: {
     let fetchedCards = 0;
 
     for (const tab of MELI_VITRINE_TABS) {
-      const html = await fetchHtml(tab.sourceUrl);
-      const products = extractTabProducts(tab, html);
+      const mergedByUrl = new Map<string, ExtractedProduct>();
+      for (const sourceUrl of tab.sourceUrls) {
+        const html = await fetchHtml(sourceUrl);
+        const extracted = extractTabProducts({
+          tabKey: tab.key,
+          sourceUrl,
+          html,
+        });
+        fetchedCards += extracted.length;
+        for (const product of extracted) {
+          if (mergedByUrl.has(product.productUrl)) continue;
+          mergedByUrl.set(product.productUrl, product);
+        }
+      }
+
+      const products = shuffleArray([...mergedByUrl.values()]);
       if (products.length === 0) {
-        throw new Error(`Nenhum produto válido encontrado para a aba ${tab.key}.`);
+        throw new Error(`Nenhum produto valido encontrado para a aba ${tab.key}.`);
       }
       extractedByTab.set(tab, products);
-      fetchedCards += products.length;
     }
 
     const counters = await transaction(async (client) => {
@@ -610,3 +734,4 @@ export async function listMeliVitrine(input: {
     stale,
   };
 }
+

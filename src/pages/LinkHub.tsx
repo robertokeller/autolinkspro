@@ -141,44 +141,69 @@ export default function LinkHub() {
       </PageHeader>
 
       {pages.length > 0 ? (
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {pages.map((page) => (
-            <Card key={page.id} className="glass">
-              <CardContent className="flex items-center justify-between py-4">
-                <div className="flex items-center gap-3 min-w-0">
+            <Card key={page.id} className="glass group/card relative overflow-hidden transition-all hover:shadow-lg hover:shadow-primary/5">
+              <div className="absolute top-0 left-0 right-0 h-1 rounded-t-lg" style={{ background: `linear-gradient(90deg, ${page.themeColor}, ${page.themeColor}88)` }} />
+              <CardContent className="p-4 pt-5 flex flex-col gap-3">
+                <div className="flex items-start gap-3">
                   {page.logoUrl ? (
-                    <img src={page.logoUrl} alt="" className="h-11 w-11 rounded-xl object-cover shrink-0" />
+                    <img src={page.logoUrl} alt="" className="h-11 w-11 rounded-xl object-cover shrink-0 ring-1 ring-border/40" />
                   ) : (
-                    <div className="h-11 w-11 rounded-xl flex items-center justify-center text-white font-bold shrink-0" style={{ backgroundColor: page.themeColor }}>
+                    <div
+                      className="h-11 w-11 rounded-xl flex items-center justify-center text-base font-bold text-white shrink-0"
+                      style={{ background: `linear-gradient(135deg, ${page.themeColor}, ${page.themeColor}bb)` }}
+                    >
                       {page.title.charAt(0).toUpperCase()}
                     </div>
                   )}
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold">{page.title}</p>
-                    <p className="text-xs text-muted-foreground truncate">/hub/{page.slug} - {resolveGroupCount(page)} grupo{resolveGroupCount(page) !== 1 ? "s" : ""}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold truncate">{page.title}</p>
+                    <p className="text-xs text-muted-foreground truncate mt-0.5">/hub/{page.slug}</p>
                   </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Switch checked={page.isActive} onCheckedChange={() => toggleActive(page.id, page.isActive)} aria-label="Ativar/desativar" />
-                  <Badge variant={page.isActive ? "secondary" : "outline"} className={cn("text-xs", page.isActive ? "bg-success/10 text-success" : "")}>
+                  <Badge variant={page.isActive ? "secondary" : "outline"} className={cn("text-2xs shrink-0", page.isActive ? "bg-success/10 text-success" : "")}>
                     {page.isActive ? "Ativa" : "Inativa"}
                   </Badge>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => copyLink(page.slug)} title="Copiar link">
-                    {copiedSlug === page.slug ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
-                  </Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" asChild title="Abrir">
-                    <a href={`${PREVIEW_BASE}/hub/${page.slug}`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-3.5 w-3.5" /></a>
-                  </Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(page)} title="Editar">
-                    <Edit className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deletePage(page.id)} title="Remover">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                </div>
+
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Users className="h-3 w-3" />
+                  <span>{resolveGroupCount(page)} grupo{resolveGroupCount(page) !== 1 ? "s" : ""}</span>
+                </div>
+
+                <Separator className="opacity-50" />
+
+                <div className="flex items-center justify-between">
+                  <Switch checked={page.isActive} onCheckedChange={() => toggleActive(page.id, page.isActive)} aria-label="Ativar/desativar" />
+                  <div className="flex items-center gap-0.5">
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => copyLink(page.slug)} title="Copiar link">
+                      {copiedSlug === page.slug ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" asChild title="Abrir">
+                      <a href={`${PREVIEW_BASE}/hub/${page.slug}`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-3.5 w-3.5" /></a>
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(page)} title="Editar">
+                      <Edit className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => deletePage(page.id)} title="Remover">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
           ))}
+
+          {/* Add new page card */}
+          <button
+            onClick={openNew}
+            className="flex flex-col items-center justify-center gap-2.5 min-h-[180px] rounded-xl border-2 border-dashed border-border/50 text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 transition-all duration-200 cursor-pointer"
+          >
+            <div className="h-10 w-10 rounded-xl bg-muted/50 flex items-center justify-center">
+              <Plus className="h-5 w-5" />
+            </div>
+            <span className="text-sm font-medium">Nova página</span>
+          </button>
         </div>
       ) : (
         <EmptyState icon={LinkIcon} title="Nenhuma página ainda" description="Crie uma página com links dos seus grupos pra compartilhar com todo mundo." actionLabel="Criar página" onAction={openNew} />
@@ -187,71 +212,68 @@ export default function LinkHub() {
       {/* Dialog Editor */}
       <Dialog open={dialogOpen} onOpenChange={(o) => { if (!o) resetAndClose(); }}>
         <DialogContent className="max-w-lg max-h-[92dvh] flex flex-col p-0 gap-0">
-          <DialogHeader className="p-5 pb-3">
+          <DialogHeader className="px-5 pt-5 pb-3">
             <DialogTitle>{editingId ? "Editar página" : "Nova página"}</DialogTitle>
             <DialogDescription>Monte sua página com os grupos que você quer mostrar.</DialogDescription>
           </DialogHeader>
 
           <ScrollArea className="flex-1 px-5 overflow-y-auto">
-            <div className="space-y-4 pb-4">
+            <div className="space-y-5 pb-4">
 
-              {/* Slug + Title */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Endereço da página</Label>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-muted-foreground">/hub/</span>
-                    <Input className="h-9 text-xs" placeholder="ofertas" value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} />
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Título da página</Label>
-                  <Input className="h-9 text-xs" placeholder="! Ofertas Tech" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              {/* Title */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium">Título da página</Label>
+                <Input className="h-9 text-sm" placeholder="Ofertas Tech" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              </div>
+
+              {/* Slug */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium">Endereço da página</Label>
+                <div className="flex items-center rounded-md border border-input overflow-hidden bg-background">
+                  <span className="px-3 py-2 text-xs text-muted-foreground bg-muted/50 border-r border-input shrink-0 select-none">/hub/</span>
+                  <Input className="h-9 text-sm border-0 shadow-none focus-visible:ring-0 rounded-none" placeholder="ofertas" value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} />
                 </div>
               </div>
 
               {/* Description */}
               <div className="space-y-1.5">
-                <Label className="text-xs">Descrição curta</Label>
+                <Label className="text-xs font-medium">Descrição curta</Label>
                 <Textarea
                   placeholder="Descontos e cupons em tempo real."
                   value={form.description}
                   onChange={(e) => setForm({ ...form, description: e.target.value })}
                   rows={2}
-                  className="resize-none text-xs"
+                  className="resize-none text-sm"
                 />
               </div>
 
-              {/* Logo + Color row */}
-              <div className="flex items-start gap-4">
-                {/* Logo */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs flex items-center gap-1"><ImageIcon className="h-3 w-3" />Logo</Label>
-                  <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleLogoUpload(f); e.target.value = ""; }} />
-                  {form.logoUrl ? (
-                    <div className="flex items-center gap-2">
-                      <img src={form.logoUrl} alt="" className="h-10 w-10 rounded-lg object-cover border" />
-                      <Button variant="ghost" size="sm" className="h-8 text-xs px-2" onClick={() => setForm(prev => ({ ...prev, logoUrl: null }))}>
-                        <X className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button variant="outline" size="sm" className="h-9 text-xs" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-                      <Upload className="h-3 w-3 mr-1" />{uploading ? "..." : "Upload"}
+              {/* Logo */}
+              <div className="space-y-2">
+                <Label className="text-xs font-medium flex items-center gap-1.5"><ImageIcon className="h-3.5 w-3.5" />Logo</Label>
+                <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleLogoUpload(f); e.target.value = ""; }} />
+                {form.logoUrl ? (
+                  <div className="flex items-center gap-3">
+                    <img src={form.logoUrl} alt="" className="h-12 w-12 rounded-xl object-cover ring-1 ring-border/50" />
+                    <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={() => setForm(prev => ({ ...prev, logoUrl: null }))}>
+                      <X className="h-3 w-3" />Remover
                     </Button>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <Button variant="outline" size="sm" className="h-9 text-xs gap-1.5" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                    <Upload className="h-3.5 w-3.5" />{uploading ? "Enviando..." : "Escolher imagem"}
+                  </Button>
+                )}
+              </div>
 
-                {/* Color */}
-                <div className="space-y-1.5 flex-1">
-                  <Label className="text-xs">Cor da página</Label>
-                  <div className="flex items-center gap-2">
-                    <input type="color" value={form.themeColor} onChange={(e) => setForm({ ...form, themeColor: e.target.value })} className="h-8 w-8 rounded-lg cursor-pointer border-0 p-0" />
-                    <div className="flex gap-1 flex-wrap">
-                      {LINK_HUB_PRESET_COLORS.map((color) => (
-                        <button key={color} className={cn("h-6 w-6 rounded-full border-2 transition-all hover:scale-110", form.themeColor === color ? "border-foreground scale-110" : "border-transparent")} style={{ backgroundColor: color }} onClick={() => setForm({ ...form, themeColor: color })} />
-                      ))}
-                    </div>
+              {/* Color */}
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Cor da página</Label>
+                <div className="flex items-center gap-3">
+                  <input type="color" value={form.themeColor} onChange={(e) => setForm({ ...form, themeColor: e.target.value })} className="h-9 w-9 rounded-lg cursor-pointer border border-input p-0.5" />
+                  <div className="flex gap-1.5 flex-wrap">
+                    {LINK_HUB_PRESET_COLORS.map((color) => (
+                      <button key={color} className={cn("h-7 w-7 rounded-full border-2 transition-all hover:scale-110", form.themeColor === color ? "border-foreground scale-110 ring-2 ring-primary/20" : "border-transparent")} style={{ backgroundColor: color }} onClick={() => setForm({ ...form, themeColor: color })} />
+                    ))}
                   </div>
                 </div>
               </div>
@@ -260,8 +282,8 @@ export default function LinkHub() {
 
               {/* Master Groups */}
               {masterGroups.length > 0 && (
-                <div className="space-y-1.5">
-                  <Label className="text-xs flex items-center gap-1"><Layers className="h-3 w-3" />Grupos Mestres</Label>
+                <div className="space-y-2">
+                  <Label className="text-xs font-medium flex items-center gap-1.5"><Layers className="h-3.5 w-3.5" />Grupos Mestres</Label>
                   <MultiOptionDropdown
                     value={form.masterGroupIds}
                     onChange={(ids) => setForm((prev) => ({ ...prev, masterGroupIds: ids }))}
@@ -280,8 +302,8 @@ export default function LinkHub() {
               )}
 
               {/* Individual Groups */}
-              <div className="space-y-1.5">
-                <Label className="text-xs flex items-center gap-1"><Users className="h-3 w-3" />Grupos ({previewGroupCount} escolhidos)</Label>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Grupos ({previewGroupCount} escolhidos)</Label>
                 <MultiOptionDropdown
                   value={form.groupIds}
                   onChange={(ids) => setForm((prev) => ({ ...prev, groupIds: ids }))}
@@ -340,7 +362,7 @@ export default function LinkHub() {
             </div>
           </ScrollArea>
 
-          <DialogFooter className="p-4 pt-3 border-t gap-2">
+          <DialogFooter className="px-5 py-4 border-t gap-2">
             <Button variant="ghost" size="sm" onClick={resetAndClose}>Cancelar</Button>
             <Button size="sm" onClick={handleSave}>{editingId ? "Salvar" : "Criar página"}</Button>
           </DialogFooter>

@@ -80,6 +80,12 @@ export function SystemRuntime() {
       }).catch(() => undefined);
     };
 
+    const runMeliAutomations = () => {
+      void invokeBackendRpc("meli-automation-run", {
+        body: { source: "global-runtime" },
+      }).catch(() => undefined);
+    };
+
     // Web Locks API-based leader election: only one tab per user runs automations at a time.
     // The lock is released automatically when the tab closes or when this component unmounts,
     // at which point the next queued tab seamlessly becomes the leader — no storage required.
@@ -88,16 +94,19 @@ export function SystemRuntime() {
         if (!cancelled) {
           runDispatch();
           runShopeeAutomations();
+          runMeliAutomations();
         }
       }, 2000);
 
       const dispatchInterval = window.setInterval(() => { if (!cancelled) runDispatch(); }, 45_000);
       const shopeeInterval = window.setInterval(() => { if (!cancelled) runShopeeAutomations(); }, 60_000);
+      const meliInterval = window.setInterval(() => { if (!cancelled) runMeliAutomations(); }, 60_000);
 
       return () => {
         window.clearTimeout(startTimeout);
         window.clearInterval(dispatchInterval);
         window.clearInterval(shopeeInterval);
+        window.clearInterval(meliInterval);
       };
     };
 

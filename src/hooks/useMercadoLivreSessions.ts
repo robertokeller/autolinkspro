@@ -39,6 +39,7 @@ interface TestSessionResult {
 
 interface TestSessionOptions {
   silent?: boolean;
+  skipInvalidate?: boolean;
 }
 
 interface UseMercadoLivreSessionsOptions {
@@ -48,11 +49,11 @@ interface UseMercadoLivreSessionsOptions {
 const DISCONNECTED_STATUSES = new Set<MeliSessionStatus>(["expired", "error", "not_found"]);
 
 function mapStatusToMessage(status: MeliSessionStatus): string {
-  if (status === "expired") return "Sessão expirada. Reimporte cookies atualizados.";
-  if (status === "not_found") return "Sessão não encontrada no serviço RPA.";
+  if (status === "expired") return "Sessao expirada. Reimporte cookies atualizados.";
+  if (status === "not_found") return "Sessao nao encontrada no servico RPA.";
   if (status === "no_affiliate") return "Conta sem acesso ao programa de afiliados.";
-  if (status === "error") return "Falha ao validar sessão no serviço Mercado Livre.";
-  return "Status de sessão não reconhecido.";
+  if (status === "error") return "Falha ao validar sessao no servico Mercado Livre.";
+  return "Status de sessao nao reconhecido.";
 }
 
 function mapRowToSession(row: Record<string, unknown>): MeliSession {
@@ -73,6 +74,7 @@ export function useMercadoLivreSessions(options: UseMercadoLivreSessionsOptions 
   const { user } = useAuth();
   const qc = useQueryClient();
   const statusMapRef = useRef<Record<string, MeliSessionStatus>>({});
+  const sessionsRef = useRef<MeliSession[]>([]);
   const isAutoCheckingRef = useRef(false);
 
   const { data: sessions = [], isLoading, error } = useQuery({
@@ -103,7 +105,7 @@ export function useMercadoLivreSessions(options: UseMercadoLivreSessionsOptions 
     options: TestSessionOptions = {},
   ): Promise<TestSessionResult> => {
     const previousStatus = statusMapRef.current[sessionId];
-    const sessionName = sessions.find((s) => s.id === sessionId)?.name || sessionId;
+    const sessionName = sessionsRef.current.find((session) => session.id === sessionId)?.name || sessionId;
 
     try {
       const result = await invokeBackendRpc<TestSessionResult>("meli-test-session", {
@@ -111,19 +113,19 @@ export function useMercadoLivreSessions(options: UseMercadoLivreSessionsOptions 
       });
 
       statusMapRef.current[sessionId] = result.status;
-      invalidate();
+      if (!options.skipInvalidate) invalidate();
 
       if (!options.silent) {
         if (result.status === "active") {
-          toast.success("Sessão ativa!", { description: result.accountName || sessionName });
+          toast.success("Sessao ativa!", { description: result.accountName || sessionName });
         } else if (DISCONNECTED_STATUSES.has(result.status)) {
-          toast.warning("Sessão expirada ou desconectada", {
+          toast.warning("Sessao expirada ou desconectada", {
             description: `${sessionName}: ${result.errorMessage || mapStatusToMessage(result.status)}`,
           });
         } else if (result.status === "no_affiliate") {
           toast.warning("Conta sem programa de afiliados", { description: sessionName });
         } else {
-          toast.error("Erro ao testar sessão", {
+          toast.error("Erro ao testar sessao", {
             description: `${sessionName}: ${result.errorMessage || mapStatusToMessage(result.status)}`,
           });
         }
@@ -131,30 +133,25 @@ export function useMercadoLivreSessions(options: UseMercadoLivreSessionsOptions 
         const isDisconnected = DISCONNECTED_STATUSES.has(result.status);
         const statusChanged = !!previousStatus && previousStatus !== result.status;
         if (statusChanged && isDisconnected) {
-          toast.warning("Sessão Mercado Livre desconectada", {
+          toast.warning("Sessao Mercado Livre desconectada", {
             description: `${sessionName}: ${result.errorMessage || mapStatusToMessage(result.status)}`,
           });
         }
         if (previousStatus && previousStatus !== "active" && result.status === "active") {
-          toast.success("Sessão Mercado Livre reconectada", { description: sessionName });
+          toast.success("Sessao Mercado Livre reconectada", { description: sessionName });
         }
       }
 
       return result;
     } catch (error) {
-      statusMapRef.current[sessionId] = "error";
       if (!options.silent) {
-        toast.error("Erro ao testar sessão", {
+        toast.error("Erro ao testar sessao", {
           description: error instanceof Error ? error.message : String(error),
-        });
-      } else if (previousStatus && previousStatus !== "error") {
-        toast.error("Sessão Mercado Livre desconectada", {
-          description: `${sessionName}: falha ao validar sessão automaticamente.`,
         });
       }
       throw error;
     }
-  }, [invalidate, sessions]);
+  }, [invalidate]);
 
   const testAllSessions = useCallback(async (options: TestSessionOptions = {}): Promise<TestSessionResult[]> => {
     const results: TestSessionResult[] = [];
@@ -166,48 +163,89 @@ export function useMercadoLivreSessions(options: UseMercadoLivreSessionsOptions 
   }, [runSessionTest, sessions]);
 
   useEffect(() => {
+    sessionsRef.current = sessions;
     for (const session of sessions) {
       statusMapRef.current[session.id] = session.status;
     }
   }, [sessions]);
 
   useEffect(() => {
-    if (!enableAutoMonitor || !user) return;
+    if (!enableAutoMonitor || !user?.id) return;
 
-    const monitoredSessions = sessions;
-    if (monitoredSessions.length === 0) return;
+    let cancelled = false;
 
     const runAutoValidation = async () => {
+      if (cancelled) return;
       if (isAutoCheckingRef.current) return;
+
+      const monitoredSessions = sessionsRef.current;
+      if (monitoredSessions.length === 0) return;
+
       isAutoCheckingRef.current = true;
+      let checkedAny = false;
       try {
         for (const session of monitoredSessions) {
           try {
-            await runSessionTest(session.id, { silent: true });
+            checkedAny = true;
+            await runSessionTest(session.id, { silent: true, skipInvalidate: true });
           } catch {
             // Keep auto-monitor running even if one session check fails.
           }
         }
       } finally {
         isAutoCheckingRef.current = false;
+        if (checkedAny && !cancelled) {
+          invalidate();
+        }
       }
     };
 
-    const intervalId = window.setInterval(() => {
-      void runAutoValidation();
-    }, 5 * 60 * 1000);
+    const startLoop = () => {
+      const intervalId = window.setInterval(() => {
+        void runAutoValidation();
+      }, 5 * 60 * 1000);
 
-    void runAutoValidation();
+      void runAutoValidation();
+
+      return () => {
+        window.clearInterval(intervalId);
+      };
+    };
+
+    if (typeof navigator?.locks?.request !== "function") {
+      const cleanup = startLoop();
+      return () => {
+        cancelled = true;
+        cleanup();
+      };
+    }
+
+    void navigator.locks.request(
+      `autolinks:meli-session-monitor:${user.id}`,
+      async () => {
+        if (cancelled) return;
+        const cleanup = startLoop();
+        await new Promise<void>((resolve) => {
+          const guard = window.setInterval(() => {
+            if (cancelled) {
+              window.clearInterval(guard);
+              cleanup();
+              resolve();
+            }
+          }, 500);
+        });
+      },
+    );
 
     return () => {
-      window.clearInterval(intervalId);
+      cancelled = true;
     };
-  }, [enableAutoMonitor, runSessionTest, sessions, user]);
+  }, [enableAutoMonitor, invalidate, runSessionTest, user?.id]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     await invokeBackendRpc("meli-delete-session", { body: { sessionId } });
     invalidate();
-    toast.success("Sessão removida");
+    toast.success("Sessao removida");
   }, [invalidate]);
 
   return {

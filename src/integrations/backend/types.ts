@@ -111,6 +111,45 @@ type TableMap = {
     last_checked_at: string | null;
     error_message: string;
   }>;
+  meli_vitrine_products: TableDef<{
+    id: string;
+    tab_key: string;
+    source_url: string;
+    product_url: string;
+    title: string;
+    image_url: string;
+    price_cents: number;
+    old_price_cents: number | null;
+    discount_text: string;
+    seller: string;
+    rating: number | null;
+    reviews_count: number | null;
+    shipping_text: string;
+    installments_text: string;
+    badge_text: string;
+    payload_hash: string;
+    is_active: boolean;
+    first_seen_at: string;
+    last_seen_at: string;
+    collected_at: string;
+    created_at: string;
+    updated_at: string;
+  }>;
+  meli_vitrine_sync_runs: TableDef<{
+    id: string;
+    source: string;
+    status: string;
+    message: string;
+    scanned_tabs: number;
+    fetched_cards: number;
+    added_count: number;
+    updated_count: number;
+    removed_count: number;
+    unchanged_count: number;
+    started_at: string;
+    finished_at: string | null;
+    created_at: string;
+  }>;
   profiles: TableDef<{
     id: string;
     created_at: string;
@@ -158,6 +197,11 @@ type TableMap = {
     maintenance_eta: string | null;
     allow_admin_bypass: boolean;
     updated_by_user_id: string;
+  }>;
+  system_settings: TableDef<{
+    key: string;
+    value: Json;
+    updated_at: string;
   }>;
   route_destinations: TableDef<{
     id: string;
@@ -238,6 +282,8 @@ type TableMap = {
     name: string;
     content: string;
     category: string;
+    scope: string;
+    tags: string[];
     is_default: boolean;
   }>;
   whatsapp_sessions: TableDef<{

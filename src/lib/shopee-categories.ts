@@ -137,26 +137,6 @@ export const SHOPEE_CATEGORIES: ShopeeCategory[] = [
   },
 ];
 
-/** Flat list of all browsable items (L1 + L2) for quick lookup */
-export interface FlatCategory {
-  matchId: number;
-  listType: 3 | 4;
-  label: string;
-  icon: string;
-  parentLabel?: string;
-}
-
-export function getFlatCategories(): FlatCategory[] {
-  const flat: FlatCategory[] = [];
-  for (const cat of SHOPEE_CATEGORIES) {
-    flat.push({ matchId: cat.id, listType: 3, label: cat.label, icon: cat.icon });
-    for (const sub of cat.subcategories) {
-      flat.push({ matchId: sub.id, listType: 4, label: sub.label, icon: cat.icon, parentLabel: cat.label });
-    }
-  }
-  return flat;
-}
-
 /** Deduplicate products by comparing first 50 chars of name + image filename */
 import type { ShopeeProduct } from "@/components/shopee/ProductCard";
 
@@ -171,14 +151,3 @@ export function deduplicateProducts(products: ShopeeProduct[]): ShopeeProduct[] 
     return true;
   });
 }
-
-/** Fisher-Yates shuffle */
-export function shuffleArray<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-

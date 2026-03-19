@@ -34,7 +34,7 @@ export function TemplateModuleProvider({ children }: PropsWithChildren) {
     deleteTemplate,
     setDefaultTemplate,
     duplicateTemplate,
-  } = useTemplates();
+  } = useTemplates("shopee");
 
   const applyTemplate = useCallback((input: ApplyTemplateInput) => {
     const template = (input.templateId

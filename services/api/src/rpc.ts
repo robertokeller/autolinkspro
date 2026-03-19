@@ -18,22 +18,57 @@ rpcRouter.post("/rpc", async (req, res, next) => {
   const slug = String(params.slug ?? "").trim();
   if (!slug) { res.json({ data: null, error: { message: "Slug obrigatÃ³rio" } }); return; }
   try {
-    const page = await queryOne("SELECT slug, title, description, config, is_active FROM link_hub_pages WHERE slug = $1 AND is_active = TRUE", [slug]);
+    const page = await queryOne("SELECT slug, title, description, config, is_active, user_id FROM link_hub_pages WHERE slug = $1 AND is_active = TRUE", [slug]);
     if (!page) { res.json({ data: { page: null, groups: [], groupLabels: {} }, error: null }); return; }
+    const ownerUserId = String(page.user_id || "").trim();
+    const publicPage = {
+      slug: page.slug,
+      title: page.title,
+      description: page.description,
+      config: page.config,
+      is_active: page.is_active,
+    };
     const cfg = page.config ?? {};
     const gids = Array.isArray(cfg.groupIds) ? cfg.groupIds : [];
     const mgids = Array.isArray(cfg.masterGroupIds) ? cfg.masterGroupIds : [];
     const groupLabels = cfg.groupLabels ?? {};
-    const directGroups = gids.length > 0 ? await query(`SELECT id, name, platform, member_count FROM groups WHERE id = ANY($1)`, [gids]) : [];
+    const directGroups = gids.length > 0
+      ? await query(
+          `SELECT id, name, platform, member_count
+             FROM groups
+            WHERE user_id = $1
+              AND deleted_at IS NULL
+              AND id = ANY($2)`,
+          [ownerUserId, gids],
+        )
+      : [];
     let linkedGroups: Array<Record<string, unknown>> = [];
     if (mgids.length > 0) {
-      const links = await query("SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1)", [mgids]);
+      const links = await query(
+        `SELECT l.group_id
+           FROM master_group_links l
+           JOIN master_groups mg
+             ON mg.id = l.master_group_id
+          WHERE mg.user_id = $1
+            AND l.is_active <> FALSE
+            AND l.master_group_id = ANY($2)`,
+        [ownerUserId, mgids],
+      );
       const linkedIds = links.map((l: Record<string, unknown>) => l.group_id);
-      linkedGroups = linkedIds.length > 0 ? await query("SELECT id, name, platform, member_count FROM groups WHERE id = ANY($1)", [linkedIds]) : [];
+      linkedGroups = linkedIds.length > 0
+        ? await query(
+            `SELECT id, name, platform, member_count
+               FROM groups
+              WHERE user_id = $1
+                AND deleted_at IS NULL
+                AND id = ANY($2)`,
+            [ownerUserId, linkedIds],
+          )
+        : [];
     }
     const seen = new Set();
     const groups = [...directGroups, ...linkedGroups].filter((g: Record<string, unknown>) => { if (seen.has(g.id)) return false; seen.add(g.id); return true; });
-    res.json({ data: { page, groups, groupLabels }, error: null });
+    res.json({ data: { page: publicPage, groups, groupLabels }, error: null });
   } catch {
     res.status(500).json({ data: null, error: { message: "Erro interno" } });
   }
@@ -61,6 +96,61 @@ const OPS_URL       = process.env.OPS_CONTROL_URL
 const OPS_TOKEN     = process.env.OPS_CONTROL_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
 const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance"]);
+const MAX_URL_LENGTH = 2048;
+const MAX_SHOPEE_CONVERT_BATCH = 30;
+const MAX_MELI_CONVERT_BATCH = 50;
+const MAX_SHOPEE_BATCH_QUERIES = 20;
+
+type RpcRatePolicy = {
+  max: number;
+  windowMs: number;
+  message: string;
+};
+
+const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
+  "shopee-convert-link": {
+    max: 40,
+    windowMs: 60_000,
+    message: "Limite de conversao Shopee atingido. Aguarde 1 minuto.",
+  },
+  "shopee-convert-links": {
+    max: 12,
+    windowMs: 60_000,
+    message: "Limite de lote Shopee atingido. Aguarde 1 minuto.",
+  },
+  "shopee-batch": {
+    max: 20,
+    windowMs: 60_000,
+    message: "Limite de consultas Shopee atingido. Aguarde 1 minuto.",
+  },
+  "shopee-automation-run": {
+    max: 6,
+    windowMs: 60_000,
+    message: "Muitas execucoes de piloto automatico Shopee. Aguarde 1 minuto.",
+  },
+  "meli-convert-link": {
+    max: 30,
+    windowMs: 60_000,
+    message: "Limite de conversao Mercado Livre atingido. Aguarde 1 minuto.",
+  },
+  "meli-convert-links": {
+    max: 10,
+    windowMs: 60_000,
+    message: "Limite de lote Mercado Livre atingido. Aguarde 1 minuto.",
+  },
+  "meli-test-session": {
+    max: 24,
+    windowMs: 60_000,
+    message: "Limite de validacao de sessao atingido. Aguarde 1 minuto.",
+  },
+  "meli-automation-run": {
+    max: 6,
+    windowMs: 60_000,
+    message: "Muitas execucoes de piloto automatico Mercado Livre. Aguarde 1 minuto.",
+  },
+};
+
+const rpcFunctionRateStore = new Map<string, { count: number; resetAt: number }>();
 
 // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ok(res, data) { res.json({ data, error: null }); }
@@ -128,6 +218,65 @@ function toStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function parseHttpUrl(raw: string): URL | null {
+  const value = String(raw || "").trim();
+  if (!value || value.length > MAX_URL_LENGTH) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function isShopeeProductUrlLike(raw: string): boolean {
+  const parsed = parseHttpUrl(raw);
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase();
+  return host.includes("shopee.") || host.endsWith("shope.ee");
+}
+
+function isMercadoLivreProductUrlLike(raw: string): boolean {
+  const parsed = parseHttpUrl(raw);
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase();
+  return (
+    host === "meli.la"
+    || host.endsWith(".meli.la")
+    || host === "mlb.am"
+    || host.endsWith(".mlb.am")
+    || host.includes("mercadolivre")
+    || host.includes("mercadolibre")
+    || host.includes("mercadopago")
+    || host.includes("mlstatic")
+  );
+}
+
+function consumeRpcFunctionRateLimit(scopeKey: string, funcName: string): { allowed: boolean; policy: RpcRatePolicy | null } {
+  const policy = RPC_RATE_BY_FUNCTION[funcName] ?? null;
+  if (!policy) return { allowed: true, policy: null };
+
+  const now = Date.now();
+  const key = `${scopeKey}:${funcName}`;
+  const entry = rpcFunctionRateStore.get(key);
+
+  if (!entry || now > entry.resetAt) {
+    rpcFunctionRateStore.set(key, { count: 1, resetAt: now + policy.windowMs });
+    return { allowed: true, policy };
+  }
+
+  entry.count += 1;
+  return { allowed: entry.count <= policy.max, policy };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rpcFunctionRateStore) {
+    if (now > entry.resetAt) rpcFunctionRateStore.delete(key);
+  }
+}, 5 * 60_000).unref();
+
 function parseTimeToMinutes(value: unknown, fallbackMinutes: number): number {
   const raw = String(value || "").trim();
   const [hRaw, mRaw] = raw.split(":");
@@ -193,6 +342,45 @@ function normalizeAutomationVitrineTabs(value: unknown): string[] {
   for (const raw of value) {
     const normalized = String(raw || "").trim().toLowerCase();
     if (!normalized || !AUTOMATION_VITRINE_QUERY_PRESETS[normalized] || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+const MELI_AUTOMATION_ALLOWED_TABS = new Set([
+  "top_performance",
+  "mais_vendidos",
+  "ofertas_quentes",
+  "melhor_avaliados",
+]);
+
+const MELI_AUTOMATION_TAB_ALIASES: Record<string, string> = {
+  all: "top_performance",
+  top_performance: "top_performance",
+  mais_vendidos: "mais_vendidos",
+  ofertas_quentes: "ofertas_quentes",
+  melhor_avaliados: "melhor_avaliados",
+  beleza_cuidados: "top_performance",
+  calcados_roupas_bolsas: "top_performance",
+  casa_moveis_decoracao: "top_performance",
+  celulares_telefones: "top_performance",
+  construcao: "top_performance",
+  eletrodomesticos: "top_performance",
+  esportes_fitness: "top_performance",
+  ferramentas: "top_performance",
+  informatica: "top_performance",
+  saude: "top_performance",
+};
+
+function normalizeMeliAutomationVitrineTabs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of value) {
+    const normalizedRaw = String(raw || "").trim().toLowerCase();
+    const normalized = MELI_AUTOMATION_TAB_ALIASES[normalizedRaw] || normalizedRaw;
+    if (!normalized || !MELI_AUTOMATION_ALLOWED_TABS.has(normalized) || seen.has(normalized)) continue;
     seen.add(normalized);
     out.push(normalized);
   }
@@ -457,6 +645,38 @@ function buildShopeeAutomationMessage(templateContent: string, product: Record<s
   });
 }
 
+function formatMeliTemplatePrice(value: unknown): string {
+  const numeric = toNumber(value, 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "";
+  return numeric.toFixed(2).replace(".", ",");
+}
+
+function normalizeMeliTemplateInstallments(value: unknown): string {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  const match = normalized.match(/(\d{1,2})x\s*R\$\s*([\d.]+(?:,\d{1,2})?)/i);
+  if (!match) return normalized.replace(/^ou\s+/i, "").trim();
+  const suffix = /sem juros/i.test(normalized) ? " sem juros" : "";
+  return `${match[1]}x de R$${match[2]}${suffix}`.trim();
+}
+
+function buildMeliAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
+  const contentWithoutImageLine = String(templateContent || "")
+    .replace(/^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim, "");
+
+  return applyPlaceholders(contentWithoutImageLine, {
+    "{titulo}": String(product.title || "Produto Mercado Livre").trim(),
+    "{preco}": formatMeliTemplatePrice(product.price),
+    "{preco_original}": formatMeliTemplatePrice(product.oldPrice),
+    "{link}": String(affiliateLink || "").trim(),
+    "{imagem}": "",
+    "{avaliacao}": toNumber(product.rating, 0) > 0 ? Number(toNumber(product.rating, 0)).toFixed(1) : "",
+    "{avaliacoes}": toNumber(product.reviewsCount, 0) > 0 ? String(Math.floor(toNumber(product.reviewsCount, 0))) : "",
+    "{parcelamento}": normalizeMeliTemplateInstallments(product.installmentsText),
+    "{vendedor}": String(product.seller || "").trim(),
+  });
+}
+
 async function insertAutomationHistoryEntry(input: {
   userId: string;
   automationName: string;
@@ -678,6 +898,63 @@ async function proxyMicroservice(baseUrl, path, method, body, extraHeaders = {},
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function isTransientMicroserviceError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const row = error as Record<string, unknown>;
+  const status = Number(row.status);
+  if (Number.isFinite(status) && [408, 425, 429, 500, 502, 503, 504].includes(status)) {
+    return true;
+  }
+  const message = String(row.message || "").toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes("too many requests")
+    || message.includes("rate limit")
+    || message.includes("timeout")
+    || message.includes("temporar")
+    || message.includes("econnreset")
+    || message.includes("socket hang up")
+  );
+}
+
+function isTransientMeliSessionValidationResult(input: {
+  status: string;
+  errorMessage: string;
+  logs: unknown[];
+}): boolean {
+  const normalizedStatus = String(input.status || "").trim().toLowerCase();
+  if (normalizedStatus === "active") return false;
+
+  const lines: string[] = [String(input.errorMessage || "")];
+  for (const entry of input.logs) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const row = entry as Record<string, unknown>;
+    const message = String(row.message || "").trim();
+    if (message) lines.push(message);
+  }
+  const haystack = lines.join(" ").toLowerCase();
+  if (!haystack) return false;
+
+  if (normalizedStatus !== "error" && normalizedStatus !== "no_affiliate") {
+    return false;
+  }
+
+  return (
+    haystack.includes("http 429")
+    || haystack.includes("too many requests")
+    || haystack.includes("rate limit")
+    || haystack.includes("timeout")
+    || haystack.includes("temporar")
+    || haystack.includes("captcha")
+    || haystack.includes("challenge")
+    || haystack.includes("security")
+    || haystack.includes("service unavailable")
+    || haystack.includes("indispon")
+    || haystack.includes("http 503")
+    || haystack.includes("http 502")
+  );
 }
 
 function buildUserScopedHeaders(userId: string) {
@@ -2583,6 +2860,13 @@ const BUILTIN_PLANS: Array<{ id: string; period: string; isActive: boolean }> = 
 ];
 const BUILTIN_PLAN_IDS = new Set(BUILTIN_PLANS.map((p) => p.id));
 const ADMIN_PANEL_PLAN_ID = "admin";
+const MERCADO_LIVRE_FEATURE_KEY = "mercadoLivre";
+const MERCADO_LIVRE_FALLBACK_ENABLED_PLANS = new Set([
+  "plan-starter",
+  "plan-business",
+  "plan-business-annual",
+]);
+const MERCADO_LIVRE_BLOCKED_MESSAGE = "Mercado Livre não está disponível no seu plano ou nível de acesso.";
 
 function normalizeEmail(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
@@ -2657,6 +2941,65 @@ async function isPlanExpired(userId) {
   const row = await queryOne("SELECT plan_expires_at FROM profiles WHERE user_id = $1", [userId]);
   if (!row?.plan_expires_at) return false;
   return Date.parse(row.plan_expires_at) <= Date.now();
+}
+
+async function getUserPlanId(userId: string): Promise<string> {
+  const row = await queryOne<{ plan_id: string | null }>(
+    "SELECT plan_id FROM profiles WHERE user_id = $1",
+    [userId],
+  );
+  return String(row?.plan_id || "plan-starter").trim() || "plan-starter";
+}
+
+function hasPositiveLimit(value: unknown): boolean | null {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n === -1 || n > 0;
+}
+
+async function resolveMercadoLivreFeatureAccess(userId: string): Promise<{ allowed: boolean; message: string }> {
+  const planId = await getUserPlanId(userId);
+  const cp = await loadControlPlane();
+
+  const plans = Array.isArray(cp?.plans) ? cp.plans : [];
+  const accessLevels = Array.isArray(cp?.accessLevels) ? cp.accessLevels : [];
+
+  const plan = plans.find((entry) => String(entry?.id || "").trim() === planId) || null;
+  let fallbackAllowed = MERCADO_LIVRE_FALLBACK_ENABLED_PLANS.has(planId);
+
+  if (plan && typeof plan === "object" && !Array.isArray(plan)) {
+    const limits = (plan as Record<string, unknown>).limits;
+    if (limits && typeof limits === "object" && !Array.isArray(limits)) {
+      const byLimit = hasPositiveLimit((limits as Record<string, unknown>).meliSessions);
+      if (byLimit !== null) fallbackAllowed = byLimit;
+    }
+  }
+
+  let blockedMessage = MERCADO_LIVRE_BLOCKED_MESSAGE;
+
+  if (plan && typeof plan === "object" && !Array.isArray(plan)) {
+    const accessLevelId = String((plan as Record<string, unknown>).accessLevelId || "").trim();
+    if (accessLevelId) {
+      const accessLevel = accessLevels.find((entry) => String(entry?.id || "").trim() === accessLevelId) || null;
+      if (accessLevel && typeof accessLevel === "object" && !Array.isArray(accessLevel)) {
+        const featureRules = (accessLevel as Record<string, unknown>).featureRules;
+        if (featureRules && typeof featureRules === "object" && !Array.isArray(featureRules)) {
+          const featureRuleRaw = (featureRules as Record<string, unknown>)[MERCADO_LIVRE_FEATURE_KEY];
+          if (featureRuleRaw && typeof featureRuleRaw === "object" && !Array.isArray(featureRuleRaw)) {
+            const featureRule = featureRuleRaw as Record<string, unknown>;
+            const mode = String(featureRule.mode || "").trim().toLowerCase();
+            const customBlockedMessage = String(featureRule.blockedMessage || "").trim();
+            if (customBlockedMessage) blockedMessage = customBlockedMessage;
+            if (mode === "enabled") return { allowed: true, message: "" };
+            if (mode === "hidden" || mode === "blocked") return { allowed: false, message: blockedMessage };
+          }
+        }
+      }
+    }
+  }
+
+  if (fallbackAllowed) return { allowed: true, message: "" };
+  return { allowed: false, message: blockedMessage };
 }
 
 async function listUsersWithMeta() {
@@ -2739,10 +3082,34 @@ rpcRouter.post("/rpc", async (req, res) => {
 
   const { name, ...params } = req.body;
   const funcName = String(name ?? "");
+  if (!funcName) { fail(res, "Nome da funcao obrigatorio", 400); return; }
+
+  if (!isService) {
+    const rateScopeKey = userId || (req.ip ?? req.socket.remoteAddress ?? "unknown");
+    const rateResult = consumeRpcFunctionRateLimit(rateScopeKey, funcName);
+    if (!rateResult.allowed) {
+      fail(res, rateResult.policy?.message || "Limite de chamadas excedido. Aguarde alguns segundos.", 429);
+      return;
+    }
+  }
 
   // Plan expiry check
   if (!PLAN_EXPIRY_ALLOWED.has(funcName) && !effectiveAdmin) {
     if (await isPlanExpired(userId)) { fail(res, "Plano expirado. Renove ou troque de plano."); return; }
+  }
+
+  const isMeliFunction = funcName.startsWith("meli-");
+  if (isMeliFunction && !effectiveAdmin) {
+    try {
+      const featureAccess = await resolveMercadoLivreFeatureAccess(userId);
+      if (!featureAccess.allowed) {
+        fail(res, featureAccess.message || MERCADO_LIVRE_BLOCKED_MESSAGE, 403);
+        return;
+      }
+    } catch {
+      fail(res, "Não foi possível validar o acesso ao módulo Mercado Livre.", 503);
+      return;
+    }
   }
 
   try {
@@ -3440,7 +3807,15 @@ rpcRouter.post("/rpc", async (req, res) => {
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
       if (!cred) { ok(res, { success: false, reason: "Credenciais Shopee nÃ£o configuradas.", region: "BR" }); return; }
       const fallbackRegion = String(cred.region || "BR").toUpperCase();
-      const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/test-connection", "POST", { appId: cred.app_id, secret: cred.secret_key, region: cred.region });
+      const shopeeHeaders = buildUserScopedHeaders(userId);
+      const r = await proxyMicroservice(
+        SHOPEE_URL,
+        "/api/shopee/test-connection",
+        "POST",
+        { appId: cred.app_id, secret: cred.secret_key, region: cred.region },
+        shopeeHeaders,
+        30_000,
+      );
       if (r.error) {
         ok(res, { success: false, reason: r.error.message || "Falha na conexÃ£o", region: fallbackRegion });
         return;
@@ -3460,12 +3835,15 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
       const sourceUrl = String(params.url ?? params.link ?? "").trim();
       if (!sourceUrl) { fail(res, "URL Shopee obrigatoria"); return; }
+      if (sourceUrl.length > MAX_URL_LENGTH) { fail(res, "URL Shopee excede o tamanho maximo permitido"); return; }
+      if (!isShopeeProductUrlLike(sourceUrl)) { fail(res, "URL informada nao parece ser da Shopee"); return; }
+      const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
         url: sourceUrl,
         appId: cred.app_id,
         secret: cred.secret_key,
         region: cred.region,
-      });
+      }, shopeeHeaders, 30_000);
       if (r.error) { fail(res, r.error.message); return; }
       ok(res, r.data); return;
     }
@@ -3478,16 +3856,21 @@ rpcRouter.post("/rpc", async (req, res) => {
         .filter((item): item is string => typeof item === "string")
         .map((item) => item.trim())
         .filter(Boolean);
-      if (urls.length === 0) { fail(res, "Lista de URLs Shopee obrigatoria"); return; }
+      const dedupedUrls: string[] = [...new Set<string>(urls)];
+      if (dedupedUrls.length === 0) { fail(res, "Lista de URLs Shopee obrigatoria"); return; }
+      if (dedupedUrls.length > MAX_SHOPEE_CONVERT_BATCH) { fail(res, `Limite de ${MAX_SHOPEE_CONVERT_BATCH} URLs por lote Shopee`); return; }
+      if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
+      if (dedupedUrls.some((item) => !isShopeeProductUrlLike(item))) { fail(res, "Uma ou mais URLs nao parecem ser da Shopee"); return; }
+      const shopeeHeaders = buildUserScopedHeaders(userId);
 
       const conversions = [];
-      for (const originalLink of urls) {
+      for (const originalLink of dedupedUrls) {
         const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
           url: originalLink,
           appId: cred.app_id,
           secret: cred.secret_key,
           region: cred.region,
-        });
+        }, shopeeHeaders, 30_000);
         if (r.error) {
           conversions.push({
             originalLink,
@@ -3515,7 +3898,20 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
       if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
-      const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/batch", "POST", { ...params, appId: cred.app_id, secret: cred.secret_key, region: cred.region });
+      const queries = Array.isArray(params.queries) ? params.queries : [];
+      if (queries.length > MAX_SHOPEE_BATCH_QUERIES) {
+        fail(res, `Limite de ${MAX_SHOPEE_BATCH_QUERIES} consultas por lote Shopee`);
+        return;
+      }
+      const shopeeHeaders = buildUserScopedHeaders(userId);
+      const r = await proxyMicroservice(
+        SHOPEE_URL,
+        "/api/shopee/batch",
+        "POST",
+        { ...params, appId: cred.app_id, secret: cred.secret_key, region: cred.region },
+        shopeeHeaders,
+        120_000,
+      );
       if (r.error) { fail(res, r.error.message); return; }
       ok(res, r.data); return;
     }
@@ -3527,11 +3923,12 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       const requestedAutomationId = String(params.automationId ?? "").trim();
       const source = String(params.source ?? "manual").trim() || "manual";
-      const runAllUsers = isService || (effectiveAdmin && params.allUsers === true);
+      const runAllUsers = isService || (effectiveAdmin && !userIsAdmin && params.allUsers === true);
       const limit = Math.max(1, Math.min(toInt(params.limit, runAllUsers ? 120 : 30), runAllUsers ? 300 : 100));
 
       const dueClause = `
         status = 'active' AND is_active = TRUE
+        AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'shopee'
         AND (
           last_run_at IS NULL
           OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
@@ -3541,11 +3938,11 @@ rpcRouter.post("/rpc", async (req, res) => {
       const automations = requestedAutomationId
         ? (runAllUsers
             ? await query(
-                "SELECT * FROM shopee_automations WHERE id = $1 LIMIT 1",
+                "SELECT * FROM shopee_automations WHERE id = $1 AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'shopee' LIMIT 1",
                 [requestedAutomationId],
               )
             : await query(
-                "SELECT * FROM shopee_automations WHERE id = $1 AND user_id = $2 LIMIT 1",
+                "SELECT * FROM shopee_automations WHERE id = $1 AND user_id = $2 AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'shopee' LIMIT 1",
                 [requestedAutomationId, userId],
               ))
         : (runAllUsers
@@ -3637,6 +4034,7 @@ rpcRouter.post("/rpc", async (req, res) => {
              AND user_id = $2
              AND status = 'active'
              AND is_active = TRUE
+             AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'shopee'
              AND (
                last_run_at IS NULL
                OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
@@ -3684,7 +4082,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             region: cred.region,
             queries,
           },
-          {},
+          buildUserScopedHeaders(ownerUserId),
           120_000,
         );
         if (batchResult.error) {
@@ -4129,6 +4527,661 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
 
+    if (funcName === "meli-automation-run") {
+      if (!MELI_URL) { fail(res, "Servico Mercado Livre nao configurado."); return; }
+      if (!WHATSAPP_URL && !TELEGRAM_URL) {
+        fail(res, "Nenhum canal de envio configurado (WhatsApp/Telegram).");
+        return;
+      }
+
+      const requestedAutomationId = String(params.automationId ?? "").trim();
+      const source = String(params.source ?? "manual").trim() || "manual";
+      const runAllUsers = isService || (effectiveAdmin && !userIsAdmin && params.allUsers === true);
+      const limit = Math.max(1, Math.min(toInt(params.limit, runAllUsers ? 120 : 30), runAllUsers ? 300 : 100));
+
+      const dueClause = `
+        status = 'active' AND is_active = TRUE
+        AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'meli'
+        AND (
+          last_run_at IS NULL
+          OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
+        )
+      `;
+
+      const automations = requestedAutomationId
+        ? (runAllUsers
+            ? await query(
+                "SELECT * FROM shopee_automations WHERE id = $1 AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'meli' LIMIT 1",
+                [requestedAutomationId],
+              )
+            : await query(
+                "SELECT * FROM shopee_automations WHERE id = $1 AND user_id = $2 AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'meli' LIMIT 1",
+                [requestedAutomationId, userId],
+              ))
+        : (runAllUsers
+            ? await query(
+                `SELECT * FROM shopee_automations
+                 WHERE ${dueClause}
+                 ORDER BY COALESCE(last_run_at, to_timestamp(0)) ASC
+                 LIMIT $1`,
+                [limit],
+              )
+            : await query(
+                `SELECT * FROM shopee_automations
+                 WHERE user_id = $1 AND ${dueClause}
+                 ORDER BY COALESCE(last_run_at, to_timestamp(0)) ASC
+                 LIMIT $2`,
+                [userId, limit],
+              ));
+
+      if (requestedAutomationId && automations.length === 0) { fail(res, "Automacao nao encontrada"); return; }
+      if (automations.length === 0) {
+        ok(res, {
+          ok: true,
+          source,
+          scope: runAllUsers ? "global" : "user",
+          active: 0,
+          processed: 0,
+          sent: 0,
+          skipped: 0,
+          failed: 0,
+          errors: [],
+          message: "Nenhuma automacao ML elegivel para execucao neste ciclo.",
+        });
+        return;
+      }
+
+      let processed = 0;
+      let sent = 0;
+      let skipped = 0;
+      let failed = 0;
+      const errors: string[] = [];
+      const meliAccessByUser = new Map<string, boolean>();
+
+      for (const auto of automations) {
+        const ownerUserId = String(auto.user_id || "").trim();
+        const automationName = String(auto.name || auto.id || "Automacao Mercado Livre");
+        const automationId = String(auto.id || "").trim();
+        if (!ownerUserId || !automationId) {
+          skipped += 1;
+          errors.push(`${automationName}: dados da automacao invalidos`);
+          continue;
+        }
+
+        if (runAllUsers) {
+          let ownerHasAccess = meliAccessByUser.get(ownerUserId);
+          if (ownerHasAccess === undefined) {
+            try {
+              const access = await resolveMercadoLivreFeatureAccess(ownerUserId);
+              ownerHasAccess = access.allowed;
+            } catch {
+              ownerHasAccess = false;
+            }
+            meliAccessByUser.set(ownerUserId, ownerHasAccess);
+          }
+          if (!ownerHasAccess) {
+            skipped += 1;
+            continue;
+          }
+        }
+
+        if (!inAutomationTimeWindow(auto.active_hours_start, auto.active_hours_end)) {
+          skipped += 1;
+          continue;
+        }
+
+        const claimed = await queryOne<Record<string, unknown>>(
+          `UPDATE shopee_automations
+             SET last_run_at = NOW(),
+                 updated_at = NOW()
+           WHERE id = $1
+             AND user_id = $2
+             AND status = 'active'
+             AND is_active = TRUE
+             AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'meli'
+             AND (
+               last_run_at IS NULL
+               OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
+             )
+           RETURNING *`,
+          [automationId, ownerUserId],
+        );
+        if (!claimed) {
+          skipped += 1;
+          continue;
+        }
+
+        const automationConfig = claimed.config && typeof claimed.config === "object" && !Array.isArray(claimed.config)
+          ? claimed.config as Record<string, unknown>
+          : {};
+        const configTabs = normalizeMeliAutomationVitrineTabs(automationConfig.vitrineTabs);
+        const fallbackTabs = configTabs.length > 0
+          ? configTabs
+          : normalizeMeliAutomationVitrineTabs(claimed.categories);
+        const vitrineTabs = fallbackTabs.length > 0 ? fallbackTabs : ["top_performance"];
+
+        const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
+        const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
+        const template = templateId
+          ? await queryOne<{ id: string; name: string; content: string; is_default: boolean }>(
+              `SELECT id, name, content, is_default
+                 FROM templates
+                WHERE user_id = $1
+                  AND id = $2
+                LIMIT 1`,
+              [ownerUserId, templateId],
+            )
+          : null;
+
+        const products = await query<{
+          id: string;
+          tab_key: string;
+          title: string;
+          product_url: string;
+          image_url: string;
+          price_cents: string | number;
+          old_price_cents: string | number | null;
+          seller: string;
+          rating: string | number | null;
+          reviews_count: string | number | null;
+          installments_text: string;
+        }>(
+          `SELECT id, tab_key, title, product_url, image_url, price_cents, old_price_cents, seller, rating, reviews_count, installments_text
+             FROM meli_vitrine_products
+            WHERE is_active = TRUE
+              AND tab_key = ANY($1::text[])
+            ORDER BY updated_at DESC, collected_at DESC
+            LIMIT 600`,
+          [vitrineTabs],
+        );
+
+        const minPrice = Math.max(0, toNumber(claimed.min_price, 0));
+        const maxPriceRaw = Math.max(0, toNumber(claimed.max_price, 999999));
+        const maxPrice = maxPriceRaw > 0 ? maxPriceRaw : 999999;
+        const positiveKeywords = toRouteKeywordList(automationConfig.positiveKeywords);
+        const negativeKeywords = toRouteKeywordList(automationConfig.negativeKeywords);
+
+        const candidates: Record<string, unknown>[] = [];
+        for (const row of products) {
+          const title = String(row.title || "").trim();
+          const productUrl = String(row.product_url || "").trim();
+          const imageUrl = String(row.image_url || "").trim();
+          const price = Number((Math.max(0, toNumber(row.price_cents, 0)) / 100).toFixed(2));
+          const oldPriceRaw = toNumber(row.old_price_cents, 0);
+          const oldPrice = oldPriceRaw > 0 ? Number((oldPriceRaw / 100).toFixed(2)) : 0;
+          const seller = String(row.seller || "").trim();
+          const productText = buildAutomationProductKeywordText({
+            title,
+            shopName: seller,
+          });
+          if (!title || !productUrl || !imageUrl || price <= 0) continue;
+          if (price < minPrice) continue;
+          if (price > maxPrice) continue;
+          if (negativeKeywords.length > 0 && routeTextMatchesAnyKeyword(productText, negativeKeywords)) continue;
+          if (positiveKeywords.length > 0 && !routeTextMatchesAnyKeyword(productText, positiveKeywords)) continue;
+
+          candidates.push({
+            id: String(row.id || ""),
+            tab: String(row.tab_key || ""),
+            title,
+            productUrl,
+            imageUrl,
+            price,
+            oldPrice: oldPrice > 0 ? oldPrice : null,
+            seller,
+            rating: toNumber(row.rating, 0),
+            reviewsCount: Math.max(0, Math.floor(toNumber(row.reviews_count, 0))),
+            installmentsText: String(row.installments_text || ""),
+          });
+        }
+
+        if (candidates.length === 0) {
+          skipped += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Nada compativel com seus filtros agora. Vamos tentar de novo no proximo ciclo.",
+            details: {
+              automationId,
+              source,
+              reason: "no_eligible_offer",
+              positiveKeywordsCount: positiveKeywords.length,
+              negativeKeywordsCount: negativeKeywords.length,
+            },
+            blockReason: "no_eligible_offer",
+            errorStep: "offer_filter",
+          });
+          continue;
+        }
+
+        const recentOfferTitles = await loadRecentAutomationOfferTitleSet({
+          userId: ownerUserId,
+          automationId,
+          automationName,
+        });
+
+        let duplicateRejectedCount = 0;
+        let selectedProduct: Record<string, unknown> | null = null;
+        for (const candidate of candidates) {
+          const normalizedTitle = normalizeOfferTitle(candidate.title);
+          if (normalizedTitle && recentOfferTitles.has(normalizedTitle)) {
+            duplicateRejectedCount += 1;
+            continue;
+          }
+          selectedProduct = candidate;
+          break;
+        }
+
+        if (!selectedProduct) {
+          skipped += 1;
+          errors.push(`${automationName}: sem nova oferta disponivel (duplicadas descartadas: ${duplicateRejectedCount})`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Sem oferta nova agora. As opcoes disponiveis ja foram enviadas recentemente.",
+            details: {
+              automationId,
+              source,
+              reason: "offer_duplicate_blocked",
+              duplicateRejectedCount,
+              recentMemorySize: recentOfferTitles.size,
+            },
+            blockReason: "offer_duplicate_blocked",
+            errorStep: "offer_dedupe",
+          });
+          continue;
+        }
+
+        const configuredMeliSessionId = String(automationConfig.meliSessionId || "").trim();
+        const meliSessionId = await resolveRouteMeliSessionId(ownerUserId, configuredMeliSessionId);
+        if (!meliSessionId) {
+          skipped += 1;
+          errors.push(`${automationName}: nenhuma sessao Mercado Livre ativa para conversao`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Nenhuma sessao Mercado Livre ativa para converter links da automacao.",
+            details: { automationId, source, reason: "missing_meli_session" },
+            blockReason: "missing_meli_session",
+            errorStep: "automation_setup",
+          });
+          continue;
+        }
+
+        const scopedSessionId = buildScopedMeliSessionId(ownerUserId, meliSessionId);
+        const meliHeaders = buildUserScopedHeaders(ownerUserId);
+        const conversion = await proxyMicroservice(
+          MELI_URL,
+          "/api/meli/convert",
+          "POST",
+          {
+            sessionId: scopedSessionId,
+            productUrl: String(selectedProduct.productUrl || "").trim(),
+            url: String(selectedProduct.productUrl || "").trim(),
+            source: "meli-automation",
+          },
+          meliHeaders,
+          60_000,
+        );
+        if (conversion.error) {
+          failed += 1;
+          errors.push(`${automationName}: ${conversion.error.message}`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: `Falha ao converter link Mercado Livre: ${conversion.error.message}`,
+            details: { automationId, source, reason: "meli_conversion_failed" },
+            blockReason: "meli_conversion_failed",
+            errorStep: "link_conversion",
+          });
+          continue;
+        }
+
+        const conversionPayload = (conversion.data && typeof conversion.data === "object")
+          ? conversion.data as Record<string, unknown>
+          : {};
+        const affiliateLink = String(conversionPayload.affiliateLink || "").trim();
+        if (!affiliateLink) {
+          skipped += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Conversao sem link afiliado valido.",
+            details: { automationId, source, reason: "missing_affiliate_link" },
+            blockReason: "missing_affiliate_link",
+            errorStep: "link_conversion",
+          });
+          continue;
+        }
+
+        const templateContent = template && typeof template.content === "string" ? template.content : "";
+        const fallbackTitle = String(selectedProduct.title || "Oferta Mercado Livre");
+        const message = templateContent
+          ? buildMeliAutomationMessage(templateContent, selectedProduct, affiliateLink)
+          : `${fallbackTitle}\n${affiliateLink}`;
+
+        const directGroupIds = toStringArray(claimed.destination_group_ids);
+        const masterGroupIds = toStringArray(claimed.master_group_ids);
+        const linkedGroupIds = masterGroupIds.length > 0
+          ? (await query<{ group_id: string }>(
+              "SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1) AND is_active <> FALSE",
+              [masterGroupIds],
+            )).map((row) => String(row.group_id || "").trim()).filter(Boolean)
+          : [];
+
+        const destinationIds = [...new Set([...directGroupIds, ...linkedGroupIds])];
+        if (destinationIds.length === 0) {
+          failed += 1;
+          errors.push(`${automationName}: nenhum grupo de destino configurado`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: "Automacao sem grupos de destino configurados.",
+            details: { automationId, source, reason: "no_destination_groups" },
+            blockReason: "no_destination_groups",
+            errorStep: "destination_resolve",
+          });
+          continue;
+        }
+
+        const allDestinationGroups = await query<{
+          id: string;
+          name: string;
+          platform: string;
+          session_id: string;
+          external_id: string;
+        }>(
+          "SELECT id, name, platform, session_id, external_id FROM groups WHERE user_id = $1 AND id = ANY($2)",
+          [ownerUserId, destinationIds],
+        );
+        const automationSessionId = String(claimed.session_id || "").trim();
+        const destinationGroups = automationSessionId
+          ? allDestinationGroups.filter((group) => String(group.session_id || "").trim() === automationSessionId)
+          : allDestinationGroups;
+
+        if (destinationGroups.length === 0) {
+          failed += 1;
+          errors.push(`${automationName}: nenhum grupo de destino valido para a sessao configurada`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: "Nenhum grupo valido para a sessao selecionada.",
+            details: { automationId, source, reason: "no_destination_groups_for_session" },
+            blockReason: "no_destination_groups_for_session",
+            errorStep: "destination_resolve",
+          });
+          continue;
+        }
+
+        let automationMedia: RouteForwardMedia | null = null;
+        try {
+          automationMedia = await buildAutomationImageMedia(selectedProduct);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Envio cancelado: falha ao anexar imagem.";
+          failed += destinationGroups.length;
+          errors.push(`${automationName}: ${reason}`);
+          for (const group of destinationGroups) {
+            const groupName = String(group.name || group.id || "Grupo");
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "warning",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform: String(group.platform || ""),
+                reason: "missing_image_required",
+                mediaError: reason,
+                product: selectedProduct,
+                hasMedia: false,
+              },
+              blockReason: "missing_image_required",
+              errorStep: "automation_media_failed",
+              messageType: "text",
+            });
+          }
+          continue;
+        }
+
+        const waSessionIds = [...new Set(
+          destinationGroups
+            .filter((group) => String(group.platform || "").trim() === "whatsapp")
+            .map((group) => String(group.session_id || "").trim())
+            .filter(Boolean),
+        )];
+        const tgSessionIds = [...new Set(
+          destinationGroups
+            .filter((group) => String(group.platform || "").trim() === "telegram")
+            .map((group) => String(group.session_id || "").trim())
+            .filter(Boolean),
+        )];
+        const [waSessionRows, tgSessionRows] = await Promise.all([
+          waSessionIds.length > 0
+            ? query<{ id: string; status: string }>(
+                "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
+                [ownerUserId, waSessionIds],
+              )
+            : Promise.resolve([]),
+          tgSessionIds.length > 0
+            ? query<{ id: string; status: string }>(
+                "SELECT id, status FROM telegram_sessions WHERE user_id = $1 AND id = ANY($2)",
+                [ownerUserId, tgSessionIds],
+              )
+            : Promise.resolve([]),
+        ]);
+        const onlineWaSessions = new Set(
+          waSessionRows
+            .filter((row) => isSessionOnlineStatus(row.status))
+            .map((row) => String(row.id || "").trim())
+            .filter(Boolean),
+        );
+        const onlineTgSessions = new Set(
+          tgSessionRows
+            .filter((row) => isSessionOnlineStatus(row.status))
+            .map((row) => String(row.id || "").trim())
+            .filter(Boolean),
+        );
+
+        let sentNow = 0;
+        for (const group of destinationGroups) {
+          const groupName = String(group.name || group.id || "Grupo");
+          const platform = String(group.platform || "").trim();
+          const sessionId = String(group.session_id || "").trim();
+          const externalId = String(group.external_id || "").trim();
+          if (!sessionId || !externalId) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: grupo sem sessao/external_id`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "error",
+              processingStatus: "failed",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "invalid_destination",
+              },
+              blockReason: "invalid_destination",
+              errorStep: "destination_validate",
+            });
+            continue;
+          }
+
+          const isOnline = platform === "whatsapp"
+            ? onlineWaSessions.has(sessionId)
+            : platform === "telegram"
+              ? onlineTgSessions.has(sessionId)
+              : false;
+          if (!isOnline) {
+            skipped += 1;
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "info",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "destination_session_offline",
+              },
+              blockReason: "destination_session_offline",
+              errorStep: "destination_precheck",
+            });
+            continue;
+          }
+
+          const scopedHeaders = buildUserScopedHeaders(ownerUserId);
+          const mediaForDestination = await resolveRouteForwardMediaForPlatform({
+            userId: ownerUserId,
+            platform,
+            media: automationMedia,
+          });
+          if (!mediaForDestination) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: imagem obrigatoria ausente`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "warning",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "missing_image_required",
+                product: selectedProduct,
+                hasMedia: false,
+              },
+              blockReason: "missing_image_required",
+              errorStep: "media_requirements",
+              messageType: "text",
+            });
+            continue;
+          }
+
+          const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
+          const sendResult = platform === "whatsapp" && WHATSAPP_URL
+            ? await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+                sessionId,
+                jid: externalId,
+                content: outboundMessage,
+                media: mediaForDestination,
+              }, scopedHeaders)
+            : platform === "telegram" && TELEGRAM_URL
+              ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+                  sessionId,
+                  chatId: externalId,
+                  message: outboundMessage,
+                  media: mediaForDestination,
+                }, scopedHeaders)
+              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponivel` } };
+
+          if (sendResult.error) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: ${sendResult.error.message}`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "error",
+              processingStatus: "failed",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "destination_send_failed",
+                error: sendResult.error.message,
+                product: selectedProduct,
+                hasMedia: true,
+              },
+              blockReason: "destination_send_failed",
+              errorStep: "automation_send",
+              messageType: "image",
+            });
+            continue;
+          }
+
+          sent += 1;
+          sentNow += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: groupName,
+            status: "success",
+            processingStatus: "sent",
+            message,
+            details: {
+              automationId,
+              source,
+              platform,
+              product: selectedProduct,
+              hasMedia: true,
+            },
+            messageType: "image",
+          });
+        }
+
+        if (sentNow > 0) {
+          await scheduleRouteForwardMediaDeletion({
+            userId: ownerUserId,
+            media: automationMedia,
+            delayMs: 120_000,
+          });
+          processed += 1;
+          await execute(
+            "UPDATE shopee_automations SET products_sent = products_sent + $1, updated_at = NOW() WHERE id = $2 AND user_id = $3",
+            [sentNow, automationId, ownerUserId],
+          );
+        }
+      }
+
+      ok(res, {
+        ok: failed === 0,
+        source,
+        scope: runAllUsers ? "global" : "user",
+        active: automations.length,
+        processed,
+        sent,
+        skipped,
+        failed,
+        errors: errors.slice(0, 30),
+      });
+      return;
+    }
+
     // â”€â”€ meli handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (funcName === "meli-vitrine-sync") {
       if (!effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
@@ -4144,27 +5197,11 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
 
     if (funcName === "meli-vitrine-list") {
-      let payload = await listMeliVitrine({
+      const payload = await listMeliVitrine({
         tab: params.tab,
         page: params.page,
         limit: params.limit,
       });
-
-      // Bootstrap snapshot automatically on first usage if the table is empty.
-      if (payload.total === 0) {
-        const bootstrap = await syncMeliVitrine({
-          source: isService ? "scheduler-bootstrap" : "frontend-bootstrap",
-          force: true,
-          onlyIfStale: false,
-        });
-        if (bootstrap.success) {
-          payload = await listMeliVitrine({
-            tab: params.tab,
-            page: params.page,
-            limit: params.limit,
-          });
-        }
-      }
 
       ok(res, payload);
       return;
@@ -4306,11 +5343,19 @@ rpcRouter.post("/rpc", async (req, res) => {
       );
 
       if (upstream.error) {
-        await execute(
-          "UPDATE meli_sessions SET status='error', last_checked_at=NOW(), error_message=$1 WHERE id=$2 AND user_id=$3",
-          [upstream.error.message, sessionId, userId],
-        );
-        fail(res, upstream.error.message);
+        const transientFailure = isTransientMicroserviceError(upstream.error);
+        if (transientFailure) {
+          await execute(
+            "UPDATE meli_sessions SET last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+            [`Falha temporaria ao validar sessao: ${upstream.error.message}`, sessionId, userId],
+          );
+        } else {
+          await execute(
+            "UPDATE meli_sessions SET status='error', last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+            [upstream.error.message, sessionId, userId],
+          );
+        }
+        fail(res, upstream.error.message, transientFailure ? 503 : 502);
         return;
       }
 
@@ -4335,6 +5380,20 @@ rpcRouter.post("/rpc", async (req, res) => {
             : "")
           || "Sessao expirada",
         );
+
+      const transientValidationFailure = isTransientMeliSessionValidationResult({
+        status,
+        errorMessage,
+        logs,
+      });
+      if (transientValidationFailure) {
+        await execute(
+          "UPDATE meli_sessions SET last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+          [`Falha temporaria ao validar sessao: ${errorMessage || "instabilidade no servico Mercado Livre"}`, sessionId, userId],
+        );
+        fail(res, errorMessage || "Falha temporaria ao validar sessao automaticamente", 503);
+        return;
+      }
 
       await execute(
         "UPDATE meli_sessions SET status=$1, account_name=$2, ml_user_id=$3, last_checked_at=NOW(), error_message=$4 WHERE id=$5 AND user_id=$6",
@@ -4394,6 +5453,8 @@ rpcRouter.post("/rpc", async (req, res) => {
       const productUrl = String(params.productUrl ?? params.url ?? "").trim();
       const sessionId = String(params.sessionId ?? "").trim();
       if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
+      if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
+      if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada nao parece ser do Mercado Livre"); return; }
       if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
       if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
 
@@ -4441,7 +5502,11 @@ rpcRouter.post("/rpc", async (req, res) => {
         ? params.urls.map((item) => String(item || "").trim()).filter(Boolean)
         : [];
       const sessionId = String(params.sessionId ?? "").trim();
-      if (urls.length === 0) { fail(res, "urls deve ser um array nao vazio"); return; }
+      const dedupedUrls: string[] = [...new Set<string>(urls)];
+      if (dedupedUrls.length === 0) { fail(res, "urls deve ser um array nao vazio"); return; }
+      if (dedupedUrls.length > MAX_MELI_CONVERT_BATCH) { fail(res, `Limite de ${MAX_MELI_CONVERT_BATCH} URLs por lote Mercado Livre`); return; }
+      if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
+      if (dedupedUrls.some((item) => !isMercadoLivreProductUrlLike(item))) { fail(res, "Uma ou mais URLs nao parecem ser do Mercado Livre"); return; }
       if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
       if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
 
@@ -4457,7 +5522,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         MELI_URL,
         "/api/meli/convert/batch",
         "POST",
-        { urls, sessionId: scopedSessionId },
+        { urls: dedupedUrls, sessionId: scopedSessionId },
         meliHeaders,
         120_000,
       );
@@ -4482,7 +5547,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       });
 
       ok(res, {
-        total: Number.isFinite(Number(payload.total)) ? Number(payload.total) : urls.length,
+        total: Number.isFinite(Number(payload.total)) ? Number(payload.total) : dedupedUrls.length,
         successful: Number.isFinite(Number(payload.successful))
           ? Number(payload.successful)
           : results.filter((item) => item.success).length,
@@ -5525,4 +6590,5 @@ rpcRouter.post("/rpc", async (req, res) => {
     res.status(500).json({ data: null, error: { message: msg } });
   }
 });
+
 

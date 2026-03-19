@@ -146,17 +146,27 @@ export default function LinkHubPublicPage() {
     <div
       className="min-h-screen selection:bg-white/10"
       style={{
-        background: LINK_HUB_PUBLIC_THEME.background,
-        color: LINK_HUB_PUBLIC_THEME.text,
+        background: "#08080c",
+        color: "#f0f0f5",
         fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
       }}
     >
+      {/* Noise grain overlay */}
+      <div
+        className="fixed inset-0 pointer-events-none opacity-[0.025] mix-blend-overlay"
+        style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+          backgroundSize: "200px 200px",
+        }}
+      />
+
+      {/* Ambient gradient orbs */}
       <div
         className="fixed inset-0 pointer-events-none"
         style={{
           background: `
-            radial-gradient(ellipse 60% 40% at 50% -5%, hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.12) 0%, transparent 60%),
-            radial-gradient(ellipse 40% 30% at 80% 60%, hsla(${hsl.h},${Math.max(hsl.s - 20, 0)}%,${Math.min(hsl.l + 10, 100)}%,0.04) 0%, transparent 50%)
+            radial-gradient(ellipse 55% 35% at 50% -8%, hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.10) 0%, transparent 65%),
+            radial-gradient(ellipse 35% 25% at 85% 65%, hsla(${hsl.h},${Math.max(hsl.s - 20, 0)}%,${Math.min(hsl.l + 10, 100)}%,0.04) 0%, transparent 55%)
           `,
         }}
       />
@@ -165,58 +175,58 @@ export default function LinkHubPublicPage() {
         initial={{ y: -40 }}
         animate={{ y: 0 }}
         transition={{ duration: 0.4, ease: "easeOut" }}
-        className="sticky top-0 z-50 text-center py-2 px-4 backdrop-blur-xl"
+        className="sticky top-0 z-50 text-center py-2.5 px-4 backdrop-blur-xl"
         style={{
           background: `linear-gradient(135deg, ${accent}, hsla(${(hsl.h + 15) % 360},${hsl.s}%,${Math.min(hsl.l + 8, 90)}%,1))`,
           color: textOnAccent,
           boxShadow: `0 4px 30px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.3)`,
         }}
       >
-        <p className="text-2xs sm:text-xs font-bold tracking-widest uppercase flex items-center justify-center gap-1.5">
+        <p className="text-2xs sm:text-xs font-bold tracking-[0.2em] uppercase flex items-center justify-center gap-2">
           <Star className="h-3 w-3" />
-          Vagas limitadas, entre antes que feche
+          Vagas limitadas — entre antes que feche
           <Star className="h-3 w-3" />
         </p>
       </motion.div>
 
       <section className="relative z-10">
-        <div className="ds-linkhub-shell pt-10 pb-6 sm:pt-14 sm:pb-8">
+        <div className="ds-linkhub-shell pt-12 pb-8 sm:pt-16 sm:pb-10">
           <motion.div
-            className="flex justify-center mb-5"
-            initial={{ opacity: 0, scale: 0.8, y: 10 }}
+            className="flex justify-center mb-6"
+            initial={{ opacity: 0, scale: 0.85, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
           >
             {logoUrl ? (
               <div className="relative">
-                <img src={logoUrl} alt={title} className="h-24 w-24 rounded-3xl object-cover" style={{ boxShadow: `0 8px 40px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.25)` }} />
-                <div className="absolute -inset-1 rounded-3xl -z-10" style={{ background: `linear-gradient(135deg, ${accentGlow}, transparent)`, filter: "blur(10px)" }} />
+                <img src={logoUrl} alt={title} className="h-20 w-20 sm:h-24 sm:w-24 rounded-2xl object-cover" style={{ boxShadow: `0 8px 40px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.3)` }} />
+                <div className="absolute -inset-2 rounded-3xl -z-10 animate-pulse" style={{ background: `radial-gradient(circle, hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.15), transparent 70%)` }} />
               </div>
             ) : (
               <div className="relative">
                 <div
-                  className="h-24 w-24 rounded-3xl flex items-center justify-center text-5xl font-black"
+                  className="h-20 w-20 sm:h-24 sm:w-24 rounded-2xl flex items-center justify-center text-4xl sm:text-5xl font-black"
                   style={{
-                    background: `linear-gradient(135deg, ${accent}, hsla(${(hsl.h + 20) % 360},${hsl.s}%,${Math.min(hsl.l + 12, 85)}%,1))`,
+                    background: `linear-gradient(135deg, ${accent}, hsla(${(hsl.h + 20) % 360},${hsl.s}%,${Math.min(hsl.l + 15, 85)}%,1))`,
                     color: textOnAccent,
-                    boxShadow: `0 8px 40px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.3)`,
+                    boxShadow: `0 8px 40px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.35)`,
                   }}
                 >
                   {title.charAt(0).toUpperCase()}
                 </div>
-                <div className="absolute -inset-2 rounded-3xl -z-10" style={{ background: accentGlow, filter: "blur(20px)" }} />
+                <div className="absolute -inset-3 rounded-3xl -z-10 animate-pulse" style={{ background: `radial-gradient(circle, hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.12), transparent 70%)` }} />
               </div>
             )}
           </motion.div>
 
           {totalMembers > 0 && (
-            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="flex justify-center mb-4">
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="flex justify-center mb-5">
               <span
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-2xs font-semibold backdrop-blur-sm border"
-                style={{ background: accentSoft, borderColor: accentBorder, color: accent }}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-2xs font-semibold backdrop-blur-md border"
+                style={{ background: "rgba(255,255,255,0.04)", borderColor: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.65)" }}
               >
-                <Crown className="h-3 w-3" />
-                +{totalMembers.toLocaleString("pt-BR")} membros ativos
+                <Crown className="h-3 w-3" style={{ color: accent }} />
+                <span style={{ color: accent, fontWeight: 800 }}>+{totalMembers.toLocaleString("pt-BR")}</span> membros ativos
               </span>
             </motion.div>
           )}
@@ -232,8 +242,8 @@ export default function LinkHubPublicPage() {
 
           {description && (
             <motion.p
-              className="mt-2.5 text-xs sm:text-sm text-center max-w-xs mx-auto leading-relaxed"
-              style={{ color: LINK_HUB_PUBLIC_THEME.textSubtle }}
+              className="mt-3 text-sm sm:text-base text-center max-w-xs mx-auto leading-relaxed"
+              style={{ color: "rgba(255,255,255,0.5)" }}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ delay: 0.3 }}
@@ -242,7 +252,7 @@ export default function LinkHubPublicPage() {
             </motion.p>
           )}
 
-          <motion.div className="mt-7 space-y-3" variants={stagger} initial="hidden" animate="show">
+          <motion.div className="mt-8 space-y-3" variants={stagger} initial="hidden" animate="show">
             {groups.map((group) => {
               const isWhatsApp = group.platform === "whatsapp";
               const inviteLink = getInviteLink(group);
@@ -256,37 +266,42 @@ export default function LinkHubPublicPage() {
                   href={inviteLink || "#"}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="group relative flex items-center gap-3.5 p-4 rounded-2xl border transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]"
+                  className="group relative flex items-center gap-3.5 p-4 rounded-2xl border transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] overflow-hidden"
                   style={{
-                    background: LINK_HUB_PUBLIC_THEME.surfaceMuted,
-                    borderColor: LINK_HUB_PUBLIC_THEME.borderMuted,
+                    background: "rgba(255,255,255,0.025)",
+                    borderColor: "rgba(255,255,255,0.06)",
                   }}
                   whileHover={{
-                    borderColor: accentBorder,
-                    boxShadow: `0 0 30px ${accentSoft}`,
+                    borderColor: `hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.2)`,
+                    boxShadow: `0 0 40px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.08)`,
                   }}
                 >
+                  {/* Hover glow effect */}
                   <div
-                    className="h-11 w-11 rounded-xl flex items-center justify-center text-white shrink-0 shadow-lg"
+                    className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+                    style={{ background: `radial-gradient(circle at 50% 100%, hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.04), transparent 70%)` }}
+                  />
+                  <div
+                    className="h-11 w-11 rounded-xl flex items-center justify-center text-white shrink-0 shadow-lg relative z-10"
                     style={{ background: platformGradient }}
                   >
                     <ChannelPlatformIcon platform={isWhatsApp ? "whatsapp" : "telegram"} className="h-5 w-5" />
                   </div>
 
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 relative z-10">
                     <p className="text-sm font-bold truncate">{label}</p>
-                    <p className="text-2xs mt-0.5 flex items-center gap-1" style={{ color: LINK_HUB_PUBLIC_THEME.textFaint }}>
+                    <p className="text-2xs mt-0.5 flex items-center gap-1" style={{ color: "rgba(255,255,255,0.35)" }}>
                       <Users className="h-2.5 w-2.5" />
                       {(group.member_count || 0).toLocaleString("pt-BR")} membros
                     </p>
                   </div>
 
                   <div
-                    className="px-4 py-2 rounded-xl text-xs font-bold shrink-0 flex items-center gap-1 transition-all duration-300 group-hover:gap-2"
+                    className="relative z-10 px-4 py-2 rounded-xl text-xs font-bold shrink-0 flex items-center gap-1 transition-all duration-300 group-hover:gap-2"
                     style={{
                       background: `linear-gradient(135deg, ${accent}, hsla(${(hsl.h + 15) % 360},${hsl.s}%,${Math.min(hsl.l + 10, 85)}%,1))`,
                       color: textOnAccent,
-                      boxShadow: `0 2px 16px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.25)`,
+                      boxShadow: `0 2px 20px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.3)`,
                     }}
                   >
                     Entrar
@@ -298,16 +313,16 @@ export default function LinkHubPublicPage() {
           </motion.div>
 
           {groups.length === 0 && (
-            <div className="text-center py-10 mt-4">
-              <p className="text-xs" style={{ color: LINK_HUB_PUBLIC_THEME.textFaint }}>Nenhum grupo disponível no momento.</p>
+            <div className="text-center py-12 mt-4">
+              <p className="text-sm" style={{ color: "rgba(255,255,255,0.25)" }}>Nenhum grupo disponível no momento.</p>
             </div>
           )}
         </div>
       </section>
 
-      <section className="relative z-10 py-7" style={{ borderTop: `1px solid ${LINK_HUB_PUBLIC_THEME.borderSoft}`, borderBottom: `1px solid ${LINK_HUB_PUBLIC_THEME.borderSoft}` }}>
+      <section className="relative z-10 py-8" style={{ borderTop: "1px solid rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
         <motion.div
-          className="ds-linkhub-section grid grid-cols-3 gap-3 text-center"
+          className="ds-linkhub-section grid grid-cols-3 gap-4 text-center"
           variants={stagger}
           initial="hidden"
           whileInView="show"
@@ -320,51 +335,54 @@ export default function LinkHubPublicPage() {
           ].map((item) => (
             <motion.div key={item.label} variants={fadeUp}>
               <p className="text-xl sm:text-2xl font-black" style={{ color: accent }}>{item.value}</p>
-              <p className="text-2xs mt-0.5 uppercase tracking-widest font-medium" style={{ color: LINK_HUB_PUBLIC_THEME.textFaint }}>{item.label}</p>
+              <p className="text-2xs mt-1 uppercase tracking-[0.15em] font-medium" style={{ color: "rgba(255,255,255,0.3)" }}>{item.label}</p>
             </motion.div>
           ))}
         </motion.div>
       </section>
 
-      <section className="relative z-10 py-8 sm:py-10">
+      <section className="relative z-10 py-10 sm:py-12">
         <div className="ds-linkhub-section">
-          <motion.h2 className="text-sm sm:text-base font-black text-center mb-5" initial={{ opacity: 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true }}>
+          <motion.h2 className="text-base sm:text-lg font-black text-center mb-6" initial={{ opacity: 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true }}>
             Por que entrar?
           </motion.h2>
-          <motion.div className="grid grid-cols-2 gap-2" variants={stagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.3 }}>
+          <motion.div className="grid grid-cols-2 gap-2.5" variants={stagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.3 }}>
             {benefits.map((item) => (
               <motion.div
                 key={item.text}
                 variants={fadeUp}
-                className="flex items-center gap-2.5 p-3 rounded-xl border"
-                style={{ background: LINK_HUB_PUBLIC_THEME.surfaceSoft, borderColor: LINK_HUB_PUBLIC_THEME.borderSoft }}
+                className="flex items-center gap-2.5 p-3.5 rounded-xl border backdrop-blur-sm"
+                style={{ background: "rgba(255,255,255,0.02)", borderColor: "rgba(255,255,255,0.05)" }}
               >
-                <div className="h-7 w-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: accentSoft }}>
-                  <item.icon className="h-3.5 w-3.5" style={{ color: accent }} />
+                <div className="h-8 w-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: `hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.10)` }}>
+                  <item.icon className="h-4 w-4" style={{ color: accent }} />
                 </div>
-                <p className="text-xs font-medium" style={{ color: LINK_HUB_PUBLIC_THEME.textMuted }}>{item.text}</p>
+                <p className="text-xs font-semibold" style={{ color: "rgba(255,255,255,0.7)" }}>{item.text}</p>
               </motion.div>
             ))}
           </motion.div>
         </div>
       </section>
 
-      <section className="relative z-10 py-8 sm:py-10">
+      <section className="relative z-10 py-10 sm:py-12">
         <div className="ds-linkhub-section">
-          <motion.h2 className="text-sm sm:text-base font-black text-center mb-5" initial={{ opacity: 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true }}>
+          <motion.h2 className="text-base sm:text-lg font-black text-center mb-6" initial={{ opacity: 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true }}>
             O que estão falando
           </motion.h2>
-          <motion.div className="space-y-2.5" variants={stagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.3 }}>
+          <motion.div className="space-y-3" variants={stagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.3 }}>
             {testimonials.map((item) => (
               <motion.div
                 key={item.name}
                 variants={fadeUp}
-                className="p-3.5 rounded-xl border"
-                style={{ background: LINK_HUB_PUBLIC_THEME.surfaceSoft, borderColor: LINK_HUB_PUBLIC_THEME.borderSoft }}
+                className="relative p-4 rounded-xl border overflow-hidden"
+                style={{ background: "rgba(255,255,255,0.02)", borderColor: "rgba(255,255,255,0.05)" }}
               >
-                <div className="flex items-center gap-2.5 mb-2">
+                {/* Accent left indicator */}
+                <div className="absolute top-0 left-0 w-1 h-full rounded-r" style={{ background: accent, opacity: 0.5 }} />
+
+                <div className="flex items-center gap-3 mb-2.5 pl-2">
                   <div
-                    className="h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+                    className="h-9 w-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
                     style={{
                       background: `linear-gradient(135deg, ${accent}, hsla(${(hsl.h + 20) % 360},${hsl.s}%,${Math.min(hsl.l + 12, 85)}%,1))`,
                       color: textOnAccent,
@@ -373,15 +391,15 @@ export default function LinkHubPublicPage() {
                     {item.name.charAt(0)}
                   </div>
                   <div>
-                    <p className="text-xs font-bold" style={{ color: LINK_HUB_PUBLIC_THEME.textMuted }}>{item.name}</p>
-                    <div className="flex gap-0.5">
+                    <p className="text-xs font-bold" style={{ color: "rgba(255,255,255,0.8)" }}>{item.name}</p>
+                    <div className="flex gap-0.5 mt-0.5">
                       {[...Array(5)].map((_, index) => (
-                        <Star key={index} className="h-2.5 w-2.5 fill-current" style={{ color: LINK_HUB_PUBLIC_THEME.star }} />
+                        <Star key={index} className="h-2.5 w-2.5 fill-current" style={{ color: "#facc15" }} />
                       ))}
                     </div>
                   </div>
                 </div>
-                <p className="text-xs leading-relaxed" style={{ color: LINK_HUB_PUBLIC_THEME.textDim }}>
+                <p className="text-xs leading-relaxed pl-14" style={{ color: "rgba(255,255,255,0.5)" }}>
                   "{item.text}"
                 </p>
               </motion.div>
@@ -395,10 +413,10 @@ export default function LinkHubPublicPage() {
           initial={{ y: 80 }}
           animate={{ y: 0 }}
           transition={{ delay: 0.5, duration: 0.4, ease: "easeOut" }}
-          className="sticky bottom-0 z-50 p-4 backdrop-blur-xl"
+          className="sticky bottom-0 z-50 p-4 pb-5 backdrop-blur-xl"
           style={{
-            background: "linear-gradient(to top, rgba(5,5,7,0.95), rgba(5,5,7,0.7))",
-            borderTop: `1px solid ${LINK_HUB_PUBLIC_THEME.borderSoft}`,
+            background: "linear-gradient(to top, rgba(8,8,12,0.98), rgba(8,8,12,0.75))",
+            borderTop: "1px solid rgba(255,255,255,0.04)",
           }}
         >
           <div className="ds-linkhub-shell px-0">
@@ -406,11 +424,11 @@ export default function LinkHubPublicPage() {
               href={primaryInviteLink || "#"}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 w-full py-3.5 rounded-2xl text-sm font-bold transition-all duration-300 active:scale-[0.97]"
+              className="flex items-center justify-center gap-2.5 w-full py-4 rounded-2xl text-sm font-bold transition-all duration-300 active:scale-[0.97]"
               style={{
                 background: `linear-gradient(135deg, ${accent}, hsla(${(hsl.h + 15) % 360},${hsl.s}%,${Math.min(hsl.l + 10, 85)}%,1))`,
                 color: textOnAccent,
-                boxShadow: `0 4px 30px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.3)`,
+                boxShadow: `0 4px 30px hsla(${hsl.h},${hsl.s}%,${hsl.l}%,0.35)`,
               }}
             >
               <ChannelPlatformIcon platform={primaryGroup?.platform === "whatsapp" ? "whatsapp" : "telegram"} className="h-4 w-4" />
@@ -421,8 +439,8 @@ export default function LinkHubPublicPage() {
         </motion.div>
       )}
 
-      <footer className="relative z-10 py-6 text-center" style={{ paddingBottom: groups.length > 0 ? "80px" : "24px" }}>
-        <p className="text-2xs font-medium" style={{ color: LINK_HUB_PUBLIC_THEME.textFaint }}>
+      <footer className="relative z-10 py-8 text-center" style={{ paddingBottom: groups.length > 0 ? "90px" : "32px" }}>
+        <p className="text-2xs font-medium" style={{ color: "rgba(255,255,255,0.2)" }}>
           Powered by <span style={{ color: accent }}>Auto Links</span>
         </p>
       </footer>

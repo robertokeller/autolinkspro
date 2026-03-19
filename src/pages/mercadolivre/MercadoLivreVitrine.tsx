@@ -2,20 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/EmptyState";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { RoutePendingState } from "@/components/RoutePendingState";
+import { MercadoLivreScheduleModal } from "@/components/mercadolivre/MercadoLivreScheduleModal";
 import { useMercadoLivreSessions } from "@/hooks/useMercadoLivreSessions";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { ExternalLink, Loader2, RefreshCw, ShoppingCart } from "lucide-react";
+import { CalendarDays, Copy, ExternalLink, Loader2, RefreshCw, ShoppingCart, Star, Store } from "lucide-react";
 
 type MeliVitrineItem = {
   id: string;
   tab: string;
-  sourceUrl: string;
   title: string;
   productUrl: string;
   imageUrl: string;
@@ -28,23 +30,38 @@ type MeliVitrineItem = {
   shippingText: string;
   installmentsText: string;
   badgeText: string;
-  collectedAt: string;
 };
 
 type MeliVitrinePayload = {
-  tab: string;
   page: number;
   limit: number;
   total: number;
   hasMore: boolean;
   items: MeliVitrineItem[];
-  tabs: Array<{ key: string; label: string; activeCount: number }>;
-  lastSyncAt: string | null;
-  stale: boolean;
+  tabs: Array<{ key: string; label: string; activeCount?: number }>;
+};
+
+type MeliScheduleProduct = {
+  title?: string;
+  affiliateLink: string;
+  productUrl?: string;
+  imageUrl?: string;
+  price?: number | null;
+  oldPrice?: number | null;
+  installmentsText?: string;
+  seller?: string;
+  rating?: number | null;
+  reviewsCount?: number | null;
+};
+
+type MeliConvertedPreview = {
+  product: MeliVitrineItem;
+  affiliateLink: string;
+  conversionTimeMs: number;
 };
 
 const PAGE_LIMIT = 24;
-const DEFAULT_TAB = "all";
+const DEFAULT_TAB = "top_performance";
 
 const brlFormatter = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -52,16 +69,31 @@ const brlFormatter = new Intl.NumberFormat("pt-BR", {
   maximumFractionDigits: 2,
 });
 
-function formatPrice(value: number | null | undefined) {
+function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "";
   return brlFormatter.format(value);
 }
 
-function formatSyncDate(value: string | null) {
-  if (!value) return "nunca";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "nunca";
-  return date.toLocaleString("pt-BR");
+function formatCount(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return "";
+  return Math.floor(value).toLocaleString("pt-BR");
+}
+
+function calculateDiscountPercent(oldPrice: number | null | undefined, price: number | null | undefined): number {
+  if (oldPrice === null || oldPrice === undefined || !Number.isFinite(oldPrice) || oldPrice <= 0) return 0;
+  if (price === null || price === undefined || !Number.isFinite(price) || price <= 0) return 0;
+  if (oldPrice <= price) return 0;
+  const percent = Math.round(((oldPrice - price) / oldPrice) * 100);
+  return Number.isFinite(percent) ? Math.max(0, percent) : 0;
+}
+
+function normalizeInstallmentsText(value: string): string {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  const match = normalized.match(/(\d{1,2})x\s*R\$\s*([\d.]+(?:,\d{1,2})?)/i);
+  if (!match) return normalized.replace(/^ou\s+/i, "").trim();
+  const suffix = /sem juros/i.test(normalized) ? " sem juros" : "";
+  return `${match[1]}x de R$${match[2]}${suffix}`;
 }
 
 export default function MercadoLivreVitrine() {
@@ -69,16 +101,26 @@ export default function MercadoLivreVitrine() {
   const [page, setPage] = useState(1);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [convertingProductId, setConvertingProductId] = useState("");
-  const [convertedByProductId, setConvertedByProductId] = useState<Record<string, string>>({});
+  const [schedulingProductId, setSchedulingProductId] = useState("");
+  const [scheduleProduct, setScheduleProduct] = useState<MeliScheduleProduct | null>(null);
+  const [convertedPreview, setConvertedPreview] = useState<MeliConvertedPreview | null>(null);
 
-  const { sessions, isLoading: sessionsLoading } = useMercadoLivreSessions({ enableAutoMonitor: false });
+  const { sessions } = useMercadoLivreSessions({ enableAutoMonitor: false });
+  const activeSessions = useMemo(
+    () => sessions.filter((session) => session.status === "active"),
+    [sessions],
+  );
 
   useEffect(() => {
-    if (selectedSessionId) return;
-    if (sessions.length === 0) return;
-    const activeSession = sessions.find((session) => session.status === "active");
-    setSelectedSessionId(activeSession?.id || sessions[0].id);
-  }, [selectedSessionId, sessions]);
+    if (activeSessions.length === 0) {
+      if (selectedSessionId) setSelectedSessionId("");
+      return;
+    }
+
+    const stillSelected = activeSessions.some((session) => session.id === selectedSessionId);
+    if (stillSelected) return;
+    setSelectedSessionId(activeSessions[0].id);
+  }, [activeSessions, selectedSessionId]);
 
   const { data, isLoading, isFetching, refetch, error } = useQuery({
     queryKey: ["meli-vitrine", activeTab, page],
@@ -94,61 +136,143 @@ export default function MercadoLivreVitrine() {
   });
 
   const payload = data ?? {
-    tab: activeTab,
     page,
     limit: PAGE_LIMIT,
     total: 0,
     hasMore: false,
     items: [],
     tabs: [],
-    lastSyncAt: null,
-    stale: true,
   };
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(payload.total / Math.max(1, payload.limit))), [payload.total, payload.limit]);
+  const tabs = useMemo(() => {
+    if (payload.tabs.length > 0) return payload.tabs;
+    return [{ key: DEFAULT_TAB, label: "Top Performance" }];
+  }, [payload.tabs]);
+
+  useEffect(() => {
+    if (!tabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(tabs[0]?.key || DEFAULT_TAB);
+      setPage(1);
+    }
+  }, [activeTab, tabs]);
+
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(payload.total / Math.max(1, payload.limit))),
+    [payload.total, payload.limit],
+  );
 
   const handleTabChange = (tabKey: string) => {
+    if (tabKey === activeTab) return;
     setActiveTab(tabKey);
     setPage(1);
   };
 
+  const buildScheduleProduct = (item: MeliVitrineItem, affiliateLink: string): MeliScheduleProduct => ({
+    title: item.title,
+    affiliateLink,
+    productUrl: item.productUrl,
+    imageUrl: item.imageUrl,
+    price: item.price,
+    oldPrice: item.oldPrice,
+    installmentsText: item.installmentsText,
+    seller: item.seller,
+    rating: item.rating,
+    reviewsCount: item.reviewsCount,
+  });
+
+  const convertProductLink = async (input: {
+    productUrl: string;
+    source: string;
+  }) => {
+    if (!selectedSessionId) {
+      throw new Error("Nenhuma sessao Mercado Livre ativa para conversao.");
+    }
+
+    const response = await invokeBackendRpc<{
+      affiliateLink?: string;
+      conversionTimeMs?: number;
+    }>("meli-convert-link", {
+      body: {
+        sessionId: selectedSessionId,
+        url: input.productUrl,
+        source: input.source,
+      },
+    });
+
+    const affiliateLink = String(response.affiliateLink || "").trim();
+    if (!affiliateLink) {
+      throw new Error("Conversao retornou link vazio.");
+    }
+
+    return {
+      affiliateLink,
+      conversionTimeMs: Number(response.conversionTimeMs || 0),
+    };
+  };
+
   const handleConvertClick = async (item: MeliVitrineItem) => {
     if (!selectedSessionId) {
-      toast.error("Selecione uma sessão Mercado Livre ativa para converter.");
+      toast.error("Nenhuma sessao Mercado Livre ativa para conversao.");
       return;
     }
 
     setConvertingProductId(item.id);
     try {
-      const response = await invokeBackendRpc<{
-        affiliateLink?: string;
-        conversionTimeMs?: number;
-      }>("meli-convert-link", {
-        body: {
-          sessionId: selectedSessionId,
-          url: item.productUrl,
-          source: "meli-vitrine",
-        },
+      const { affiliateLink, conversionTimeMs } = await convertProductLink({
+        productUrl: item.productUrl,
+        source: "meli-vitrine",
       });
 
-      const affiliateLink = String(response.affiliateLink || "").trim();
-      if (!affiliateLink) {
-        throw new Error("Conversão retornou link vazio.");
-      }
-
-      setConvertedByProductId((prev) => ({ ...prev, [item.id]: affiliateLink }));
-      window.open(affiliateLink, "_blank", "noopener,noreferrer");
-
-      const conversionTimeMs = Number(response.conversionTimeMs || 0);
-      toast.success("Link afiliado gerado!", {
-        description: conversionTimeMs > 0
-          ? `Tempo de conversão: ${conversionTimeMs} ms`
-          : "O link afiliado foi aberto em nova aba.",
+      setConvertedPreview({
+        product: item,
+        affiliateLink,
+        conversionTimeMs,
       });
+
+      toast.success("Link afiliado gerado com sucesso.");
     } catch (convertError) {
       toast.error(convertError instanceof Error ? convertError.message : "Falha ao converter link.");
     } finally {
       setConvertingProductId("");
+    }
+  };
+
+  const handleScheduleClick = async (item: MeliVitrineItem) => {
+    if (!selectedSessionId) {
+      toast.error("Conecte uma sessao Mercado Livre ativa para agendar com link afiliado.");
+      return;
+    }
+
+    setSchedulingProductId(item.id);
+    try {
+      const { affiliateLink } = await convertProductLink({
+        productUrl: item.productUrl,
+        source: "meli-vitrine-schedule",
+      });
+
+      setScheduleProduct(buildScheduleProduct(item, affiliateLink));
+    } catch (scheduleError) {
+      toast.error(scheduleError instanceof Error ? scheduleError.message : "Falha ao preparar agendamento.");
+    } finally {
+      setSchedulingProductId("");
+    }
+  };
+
+  const handleCreateScheduleFromConverted = () => {
+    if (!convertedPreview) return;
+    setScheduleProduct(buildScheduleProduct(convertedPreview.product, convertedPreview.affiliateLink));
+    setConvertedPreview(null);
+  };
+
+  const handleCopyConvertedLink = async () => {
+    const link = String(convertedPreview?.affiliateLink || "").trim();
+    if (!link) return;
+
+    try {
+      await navigator.clipboard.writeText(link);
+      toast.success("Link afiliado copiado.");
+    } catch {
+      toast.error("Nao foi possivel copiar o link.");
     }
   };
 
@@ -157,180 +281,263 @@ export default function MercadoLivreVitrine() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6">
+    <div className="mx-auto w-full max-w-[1380px] space-y-6">
       <PageHeader
-        title="Vitrine ML"
-        description="Ofertas do Mercado Livre atualizadas automaticamente a cada 2 horas."
+        title="Vitrine de ofertas"
+        description="Produtos em destaque com links de afiliado"
       >
         <Button size="sm" variant="outline" onClick={() => { void refetch(); }} disabled={isFetching}>
-          <RefreshCw className={`mr-1.5 h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
+          <RefreshCw className={cn("mr-1.5 h-4 w-4", isFetching && "animate-spin")} />
           Atualizar
         </Button>
       </PageHeader>
 
-      <Card className="glass">
-        <CardContent className="grid gap-3 pt-5 md:grid-cols-3">
-          <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Último sync</p>
-            <p className="text-sm font-medium">{formatSyncDate(payload.lastSyncAt)}</p>
-          </div>
-          <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Status da vitrine</p>
-            <p className="text-sm font-medium">{payload.stale ? "Desatualizada" : "Atualizada"}</p>
-          </div>
-          <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Sessão para conversão</p>
-            <Select value={selectedSessionId || undefined} onValueChange={setSelectedSessionId} disabled={sessionsLoading || sessions.length === 0}>
-              <SelectTrigger className="mt-1 h-9">
-                <SelectValue placeholder={sessions.length === 0 ? "Sem sessão ML ativa" : "Selecione a sessão"} />
-              </SelectTrigger>
-              <SelectContent>
-                {sessions.map((session) => (
-                  <SelectItem key={session.id} value={session.id}>
-                    {session.name} {session.status === "active" ? "• ativa" : `• ${session.status}`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
-
-      <ScrollArea className="w-full whitespace-nowrap">
-        <div className="flex min-w-full gap-2 pb-2">
-          {payload.tabs.map((tab) => (
-            <Button
-              key={tab.key}
-              size="sm"
-              variant={activeTab === tab.key ? "default" : "outline"}
-              className="h-9 shrink-0 rounded-full px-4"
-              onClick={() => handleTabChange(tab.key)}
-            >
-              {tab.label} ({tab.activeCount})
-            </Button>
-          ))}
-        </div>
-        <ScrollBar orientation="horizontal" />
-      </ScrollArea>
-
-      {error && (
-        <Card>
-          <CardContent className="pt-6 text-sm text-destructive">
-            {error instanceof Error ? error.message : "Não foi possível carregar a vitrine ML."}
+      {activeSessions.length === 0 && (
+        <Card className="border-amber-500/30">
+          <CardContent className="pt-4 text-sm text-muted-foreground">
+            Conecte uma sessao Mercado Livre ativa em Configuracoes para habilitar a conversao e agendamento de links nesta vitrine.
           </CardContent>
         </Card>
       )}
 
-      {!error && payload.items.length === 0 && (
-        <EmptyState
-          icon={ShoppingCart}
-          title="Sem produtos na vitrine"
-          description="Aguarde o próximo sync ou clique em Atualizar para tentar novamente."
-        />
-      )}
+      <div className="space-y-5">
+        <ScrollArea className="w-full whitespace-nowrap">
+          <div className="flex min-w-full justify-center gap-2.5 pb-2">
+            {tabs.map((tab) => (
+              <Button
+                key={tab.key}
+                size="sm"
+                variant={activeTab === tab.key ? "default" : "outline"}
+                className="h-9 shrink-0 rounded-full px-4 text-sm"
+                onClick={() => handleTabChange(tab.key)}
+                disabled={isFetching}
+              >
+                {tab.label}
+              </Button>
+            ))}
+          </div>
+          <ScrollBar orientation="horizontal" />
+        </ScrollArea>
 
-      {!error && payload.items.length > 0 && (
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
-          {payload.items.map((item) => {
-            const converting = convertingProductId === item.id;
-            const convertedLink = convertedByProductId[item.id] || "";
+        {!error && (
+          <p className="text-sm text-muted-foreground">
+            {payload.total.toLocaleString("pt-BR")} itens encontrados
+          </p>
+        )}
 
-            return (
-              <Card key={item.id} className="overflow-hidden">
-                <CardHeader className="p-0">
-                  <div className="aspect-square bg-muted">
+        {error && (
+          <Card>
+            <CardContent className="pt-6 text-sm text-destructive">
+              {error instanceof Error ? error.message : "Nao foi possivel carregar a vitrine ML."}
+            </CardContent>
+          </Card>
+        )}
+
+        {!error && payload.items.length === 0 && (
+          <EmptyState
+            icon={ShoppingCart}
+            title="Sem produtos na vitrine"
+            description="Aguarde o proximo sync ou clique em Atualizar para tentar novamente."
+          />
+        )}
+
+        {!error && payload.items.length > 0 && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {payload.items.map((item) => {
+              const converting = convertingProductId === item.id;
+              const scheduling = schedulingProductId === item.id;
+              const discountPercent = calculateDiscountPercent(item.oldPrice, item.price);
+              const installmentsText = normalizeInstallmentsText(item.installmentsText);
+              const reviewsCountLabel = formatCount(item.reviewsCount);
+
+              return (
+                <Card
+                  key={item.id}
+                  className="group flex h-full flex-col overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg"
+                >
+                  <div className="relative aspect-square overflow-hidden bg-muted/40">
                     <img
                       src={item.imageUrl}
                       alt={item.title}
                       loading="lazy"
-                      className="h-full w-full object-cover"
+                      className="h-full w-full object-contain p-2 transition-transform duration-300 group-hover:scale-105"
+                      onError={(event) => { event.currentTarget.src = "/placeholder.svg"; }}
                     />
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-2.5 p-3">
-                  <p className="line-clamp-3 text-sm font-medium">{item.title}</p>
 
-                  {item.badgeText && <p className="text-xs font-semibold text-primary">{item.badgeText}</p>}
-                  {item.seller && <p className="text-xs text-muted-foreground">{item.seller}</p>}
-                  {(item.rating || item.reviewsCount) && (
-                    <p className="text-xs text-muted-foreground">
-                      {item.rating ? `${item.rating.toFixed(1)} ⭐` : ""} {item.reviewsCount ? `(${item.reviewsCount})` : ""}
+                    {discountPercent > 0 && (
+                      <Badge className="absolute right-2 top-2 bg-destructive text-xs text-white">
+                        -{discountPercent}%
+                      </Badge>
+                    )}
+                  </div>
+
+                  <CardContent className="flex flex-1 flex-col gap-2.5 p-3.5">
+                    <p className="line-clamp-2 min-h-[2.75rem] text-sm font-semibold leading-5">
+                      {item.title}
                     </p>
-                  )}
 
-                  {item.oldPrice && <p className="text-xs text-muted-foreground line-through">{formatPrice(item.oldPrice)}</p>}
-                  <p className="text-base font-bold">{formatPrice(item.price)}</p>
-                  {item.discountText && <p className="text-xs font-medium text-green-600">{item.discountText}</p>}
-                  {item.shippingText && <p className="text-xs text-muted-foreground">{item.shippingText}</p>}
-                  {item.installmentsText && <p className="line-clamp-2 text-xs text-muted-foreground">{item.installmentsText}</p>}
-
-                  <div className="flex gap-2 pt-1">
-                    <Button asChild variant="outline" size="sm" className="flex-1">
-                      <a href={item.productUrl} target="_blank" rel="noreferrer">
-                        <ExternalLink className="mr-1 h-3.5 w-3.5" />
-                        Anúncio
-                      </a>
-                    </Button>
-
-                    <Button
-                      size="sm"
-                      className="flex-1"
-                      disabled={converting}
-                      onClick={() => { void handleConvertClick(item); }}
-                    >
-                      {converting ? (
-                        <>
-                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                          Convertendo
-                        </>
-                      ) : (
-                        "Converter"
+                    <div className="space-y-1">
+                      {item.seller && (
+                        <p className="line-clamp-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                          <Store className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">{item.seller}</span>
+                        </p>
                       )}
-                    </Button>
-                  </div>
 
-                  {convertedLink && (
-                    <a
-                      href={convertedLink}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block truncate text-xs text-primary hover:underline"
-                      title={convertedLink}
-                    >
-                      {convertedLink}
-                    </a>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                        {item.rating ? (
+                          <span className="inline-flex items-center gap-1">
+                            <Star className="h-3.5 w-3.5 fill-warning text-warning" />
+                            {item.rating.toFixed(1)}
+                          </span>
+                        ) : null}
+                        <span>{reviewsCountLabel ? `${reviewsCountLabel} avaliacoes` : "Sem avaliacoes"}</span>
+                      </div>
+                    </div>
 
-      {!error && payload.total > 0 && (
-        <div className="flex items-center justify-between rounded-lg border bg-card px-3 py-2 text-sm">
-          <span>Mostrando {payload.items.length} de {payload.total} itens</span>
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={page <= 1}
-              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-            >
-              Anterior
-            </Button>
-            <span>Página {page} de {totalPages}</span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!payload.hasMore}
-              onClick={() => setPage((prev) => prev + 1)}
-            >
-              Próxima
-            </Button>
+                    <div className="space-y-1">
+                      {item.oldPrice && (
+                        <p className="text-xs text-muted-foreground line-through">
+                          {formatPrice(item.oldPrice)}
+                        </p>
+                      )}
+                      <p className="text-xl font-bold tracking-tight text-primary">{formatPrice(item.price)}</p>
+                      {installmentsText && (
+                        <p className="line-clamp-1 text-xs text-muted-foreground">{installmentsText}</p>
+                      )}
+                    </div>
+
+                    <div className="mt-auto flex items-center gap-2 pt-1">
+                      <Button asChild size="sm" variant="outline" className="h-9 flex-1 text-xs">
+                        <a href={item.productUrl} target="_blank" rel="noreferrer">
+                          <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                          Anuncio
+                        </a>
+                      </Button>
+
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        className="h-9 w-9 shrink-0"
+                        title="Agendar envio"
+                        disabled={scheduling || !selectedSessionId}
+                        onClick={() => { void handleScheduleClick(item); }}
+                      >
+                        {scheduling ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <CalendarDays className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        className="h-9 flex-1 text-xs"
+                        disabled={converting || !selectedSessionId}
+                        onClick={() => { void handleConvertClick(item); }}
+                      >
+                        {converting ? (
+                          <>
+                            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                            Convertendo...
+                          </>
+                        ) : (
+                          "Converter"
+                        )}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
-        </div>
-      )}
+        )}
+
+        {!error && payload.total > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-sm">
+            <span className="text-muted-foreground">Pagina {page} de {totalPages}</span>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={page <= 1}
+                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+              >
+                Anterior
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!payload.hasMore}
+                onClick={() => setPage((prev) => prev + 1)}
+              >
+                Proxima
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <Dialog open={!!convertedPreview} onOpenChange={(open) => { if (!open) setConvertedPreview(null); }}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Link convertido com sucesso</DialogTitle>
+            <DialogDescription>
+              O link de afiliado foi gerado usando o conversor padrao. Voce pode copiar, abrir ou criar um agendamento agora.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border bg-muted/30 p-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Produto</p>
+              <p className="mt-1 line-clamp-2 text-sm font-medium">
+                {convertedPreview?.product.title || ""}
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Link afiliado</p>
+              <p className="mt-1 break-all font-mono text-sm text-primary">
+                {convertedPreview?.affiliateLink || ""}
+              </p>
+            </div>
+
+            {!!convertedPreview?.conversionTimeMs && (
+              <p className="text-xs text-muted-foreground">
+                Tempo de conversao: {convertedPreview.conversionTimeMs} ms
+              </p>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button variant="outline" onClick={() => { void handleCopyConvertedLink(); }}>
+              <Copy className="mr-1.5 h-4 w-4" />
+              Copiar link
+            </Button>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild variant="outline">
+                <a href={convertedPreview?.affiliateLink || "#"} target="_blank" rel="noreferrer">
+                  <ExternalLink className="mr-1.5 h-4 w-4" />
+                  Abrir link
+                </a>
+              </Button>
+              <Button onClick={handleCreateScheduleFromConverted}>
+                <CalendarDays className="mr-1.5 h-4 w-4" />
+                Criar agendamento
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <MercadoLivreScheduleModal
+        open={!!scheduleProduct}
+        onOpenChange={(open) => {
+          if (!open) setScheduleProduct(null);
+        }}
+        product={scheduleProduct || undefined}
+      />
     </div>
   );
 }

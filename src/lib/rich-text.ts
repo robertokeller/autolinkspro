@@ -89,9 +89,6 @@ export function renderRichTextPreviewHtml(text: string): string {
     .replace(/\n/g, "<br />");
 }
 
-/** @deprecated renamed to renderRichTextPreviewHtml */
-export const renderBoldPreviewHtml = renderRichTextPreviewHtml;
-
 /**
  * Renders a raw template (before placeholder substitution) into HTML for
  * in-editor preview, aware of the {imagem} placeholder.

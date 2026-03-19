@@ -62,6 +62,26 @@ export function ProtectedAppRoutes() {
           )}
         />
         <Route
+          path={ROUTES.app.automacoesMeli}
+          element={(
+            <FeatureRouteGuard feature="mercadoLivre">
+              <FeatureRouteGuard feature="shopeeAutomations">
+                <Pages.MercadoLivreAutomacoes />
+              </FeatureRouteGuard>
+            </FeatureRouteGuard>
+          )}
+        />
+        <Route
+          path={ROUTES.app.templatesMeli}
+          element={(
+            <FeatureRouteGuard feature="mercadoLivre">
+              <FeatureRouteGuard feature="templates">
+                <Pages.TemplatesMeli />
+              </FeatureRouteGuard>
+            </FeatureRouteGuard>
+          )}
+        />
+        <Route
           path={ROUTES.app.mercadolivreConfiguracoes}
           element={(
             <FeatureRouteGuard feature="mercadoLivre">

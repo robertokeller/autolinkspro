@@ -6,6 +6,10 @@ import { requireAuth } from "./auth.js";
 export const restRouter = Router();
 restRouter.use(requireAuth);
 
+const MAX_SELECT_LIMIT = 500;
+const MAX_MUTATION_ROWS = 200;
+const MAX_FILTERS = 50;
+
 // ─── Allowed tables and their ownership rules ─────────────────────────────────
 // Tables with direct user_id column
 const USER_OWNED = new Set([
@@ -85,6 +89,13 @@ function safeCols(cols: string): string {
   }).join(", ");
 }
 
+function toPositiveInt(value: unknown, min: number, max: number): number | null {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < min) return null;
+  return Math.min(parsed, max);
+}
+
 // ─── Filter building ──────────────────────────────────────────────────────────
 type Filter = { type: string; col: string; val: unknown };
 
@@ -137,6 +148,15 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     options?: Record<string, unknown>;
   };
 
+  const normalizedFilters = Array.isArray(filters) ? filters : [];
+  const normalizedOptions = (options && typeof options === "object" && !Array.isArray(options))
+    ? options
+    : {};
+
+  if (normalizedFilters.length > MAX_FILTERS) {
+    res.status(400).json({ data: null, count: null, error: { message: `Quantidade maxima de filtros excedida (${MAX_FILTERS})` } }); return;
+  }
+
   // Block writes to system tables for non-admins (reads remain accessible)
   if (SELF_WRITE_BLOCKED.has(table) && !effectiveAdmin && op !== "select") {
     res.status(403).json({ data: null, count: null, error: { message: "Acesso negado" } }); return;
@@ -147,7 +167,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     // ── SELECT ─────────────────────────────────────────────────────────────────
     if (op === "select") {
       const params: unknown[] = [];
-      const whereFilters: Filter[] = [...filters];
+      const whereFilters: Filter[] = [...normalizedFilters];
 
       // Inject user scoping
       if (USER_OWNED.has(table)) {
@@ -163,7 +183,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       let cols = "*";
       try { cols = columns && columns.trim() ? safeCols(columns) : "*"; } catch { /* fallback */ }
 
-      const isCount = options.head === true || options.count === "exact";
+      const isCount = normalizedOptions.head === true || normalizedOptions.count === "exact";
       const selectExpr = isCount ? "COUNT(*)" : cols;
 
       let whereSql = "";
@@ -181,11 +201,12 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       let sql = `SELECT ${selectExpr} FROM "${table}" ${whereSql}`;
 
       if (!isCount) {
-        const ordArr = Array.isArray(options.order) ? options.order : [];
+        const ordArr = (Array.isArray(normalizedOptions.order) ? normalizedOptions.order : []).slice(0, 5);
         if (ordArr.length > 0) {
           sql += " ORDER BY " + ordArr.map((o: Record<string, unknown>) => `${safeIdent(String(o.col))} ${o.ascending === false ? "DESC" : "ASC"}`).join(", ");
         }
-        if (options.limit) sql += ` LIMIT ${Math.min(Number(options.limit), 10000)}`;
+        const safeLimit = toPositiveInt(normalizedOptions.limit, 1, MAX_SELECT_LIMIT);
+        if (safeLimit) sql += ` LIMIT ${safeLimit}`;
       }
 
       const result = await client.query(sql, params);
@@ -195,8 +216,8 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       }
 
       const rows = result.rows;
-      if (options.maybeSingle) { res.json({ data: rows[0] ?? null, count: null, error: null }); return; }
-      if (options.single) {
+      if (normalizedOptions.maybeSingle) { res.json({ data: rows[0] ?? null, count: null, error: null }); return; }
+      if (normalizedOptions.single) {
         if (rows.length === 0) { res.json({ data: null, count: null, error: { message: "No rows found" } }); return; }
         res.json({ data: rows[0], count: null, error: null }); return;
       }
@@ -206,8 +227,12 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     // ── INSERT ─────────────────────────────────────────────────────────────────
     if (op === "insert") {
       const rows = Array.isArray(data) ? data : [data];
+      if (rows.length > MAX_MUTATION_ROWS) {
+        res.status(400).json({ data: null, count: null, error: { message: `Limite maximo de ${MAX_MUTATION_ROWS} registros por insert` } }); return;
+      }
       const inserted: unknown[] = [];
       for (const row of rows as Record<string, unknown>[]) {
+        if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("Payload de insert invalido");
         if (!row.id) row.id = uuid();
         // Always force user_id from JWT — never trust client-supplied value
         if (USER_OWNED.has(table)) row.user_id = userId;
@@ -240,6 +265,9 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     // ── UPDATE ─────────────────────────────────────────────────────────────────
     if (op === "update") {
       const updateData = data as Record<string, unknown>;
+      if (!updateData || typeof updateData !== "object" || Array.isArray(updateData)) {
+        res.status(400).json({ data: null, count: null, error: { message: "Payload de update invalido" } }); return;
+      }
       // Strip admin-only columns to prevent privilege escalation via self-service
       if (!effectiveAdmin && NON_ADMIN_WRITE_DENIED_COLUMNS[table]) {
         for (const col of NON_ADMIN_WRITE_DENIED_COLUMNS[table]) delete updateData[col];
@@ -253,7 +281,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
         return `${safeIdent(k)} = $${params.length}`;
       }).join(", ");
 
-      const whereFilters: Filter[] = [...filters];
+      const whereFilters: Filter[] = [...normalizedFilters];
       if ((USER_OWNED.has(table) || table === "profiles") && !effectiveAdmin) whereFilters.push({ type: "eq", col: "user_id", val: userId });
       let whereSql: string;
       if (PARENT_SCOPED[table] && !effectiveAdmin) {
@@ -274,7 +302,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     // ── DELETE ─────────────────────────────────────────────────────────────────
     if (op === "delete") {
       const params: unknown[] = [];
-      const whereFilters: Filter[] = [...filters];
+      const whereFilters: Filter[] = [...normalizedFilters];
       if ((USER_OWNED.has(table) || table === "profiles") && !effectiveAdmin) whereFilters.push({ type: "eq", col: "user_id", val: userId });
       let whereSql: string;
       if (PARENT_SCOPED[table] && !effectiveAdmin) {
@@ -295,11 +323,15 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     // ── UPSERT ─────────────────────────────────────────────────────────────────
     if (op === "upsert") {
       const rows = Array.isArray(data) ? data : [data];
-      const onConflict = String(options.onConflict ?? "id");
-      const ignoreDupes = options.ignoreDuplicates === true;
+      if (rows.length > MAX_MUTATION_ROWS) {
+        res.status(400).json({ data: null, count: null, error: { message: `Limite maximo de ${MAX_MUTATION_ROWS} registros por upsert` } }); return;
+      }
+      const onConflict = String(normalizedOptions.onConflict ?? "id");
+      const ignoreDupes = normalizedOptions.ignoreDuplicates === true;
       const upserted: unknown[] = [];
 
       for (const row of rows as Record<string, unknown>[]) {
+        if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("Payload de upsert invalido");
         if (!row.id) row.id = uuid();
         // Always force user_id from JWT — never trust client-supplied value
         if (USER_OWNED.has(table)) row.user_id = userId;

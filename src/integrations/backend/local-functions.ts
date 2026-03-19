@@ -3801,6 +3801,91 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     }
   }
 
+  if (name === "poll-channel-events") {
+    if (!currentUser || !userId) return fail("Usuário não autenticado");
+    return {
+      data: {
+        ok: true,
+        source: String(body.source || "local"),
+        whatsapp: { sessions: 0, events: 0 },
+        telegram: { sessions: 0, events: 0 },
+      },
+      error: null,
+    };
+  }
+
+  if (name === "meli-vitrine-list") {
+    if (!currentUser || !userId) return fail("Usuário não autenticado");
+
+    const tabs = [
+      { key: "top_performance", label: "Top Performance", activeCount: 0 },
+      { key: "mais_vendidos", label: "Mais vendidos", activeCount: 0 },
+      { key: "ofertas_quentes", label: "Ofertas quentes", activeCount: 0 },
+      { key: "melhor_avaliados", label: "Melhor Avaliados", activeCount: 0 },
+    ];
+
+    const requestedTab = String(body.tab || "top_performance").trim() || "top_performance";
+    const page = Math.max(1, Number.parseInt(String(body.page || "1"), 10) || 1);
+    const limit = Math.max(1, Math.min(60, Number.parseInt(String(body.limit || "24"), 10) || 24));
+
+    return {
+      data: {
+        tab: requestedTab,
+        page,
+        limit,
+        total: 0,
+        hasMore: false,
+        items: [],
+        tabs,
+        lastSyncAt: null,
+        stale: true,
+      },
+      error: null,
+    };
+  }
+
+  if (name === "meli-vitrine-sync") {
+    if (!currentUser || !userId) return fail("Usuário não autenticado");
+    if (!userIsAdmin(authSnapshot, userId)) return fail("Acesso negado");
+
+    return {
+      data: {
+        success: true,
+        skipped: true,
+        source: String(body.source || "manual"),
+        scannedTabs: 0,
+        fetchedCards: 0,
+        addedCount: 0,
+        updatedCount: 0,
+        removedCount: 0,
+        unchangedCount: 0,
+        lastSyncAt: nowIso(),
+        message: "Sincronizacao local simulada concluida.",
+      },
+      error: null,
+    };
+  }
+
+  if (name === "meli-automation-run") {
+    if (!currentUser || !userId) return fail("Usuário não autenticado");
+
+    return {
+      data: {
+        ok: true,
+        source: String(body.source || "manual"),
+        scope: "user",
+        active: 0,
+        processed: 0,
+        sent: 0,
+        skipped: 0,
+        failed: 0,
+        errors: [],
+        message: "Nenhuma automacao ML elegivel para execucao neste ambiente local.",
+      },
+      error: null,
+    };
+  }
+
   if (name === "route-process-message") {
     if (!currentUser || !userId) return fail("Usuário não autenticado");
 
@@ -4752,8 +4837,6 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     const slot = await acquireProcessSlot("convert");
     await applyProcessQueueDelay(slot);
     try {
-
-    try {
       const conversion = await convertShopeeLinkForUser({
         url: source,
         userId,
@@ -4787,7 +4870,6 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       };
     } catch (error) {
       return fail(error instanceof Error ? error.message : "Falha ao converter link Shopee");
-    }
     } finally {
       releaseProcessSlot(slot);
     }
@@ -6338,6 +6420,64 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     }
   }
 
+  if (name === "ops-service-ports") {
+    if (!currentUser || !userId) return fail("Usuário não autenticado");
+    if (!userIsAdmin(authSnapshot, userId)) return fail("Acesso negado");
+
+    return {
+      data: {
+        ok: true,
+        services: [],
+      },
+      error: null,
+    };
+  }
+
+  if (name === "ops-service-port") {
+    if (!currentUser || !userId) return fail("Usuário não autenticado");
+    if (!userIsAdmin(authSnapshot, userId)) return fail("Acesso negado");
+
+    const service = parseOpsServiceId(body.service || body.id);
+    if (!service || service === "all") return fail("Serviço inválido");
+
+    const port = Number(body.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return fail("Porta inválida");
+
+    withDb((db) => {
+      appendAudit(db, "ops_service_port", userId, null, {
+        service,
+        port,
+        ok: true,
+        source: "local-stub",
+      });
+    });
+
+    return {
+      data: {
+        ok: true,
+        service,
+        port,
+        status: "updated",
+      },
+      error: null,
+    };
+  }
+
+  if (name === "ops-bootstrap") {
+    if (!currentUser || !userId) return fail("Usuário não autenticado");
+    if (!userIsAdmin(authSnapshot, userId)) return fail("Acesso negado");
+
+    return {
+      data: {
+        ok: true,
+        online: true,
+        started: false,
+        url: OPS_CONTROL_URL || "",
+      },
+      error: null,
+    };
+  }
+
   if (name === "meli-test-session") {
     const snapshot = loadDb();
     const currentUser = snapshot.auth.session?.user || null;
@@ -6472,8 +6612,6 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     const slot = await acquireProcessSlot("convert");
     await applyProcessQueueDelay(slot);
     try {
-
-    try {
       const response = await convertMercadoLivreLinkForUser({ userId, sessionId, url });
 
       withDb((db) => {
@@ -6489,7 +6627,6 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       return { data: { affiliateLink: response.affiliateLink || url, cached: response.cached, conversionTimeMs: response.conversionTimeMs }, error: null };
     } catch (error) {
       return fail(error instanceof Error ? error.message : "Falha ao converter link ML");
-    }
     } finally {
       releaseProcessSlot(slot);
     }
@@ -6507,21 +6644,21 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
 
     const urls = urlsRaw.filter((item): item is string => typeof item === "string").map((s) => s.trim()).filter(Boolean);
     if (urls.length === 0) return fail("Lista de URLs obrigatória");
+    if (urls.length > 50) return fail("Máximo de 50 URLs por lote");
 
     const slot = await acquireProcessSlot("convert");
     await applyProcessQueueDelay(slot);
     try {
-
-    const conversions: Array<{ originalLink: string; affiliateLink: string; cached: boolean; error: string | null }> = [];
-    for (const url of urls) {
-      try {
-        const response = await convertMercadoLivreLinkForUser({ userId, sessionId, url });
-        conversions.push({ originalLink: url, affiliateLink: response.affiliateLink || url, cached: response.cached, error: null });
-      } catch (error) {
-        conversions.push({ originalLink: url, affiliateLink: url, cached: false, error: error instanceof Error ? error.message : "Falha" });
+      const conversions: Array<{ originalLink: string; affiliateLink: string; cached: boolean; error: string | null }> = [];
+      for (const url of urls) {
+        try {
+          const response = await convertMercadoLivreLinkForUser({ userId, sessionId, url });
+          conversions.push({ originalLink: url, affiliateLink: response.affiliateLink || url, cached: response.cached, error: null });
+        } catch (error) {
+          conversions.push({ originalLink: url, affiliateLink: url, cached: false, error: error instanceof Error ? error.message : "Falha" });
+        }
       }
-    }
-    return { data: { conversions }, error: null };
+      return { data: { conversions }, error: null };
     } finally {
       releaseProcessSlot(slot);
     }

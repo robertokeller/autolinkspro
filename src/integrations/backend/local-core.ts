@@ -1,10 +1,10 @@
-/**
- * local-core.ts — self-hosted edition
+﻿/**
+ * local-core.ts â€” self-hosted edition
  *
  * In-memory cache for admin config & runtime control, backed by the
  * self-hosted PostgreSQL API service (via `system_settings` table).
  * Change notifications use a custom DOM event (LOCAL_DB_UPDATED_EVENT)
- * instead of Supabase Realtime — saves open connections and works with
+ * instead of Supabase Realtime â€” saves open connections and works with
  * the self-hosted stack that has no Realtime server.
  */
 
@@ -16,7 +16,7 @@ import {
 
 const _IS_TEST: boolean = (import.meta.env as Record<string, unknown>)?.MODE === "test";
 
-// ─── Event bus (keeps existing subscriber pattern intact) ────────────────────
+// â”€â”€â”€ Event bus (keeps existing subscriber pattern intact) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const LOCAL_DB_UPDATED_EVENT = "autolinks:local-db-updated";
 
 function emitLocalDbUpdated() {
@@ -26,7 +26,7 @@ function emitLocalDbUpdated() {
   }));
 }
 
-// ─── In-memory caches ────────────────────────────────────────────────────────
+// â”€â”€â”€ In-memory caches â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let _adminConfigCache: Record<string, unknown> | null = null;
 let _runtimeControlCache: { enabled: boolean } | null = null;
 
@@ -57,7 +57,7 @@ export async function initializeLocalCoreCache(): Promise<void> {
   emitLocalDbUpdated();
 }
 
-// ─── subscribeLocalDbChanges ─────────────────────────────────────────────────
+// â”€â”€â”€ subscribeLocalDbChanges â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function subscribeLocalDbChanges(onChange: () => void): () => void {
   if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
     return () => undefined;
@@ -71,8 +71,8 @@ export function subscribeLocalDbChanges(onChange: () => void): () => void {
   };
 }
 
-// ─── Admin config ─────────────────────────────────────────────────────────────
-/** Synchronous read from cache — may return null until `initializeLocalCoreCache()` completes. */
+// â”€â”€â”€ Admin config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/** Synchronous read from cache â€” may return null until `initializeLocalCoreCache()` completes. */
 export function loadAdminConfig(): Record<string, unknown> | null {
   if (_IS_TEST) return _legacyLoadAdminConfig();
   return _adminConfigCache;
@@ -94,8 +94,8 @@ export async function saveAdminConfig(config: Record<string, unknown>): Promise<
   emitLocalDbUpdated();
 }
 
-// ─── Runtime control ─────────────────────────────────────────────────────────
-/** Synchronous read from cache — defaults to enabled:true. */
+// â”€â”€â”€ Runtime control â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/** Synchronous read from cache â€” defaults to enabled:true. */
 export function loadRuntimeControl(): { enabled: boolean } {
   return _runtimeControlCache ?? { enabled: true };
 }
@@ -110,11 +110,3 @@ export async function saveRuntimeControl(next: { enabled: boolean }): Promise<vo
   emitLocalDbUpdated();
 }
 
-// ─── Utilities ───────────────────────────────────────────────────────────────
-export function randomId(_prefix?: string): string {
-  return crypto.randomUUID();
-}
-
-export function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}

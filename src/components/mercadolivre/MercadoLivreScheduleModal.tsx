@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,12 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent } from "@/components/ui/card";
 import { CalendarDays, Clock, Send } from "lucide-react";
-import { useTemplateModule } from "@/contexts/TemplateModuleContext";
+import { useTemplates } from "@/hooks/useTemplates";
 import { useGrupos } from "@/hooks/useGrupos";
 import { useSessoes } from "@/hooks/useSessoes";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
-import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
+import { applyMeliTemplatePlaceholders, buildMeliTemplatePlaceholderData } from "@/lib/meli-template-placeholders";
 import type { RecurrenceType, ScheduledMediaAttachment, ScheduledPost, WeekDay } from "@/lib/types";
 import { toast } from "sonner";
 import { WEEK_DAYS, mergeDateWithScheduleTime, normalizeScheduleTime } from "@/lib/scheduling";
@@ -26,20 +26,21 @@ import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown"
 import { formatBRT } from "@/lib/timezone";
 import { extractMarketplaceLinks } from "@/lib/marketplace-utils";
 
-interface ScheduleProductModalProps {
+interface MercadoLivreScheduleModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialTemplateId?: string;
   product?: {
     title?: string;
     affiliateLink: string;
+    productUrl?: string;
     imageUrl?: string;
-    salePrice?: number;
-    originalPrice?: number;
-    discount?: number;
-    sales?: number;
-    commission?: number;
-    shopName?: string;
+    price?: number | null;
+    oldPrice?: number | null;
+    installmentsText?: string;
+    seller?: string;
+    rating?: number | null;
+    reviewsCount?: number | null;
   };
   editingPost?: ScheduledPost;
 }
@@ -59,7 +60,7 @@ function getTimeFromDateTime(value: string): string {
 async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaAttachment> {
   const target = String(imageUrl || "").trim();
   if (!/^https?:\/\//i.test(target)) {
-    throw new Error("URL de imagem inválida para anexo");
+    throw new Error("URL de imagem invalida para anexo");
   }
 
   const response = await fetch(target);
@@ -69,7 +70,7 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
 
   const blob = await response.blob();
   if (!blob.type.startsWith("image/")) {
-    throw new Error("Arquivo retornado não é uma imagem");
+    throw new Error("Arquivo retornado nao eh uma imagem");
   }
   if (blob.size > MAX_SCHEDULE_IMAGE_BYTES) {
     throw new Error("Imagem da oferta excede 8MB");
@@ -84,19 +85,38 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
 
   const base64 = dataUrlToBase64(dataUrl);
   if (!base64) {
-    throw new Error("Conteúdo da imagem inválido");
+    throw new Error("Conteudo da imagem invalido");
   }
 
   return {
     kind: "image",
     base64,
     mimeType: blob.type || "image/jpeg",
-    fileName: "shopee_offer.jpg",
+    fileName: "meli_offer.jpg",
   };
 }
 
-export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, product, editingPost }: ScheduleProductModalProps) {
-  const { templates, defaultTemplate, applyTemplate } = useTemplateModule();
+function formatProductPrice(value: number | null | undefined): string {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return "";
+  return parsed.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    maximumFractionDigits: 2,
+  });
+}
+
+export function MercadoLivreScheduleModal({
+  open,
+  onOpenChange,
+  initialTemplateId,
+  product,
+  editingPost,
+}: MercadoLivreScheduleModalProps) {
+  const {
+    templates,
+    defaultTemplate,
+  } = useTemplates("meli");
   const { syncedGroups, masterGroups } = useGrupos();
   const { allSessions } = useSessoes();
   const { createPost, updatePost } = useAgendamentos();
@@ -124,17 +144,18 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     masterGroups,
   });
 
-  const fallbackContent = editingPost?.content || product?.affiliateLink || "";
-  const placeholderData = useMemo(() => buildTemplatePlaceholderData(
+  const fallbackContent = editingPost?.content || product?.affiliateLink || product?.productUrl || "";
+  const placeholderData = useMemo(() => buildMeliTemplatePlaceholderData(
     product ? {
       title: product.title,
-      salePrice: product.salePrice,
-      originalPrice: product.originalPrice,
-      discount: product.discount,
+      productUrl: product.productUrl,
       imageUrl: product.imageUrl,
-      commission: product.commission,
-      sales: product.sales,
-      shopName: product.shopName,
+      price: product.price,
+      oldPrice: product.oldPrice,
+      installmentsText: product.installmentsText,
+      seller: product.seller,
+      rating: product.rating,
+      reviewsCount: product.reviewsCount,
     } : null,
     product?.affiliateLink || "",
   ), [product]);
@@ -148,17 +169,20 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     () => ({ ...baseTemplateData, "{imagem}": "", "{{imagem}}": "" }),
     [baseTemplateData],
   );
-  const templateContent = applyTemplate({
-    templateId: resolvedTemplateId,
-    fallbackContent,
-    placeholderData: scheduleTemplateData,
-  });
+  const templateContent = useMemo(() => {
+    const template = templates.find((item) => item.id === resolvedTemplateId)
+      || defaultTemplate
+      || templates[0]
+      || null;
+    if (!template) return fallbackContent;
+    return applyMeliTemplatePlaceholders(template.content, scheduleTemplateData);
+  }, [defaultTemplate, fallbackContent, resolvedTemplateId, scheduleTemplateData, templates]);
 
   const requiresImageAttachment = useMemo(() => {
     if (product) return true;
     const policy = String(editingPost?.imagePolicy || "").trim().toLowerCase();
     const source = String(editingPost?.scheduleSource || "").trim().toLowerCase();
-    return policy === "required" || source === "shopee_catalog";
+    return policy === "required" || source === "meli_vitrine";
   }, [editingPost?.imagePolicy, editingPost?.scheduleSource, product]);
   const preferredImageUrl = useMemo(() => {
     const fromProduct = String(product?.imageUrl || "").trim();
@@ -177,13 +201,12 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       setImageAttachment(media);
     } catch {
       setImageAttachment(null);
-      toast.error("Não deu pra preparar a imagem pra esse agendamento");
+      toast.error("Nao foi possivel preparar a imagem para esse agendamento");
     } finally {
       setPreparingImageAttachment(false);
     }
   }, [preferredImageUrl, requiresImageAttachment]);
 
-  // Reset group selections when session changes.
   const handleSessionChange = (sessionId: string) => {
     setSelectedSessionId(sessionId);
     setSelectedGroups([]);
@@ -223,11 +246,11 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     if (!open || editingPost || !product) return;
 
     const generatedName = product.title
-      ? `Oferta: ${product.title.slice(0, 60)}`
-      : "Oferta Shopee";
+      ? `Oferta ML: ${product.title.slice(0, 60)}`
+      : "Oferta Mercado Livre";
 
     setScheduleName(generatedName);
-    setMessageContent(templateContent || product.affiliateLink || "");
+    setMessageContent(templateContent || product.affiliateLink || product.productUrl || "");
   }, [editingPost, open, product, templateContent]);
 
   useEffect(() => {
@@ -252,21 +275,20 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
 
   const handleTemplateChange = (templateId: string) => {
     setSelectedTemplateId(templateId);
-    const nextContent = applyTemplate({
-      templateId,
-      fallbackContent,
-      placeholderData: scheduleTemplateData,
-    });
+    const template = templates.find((item) => item.id === templateId) || null;
+    const nextContent = template
+      ? applyMeliTemplatePlaceholders(template.content, scheduleTemplateData)
+      : fallbackContent;
     setMessageContent(nextContent || fallbackContent);
   };
 
   const toggleWeekDay = (day: WeekDay) =>
-    setWeekDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
+    setWeekDays((prev) => (prev.includes(day) ? prev.filter((item) => item !== day) : [...prev, day]));
 
   const addRecurrenceTime = () => {
     const normalized = normalizeScheduleTime(recurrenceTimeInput);
     if (!normalized) {
-      toast.error("Horário inválido — use o formato HH:mm");
+      toast.error("Horario invalido - use o formato HH:mm");
       return;
     }
     setRecurrenceTimes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized].sort()));
@@ -290,15 +312,15 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
 
   const handleSchedule = async () => {
     if (!scheduleName.trim()) {
-      toast.error("Dê um nome pro agendamento");
+      toast.error("Defina um nome para o agendamento");
       return;
     }
     if (!messageContent.trim()) {
-      toast.error("Escreva o conteúdo da mensagem");
+      toast.error("Escreva o conteudo da mensagem");
       return;
     }
     if (!isRecurring && !scheduledAt) {
-      toast.error("Escolha a data e o horário");
+      toast.error("Escolha a data e o horario");
       return;
     }
     if (isRecurring && weekDays.length === 0) {
@@ -306,7 +328,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       return;
     }
     if (isRecurring && recurrenceTimes.length === 0) {
-      toast.error("Adicione pelo menos um horário");
+      toast.error("Adicione pelo menos um horario");
       return;
     }
     if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
@@ -314,11 +336,11 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       return;
     }
     if (requiresImageAttachment && preparingImageAttachment) {
-      toast.error("Espera só um pouco, a imagem ainda tá sendo preparada");
+      toast.error("Aguarde, a imagem ainda esta sendo preparada");
       return;
     }
     if (requiresImageAttachment && !imageAttachment) {
-      toast.error("Esse agendamento precisa de imagem e ela não tá disponível");
+      toast.error("Esse agendamento precisa de imagem e ela nao esta disponivel");
       return;
     }
 
@@ -334,7 +356,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       const detectedLinks = detectedLinksFromContent.length > 0
         ? detectedLinksFromContent
         : (editingPost?.detectedLinks || []);
-      const scheduleSource = editingPost?.scheduleSource || (product ? "shopee_catalog" : "");
+      const scheduleSource = editingPost?.scheduleSource || (product ? "meli_vitrine" : "");
       const imagePolicy = requiresImageAttachment ? "required" : (editingPost?.imagePolicy || "");
       const payload = {
         name: scheduleName.trim(),
@@ -365,7 +387,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       onOpenChange(false);
       resetForm();
     } catch {
-      toast.error(editingPost ? "Não deu pra atualizar o agendamento" : "Não deu pra criar o agendamento");
+      toast.error(editingPost ? "Nao foi possivel atualizar o agendamento" : "Nao foi possivel criar o agendamento");
     } finally {
       setSubmitting(false);
     }
@@ -393,32 +415,30 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <CalendarDays className="h-5 w-5 text-primary" />
-            {isEditing ? "Editar agendamento Shopee" : "Agendar envio"}
+            {isEditing ? "Editar agendamento ML" : "Agendar envio"}
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-5">
           {product?.title && (
-            <div className="flex gap-3 p-3 rounded-lg bg-secondary/30 border">
+            <div className="flex gap-3 rounded-lg border bg-secondary/30 p-3">
               {product.imageUrl && (
                 <img
                   src={product.imageUrl}
                   alt={product.title}
-                  className="h-16 w-16 rounded object-cover bg-muted shrink-0"
-                  onError={(e) => { e.currentTarget.src = "/placeholder.svg"; }}
+                  className="h-16 w-16 shrink-0 rounded object-cover bg-muted"
+                  onError={(event) => { event.currentTarget.src = "/placeholder.svg"; }}
                 />
               )}
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium line-clamp-2">{product.title}</p>
-                <div className="flex items-center gap-2 mt-1">
-                  {product.salePrice && (
-                    <span className="text-sm font-bold text-primary">
-                      R${Number(product.salePrice).toFixed(2)}
-                    </span>
-                  )}
-                  {product.discount && product.discount > 0 && (
-                    <Badge variant="secondary" className="text-xs">{product.discount}% OFF</Badge>
-                  )}
+                <p className="line-clamp-2 text-sm font-medium">{product.title}</p>
+                <div className="mt-1 flex items-center gap-2">
+                  {product.price ? (
+                    <span className="text-sm font-bold text-primary">{formatProductPrice(product.price)}</span>
+                  ) : null}
+                  {product.oldPrice && product.oldPrice > (product.price || 0) ? (
+                    <span className="text-xs text-muted-foreground line-through">{formatProductPrice(product.oldPrice)}</span>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -427,42 +447,45 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
           <div className="space-y-2">
             <Label>Nome *</Label>
             <Input
-              placeholder="Ex: Oferta pra grupos VIP"
+              placeholder="Ex: Oferta ML para grupos VIP"
               value={scheduleName}
-              onChange={(e) => setScheduleName(e.target.value)}
+              onChange={(event) => setScheduleName(event.target.value)}
             />
           </div>
 
           <div className="space-y-2">
-            <Label>Template</Label>
+            <Label>Template Meli</Label>
             <Select value={resolvedTemplateId} onValueChange={handleTemplateChange}>
               <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
               <SelectContent>
-                {templates.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>{t.name}{t.isDefault ? " *" : ""}</SelectItem>
+                {templates.map((template) => (
+                  <SelectItem key={template.id} value={template.id}>
+                    {template.name}
+                    {template.isDefault ? " *" : ""}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
 
           <div className="space-y-2">
-            <Label>Mensagem *</Label>
+            <Label>Preview da mensagem *</Label>
             <Textarea
               placeholder="Escreva a mensagem aqui..."
               value={messageContent}
-              onChange={(e) => setMessageContent(e.target.value)}
+              onChange={(event) => setMessageContent(event.target.value)}
               className="min-h-[100px]"
             />
             <p className="text-xs text-muted-foreground">
-              Quando voce escolhe um template, o texto ja vem pronto. Pode editar a vontade.
+              O texto ja vem pronto quando voce escolhe um template. Voce pode ajustar antes de agendar.
             </p>
           </div>
 
           <div className="space-y-2">
             <Label>Repetir envio</Label>
             <div className="flex items-center gap-2">
-              <Switch id="is-recurring-offer" checked={isRecurring} onCheckedChange={toggleRecurrence} />
-              <Label htmlFor="is-recurring-offer">Repetir nos dias escolhidos</Label>
+              <Switch id="is-recurring-meli" checked={isRecurring} onCheckedChange={toggleRecurrence} />
+              <Label htmlFor="is-recurring-meli">Repetir nos dias escolhidos</Label>
             </div>
           </div>
 
@@ -479,10 +502,10 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
             <div className="space-y-2">
               <Label>Dias da semana *</Label>
               <div className="flex flex-wrap gap-2">
-                {WEEK_DAYS.map((d) => (
-                  <label key={d.value} className="flex items-center gap-1.5 cursor-pointer">
-                    <Checkbox checked={weekDays.includes(d.value)} onCheckedChange={() => toggleWeekDay(d.value)} />
-                    <span className="text-sm">{d.label}</span>
+                {WEEK_DAYS.map((day) => (
+                  <label key={day.value} className="flex cursor-pointer items-center gap-1.5">
+                    <Checkbox checked={weekDays.includes(day.value)} onCheckedChange={() => toggleWeekDay(day.value)} />
+                    <span className="text-sm">{day.label}</span>
                   </label>
                 ))}
               </div>
@@ -492,13 +515,13 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
           {isRecurring && (
             <Card>
               <CardContent className="space-y-2 p-4">
-                <Label>Horários *</Label>
+                <Label>Horarios *</Label>
                 <div className="flex items-center gap-2">
                   <TimePickerField
                     value={recurrenceTimeInput}
                     onChange={setRecurrenceTimeInput}
                     className="flex-1"
-                    placeholder="Selecionar horário"
+                    placeholder="Selecionar horario"
                   />
                   <Button type="button" variant="outline" onClick={addRecurrenceTime} disabled={!recurrenceTimeInput}>
                     Adicionar
@@ -511,7 +534,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
                     </Badge>
                   ))}
                   {recurrenceTimes.length === 0 && (
-                    <span className="text-xs text-muted-foreground">Escolha um horário e adicione outros se necessário</span>
+                    <span className="text-xs text-muted-foreground">Escolha um horario e adicione outros se necessario</span>
                   )}
                 </div>
               </CardContent>
@@ -520,76 +543,83 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
 
           {isRecurring && (
             <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Se ligar a repetição, o envio segue os dias e horários que você escolher (ignora a data fixa).</Label>
+              <Label className="text-xs text-muted-foreground">
+                Com recorrencia ativa, o envio segue os dias e horarios escolhidos.
+              </Label>
             </div>
           )}
 
           <div className="space-y-2">
-            <Label>Sessão *</Label>
+            <Label>Sessao *</Label>
             <SessionSelect
               value={selectedSessionId}
               onValueChange={handleSessionChange}
               sessions={allSessions}
-              placeholder="Escolha uma sessão..."
-              emptyLabel="Nenhuma sessão conectada"
+              placeholder="Escolha uma sessao..."
+              emptyLabel="Nenhuma sessao conectada"
             />
           </div>
 
           <div className="space-y-2">
             <Label className="text-xs">Grupos</Label>
             {!selectedSessionId ? (
-              <p className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
-                Escolha a sessão primeiro pra ver os grupos.
-              </p>
+              <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                Selecione uma sessao para listar os grupos disponiveis.
+              </div>
             ) : (
-              <MultiOptionDropdown
-                value={selectedGroups}
-                onChange={setSelectedGroups}
-                items={filteredGroups.map((group) => ({
-                  id: group.id,
-                  label: group.name,
-                  meta: `${group.memberCount}`,
-                }))}
-                placeholder="Escolher grupos"
-                selectedLabel={(count) => `${count} grupo(s)`}
-                emptyMessage="Nenhum grupo nessa sessão"
-                title="Grupos"
-              />
+              <>
+                <MultiOptionDropdown
+                  label="Grupos diretos"
+                  selectedLabel="grupos"
+                  options={filteredGroups.map((group) => ({
+                    id: group.id,
+                    label: group.name,
+                    description: group.platform,
+                  }))}
+                  selectedValues={selectedGroups}
+                  onChange={setSelectedGroups}
+                  maxHeightClassName="max-h-56"
+                  searchPlaceholder="Buscar grupo..."
+                />
+
+                <MultiOptionDropdown
+                  label="Grupos mestre"
+                  selectedLabel="grupos mestre"
+                  options={filteredMasterGroups.map((master) => ({
+                    id: master.id,
+                    label: master.name,
+                    description: `${master.groupIds.length} grupo(s)`,
+                  }))}
+                  selectedValues={selectedMasterGroups}
+                  onChange={setSelectedMasterGroups}
+                  maxHeightClassName="max-h-56"
+                  searchPlaceholder="Buscar grupo mestre..."
+                />
+              </>
             )}
           </div>
 
-          {selectedSessionId && filteredMasterGroups.length > 0 && (
-            <div className="space-y-2">
-              <Label className="text-xs">Grupos mestres</Label>
-              <MultiOptionDropdown
-                value={selectedMasterGroups}
-                onChange={setSelectedMasterGroups}
-                items={filteredMasterGroups.map((masterGroup) => ({
-                  id: masterGroup.id,
-                  label: masterGroup.name,
-                  meta: `${masterGroup.groupIds.length} grupos`,
-                }))}
-                placeholder="Escolher grupos mestres"
-                selectedLabel={(count) => `${count} grupo(s) mestre`}
-                emptyMessage="Nenhum grupo mestre nessa sessão"
-                title="Grupos mestres"
-              />
-            </div>
-          )}
-
-          {totalDestinations > 0 && (
-            <div className="text-xs text-muted-foreground flex items-center gap-1 p-2 rounded-lg bg-muted/30">
-              <Send className="h-3 w-3" />
-              {totalDestinations} grupo(s) vão receber
-            </div>
-          )}
+          <div className="rounded-lg border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            Destinos selecionados: <span className="font-medium text-foreground">{totalDestinations}</span>
+          </div>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleDialogOpenChange(false)}>Cancelar</Button>
-          <Button onClick={handleSchedule} disabled={submitting}>
-            <Clock className="h-4 w-4 mr-1.5" />
-            {submitting ? (isEditing ? "Salvando..." : "Agendando...") : (isEditing ? "Salvar" : "Agendar")}
+          <Button variant="outline" onClick={() => handleDialogOpenChange(false)} disabled={submitting}>
+            Cancelar
+          </Button>
+          <Button onClick={() => { void handleSchedule(); }} disabled={submitting}>
+            {submitting ? (
+              <>
+                <Clock className="mr-1.5 h-4 w-4 animate-spin" />
+                {isEditing ? "Salvando..." : "Agendando..."}
+              </>
+            ) : (
+              <>
+                <Send className="mr-1.5 h-4 w-4" />
+                {isEditing ? "Salvar" : "Agendar"}
+              </>
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>
