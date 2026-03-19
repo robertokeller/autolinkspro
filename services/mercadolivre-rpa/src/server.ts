@@ -62,7 +62,9 @@ app.use((_req: express.Request, res: express.Response, next: express.NextFunctio
 
 // ─── Rate limiting (in-memory, per IP) ───────────────────────────────────
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT_REQUESTS = 300;
+const rateLimitByUser = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT_REQUESTS = 60;
+const USER_RATE_LIMIT_REQUESTS = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 function rateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -89,6 +91,9 @@ setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitStore) {
     if (now > entry.resetAt) rateLimitStore.delete(ip);
+  }
+  for (const [userId, entry] of rateLimitByUser) {
+    if (now > entry.resetAt) rateLimitByUser.delete(userId);
   }
 }, 5 * 60_000).unref();
 
@@ -139,18 +144,40 @@ function sanitizeScopePart(value: string, max = 24): string {
     .slice(0, max) || "x";
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function readRequestUserId(req: express.Request, res: express.Response): string | null {
   const userId = String(req.header("x-autolinks-user-id") || "").trim();
   if (!userId) {
-    res.status(400).json({ error: "x-autolinks-user-id é obrigatório" });
+    res.status(400).json({ error: "x-autolinks-user-id obrigatorio" });
     return null;
   }
-  return userId;
+  if (userId.length > 64 || !isUuid(userId)) {
+    res.status(400).json({ error: "x-autolinks-user-id invalido" });
+    return null;
+  }
+  return userId.toLowerCase();
 }
 
 function ensureScopedSessionOwnership(sessionId: string, userId: string): boolean {
   const scopedPrefix = `${sanitizeScopePart(userId, 64)}__`;
   return String(sessionId || "").startsWith(scopedPrefix);
+}
+
+function consumeUserRateLimit(userId: string, amount = 1): boolean {
+  const now = Date.now();
+  const increment = Number.isFinite(amount) && amount > 0 ? Math.floor(amount) : 1;
+  const entry = rateLimitByUser.get(userId);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimitByUser.set(userId, { count: increment, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return increment <= USER_RATE_LIMIT_REQUESTS;
+  }
+
+  entry.count += increment;
+  return entry.count <= USER_RATE_LIMIT_REQUESTS;
 }
 
 // ─── Health ────────────────────────────────────────────────────────────────
@@ -258,6 +285,10 @@ app.delete("/api/meli/sessions/:id", async (req, res) => {
 app.post("/api/meli/convert", async (req, res) => {
   const requestUserId = readRequestUserId(req, res);
   if (!requestUserId) return;
+  if (!consumeUserRateLimit(requestUserId, 1)) {
+    res.status(429).json({ error: "Too Many Requests" });
+    return;
+  }
 
   const { productUrl, sessionId } = req.body as { productUrl?: string; sessionId?: string };
 
@@ -325,6 +356,10 @@ app.post("/api/meli/convert/batch", async (req, res) => {
   }
   if (urls.length > 50) {
     res.status(400).json({ error: "Máximo de 50 URLs por lote" });
+    return;
+  }
+  if (!consumeUserRateLimit(requestUserId, urls.length)) {
+    res.status(429).json({ error: "Too Many Requests" });
     return;
   }
 

@@ -52,7 +52,15 @@ export function ProtectedAppRoutes() {
           )}
         />
         <Route path={ROUTES.app.shopeeConfiguracoes} element={<Pages.ShopeeConfiguracoes />} />
-        <Route path={ROUTES.app.mercadolivreRoot} element={<Navigate to={ROUTES.app.mercadolivreConfiguracoes} replace />} />
+        <Route path={ROUTES.app.mercadolivreRoot} element={<Navigate to={ROUTES.app.vitrineMl} replace />} />
+        <Route
+          path={ROUTES.app.vitrineMl}
+          element={(
+            <FeatureRouteGuard feature="mercadoLivre">
+              <Pages.MercadoLivreVitrine />
+            </FeatureRouteGuard>
+          )}
+        />
         <Route
           path={ROUTES.app.mercadolivreConfiguracoes}
           element={(

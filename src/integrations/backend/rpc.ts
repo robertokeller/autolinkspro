@@ -18,6 +18,8 @@ const SERVICE_RPC_NAMES: Record<string, RuntimeService> = {
   "shopee-test-connection": "shopee",
   "shopee-automation-run": "shopee",
   "meli-service-health": "meli",
+  "meli-vitrine-list": "meli",
+  "meli-vitrine-sync": "meli",
   "meli-list-sessions": "meli",
   "meli-save-session": "meli",
   "meli-test-session": "meli",

@@ -272,6 +272,9 @@ CREATE INDEX IF NOT EXISTS history_entries_user_idx ON history_entries(user_id);
 CREATE INDEX IF NOT EXISTS history_entries_created_idx ON history_entries(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_history_user_created
   ON history_entries(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_route_sent_user_created
+  ON history_entries(user_id, created_at DESC)
+  WHERE type = 'route_forward' AND processing_status = 'sent';
 
 -- ─── Link hub pages ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS link_hub_pages (

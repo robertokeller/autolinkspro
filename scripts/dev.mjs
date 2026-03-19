@@ -56,7 +56,7 @@ async function ensureDatabaseReady() {
 
     console.log("[dev] Syncing local seed users...");
     await runNpm(["run", "seed:dev"], "db seed");
-    return;
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const apiHealthyAfter = await fetchHealth(API_HEALTH_URL);
@@ -64,15 +64,13 @@ async function ensureDatabaseReady() {
     if (apiHealthyBefore || apiHealthyAfter) {
       console.warn(`[dev] Docker/bootstrap skipped: ${message}`);
       console.warn("[dev] Existing API is healthy on port 3116, continuing with OPS + API standby + WEB.");
-      return;
+      return true;
     }
 
     console.warn(`[dev] Docker/bootstrap skipped: ${message}`);
     console.warn("[dev] API is not healthy on port 3116. Starting degraded mode (OPS + WEB only).");
     return false;
   }
-
-  return true;
 }
 
 async function startRuntime(withApi) {

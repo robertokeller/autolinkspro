@@ -243,19 +243,19 @@ export default function HistoryPage() {
 
       <Card className="glass">
         <CardContent className="p-4">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-            <div className="relative min-w-[220px] flex-1">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(260px,2fr)_repeat(5,minmax(0,1fr))]">
+            <div className="relative min-w-0">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Buscar por mensagem, rota ou erro..."
                 aria-label="Pesquisar no histórico"
-                className="pl-9"
+                className="h-10 pl-9"
               />
             </div>
             <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger>
+              <SelectTrigger className="w-full">
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
@@ -272,7 +272,7 @@ export default function HistoryPage() {
                 setSecondaryFilter("all");
               }}
             >
-              <SelectTrigger>
+              <SelectTrigger className="w-full">
                 <SelectValue placeholder="Tipo" />
               </SelectTrigger>
               <SelectContent>
@@ -287,7 +287,7 @@ export default function HistoryPage() {
               onValueChange={setSecondaryFilter}
               disabled={mechanism === "all"}
             >
-              <SelectTrigger>
+              <SelectTrigger className="w-full">
                 <SelectValue placeholder={secondaryFilterConfig.placeholder} />
               </SelectTrigger>
               <SelectContent>
@@ -300,7 +300,7 @@ export default function HistoryPage() {
               </SelectContent>
             </Select>
             <Select value={connection} onValueChange={setConnection}>
-              <SelectTrigger>
+              <SelectTrigger className="w-full">
                 <SelectValue placeholder="Conexão" />
               </SelectTrigger>
               <SelectContent>
@@ -311,7 +311,7 @@ export default function HistoryPage() {
               </SelectContent>
             </Select>
             <Select value={timeRange} onValueChange={setTimeRange}>
-              <SelectTrigger>
+              <SelectTrigger className="w-full">
                 <SelectValue placeholder="Período" />
               </SelectTrigger>
               <SelectContent>
@@ -431,3 +431,4 @@ export default function HistoryPage() {
     </div>
   );
 }
+

@@ -6,6 +6,8 @@ const IS_PRODUCTION = NODE_ENV === "production";
 
 const DISPATCH_INTERVAL_SECONDS = Number.parseInt(process.env.DISPATCH_INTERVAL_SECONDS || "45", 10);
 const SHOPEE_INTERVAL_SECONDS = Number.parseInt(process.env.SHOPEE_INTERVAL_SECONDS || "60", 10);
+const CHANNEL_EVENTS_INTERVAL_SECONDS = Number.parseInt(process.env.CHANNEL_EVENTS_INTERVAL_SECONDS || "15", 10);
+const MELI_VITRINE_INTERVAL_SECONDS = Number.parseInt(process.env.MELI_VITRINE_INTERVAL_SECONDS || "7200", 10);
 const DISPATCH_LIMIT = Number.parseInt(process.env.DISPATCH_LIMIT || "100", 10);
 const DISPATCH_SOURCE = String(process.env.DISPATCH_SOURCE || "node-scheduler").trim();
 const RPC_BASE_URL = String(process.env.SCHEDULER_RPC_BASE_URL || "").trim().replace(/\/$/, "");
@@ -20,6 +22,8 @@ const LIMIT_SCALE_CRITICAL = Number.parseFloat(process.env.SCHEDULER_LIMIT_SCALE
 
 let runningDispatch = false;
 let runningShopee = false;
+let runningChannelEvents = false;
+let runningMeliVitrine = false;
 
 function log(message) {
 	console.log(`[scheduler] ${message}`);
@@ -40,6 +44,13 @@ function canRunRemoteMode() {
 
 function hasRemoteToken() {
 	return Boolean(RPC_TOKEN);
+}
+
+function unwrapRpcData(result) {
+  if (result && typeof result === "object" && "data" in result) {
+    return result.data || {};
+  }
+  return result || {};
 }
 
 function readPressure() {
@@ -122,10 +133,11 @@ async function runDispatchCycle() {
 			limit: effectiveLimit,
 			silent: true,
 		});
+		const payload = unwrapRpcData(result);
 
-		const sent = Number(result?.sent || 0);
-		const processed = Number(result?.processed || 0);
-		const failed = Number(result?.failed || 0);
+		const sent = Number(payload?.sent || 0);
+		const processed = Number(payload?.processed || 0);
+		const failed = Number(payload?.failed || 0);
 		log(`dispatch cycle ok: processed=${processed} sent=${sent} failed=${failed} pressure=${pressure.level} limit=${effectiveLimit}`);
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
@@ -150,36 +162,110 @@ async function runShopeeCycle() {
 			source: DISPATCH_SOURCE,
 			pressure: pressure.level,
 		});
+		const payload = unwrapRpcData(result);
 
-		const active = Number(result?.active || 0);
-		const processed = Number(result?.processed || 0);
-		const sent = Number(result?.sent || 0);
-		const skipped = Number(result?.skipped || 0);
-		const failed = Number(result?.failed || 0);
+		const active = Number(payload?.active || 0);
+		const processed = Number(payload?.processed || 0);
+		const sent = Number(payload?.sent || 0);
+		const skipped = Number(payload?.skipped || 0);
+		const failed = Number(payload?.failed || 0);
 		log(`shopee cycle ok: active=${active} processed=${processed} sent=${sent} skipped=${skipped} failed=${failed} pressure=${pressure.level}`);
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		log(`shopee cycle error: ${reason}`);
-	} finally {
-		runningShopee = false;
-	}
+  } finally {
+    runningShopee = false;
+  }
+}
+
+async function runChannelEventsCycle() {
+  if (runningChannelEvents) return;
+  runningChannelEvents = true;
+
+  try {
+    const pressure = readPressure();
+    if (pressure.level === "critical") {
+      log(`channel events cycle skipped due to host pressure critical (mem=${pressure.usedMemPercent}% load/cpu=${pressure.loadPerCpu})`);
+      return;
+    }
+
+    const result = await invokeFunction("poll-channel-events", {
+      source: DISPATCH_SOURCE,
+    });
+    const payload = unwrapRpcData(result);
+
+    const scope = String(payload?.scope || "unknown");
+    const waSessions = Number(payload?.whatsappSessions || 0);
+    const waEvents = Number(payload?.whatsappEvents || 0);
+    const tgSessions = Number(payload?.telegramSessions || 0);
+    const tgEvents = Number(payload?.telegramEvents || 0);
+    const failed = Number(payload?.failed || 0);
+
+    log(`channel events cycle ok: scope=${scope} wa_sessions=${waSessions} wa_events=${waEvents} tg_sessions=${tgSessions} tg_events=${tgEvents} failed=${failed} pressure=${pressure.level}`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`channel events cycle error: ${reason}`);
+  } finally {
+    runningChannelEvents = false;
+  }
+}
+
+async function runMeliVitrineCycle() {
+  if (runningMeliVitrine) return;
+  runningMeliVitrine = true;
+
+  try {
+    const pressure = readPressure();
+    if (pressure.level === "critical") {
+      log(`meli vitrine cycle skipped due to host pressure critical (mem=${pressure.usedMemPercent}% load/cpu=${pressure.loadPerCpu})`);
+      return;
+    }
+
+    const result = await invokeFunction("meli-vitrine-sync", {
+      source: DISPATCH_SOURCE,
+      onlyIfStale: true,
+    });
+    const payload = unwrapRpcData(result);
+    const skipped = payload?.skipped === true;
+    const added = Number(payload?.addedCount || 0);
+    const updated = Number(payload?.updatedCount || 0);
+    const removed = Number(payload?.removedCount || 0);
+    const fetched = Number(payload?.fetchedCards || 0);
+
+    log(`meli vitrine cycle ok: skipped=${skipped} fetched=${fetched} added=${added} updated=${updated} removed=${removed} pressure=${pressure.level}`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`meli vitrine cycle error: ${reason}`);
+  } finally {
+    runningMeliVitrine = false;
+  }
 }
 
 function startRemoteWorker() {
-	log(
-		`remote mode started (dispatch=${DISPATCH_INTERVAL_SECONDS}s shopee=${SHOPEE_INTERVAL_SECONDS}s timeout=${REQUEST_TIMEOUT_MS}ms)`,
-	);
+  log(
+    `remote mode started (dispatch=${DISPATCH_INTERVAL_SECONDS}s shopee=${SHOPEE_INTERVAL_SECONDS}s channels=${CHANNEL_EVENTS_INTERVAL_SECONDS}s meli_vitrine=${MELI_VITRINE_INTERVAL_SECONDS}s timeout=${REQUEST_TIMEOUT_MS}ms)`,
+  );
 
-	void runDispatchCycle();
-	void runShopeeCycle();
+  void runDispatchCycle();
+  void runShopeeCycle();
+  void runChannelEventsCycle();
+  void runMeliVitrineCycle();
 
 	setInterval(() => {
 		void runDispatchCycle();
 	}, Math.max(5, DISPATCH_INTERVAL_SECONDS) * 1000);
 
-	setInterval(() => {
-		void runShopeeCycle();
-	}, Math.max(5, SHOPEE_INTERVAL_SECONDS) * 1000);
+  setInterval(() => {
+    void runShopeeCycle();
+  }, Math.max(5, SHOPEE_INTERVAL_SECONDS) * 1000);
+
+  setInterval(() => {
+    void runChannelEventsCycle();
+  }, Math.max(5, CHANNEL_EVENTS_INTERVAL_SECONDS) * 1000);
+
+  setInterval(() => {
+    void runMeliVitrineCycle();
+  }, Math.max(60, MELI_VITRINE_INTERVAL_SECONDS) * 1000);
 }
 
 function startLocalFallback() {

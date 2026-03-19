@@ -150,9 +150,6 @@ export default function RoutesPage() {
       : nr.destinationGroupIds.length > 0
   );
   const hasMeliSessionSelected = !!nr.meliSessionId || !!defaultMeliSession?.id;
-  const activeMeliSession = nr.meliSessionId
-    ? meliSessionsById.get(nr.meliSessionId) || null
-    : defaultMeliSession;
   const canCreate = canGoStep2 && canGoStep3 && (!nr.autoConvertMercadoLivre || hasMeliSessionSelected);
 
   useEffect(() => {
@@ -422,9 +419,6 @@ export default function RoutesPage() {
               const template = route.rules.templateId
                 ? templatesById.get(route.rules.templateId)
                 : null;
-              const meliSession = route.rules.meliSessionId
-                ? meliSessionsById.get(route.rules.meliSessionId)
-                : null;
               const hasShopeeConversion = route.rules.autoConvertShopee;
               const hasMeliConversion = route.rules.autoConvertMercadoLivre;
 
@@ -524,7 +518,7 @@ export default function RoutesPage() {
                         {hasMeliConversion && (
                           <Badge variant="outline" className="gap-0.5 text-2xs px-1.5 py-0">
                             <LinkIcon className="h-2 w-2" />
-                            {meliSession ? `ML: ${meliSession.name}` : "Mercado Livre"}
+                            Mercado Livre
                           </Badge>
                         )}
                         {route.rules.positiveKeywords.length > 0 && (
@@ -842,23 +836,10 @@ export default function RoutesPage() {
                     />
                   </div>
 
-                  {nr.autoConvertMercadoLivre && (
-                    <div className="space-y-2">
-                      <Label className="text-xs">Sessão Mercado Livre</Label>
-                      <div className="rounded-lg border bg-secondary/30 px-3 py-2">
-                        <p className="text-xs font-medium text-foreground">
-                          {activeMeliSession ? `${activeMeliSession.name} (${activeMeliSession.status})` : "Nenhuma sessão disponível"}
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          Sessão definida automaticamente.
-                        </p>
-                      </div>
-                      {!hasMeliSessionSelected && (
-                        <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                          Nenhuma sessão Mercado Livre no momento. Conecte uma sessão pra usar a conversão.
-                        </p>
-                      )}
-                    </div>
+                  {nr.autoConvertMercadoLivre && !hasMeliSessionSelected && (
+                    <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
+                      Nenhuma sessão Mercado Livre no momento. Conecte uma sessão pra usar a conversão.
+                    </p>
                   )}
 
                 </CardContent>
@@ -936,4 +917,3 @@ export default function RoutesPage() {
     </div>
   );
 }
-

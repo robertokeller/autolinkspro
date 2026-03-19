@@ -245,13 +245,6 @@ export default function Dashboard() {
   const tgServiceOnline = channelHealth?.telegram.online === true;
   const shopeeServiceOnline = shopeeHealth?.online === true;
   const meliServiceOnline = meliHealth?.online === true;
-  const formatUptime = (uptimeSec: number | null | undefined) => {
-    if (!uptimeSec || uptimeSec <= 0) return "Tempo online indisponível";
-    if (uptimeSec < 60) return `${uptimeSec}s online`;
-    if (uptimeSec < 3600) return `${Math.floor(uptimeSec / 60)}min online`;
-    if (uptimeSec < 86400) return `${Math.floor(uptimeSec / 3600)}h online`;
-    return `${Math.floor(uptimeSec / 86400)}d online`;
-  };
   const sanitizeError = (value: string | null | undefined) => {
     if (!value) return null;
     const normalized = value.trim();
@@ -361,13 +354,9 @@ export default function Dashboard() {
             ? `${waOnline}/${waSessions.length} sessões conectadas`
             : waError || `${waOnline}/${waSessions.length} sessões conectadas`,
       statusText:
-        waSessions.length === 0
-          ? "Não configurou ainda"
-          : !waServiceOnline
-            ? "Fora do ar"
-            : waOnline === 0
-              ? "Sem sessão conectada"
-              : formatUptime(channelHealth?.whatsapp.uptimeSec),
+        waSessions.length === 0 || !waServiceOnline || waOnline === 0
+          ? "Offline"
+          : "Online",
       statusTone:
         waSessions.length === 0
           ? "warning"
@@ -390,13 +379,9 @@ export default function Dashboard() {
             ? `${tgOnline}/${tgSessions.length} sessões conectadas`
             : tgError || `${tgOnline}/${tgSessions.length} sessões conectadas`,
       statusText:
-        tgSessions.length === 0
-          ? "Não configurou ainda"
-          : !tgServiceOnline
-            ? "Fora do ar"
-            : tgOnline === 0
-              ? "Sem sessão conectada"
-              : formatUptime(channelHealth?.telegram.uptimeSec),
+        tgSessions.length === 0 || !tgServiceOnline || tgOnline === 0
+          ? "Offline"
+          : "Online",
       statusTone:
         tgSessions.length === 0
           ? "warning"
@@ -418,10 +403,10 @@ export default function Dashboard() {
           ? "Tudo certo, serviço funcionando"
           : shopeeError || "Serviço não respondeu",
       statusText: !shopeeConfigured
-        ? "Não configurou ainda"
+        ? "Offline"
         : shopeeServiceOnline
-          ? formatUptime(shopeeHealth?.uptimeSec)
-          : "Fora do ar",
+          ? "Online"
+          : "Offline",
       statusTone: !shopeeConfigured ? "warning" : shopeeServiceOnline ? "success" : "destructive",
       icon: ShoppingBag,
       iconColorClass: "text-primary",
@@ -436,12 +421,12 @@ export default function Dashboard() {
           ? `${analytics.meliActive}/${meliSessions.length} sessões funcionando`
           : meliError || `${analytics.meliActive}/${meliSessions.length} sessões funcionando`,
       statusText: meliSessions.length === 0
-        ? "Não configurou ainda"
+        ? "Offline"
         : !meliServiceOnline
-          ? "Fora do ar"
+          ? "Offline"
           : analytics.meliActive === 0
-            ? "Sem sessão funcionando"
-            : formatUptime(meliHealth?.uptimeSec),
+            ? "Offline"
+            : "Online",
       statusTone: meliSessions.length === 0
         ? "warning"
         : !meliServiceOnline
@@ -711,3 +696,5 @@ export default function Dashboard() {
     </div>
   );
 }
+
+

@@ -263,6 +263,9 @@ export class MercadoLivreLinkConverter {
     const tempPage = await context.newPage();
     try {
       await this.applyAntiBotPatches(tempPage);
+      await tempPage.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css,mp4,mp3,webm,avi}", (route) => route.abort());
+      await tempPage.route("**/analytics*", (route) => route.abort());
+      await tempPage.route("**/beacon*", (route) => route.abort());
       await tempPage.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
       await tempPage.waitForTimeout(1500);
 
@@ -396,11 +399,25 @@ export class MercadoLivreLinkConverter {
     try {
       browser = await chromium.launch({
         headless: true,
-        args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-setuid-sandbox", "--memory-pressure-off"],
+        args: [
+          "--no-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-setuid-sandbox",
+          "--memory-pressure-off",
+          "--disable-gpu",
+          "--disable-extensions",
+          "--disable-background-networking",
+          "--disable-default-apps",
+          "--disable-sync",
+          "--disable-translate",
+          "--disable-component-update",
+          "--disable-domain-reliability",
+          "--no-first-run",
+        ],
       });
       context = await browser.newContext({
         storageState: sessionPath,
-        viewport: { width: 1280, height: 800 },
+        viewport: { width: 800, height: 600 },
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         locale: "pt-BR",
       });
@@ -417,7 +434,7 @@ export class MercadoLivreLinkConverter {
       const page = await context.newPage();
 
       // Block unnecessary resources for speed
-      await page.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}", (route) => route.abort());
+      await page.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css,mp4,mp3,webm,avi}", (route) => route.abort());
       await page.route("**/analytics*", (route) => route.abort());
       await page.route("**/beacon*", (route) => route.abort());
 

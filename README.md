@@ -197,7 +197,7 @@ npm run pm2:bootstrap
 ```
 
 - O processo `autolinks-health-guardian` roda junto no PM2 para monitorar os 4 servicos e reiniciar automaticamente em caso de falhas consecutivas.
-- Para agendamentos e automacoes rodarem sem depender da interface aberta, configure `SCHEDULER_MODE=remote`, `SCHEDULER_RPC_BASE_URL` e `SCHEDULER_RPC_TOKEN`.
+- Para agendamentos, automacoes e roteamento de mensagens (WhatsApp/Telegram) rodarem sem depender da interface aberta, configure `SCHEDULER_MODE=remote`, `SCHEDULER_RPC_BASE_URL` e `SCHEDULER_RPC_TOKEN`.
 
 ## Estudo de reestruturacao visual
 

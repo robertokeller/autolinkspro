@@ -48,6 +48,7 @@ const shopeeSubNav = [
 ];
 
 const meliSubNav = [
+  { title: "Vitrine ML", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.mercadolivreConfiguracoes },
 ];
 
@@ -69,7 +70,8 @@ export function AppSidebar() {
 
   const isActive = (href: string) => location.pathname.startsWith(href);
   const isShopeeActive = location.pathname.startsWith(ROUTES.app.shopeeRoot);
-  const isMeliActive = location.pathname.startsWith(ROUTES.app.mercadolivreRoot);
+  const isMeliActive = location.pathname.startsWith(ROUTES.app.mercadolivreRoot)
+    || location.pathname === ROUTES.app.vitrineMl;
 
   const visibleShopeeSubNav = shopeeSubNav.filter((item) => {
     if (item.href === ROUTES.app.shopeeAutomacoes) return featureVisibility.shopeeAutomations;
@@ -212,10 +214,10 @@ export function AppSidebar() {
 
               {featureVisibility.routes && (
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas automaticas">
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas Automáticas">
                   <Link to={ROUTES.app.routes}>
                     <Route className="h-4 w-4" />
-                    <span>Rotas automaticas</span>
+                    <span>Rotas Automáticas</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

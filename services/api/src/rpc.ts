@@ -7,6 +7,7 @@ import { getPasswordPolicyError } from "./password-policy.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { listMeliVitrine, syncMeliVitrine } from "./meli-vitrine.js";
 
 export const rpcRouter = Router();
 
@@ -2442,6 +2443,77 @@ async function pollTelegramEventsForSession(userId: string, sessionId: string): 
   return events.length;
 }
 
+async function pollChannelEventsInScope(input: {
+  requesterUserId: string;
+  canRunGlobal: boolean;
+}): Promise<{
+  scope: "user" | "global";
+  whatsappSessions: number;
+  whatsappEvents: number;
+  telegramSessions: number;
+  telegramEvents: number;
+  failed: number;
+}> {
+  const scope: "user" | "global" = input.canRunGlobal ? "global" : "user";
+  const scopeParams: unknown[] = [];
+  const scopeFilter = input.canRunGlobal ? "" : "AND user_id = $1";
+  if (!input.canRunGlobal) scopeParams.push(input.requesterUserId);
+
+  let whatsappSessions = 0;
+  let whatsappEvents = 0;
+  let telegramSessions = 0;
+  let telegramEvents = 0;
+  let failed = 0;
+
+  if (WHATSAPP_URL) {
+    const sessions = await query<{ id: string; user_id: string }>(
+      `SELECT id, user_id
+       FROM whatsapp_sessions
+       WHERE COALESCE(status, '') <> 'offline'
+       ${scopeFilter}`,
+      scopeParams,
+    );
+    whatsappSessions = sessions.length;
+
+    for (const session of sessions) {
+      try {
+        whatsappEvents += await pollWhatsAppEventsForSession(String(session.user_id), String(session.id));
+      } catch {
+        failed += 1;
+      }
+    }
+  }
+
+  if (TELEGRAM_URL) {
+    const sessions = await query<{ id: string; user_id: string }>(
+      `SELECT id, user_id
+       FROM telegram_sessions
+       WHERE COALESCE(status, '') <> 'offline'
+          OR COALESCE(session_string, '') <> ''
+       ${scopeFilter}`,
+      scopeParams,
+    );
+    telegramSessions = sessions.length;
+
+    for (const session of sessions) {
+      try {
+        telegramEvents += await pollTelegramEventsForSession(String(session.user_id), String(session.id));
+      } catch {
+        failed += 1;
+      }
+    }
+  }
+
+  return {
+    scope,
+    whatsappSessions,
+    whatsappEvents,
+    telegramSessions,
+    telegramEvents,
+    failed,
+  };
+}
+
 function spawnOpsControlLocal(targetPort: number): { ok: true; pid: number } | { ok: false; error: string } {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -2674,6 +2746,16 @@ rpcRouter.post("/rpc", async (req, res) => {
   }
 
   try {
+    // â”€â”€ poll-channel-events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "poll-channel-events") {
+      const canRunGlobalChannelPolling = isService || (effectiveAdmin && !userIsAdmin);
+      const polled = await pollChannelEventsInScope({
+        requesterUserId: userId,
+        canRunGlobal: canRunGlobalChannelPolling,
+      });
+      ok(res, { ok: true, source: String(params.source ?? "frontend"), ...polled }); return;
+    }
+
     // â”€â”€ whatsapp-connect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (funcName === "whatsapp-connect") {
       const action = String(params.action ?? "");
@@ -4048,6 +4130,46 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
 
     // â”€â”€ meli handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (funcName === "meli-vitrine-sync") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
+
+      const source = String(params.source ?? (isService ? "scheduler" : "manual")).trim() || (isService ? "scheduler" : "manual");
+      const force = params.force === true;
+      const onlyIfStale = params.onlyIfStale !== false;
+
+      const result = await syncMeliVitrine({ source, force, onlyIfStale });
+      if (!result.success) { fail(res, result.message); return; }
+      ok(res, result);
+      return;
+    }
+
+    if (funcName === "meli-vitrine-list") {
+      let payload = await listMeliVitrine({
+        tab: params.tab,
+        page: params.page,
+        limit: params.limit,
+      });
+
+      // Bootstrap snapshot automatically on first usage if the table is empty.
+      if (payload.total === 0) {
+        const bootstrap = await syncMeliVitrine({
+          source: isService ? "scheduler-bootstrap" : "frontend-bootstrap",
+          force: true,
+          onlyIfStale: false,
+        });
+        if (bootstrap.success) {
+          payload = await listMeliVitrine({
+            tab: params.tab,
+            page: params.page,
+            limit: params.limit,
+          });
+        }
+      }
+
+      ok(res, payload);
+      return;
+    }
+
     if (funcName === "meli-service-health") {
       if (!MELI_URL) {
         ok(res, {

@@ -20,6 +20,7 @@ export const Pages = {
   ShopeeConversor: lazy(() => import("@/pages/shopee/ShopeeConversor")),
   ShopeeAutomacoes: lazy(() => import("@/pages/shopee/ShopeeAutomacoes")),
   ShopeeConfiguracoes: lazy(() => import("@/pages/shopee/ShopeeConfiguracoes")),
+  MercadoLivreVitrine: lazy(() => import("@/pages/mercadolivre/MercadoLivreVitrine")),
   MercadoLivreConfiguracoes: lazy(() => import("@/pages/mercadolivre/MercadoLivreConfiguracoes")),
   Agendamentos: lazy(() => import("@/pages/Agendamentos")),
   Modelos: lazy(() => import("@/pages/Modelos")),
