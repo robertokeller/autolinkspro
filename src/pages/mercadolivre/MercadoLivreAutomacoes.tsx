@@ -335,10 +335,11 @@ export default function MercadoLivreAutomacoes() {
   return (
     <div className="ds-page">
       <PageHeader title="Piloto automatico" description="Envie ofertas da Vitrine ML automaticamente para seus grupos">
-        <div className="flex w-full flex-wrap items-center justify-center gap-2.5">
+        <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
           <Button
             size="sm"
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => { void refreshAllAutomations(); }}
             disabled={automations.length === 0 || isHeaderActionPending}
           >
@@ -348,6 +349,7 @@ export default function MercadoLivreAutomacoes() {
           <Button
             size="sm"
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => { void handleBulkToggleAndRefreshRoutes(); }}
             disabled={automations.length === 0 || isHeaderActionPending}
           >
@@ -358,7 +360,7 @@ export default function MercadoLivreAutomacoes() {
                 ? "Atualizando rotas..."
                 : (shouldPauseAll ? "Pausar automacoes" : "Retomar automacoes")}
           </Button>
-          <Button size="sm" onClick={openCreate}>
+          <Button size="sm" className="w-full sm:w-auto" onClick={openCreate}>
             <Plus className="mr-1.5 h-4 w-4" />
             Nova automacao
           </Button>
@@ -389,7 +391,7 @@ export default function MercadoLivreAutomacoes() {
             return (
               <Card key={automation.id} className="glass">
                 <CardContent className="space-y-4 p-5">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0 flex-1">
                       <p className="text-base font-medium leading-snug">{automation.name}</p>
                       <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
@@ -398,7 +400,7 @@ export default function MercadoLivreAutomacoes() {
                         {Number(automation.max_price) < 9999 && ` - <=R$${automation.max_price}`}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <Badge variant="secondary" className={`text-xs ${automation.is_active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
                         {automation.is_active ? "Ativa" : "Pausada"}
                       </Badge>
@@ -447,7 +449,7 @@ export default function MercadoLivreAutomacoes() {
                     )}
                   </div>
 
-                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
                     <span>{automation.products_sent} enviados</span>
                     {automation.last_run_at && (
                       <span className="flex items-center gap-1">
@@ -495,7 +497,7 @@ export default function MercadoLivreAutomacoes() {
       </AlertDialog>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="max-h-[90dvh] max-w-3xl overflow-y-auto px-6 py-5">
+        <DialogContent className="max-h-[90dvh] w-[min(calc(100vw-1rem),48rem)] overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           <DialogHeader>
             <DialogTitle>{editingId ? "Editar automacao" : "Nova automacao"}</DialogTitle>
           </DialogHeader>

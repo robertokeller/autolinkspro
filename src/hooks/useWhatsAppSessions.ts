@@ -108,8 +108,14 @@ export function useWhatsAppSessions() {
       const name = input.name.trim();
       if (!name) throw new Error("Informe o nome da sessão");
 
-      const phoneValidation = input.phone
-        ? validatePhone(input.phone)
+      const authMethod: AuthMethod = input.authMethod === "pairing" ? "pairing" : "qr";
+      const rawPhone = String(input.phone || "").trim();
+      if (authMethod === "pairing" && !rawPhone) {
+        throw new Error("Informe o telefone para usar Pairing Code.");
+      }
+
+      const phoneValidation = rawPhone
+        ? validatePhone(rawPhone)
         : { valid: true as const, normalized: "" };
       if (!phoneValidation.valid) {
         throw new Error((phoneValidation as { error?: string }).error || "Telefone inválido");
@@ -124,7 +130,7 @@ export function useWhatsAppSessions() {
           name,
           phone: phoneValidation.normalized,
           status: "offline",
-          auth_method: input.authMethod,
+          auth_method: authMethod,
           is_default: shouldBeDefault,
           qr_code: "",
           error_message: "",
@@ -277,4 +283,3 @@ export function useWhatsAppSessions() {
     refresh,
   };
 }
-

@@ -1,4 +1,5 @@
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useCallback } from "react";
+import { Link, useLocation } from "react-router-dom";
 import {
   ArrowLeftRight,
   CalendarDays,
@@ -33,10 +34,12 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarSeparator,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAccessControl } from "@/hooks/useAccessControl";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { ROUTES } from "@/lib/routes";
 
 const shopeeSubNav = [
@@ -48,7 +51,7 @@ const shopeeSubNav = [
 ];
 
 const meliSubNav = [
-  { title: "Vitrine ML", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
+  { title: "Vitrine de Ofertas", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.automacoesMeli },
   { title: "Templates Meli", icon: FileText, href: ROUTES.app.templatesMeli },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.mercadolivreConfiguracoes },
@@ -56,7 +59,8 @@ const meliSubNav = [
 
 export function AppSidebar() {
   const location = useLocation();
-  const navigate = useNavigate();
+  const isMobile = useIsMobile();
+  const { setOpenMobile } = useSidebar();
   const { signOut } = useAuth();
   const { canSeeFeature } = useAccessControl();
 
@@ -77,6 +81,15 @@ export function AppSidebar() {
     || location.pathname === ROUTES.app.automacoesMeli
     || location.pathname === ROUTES.app.templatesMeli;
 
+  const closeMobileSidebar = useCallback(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [isMobile, setOpenMobile]);
+
+  const handleSignOut = () => {
+    closeMobileSidebar();
+    signOut();
+  };
+
   const visibleShopeeSubNav = shopeeSubNav.filter((item) => {
     if (item.href === ROUTES.app.shopeeAutomacoes) return featureVisibility.shopeeAutomations;
     if (item.href === ROUTES.app.shopeeTemplates) return featureVisibility.templates;
@@ -94,7 +107,7 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible="icon" className="border-r-0">
       <SidebarHeader className="px-3 py-4">
-        <Link to={ROUTES.app.dashboard} className="flex items-center gap-2.5 px-1">
+        <Link to={ROUTES.app.dashboard} onClick={closeMobileSidebar} className="flex items-center gap-2.5 px-1">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center">
             <img
               src="/brand/icon-64.png"
@@ -115,7 +128,7 @@ export function AppSidebar() {
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.dashboard)} tooltip="Dashboard">
-                  <Link to={ROUTES.app.dashboard}>
+                  <Link to={ROUTES.app.dashboard} onClick={closeMobileSidebar}>
                     <LayoutDashboard className="h-4 w-4" />
                     <span>Dashboard</span>
                   </Link>
@@ -123,7 +136,7 @@ export function AppSidebar() {
               </SidebarMenuItem>
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.history)} tooltip="Histórico">
-                  <Link to={ROUTES.app.history}>
+                  <Link to={ROUTES.app.history} onClick={closeMobileSidebar}>
                     <History className="h-4 w-4" />
                     <span>Histórico</span>
                   </Link>
@@ -153,7 +166,7 @@ export function AppSidebar() {
                       {visibleShopeeSubNav.map((item) => (
                         <SidebarMenuSubItem key={item.href}>
                           <SidebarMenuSubButton asChild isActive={location.pathname === item.href}>
-                            <Link to={item.href}>
+                            <Link to={item.href} onClick={closeMobileSidebar}>
                               <item.icon className="h-4 w-4" />
                               <span>{item.title}</span>
                             </Link>
@@ -180,7 +193,7 @@ export function AppSidebar() {
                       {visibleMeliSubNav.map((item) => (
                         <SidebarMenuSubItem key={item.href}>
                           <SidebarMenuSubButton asChild isActive={location.pathname === item.href}>
-                            <Link to={item.href}>
+                            <Link to={item.href} onClick={closeMobileSidebar}>
                               <item.icon className="h-4 w-4" />
                               <span>{item.title}</span>
                             </Link>
@@ -205,7 +218,7 @@ export function AppSidebar() {
               {featureVisibility.schedules && (
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.schedules)} tooltip="Agendamentos">
-                  <Link to={ROUTES.app.schedules}>
+                  <Link to={ROUTES.app.schedules} onClick={closeMobileSidebar}>
                     <CalendarDays className="h-4 w-4" />
                     <span>Agendamentos</span>
                   </Link>
@@ -215,7 +228,7 @@ export function AppSidebar() {
 
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.shopeeConversor)} tooltip="Conversor de links">
-                  <Link to={ROUTES.app.shopeeConversor}>
+                  <Link to={ROUTES.app.shopeeConversor} onClick={closeMobileSidebar}>
                     <ArrowLeftRight className="h-4 w-4" />
                     <span>Conversor de links</span>
                   </Link>
@@ -225,7 +238,7 @@ export function AppSidebar() {
               {featureVisibility.routes && (
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas Automáticas">
-                  <Link to={ROUTES.app.routes}>
+                  <Link to={ROUTES.app.routes} onClick={closeMobileSidebar}>
                     <Route className="h-4 w-4" />
                     <span>Rotas Automáticas</span>
                   </Link>
@@ -245,7 +258,7 @@ export function AppSidebar() {
               {featureVisibility.linkHub && (
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.linkHub)} tooltip="Link Hub">
-                  <Link to={ROUTES.app.linkHub}>
+                  <Link to={ROUTES.app.linkHub} onClick={closeMobileSidebar}>
                     <Link2 className="h-4 w-4" />
                     <span>Link Hub</span>
                   </Link>
@@ -256,7 +269,7 @@ export function AppSidebar() {
               {featureVisibility.telegramConnections && (
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.connectionsTelegram)} tooltip="Telegram">
-                  <Link to={ROUTES.app.connectionsTelegram}>
+                  <Link to={ROUTES.app.connectionsTelegram} onClick={closeMobileSidebar}>
                     <TelegramIcon className="h-4 w-4" />
                     <span>Telegram</span>
                   </Link>
@@ -266,7 +279,7 @@ export function AppSidebar() {
 
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.connectionsWhatsApp)} tooltip="WhatsApp">
-                  <Link to={ROUTES.app.connectionsWhatsApp}>
+                  <Link to={ROUTES.app.connectionsWhatsApp} onClick={closeMobileSidebar}>
                     <WhatsAppIcon className="h-4 w-4" />
                     <span>WhatsApp</span>
                   </Link>
@@ -284,15 +297,15 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <div className="flex items-center gap-1">
               <SidebarMenuButton asChild isActive={isActive(ROUTES.app.account)} tooltip="Minha conta" className="flex-1">
-                <Link to={ROUTES.app.account}>
+                <Link to={ROUTES.app.account} onClick={closeMobileSidebar}>
                   <UserCircle className="h-4 w-4" />
                   <span>Minha conta</span>
                 </Link>
               </SidebarMenuButton>
               <button
-                onClick={() => signOut()}
+                onClick={handleSignOut}
                 title="Sair"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
               >
                 <LogOut className="h-4 w-4" />
               </button>
@@ -303,5 +316,6 @@ export function AppSidebar() {
     </Sidebar>
   );
 }
+
 
 

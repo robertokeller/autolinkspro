@@ -15,6 +15,13 @@
     --app-page-x: 16px;
     --app-page-y: 20px;
     --app-header-height: 56px;
+    --touch-target-size: 40px;
+    --safe-area-top: env(safe-area-inset-top, 0px);
+    --safe-area-right: env(safe-area-inset-right, 0px);
+    --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-area-left: env(safe-area-inset-left, 0px);
+    --ds-page-gap: 1.5rem;
+    --ds-stack-gap: 1.5rem;
 
     /* Auto Links — Light Mode (Premium Coral) */
     --background: 220 15% 98%;
@@ -143,11 +150,19 @@
     @apply border-border;
   }
 
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
   body {
     @apply bg-background text-foreground antialiased;
     font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
     font-size: calc(16px * var(--app-font-scale));
-    min-height: calc(var(--vh-unit) * 100);
+    min-height: max(100dvh, calc(var(--vh-unit) * 100));
+    overscroll-behavior-y: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   /* Custom scrollbar */
@@ -167,6 +182,16 @@
 }
 
 @layer utilities {
+  .app-safe-top {
+    padding-top: max(var(--safe-area-top), 0px);
+  }
+  .app-safe-bottom {
+    padding-bottom: max(var(--safe-area-bottom), 0px);
+  }
+  .touch-target {
+    min-height: var(--touch-target-size);
+    min-width: var(--touch-target-size);
+  }
   .admin-page {
     @apply mx-auto w-full max-w-[1280px] space-y-6;
   }
@@ -186,10 +211,15 @@
     @apply rounded-full border border-border/80 bg-muted/50 px-2.5 py-0.5 text-[11px] font-medium;
   }
   .ds-page {
-    @apply mx-auto w-full max-w-[1240px] space-y-6;
+    @apply mx-auto w-full max-w-[1240px];
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-page-gap);
   }
   .ds-stack {
-    @apply space-y-6;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-stack-gap);
   }
   .ds-card-grid {
     @apply grid gap-4 sm:gap-5;
@@ -224,4 +254,32 @@
   .animate-pulse-slow {
     animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
+}
+
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  a[role="button"],
+  input,
+  select,
+  textarea,
+  summary {
+    touch-action: manipulation;
+  }
+}
+
+:root[data-screen-profile="tiny"],
+:root[data-screen-profile="mobile"] {
+  --ds-page-gap: 1rem;
+  --ds-stack-gap: 1rem;
+}
+
+:root[data-screen-profile="tablet"] {
+  --ds-page-gap: 1.25rem;
+  --ds-stack-gap: 1.25rem;
+}
+
+:root[data-screen-profile="tiny"] .ds-card-grid,
+:root[data-screen-profile="mobile"] .ds-card-grid {
+  gap: 0.75rem;
 }

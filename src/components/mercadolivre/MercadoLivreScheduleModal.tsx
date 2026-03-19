@@ -411,7 +411,7 @@ export function MercadoLivreScheduleModal({
 
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
-      <DialogContent className="max-w-lg max-h-[92dvh] overflow-y-auto">
+      <DialogContent className="max-h-[92dvh] w-[min(calc(100vw-1rem),32rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <CalendarDays className="h-5 w-5 text-primary" />

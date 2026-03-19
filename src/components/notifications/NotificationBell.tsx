@@ -199,7 +199,7 @@ export function NotificationBell() {
             variant="outline"
             size="icon"
             className={cn(
-              "relative h-9 w-9 transition-all",
+              "relative h-10 w-10 transition-all sm:h-9 sm:w-9",
               unreadCount > 0 && "border-primary/50 shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]",
             )}
             aria-label={unreadCount > 0 ? `${unreadCount} notificações não lidas` : "Notificações"}
@@ -217,7 +217,7 @@ export function NotificationBell() {
           </Button>
         </DropdownMenuTrigger>
 
-        <DropdownMenuContent align="end" sideOffset={8} className="w-[380px] p-0">
+        <DropdownMenuContent align="end" sideOffset={8} className="w-[min(calc(100vw-1rem),380px)] p-0">
           {/* Header */}
           <div className="flex items-center justify-between border-b px-4 py-3">
             <div className="flex items-center gap-2">
@@ -281,7 +281,7 @@ export function NotificationBell() {
 
       {/* ── Central de Notificações (dialog) ──────────────────── */}
       <Dialog open={openCenter} onOpenChange={setOpenCenter}>
-        <DialogContent className="flex h-[85dvh] max-w-2xl flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent className="flex h-[85dvh] max-w-[min(42rem,calc(100vw-1rem))] flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="shrink-0 border-b px-6 py-4">
             <div className="flex items-center justify-between">
               <div>

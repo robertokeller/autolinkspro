@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { load } from "cheerio";
+import type { AnyNode } from "domhandler";
 import { execute, query, queryOne, transaction } from "./db.js";
 
 export type MeliVitrineTabKey =
@@ -17,10 +18,25 @@ export type MeliVitrineTabConfig = {
 
 const MELI_VITRINE_SYNC_INTERVAL_MS = Number.parseInt(process.env.MELI_VITRINE_SYNC_INTERVAL_MS || "7200000", 10);
 const MELI_VITRINE_FETCH_TIMEOUT_MS = Number.parseInt(process.env.MELI_VITRINE_FETCH_TIMEOUT_MS || "20000", 10);
+const MELI_VITRINE_FETCH_MAX_ATTEMPTS = Math.max(1, Number.parseInt(process.env.MELI_VITRINE_FETCH_MAX_ATTEMPTS || "3", 10));
+const MELI_VITRINE_FETCH_RETRY_BASE_MS = Math.max(150, Number.parseInt(process.env.MELI_VITRINE_FETCH_RETRY_BASE_MS || "700", 10));
+const MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS || "600000", 10),
+);
 const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 const MELI_BASE_URL = "https://www.mercadolivre.com.br";
 const DEFAULT_TAB_KEY: MeliVitrineTabKey = "top_performance";
 const PAUSED_AD_MARKERS = ["anuncio pausado", "publicacao pausada"];
+const BLOCKED_HTML_MARKERS = [
+  "captcha",
+  "verifique que voce e humano",
+  "acesso denegado",
+  "access denied",
+  "too many requests",
+  "request blocked",
+  "solicitacao bloqueada",
+];
 
 const MELI_VITRINE_TAB_ALIAS_MAP: Record<string, MeliVitrineTabKey> = {
   all: "top_performance",
@@ -105,6 +121,30 @@ type LastSyncRow = {
   finished_at: string | null;
 };
 
+type ListSnapshot = {
+  countRow: { total: string } | null;
+  rows: Array<{
+    id: string;
+    tab_key: MeliVitrineTabKey;
+    source_url: string;
+    title: string;
+    product_url: string;
+    image_url: string;
+    price_cents: number;
+    old_price_cents: number | null;
+    discount_text: string;
+    seller: string;
+    rating: number | null;
+    reviews_count: number | null;
+    shipping_text: string;
+    installments_text: string;
+    badge_text: string;
+    collected_at: string;
+  }>;
+  tabRows: Array<{ tab_key: MeliVitrineTabKey; active_count: string }>;
+  lastSync: LastSyncRow | null;
+};
+
 export type MeliVitrineSyncResult = {
   success: boolean;
   skipped: boolean;
@@ -148,6 +188,9 @@ export type MeliVitrineListResult = {
   stale: boolean;
 };
 
+let syncInFlight: Promise<MeliVitrineSyncResult> | null = null;
+let lastEmptyAutoSyncAtMs = 0;
+
 function normalizeText(value: string): string {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -178,6 +221,19 @@ function parseAmountCentsFromNode(nodeText: string, centsText = ""): number {
   const centsRaw = parseIntegerDigits(centsText);
   const cents = Math.max(0, Math.min(99, centsRaw));
   return fraction * 100 + cents;
+}
+
+function parseAmountCentsFromCurrencyText(value: string): number {
+  const normalized = normalizeText(value);
+  if (!normalized) return 0;
+  const match = normalized.match(/R\$\s*([\d.]+)(?:,(\d{1,2}))?/i);
+  if (!match) return 0;
+  const integerPart = Number.parseInt(String(match[1] || "").replace(/\./g, ""), 10);
+  if (!Number.isFinite(integerPart) || integerPart <= 0) return 0;
+  const centsRaw = String(match[2] || "").trim();
+  const centsParsed = Number.parseInt(centsRaw.padEnd(2, "0").slice(0, 2), 10);
+  const cents = Number.isFinite(centsParsed) ? Math.max(0, Math.min(99, centsParsed)) : 0;
+  return integerPart * 100 + cents;
 }
 
 function parseRating(value: string): number | null {
@@ -238,6 +294,23 @@ function sanitizeBadgeText(value: string): string {
   return normalized;
 }
 
+function extractFirstSrcsetUrl(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  const firstEntry = normalized.split(",")[0] || "";
+  const firstUrl = firstEntry.trim().split(/\s+/)[0] || "";
+  return firstUrl.trim();
+}
+
+function normalizeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return normalizeText(message);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
 function toAbsoluteUrl(raw: string): string {
   const value = String(raw || "").trim();
   if (!value) return "";
@@ -293,21 +366,106 @@ function buildPayloadHash(input: Omit<ExtractedProduct, "payloadHash">): string 
   return createHash("sha1").update(payload).digest("hex");
 }
 
-async function fetchHtml(url: string): Promise<string> {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "user-agent": BROWSER_UA,
-      "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-      accept: "text/html,application/xhtml+xml",
-    },
-    signal: AbortSignal.timeout(Math.max(5000, MELI_VITRINE_FETCH_TIMEOUT_MS)),
-  });
+function isBlockedHtml(value: string): boolean {
+  const head = normalizeSearchableText(String(value || "").slice(0, 80_000));
+  if (!head) return false;
+  return BLOCKED_HTML_MARKERS.some((marker) => head.includes(marker));
+}
 
-  if (!response.ok) {
-    throw new Error(`Falha ao buscar ${url} (HTTP ${response.status})`);
+async function fetchHtml(url: string): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= MELI_VITRINE_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "user-agent": BROWSER_UA,
+          "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+          accept: "text/html,application/xhtml+xml",
+          referer: MELI_BASE_URL,
+          "cache-control": "no-cache",
+          pragma: "no-cache",
+        },
+        signal: AbortSignal.timeout(Math.max(5000, MELI_VITRINE_FETCH_TIMEOUT_MS)),
+      });
+
+      const html = await response.text();
+      if (!response.ok) {
+        const suffix = normalizeText(html.slice(0, 180));
+        throw new Error(`HTTP ${response.status}${suffix ? ` - ${suffix}` : ""}`);
+      }
+
+      const hasCards = html.includes("poly-card");
+      if (!hasCards && isBlockedHtml(html)) {
+        throw new Error("pagina bloqueada por anti-bot/captcha");
+      }
+
+      return html;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error || "erro desconhecido"));
+      if (attempt >= MELI_VITRINE_FETCH_MAX_ATTEMPTS) break;
+      const retryDelayMs = MELI_VITRINE_FETCH_RETRY_BASE_MS * attempt + Math.floor(Math.random() * 250);
+      await sleep(retryDelayMs);
+    }
   }
-  return await response.text();
+
+  throw new Error(`Falha ao buscar ${url}: ${normalizeErrorMessage(lastError) || "erro desconhecido"}`);
+}
+
+function extractTitleFromCard($: ReturnType<typeof load>, card: AnyNode): string {
+  const titleFromNode = normalizeText($(card).find(".poly-component__title").first().text());
+  if (titleFromNode) return titleFromNode;
+
+  return normalizeText(String(
+    $(card).find("a.poly-component__title").first().attr("title")
+    || $(card).find("a[title]").first().attr("title")
+    || $(card).find("img").first().attr("alt")
+    || "",
+  ));
+}
+
+function extractProductUrlFromCard($: ReturnType<typeof load>, card: AnyNode): string {
+  const hrefCandidates = [
+    String($(card).find("a.poly-component__title").first().attr("href") || ""),
+    String($(card).find("a[href*='/p/']").first().attr("href") || ""),
+    String($(card).find("a[href*='/MLB']").first().attr("href") || ""),
+    String($(card).find("a[href*='mercadolivre.com.br']").first().attr("href") || ""),
+  ];
+
+  for (const href of hrefCandidates) {
+    const canonical = canonicalizeProductUrl(href);
+    if (canonical) return canonical;
+  }
+
+  return "";
+}
+
+function extractImageUrlFromCard($: ReturnType<typeof load>, card: AnyNode): string {
+  const imageNode = $(card).find("img.poly-component__picture, img").first();
+  const imageCandidates = [
+    String(imageNode.attr("src") || ""),
+    String(imageNode.attr("data-src") || ""),
+    extractFirstSrcsetUrl(String(imageNode.attr("data-srcset") || "")),
+    extractFirstSrcsetUrl(String(imageNode.attr("srcset") || "")),
+  ];
+
+  for (const candidate of imageCandidates) {
+    const absolute = toAbsoluteUrl(candidate);
+    if (absolute) return absolute;
+  }
+
+  return "";
+}
+
+function extractPriceCentsFromCard($: ReturnType<typeof load>, card: AnyNode): number {
+  const currentAmount = $(card).find(".poly-price__current .andes-money-amount").first();
+  const currentFraction = normalizeText(currentAmount.find(".andes-money-amount__fraction").first().text());
+  const currentCents = normalizeText(currentAmount.find(".andes-money-amount__cents").first().text());
+  const priceFromNodes = parseAmountCentsFromNode(currentFraction, currentCents);
+  if (priceFromNodes > 0) return priceFromNodes;
+
+  return parseAmountCentsFromCurrencyText($(card).find(".poly-price__current").first().text());
 }
 
 function extractTabProducts(input: {
@@ -324,15 +482,10 @@ function extractTabProducts(input: {
     const cardText = normalizeText($(card).text());
     if (isPausedAdText(cardText)) continue;
 
-    const title = normalizeText($(card).find(".poly-component__title").first().text());
-    const rawLink = String($(card).find("a.poly-component__title").first().attr("href") || $(card).find("a[href*='/p/']").first().attr("href") || "");
-    const productUrl = canonicalizeProductUrl(rawLink);
-    const imageUrl = toAbsoluteUrl(String($(card).find("img.poly-component__picture").first().attr("src") || $(card).find("img.poly-component__picture").first().attr("data-src") || ""));
-
-    const currentAmount = $(card).find(".poly-price__current .andes-money-amount").first();
-    const currentFraction = normalizeText(currentAmount.find(".andes-money-amount__fraction").first().text());
-    const currentCents = normalizeText(currentAmount.find(".andes-money-amount__cents").first().text());
-    const priceCents = parseAmountCentsFromNode(currentFraction, currentCents);
+    const title = extractTitleFromCard($, card);
+    const productUrl = extractProductUrlFromCard($, card);
+    const imageUrl = extractImageUrlFromCard($, card);
+    const priceCents = extractPriceCentsFromCard($, card);
 
     if (!title || !productUrl || !imageUrl || priceCents <= 0) continue;
 
@@ -512,7 +665,7 @@ async function upsertTabProducts(
   return { added, updated, removed, unchanged };
 }
 
-export async function syncMeliVitrine(input: {
+async function syncMeliVitrineInternal(input: {
   source?: string;
   force?: boolean;
   onlyIfStale?: boolean;
@@ -543,30 +696,54 @@ export async function syncMeliVitrine(input: {
     }
 
     const extractedByTab = new Map<MeliVitrineTabConfig, ExtractedProduct[]>();
+    const extractionWarnings: string[] = [];
     let fetchedCards = 0;
 
     for (const tab of MELI_VITRINE_TABS) {
       const mergedByUrl = new Map<string, ExtractedProduct>();
       for (const sourceUrl of tab.sourceUrls) {
-        const html = await fetchHtml(sourceUrl);
-        const extracted = extractTabProducts({
-          tabKey: tab.key,
-          sourceUrl,
-          html,
-        });
-        fetchedCards += extracted.length;
-        for (const product of extracted) {
-          if (mergedByUrl.has(product.productUrl)) continue;
-          mergedByUrl.set(product.productUrl, product);
+        try {
+          const html = await fetchHtml(sourceUrl);
+          const extracted = extractTabProducts({
+            tabKey: tab.key,
+            sourceUrl,
+            html,
+          });
+          fetchedCards += extracted.length;
+          if (extracted.length === 0) {
+            extractionWarnings.push(`[${tab.key}] sem cards validos em ${sourceUrl}`);
+            continue;
+          }
+
+          for (const product of extracted) {
+            if (mergedByUrl.has(product.productUrl)) continue;
+            mergedByUrl.set(product.productUrl, product);
+          }
+        } catch (sourceError) {
+          extractionWarnings.push(`[${tab.key}] ${sourceUrl}: ${normalizeErrorMessage(sourceError)}`);
         }
       }
 
       const products = shuffleArray([...mergedByUrl.values()]);
       if (products.length === 0) {
-        throw new Error(`Nenhum produto valido encontrado para a aba ${tab.key}.`);
+        extractionWarnings.push(`[${tab.key}] nenhuma oferta valida apos processar ${tab.sourceUrls.length} fonte(s)`);
+        continue;
       }
       extractedByTab.set(tab, products);
     }
+
+    if (extractedByTab.size === 0) {
+      const details = extractionWarnings
+        .map((warning) => normalizeText(warning))
+        .filter(Boolean)
+        .slice(0, 5)
+        .join(" | ");
+      throw new Error(details ? `Nenhum produto valido encontrado. ${details}` : "Nenhum produto valido encontrado.");
+    }
+
+    const syncWarningMessage = extractionWarnings.length > 0
+      ? normalizeText(extractionWarnings.slice(0, 10).join(" | ")).slice(0, 1900)
+      : "";
 
     const counters = await transaction(async (client) => {
       let added = 0;
@@ -585,10 +762,11 @@ export async function syncMeliVitrine(input: {
       await client.query(
         `INSERT INTO meli_vitrine_sync_runs
           (source, status, message, scanned_tabs, fetched_cards, added_count, updated_count, removed_count, unchanged_count, started_at, finished_at)
-         VALUES ($1, 'success', '', $2, $3, $4, $5, $6, $7, $8, NOW())`,
+         VALUES ($1, 'success', $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
         [
           source,
-          MELI_VITRINE_TABS.length,
+          syncWarningMessage,
+          extractedByTab.size,
           fetchedCards,
           added,
           updated,
@@ -606,14 +784,16 @@ export async function syncMeliVitrine(input: {
       success: true,
       skipped: false,
       source,
-      scannedTabs: MELI_VITRINE_TABS.length,
+      scannedTabs: extractedByTab.size,
       fetchedCards,
       addedCount: counters.added,
       updatedCount: counters.updated,
       removedCount: counters.removed,
       unchangedCount: counters.unchanged,
       lastSyncAt: lastSync?.finished_at || lastSync?.created_at || null,
-      message: "Sync da vitrine ML concluído com sucesso.",
+      message: extractionWarnings.length > 0
+        ? `Sync da vitrine ML concluido com avisos (${extractedByTab.size}/${MELI_VITRINE_TABS.length} abas atualizadas).`
+        : "Sync da vitrine ML concluido com sucesso.",
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -634,16 +814,23 @@ export async function syncMeliVitrine(input: {
   }
 }
 
-export async function listMeliVitrine(input: {
-  tab?: unknown;
-  page?: unknown;
-  limit?: unknown;
-}): Promise<MeliVitrineListResult> {
-  const tab = normalizeTabKey(input.tab);
-  const page = getSafePage(input.page);
-  const limit = getSafeLimit(input.limit);
-  const offset = (page - 1) * limit;
+export async function syncMeliVitrine(input: {
+  source?: string;
+  force?: boolean;
+  onlyIfStale?: boolean;
+} = {}): Promise<MeliVitrineSyncResult> {
+  if (syncInFlight) {
+    return await syncInFlight;
+  }
 
+  syncInFlight = syncMeliVitrineInternal(input).finally(() => {
+    syncInFlight = null;
+  });
+
+  return await syncInFlight;
+}
+
+async function fetchMeliVitrineListSnapshot(tab: MeliVitrineTabKey, limit: number, offset: number): Promise<ListSnapshot> {
   const [countRow, rows, tabRows, lastSync] = await Promise.all([
     queryOne<{ total: string }>(
       "SELECT COUNT(*)::text AS total FROM meli_vitrine_products WHERE tab_key = $1 AND is_active = TRUE",
@@ -684,7 +871,47 @@ export async function listMeliVitrine(input: {
     getLastSuccessfulSync(),
   ]);
 
-  const total = Number.parseInt(String(countRow?.total || "0"), 10) || 0;
+  return { countRow, rows, tabRows, lastSync };
+}
+
+async function maybeAutoRecoverEmptyVitrine() {
+  if (syncInFlight) {
+    await syncInFlight.catch(() => undefined);
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastEmptyAutoSyncAtMs < MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS) {
+    return;
+  }
+
+  lastEmptyAutoSyncAtMs = now;
+  await syncMeliVitrine({
+    source: "auto-empty-list",
+    force: true,
+    onlyIfStale: false,
+  }).catch(() => undefined);
+}
+
+export async function listMeliVitrine(input: {
+  tab?: unknown;
+  page?: unknown;
+  limit?: unknown;
+}): Promise<MeliVitrineListResult> {
+  const tab = normalizeTabKey(input.tab);
+  const page = getSafePage(input.page);
+  const limit = getSafeLimit(input.limit);
+  const offset = (page - 1) * limit;
+
+  let snapshot = await fetchMeliVitrineListSnapshot(tab, limit, offset);
+  let total = Number.parseInt(String(snapshot.countRow?.total || "0"), 10) || 0;
+  if (total <= 0) {
+    await maybeAutoRecoverEmptyVitrine();
+    snapshot = await fetchMeliVitrineListSnapshot(tab, limit, offset);
+    total = Number.parseInt(String(snapshot.countRow?.total || "0"), 10) || 0;
+  }
+
+  const { rows, tabRows, lastSync } = snapshot;
   const tabCountMap = new Map<MeliVitrineTabKey, number>();
   for (const row of tabRows) {
     tabCountMap.set(row.tab_key, Number.parseInt(String(row.active_count || "0"), 10) || 0);

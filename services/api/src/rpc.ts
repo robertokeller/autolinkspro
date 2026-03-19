@@ -148,6 +148,11 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
     windowMs: 60_000,
     message: "Muitas execucoes de piloto automatico Mercado Livre. Aguarde 1 minuto.",
   },
+  "meli-vitrine-sync": {
+    max: 6,
+    windowMs: 60_000,
+    message: "Muitas atualizacoes da vitrine ML. Aguarde 1 minuto.",
+  },
 };
 
 const rpcFunctionRateStore = new Map<string, { count: number; resetAt: number }>();
@@ -3171,13 +3176,19 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (action === "connect") {
         const sess = await queryOne("SELECT auth_method, phone, name FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
         if (!sess) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+        const authMethod = String(sess.auth_method ?? "qr").trim().toLowerCase() === "pairing" ? "pairing" : "qr";
+        const phone = String(sess.phone ?? "").trim();
+        if (authMethod === "pairing" && !phone) {
+          fail(res, "SessÃ£o em modo pairing exige telefone. Atualize o nÃºmero da sessÃ£o e tente novamente.");
+          return;
+        }
         await execute("UPDATE whatsapp_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
         const waHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(WHATSAPP_URL, `/api/sessions/${encodeURIComponent(sessionId)}/connect`, "POST", {
           userId,
           webhookUrl: "",
-          phone: String(sess.phone ?? ""),
-          authMethod: String(sess.auth_method ?? "qr"),
+          phone,
+          authMethod,
           sessionName: String(sess.name ?? sessionId),
         }, waHeaders);
         if (r.error) { fail(res, r.error.message); return; }
@@ -4662,16 +4673,16 @@ rpcRouter.post("/rpc", async (req, res) => {
 
         const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
         const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
-        const template = templateId
-          ? await queryOne<{ id: string; name: string; content: string; is_default: boolean }>(
-              `SELECT id, name, content, is_default
-                 FROM templates
-                WHERE user_id = $1
-                  AND id = $2
-                LIMIT 1`,
-              [ownerUserId, templateId],
-            )
-          : null;
+        const template = await queryOne<{ id: string; name: string; content: string; is_default: boolean }>(
+          `SELECT id, name, content, is_default
+             FROM templates
+            WHERE user_id = $1
+              AND scope = 'meli'
+              AND ($2::uuid IS NULL OR id = $2 OR is_default = TRUE)
+            ORDER BY CASE WHEN id = $2 THEN 0 WHEN is_default = TRUE THEN 1 ELSE 2 END
+            LIMIT 1`,
+          [ownerUserId, templateId || null],
+        );
 
         const products = await query<{
           id: string;
@@ -5184,11 +5195,20 @@ rpcRouter.post("/rpc", async (req, res) => {
 
     // â”€â”€ meli handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (funcName === "meli-vitrine-sync") {
-      if (!effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
+      const isPrivilegedSync = Boolean(effectiveAdmin || isService);
+      if (!isPrivilegedSync && params.force === true) {
+        fail(res, "Acesso negado", 403);
+        return;
+      }
 
-      const source = String(params.source ?? (isService ? "scheduler" : "manual")).trim() || (isService ? "scheduler" : "manual");
-      const force = params.force === true;
-      const onlyIfStale = params.onlyIfStale !== false;
+      const source = String(
+        params.source
+        ?? (isService ? "scheduler" : isPrivilegedSync ? "manual-admin" : "manual-user"),
+      ).trim() || (isService ? "scheduler" : isPrivilegedSync ? "manual-admin" : "manual-user");
+      const force = isPrivilegedSync && params.force === true;
+      const onlyIfStale = isPrivilegedSync
+        ? params.onlyIfStale !== false
+        : true;
 
       const result = await syncMeliVitrine({ source, force, onlyIfStale });
       if (!result.success) { fail(res, result.message); return; }

@@ -502,7 +502,7 @@ export default function Dashboard() {
         />
       )}
 
-      <div className="ds-card-grid grid-cols-2 lg:grid-cols-6">
+      <div className="ds-card-grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-6">
         {isLoading
           ? Array.from({ length: 6 }).map((_, idx) => (
               <Card key={idx} className="glass">
@@ -528,7 +528,7 @@ export default function Dashboard() {
       </div>
 
       <div className="ds-card-grid lg:grid-cols-5">
-        <Card className="glass lg:col-span-3">
+        <Card className="glass order-2 lg:order-1 lg:col-span-3">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
@@ -584,7 +584,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card className="glass lg:col-span-2 lg:self-start">
+        <Card className="glass order-1 lg:order-2 lg:col-span-2 lg:self-start">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -617,18 +617,18 @@ export default function Dashboard() {
       </div>
 
       <div className="ds-card-grid lg:grid-cols-5">
-        <Card className="glass lg:col-span-2 lg:self-start">
+        <Card className="glass lg:col-span-2 h-full flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <LinkIcon className="h-4 w-4 text-muted-foreground" />
               Ações rápidas
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-2">
+          <CardContent className="pt-2 flex-1">
             {isLoading ? (
               <Skeleton className="h-28 w-full" />
             ) : (
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div className="grid h-full grid-cols-1 gap-2.5 sm:grid-cols-2 sm:auto-rows-fr">
                 {quickActions.map((action) => (
                   <Link key={action.label} to={action.href} className="group h-full">
                     <div className="flex h-full min-h-[86px] items-center gap-3 rounded-xl bg-secondary/50 p-3 transition-all hover:bg-secondary hover:ring-1 hover:ring-border">
@@ -648,7 +648,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card className="glass lg:col-span-3">
+        <Card className="glass lg:col-span-3 h-full flex flex-col">
           <CardHeader className="pb-2 flex-row items-center justify-between">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Clock className="h-4 w-4 text-muted-foreground" />
@@ -658,7 +658,7 @@ export default function Dashboard() {
               <Link to={ROUTES.app.history}>Ver tudo <ChevronRight className="h-3 w-3 ml-0.5" /></Link>
             </Button>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex-1">
             {histLoading ? (
               <Skeleton className="h-40 w-full" />
             ) : recentActivity.length === 0 ? (
@@ -687,7 +687,7 @@ export default function Dashboard() {
               </div>
             )}
 
-            <div className="pt-3 flex items-center justify-between text-xs text-muted-foreground">
+            <div className="flex flex-col gap-1.5 pt-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
               <span>{analytics.dueNext24h} agendamento(s) saem nas próximas 24h</span>
               <Link to={ROUTES.app.schedules} className="inline-flex items-center hover:text-foreground transition-colors">
                 Abrir agenda <ArrowRight className="h-3 w-3 ml-1" />
@@ -699,5 +699,6 @@ export default function Dashboard() {
     </div>
   );
 }
+
 
 

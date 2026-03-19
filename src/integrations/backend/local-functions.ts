@@ -4011,6 +4011,20 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     if (!sessionRow) return fail("Sessão WhatsApp não encontrada");
 
     if (action === "connect") {
+      const authMethod = String(sessionRow.auth_method || "qr").trim().toLowerCase() === "pairing" ? "pairing" : "qr";
+      const phone = String(sessionRow.phone || "").trim();
+      if (authMethod === "pairing" && !phone) {
+        const message = "Sessão em modo pairing exige telefone. Atualize o número da sessão e tente novamente.";
+        withDb((db) => {
+          const row = db.tables.whatsapp_sessions.find((item) => item.id === sessionId && item.user_id === userId);
+          if (!row) return;
+          row.status = "warning";
+          row.error_message = message;
+          row.updated_at = nowIso();
+        });
+        return fail(message);
+      }
+
       withDb((db) => {
         const row = db.tables.whatsapp_sessions.find((item) => item.id === sessionId && item.user_id === userId);
         if (!row) return;
@@ -4029,8 +4043,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
             body: {
               userId,
               webhookUrl: "",
-              phone: String(sessionRow.phone || ""),
-              authMethod: String(sessionRow.auth_method || "qr"),
+              phone,
+              authMethod,
               sessionName: String(sessionRow.name || sessionId),
             },
           },

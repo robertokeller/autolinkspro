@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
@@ -16,11 +15,9 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   User,
-  Bell,
   CalendarClock,
   CreditCard,
   Save,
-  AlertTriangle,
   Users,
   Route,
   Flame,
@@ -29,7 +26,6 @@ import {
   ArrowUpRight,
   Shield,
   KeyRound,
-  Download,
   Eye,
   EyeOff,
   Check,
@@ -42,19 +38,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/components/ThemeProvider";
 import { backend } from "@/integrations/backend/client";
 import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
-import type { Json } from "@/integrations/backend/types";
 import { toast } from "sonner";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from "@/lib/password-policy";
-
-interface NotificationPrefs {
-  routeErrors: boolean;
-  automationComplete: boolean;
-  sessionDisconnected: boolean;
-  dailyReport: boolean;
-  lowQuotaAlert: boolean;
-  weeklyPerformanceDigest: boolean;
-}
 
 interface ProrationState {
   targetPlanId: string;
@@ -85,26 +71,6 @@ function parsePeriodToMs(period: string): number | null {
   return null;
 }
 
-const defaultPrefs: NotificationPrefs = {
-  routeErrors: true,
-  automationComplete: true,
-  sessionDisconnected: true,
-  dailyReport: false,
-  lowQuotaAlert: true,
-  weeklyPerformanceDigest: false,
-};
-
-function toNotificationPrefs(input: unknown): NotificationPrefs {
-  const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
-  return {
-    routeErrors: source.routeErrors !== false,
-    automationComplete: source.automationComplete !== false,
-    sessionDisconnected: source.sessionDisconnected !== false,
-    dailyReport: source.dailyReport === true,
-    lowQuotaAlert: source.lowQuotaAlert !== false,
-    weeklyPerformanceDigest: source.weeklyPerformanceDigest === true,
-  };
-}
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -112,7 +78,6 @@ export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const [profile, setProfile] = useState({ name: "", email: "" });
   const [planId, setPlanId] = useState("plan-starter");
-  const [notifications, setNotifications] = useState<NotificationPrefs>(defaultPrefs);
   const [usageCounts, setUsageCounts] = useState({
     wa: 0,
     tg: 0,
@@ -131,7 +96,6 @@ export default function SettingsPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [savingNotifs, setSavingNotifs] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
 
   const fetchAll = useCallback(async () => {
@@ -139,7 +103,7 @@ export default function SettingsPage() {
 
     setLoading(true);
     const [profileRes, wa, tg, waGroups, tgGroups, rt, au, sch, tp] = await Promise.all([
-      backend.from("profiles").select("name, email, plan_id, notification_prefs, plan_expires_at").eq("user_id", user.id).maybeSingle(),
+      backend.from("profiles").select("name, email, plan_id, plan_expires_at").eq("user_id", user.id).maybeSingle(),
       backend.from("whatsapp_sessions").select("id", { count: "exact", head: true }).eq("user_id", user.id),
       backend.from("telegram_sessions").select("id", { count: "exact", head: true }).eq("user_id", user.id),
       backend.from("groups").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("platform", "whatsapp").is("deleted_at", null),
@@ -159,7 +123,6 @@ export default function SettingsPage() {
         email: profileEmail || fallbackEmail,
       });
       setPlanId(String(profileRes.data.plan_id || "plan-starter"));
-      setNotifications(toNotificationPrefs(profileRes.data.notification_prefs));
       setPlanExpiresAt(typeof profileRes.data.plan_expires_at === "string" && profileRes.data.plan_expires_at.trim()
         ? profileRes.data.plan_expires_at
         : null);
@@ -218,8 +181,6 @@ export default function SettingsPage() {
     ? new Date(planExpiryMs).toLocaleDateString("pt-BR")
     : null;
 
-  const hasCriticalAlertsEnabled = notifications.routeErrors && notifications.sessionDisconnected;
-
   const saveProfile = async () => {
     if (!user) return;
     const parsed = perfilSchema.safeParse(profile);
@@ -265,21 +226,6 @@ export default function SettingsPage() {
     }
   };
 
-  const saveNotifications = async () => {
-    if (!user) return;
-    setSavingNotifs(true);
-    const { error } = await backend
-      .from("profiles")
-      .update({ notification_prefs: notifications as unknown as Json })
-      .eq("user_id", user.id);
-    setSavingNotifs(false);
-    if (error) {
-      toast.error("Não deu pra salvar os avisos");
-      return;
-    }
-    toast.success("Avisos salvos");
-  };
-
   const updatePassword = async () => {
     if (!passwordForm.currentPassword) {
       toast.error("Coloque sua senha atual");
@@ -310,34 +256,6 @@ export default function SettingsPage() {
 
     setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
     toast.success("Senha trocada");
-  };
-
-  const exportAccountData = () => {
-    const payload = {
-      exportedAt: new Date().toISOString(),
-      profile,
-      plan: {
-        id: currentPlan.id,
-        name: currentPlan.name,
-        price: currentPlan.price,
-        period: currentPlan.period,
-      },
-      notificationPrefs: notifications,
-      usage: usageCounts,
-      ui: {
-        theme,
-      },
-    };
-
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const href = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = href;
-    a.download = `autolinks-minha-conta-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(href);
   };
 
   const handleChoosePlan = async (targetPlanId: string) => {
@@ -407,15 +325,6 @@ export default function SettingsPage() {
     { label: "Templates", icon: FileText, used: usageCounts.templates, max: effectiveLimits.templates },
   ];
 
-  const notifItems = [
-    { key: "routeErrors" as const, label: "Erros nas rotas", desc: "Avisa quando uma rota der problema", icon: AlertTriangle },
-    { key: "automationComplete" as const, label: "Automação terminou", desc: "Avisa quando uma automação Shopee acabar", icon: CheckCircle2 },
-    { key: "sessionDisconnected" as const, label: "Sessão caiu", desc: "Avisa quando WhatsApp ou Telegram desconectar", icon: WhatsAppIcon },
-    { key: "dailyReport" as const, label: "Resumo do dia", desc: "Receba um resumo diário por e-mail", icon: Bell },
-    { key: "lowQuotaAlert" as const, label: "Limite quase no teto", desc: "Avisa quando você usar mais de 80% do plano", icon: CreditCard },
-    { key: "weeklyPerformanceDigest" as const, label: "Resumo da semana", desc: "Receba um resumo semanal", icon: FileText },
-  ];
-
   const nearLimitItems = usageItems.filter((item) => item.max !== -1 && item.max > 0 && (item.used / item.max) * 100 >= 80);
 
   if (loading) {
@@ -438,14 +347,14 @@ export default function SettingsPage() {
           description="Seu perfil, segurança e configurações num lugar só"
         />
 
-        <Tabs defaultValue="conta" className="space-y-5">
-          <TabsList className="w-full justify-start overflow-x-auto">
-            <TabsTrigger value="conta">Conta</TabsTrigger>
-            <TabsTrigger value="plano">Plano</TabsTrigger>
+        <Tabs defaultValue="conta" className="mx-auto w-full max-w-4xl space-y-6">
+          <TabsList className="mx-auto grid h-12 w-full max-w-xl grid-cols-2 rounded-2xl bg-muted/70 p-1">
+            <TabsTrigger value="conta" className="text-sm font-semibold data-[state=active]:shadow-sm">Conta</TabsTrigger>
+            <TabsTrigger value="plano" className="text-sm font-semibold data-[state=active]:shadow-sm">Plano</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="conta" className="space-y-5">
-            <Card className="glass">
+          <TabsContent value="conta" className="mx-auto w-full max-w-3xl space-y-5">
+            <Card className="glass border-primary/20 shadow-sm">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -488,7 +397,7 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
 
-            <Card className="glass">
+            <Card className="glass border-primary/20 shadow-sm">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -549,68 +458,11 @@ export default function SettingsPage() {
                     <KeyRound className="mr-1.5 h-3.5 w-3.5" />
                     {savingPassword ? "Atualizando..." : "Atualizar senha"}
                   </Button>
-                  <Button size="sm" variant="outline" onClick={exportAccountData}>
-                    <Download className="mr-1.5 h-3.5 w-3.5" />
-                    Exportar dados da conta
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="conta" className="space-y-5">
-            <Card className="glass">
-              <CardHeader className="pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                    <Bell className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-base">Avisos e notificações</CardTitle>
-                    <CardDescription>Escolha o que você quer receber</CardDescription>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-1">
-                <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground/70">
-                  <AlertTriangle className="h-3 w-3" />
-                  Deixe ligado pelo menos os alertas de erro e sessão desconectada pra não perder envios.
-                </p>
-                {notifItems.map((item, idx) => (
-                  <div key={item.key}>
-                    <div className="flex items-center justify-between py-3">
-                      <div className="flex items-center gap-3">
-                        <item.icon className="h-4 w-4 text-muted-foreground" />
-                        <div>
-                          <p className="text-sm font-medium">{item.label}</p>
-                          <p className="text-xs text-muted-foreground">{item.desc}</p>
-                        </div>
-                      </div>
-                      <Switch
-                        checked={notifications[item.key]}
-                        onCheckedChange={(c) => setNotifications({ ...notifications, [item.key]: c })}
-                      />
-                    </div>
-                    {idx < notifItems.length - 1 && <Separator />}
-                  </div>
-                ))}
-
-                {!hasCriticalAlertsEnabled && (
-                  <p className="rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
-                    Recomendado: manter os alertas importantes ligados pra evitar erros silenciosos.
-                  </p>
-                )}
-
-                <div className="flex justify-end pt-3">
-                  <Button size="sm" onClick={saveNotifications} disabled={savingNotifs}>
-                    <Save className="mr-1.5 h-3.5 w-3.5" />
-                    {savingNotifs ? "Salvando..." : "Salvar preferências"}
-                  </Button>
                 </div>
               </CardContent>
             </Card>
 
-            <Card className="glass">
+            <Card className="glass border-primary/20 shadow-sm">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -640,8 +492,8 @@ export default function SettingsPage() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="plano" className="space-y-5">
-            <Card className="glass">
+          <TabsContent value="plano" className="mx-auto w-full max-w-3xl space-y-5">
+            <Card className="glass border-primary/20 shadow-sm">
               <CardHeader className="pb-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
