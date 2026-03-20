@@ -2149,12 +2149,50 @@ async function fetchWhatsAppMediaByToken(token: string, userId: string): Promise
   }));
 }
 
+async function fetchTelegramMediaByToken(token: string, userId: string): Promise<{
+  base64: string;
+  mimeType: string;
+  fileName: string;
+}> {
+  return callService<{
+    ok?: boolean;
+    base64?: string;
+    mimeType?: string;
+    fileName?: string;
+  }>(
+    TELEGRAM_MICROSERVICE_URL,
+    `/api/telegram/media/${encodeURIComponent(token)}`,
+    { userId },
+  ).then((response) => ({
+    base64: String(response.base64 || ""),
+    mimeType: String(response.mimeType || "image/jpeg"),
+    fileName: String(response.fileName || "route_image.jpg"),
+  }));
+}
+
 async function scheduleWhatsAppMediaDeletion(token: string, userId: string, delayMs = 120_000): Promise<void> {
   if (!WHATSAPP_MICROSERVICE_URL || !token) return;
   try {
     await callService(
       WHATSAPP_MICROSERVICE_URL,
       `/api/media/${encodeURIComponent(token)}/schedule-delete`,
+      {
+        method: "POST",
+        userId,
+        body: { delayMs },
+      },
+    );
+  } catch {
+    // best effort cleanup
+  }
+}
+
+async function scheduleTelegramMediaDeletion(token: string, userId: string, delayMs = 120_000): Promise<void> {
+  if (!TELEGRAM_MICROSERVICE_URL || !token) return;
+  try {
+    await callService(
+      TELEGRAM_MICROSERVICE_URL,
+      `/api/telegram/media/${encodeURIComponent(token)}/schedule-delete`,
       {
         method: "POST",
         userId,
@@ -2192,9 +2230,27 @@ async function resolveOutboundMedia(
       fileName: media.fileName || "route_image.jpg",
     };
   }
+  if (media.sourcePlatform === "telegram" && destinationPlatform === "telegram" && media.token) {
+    return {
+      kind: "image",
+      token: media.token,
+      mimeType: media.mimeType || "image/jpeg",
+      fileName: media.fileName || "route_image.jpg",
+    };
+  }
 
   if (media.sourcePlatform === "whatsapp" && media.token && WHATSAPP_MICROSERVICE_URL) {
     const fetched = await fetchWhatsAppMediaByToken(media.token, userId);
+    if (!fetched.base64) return null;
+    return {
+      kind: "image",
+      base64: fetched.base64,
+      mimeType: fetched.mimeType,
+      fileName: fetched.fileName,
+    };
+  }
+  if (media.sourcePlatform === "telegram" && media.token && TELEGRAM_MICROSERVICE_URL) {
+    const fetched = await fetchTelegramMediaByToken(media.token, userId);
     if (!fetched.base64) return null;
     return {
       kind: "image",
@@ -2212,15 +2268,21 @@ async function prepareRouteMediaForProcessing(
   userId: string,
 ): Promise<InboundMessageInput["media"]> {
   if (!media || media.kind !== "image") return media;
-  if (media.sourcePlatform !== "whatsapp" || !media.token) return media;
+  if (!media.token) return media;
 
-  // Keep source token alive while heavy route processing is in progress.
-  await scheduleWhatsAppMediaDeletion(media.token, userId, ROUTE_MEDIA_PROCESSING_HOLD_MS);
+  if (media.sourcePlatform === "whatsapp") {
+    // Keep source token alive while heavy route processing is in progress.
+    await scheduleWhatsAppMediaDeletion(media.token, userId, ROUTE_MEDIA_PROCESSING_HOLD_MS);
+  } else if (media.sourcePlatform === "telegram") {
+    await scheduleTelegramMediaDeletion(media.token, userId, ROUTE_MEDIA_PROCESSING_HOLD_MS);
+  }
 
-  if (media.base64 || !WHATSAPP_MICROSERVICE_URL) return media;
+  if (media.base64) return media;
 
   try {
-    const fetched = await fetchWhatsAppMediaByToken(media.token, userId);
+    const fetched = media.sourcePlatform === "telegram"
+      ? await fetchTelegramMediaByToken(media.token, userId)
+      : await fetchWhatsAppMediaByToken(media.token, userId);
     if (!fetched.base64) return media;
     return {
       ...media,
@@ -2610,22 +2672,52 @@ function appendLinkConvertedHistory(
   });
 }
 
+function buildSourceExternalIdCandidates(rawValue: string): string[] {
+  const base = String(rawValue || "").trim();
+  if (!base) return [];
+
+  const candidates = new Set<string>([base]);
+  const unsigned = base.replace(/^-/, "");
+  const numeric = /^\d+$/.test(unsigned);
+
+  if (base.startsWith("-100") && /^\d+$/.test(base.slice(4))) {
+    candidates.add(`-${base.slice(4)}`);
+    candidates.add(base.slice(4));
+  }
+  if (base.startsWith("-") && numeric) {
+    candidates.add(unsigned);
+    candidates.add(`-100${unsigned}`);
+  }
+  if (numeric) {
+    candidates.add(`-${unsigned}`);
+    candidates.add(`-100${unsigned}`);
+  }
+
+  return [...candidates];
+}
+
 async function processInboundMessageForRoutes(input: InboundMessageInput): Promise<RouteProcessResult> {
   const snapshot = loadDb();
   const capturedAt = nowIso();
   const routeMedia = await prepareRouteMediaForProcessing(input.media, input.userId);
+  const sourceExternalCandidates = new Set(buildSourceExternalIdCandidates(input.sourceExternalId));
   const sourceGroup = snapshot.tables.groups.find(
     (row) =>
       row.user_id === input.userId &&
       row.platform === input.platform &&
       String(row.session_id || "") === input.sessionId &&
-      String(row.external_id || "") === input.sourceExternalId,
+      sourceExternalCandidates.has(String(row.external_id || "")),
   ) || snapshot.tables.groups.find(
     (row) =>
       row.user_id === input.userId &&
       row.platform === input.platform &&
       String(row.session_id || "") === input.sessionId &&
       String(row.name || "") === input.sourceName,
+  ) || snapshot.tables.groups.find(
+    (row) =>
+      row.user_id === input.userId &&
+      row.platform === input.platform &&
+      sourceExternalCandidates.has(String(row.external_id || "")),
   );
 
   if (!sourceGroup) {
@@ -2654,9 +2746,23 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
     return { routesMatched: 0, processed: 0, sent: 0, skipped: 0, failed: 0 };
   }
 
-  const allConfiguredRoutes = snapshot.tables.routes.filter(
-    (row) => row.user_id === input.userId && row.source_group_id === sourceGroup.id,
-  );
+  const sourceExternalCandidateSet = sourceExternalCandidates;
+  const routeSourceExternalById = new Map<string, string>();
+  for (const group of snapshot.tables.groups) {
+    if (group.user_id !== input.userId) continue;
+    routeSourceExternalById.set(String(group.id || ""), String(group.external_id || "").trim());
+  }
+
+  const allConfiguredRoutes = snapshot.tables.routes.filter((row) => {
+    if (row.user_id !== input.userId) return false;
+    if (row.source_group_id === sourceGroup.id) return true;
+
+    const routeSourceExternalId = routeSourceExternalById.get(String(row.source_group_id || "")) || "";
+    if (!routeSourceExternalId) return false;
+
+    const routeSourceExternalCandidates = buildSourceExternalIdCandidates(routeSourceExternalId);
+    return routeSourceExternalCandidates.some((candidate) => sourceExternalCandidateSet.has(candidate));
+  });
 
   const routes = allConfiguredRoutes.filter((row) => row.status === "active");
 
@@ -3109,7 +3215,6 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         } catch { /* ignore auto-image failures */ }
       }
     }
-
     if (!effectiveMedia) {
       failed += 1;
       withDb((db) => {
@@ -3127,6 +3232,28 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
           messageData: {
             reason: "missing_image_required",
             hasMedia: false,
+          },
+        });
+      });
+      continue;
+    }
+    if (!String(finalMessage || "").trim()) {
+      failed += 1;
+      withDb((db) => {
+        appendRouteHistory(db, {
+          userId: input.userId,
+          source: sourceName,
+          destination: routeName,
+          status: "info",
+          message: finalMessage,
+          processingStatus: "blocked",
+          blockReason: "missing_text_required",
+          routeId: String(route.id),
+          routeName,
+          originPlatform: input.platform,
+          messageData: {
+            reason: "missing_text_required",
+            hasMedia: true,
           },
         });
       });
@@ -3201,8 +3328,11 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         const outboundMedia = routeHasMedia
           ? await resolveOutboundMedia(effectiveMedia, input.userId, destinationPlatformTyped)
           : null;
-        if (routeHasMedia && !outboundMedia) {
+        if (!outboundMedia) {
           throw new Error("Envio cancelado: não foi possível preparar o anexo de imagem da mensagem.");
+        }
+        if (!String(finalMessage || "").trim()) {
+          throw new Error("Envio cancelado: a mensagem de texto está vazia.");
         }
         await sendMessageToGroup(input.userId, destinationGroup, finalMessage, outboundMedia);
         sent += 1;
@@ -3246,8 +3376,12 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
       });
     }
 
-    if (routeSentCount > 0 && routeMedia?.sourcePlatform === "whatsapp" && routeMedia.token) {
-      await scheduleWhatsAppMediaDeletion(routeMedia.token, input.userId, 120_000);
+    if (routeSentCount > 0 && routeMedia?.token) {
+      if (routeMedia.sourcePlatform === "whatsapp") {
+        await scheduleWhatsAppMediaDeletion(routeMedia.token, input.userId, 120_000);
+      } else if (routeMedia.sourcePlatform === "telegram") {
+        await scheduleTelegramMediaDeletion(routeMedia.token, input.userId, 120_000);
+      }
     }
   }
 
@@ -3483,6 +3617,7 @@ function applyTelegramEvents(
         ? {
           kind: "image" as const,
           sourcePlatform: "telegram" as const,
+          token: typeof mediaRaw.token === "string" ? mediaRaw.token : undefined,
           base64: typeof mediaRaw.base64 === "string" ? mediaRaw.base64 : undefined,
           mimeType: typeof mediaRaw.mimeType === "string" ? mediaRaw.mimeType : undefined,
           fileName: typeof mediaRaw.fileName === "string" ? mediaRaw.fileName : undefined,

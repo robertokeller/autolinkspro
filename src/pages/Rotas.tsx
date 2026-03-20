@@ -87,9 +87,9 @@ export default function RoutesPage() {
 
   const totalSteps = 3;
   const stepDescriptions: Record<number, string> = {
-    1: "D� um nome, escolha a sess�o e o grupo que vai ser monitorado.",
-    2: "Escolha pra onde as ofertas v�o ser enviadas.",
-    3: "Ajuste a convers�o de links, templates e filtros.",
+    1: "Dê um nome, escolha a sessão e o grupo que vai ser monitorado.",
+    2: "Escolha pra onde as ofertas vão ser enviadas.",
+    3: "Ajuste a conversão de links, templates e filtros.",
   };
   const connectedSessions = allSessions.filter((s) => s.status === "online");
   const hasAvailableMeliSession = meliSessions.some((session) => session.status === "active" || session.status === "untested");
@@ -141,7 +141,7 @@ export default function RoutesPage() {
     );
   }, [masterGroups, groups, nr.destSessionId]);
 
-  // Step validation � when editing an existing route, allow offline sessions so the user
+  // Step validation — when editing an existing route, allow offline sessions so the user
   // can update keywords, templates, etc. without requiring a live connection.
   const canGoStep2 = !!nr.name.trim() && !!nr.sourceSessionId && (isEditing || sourceSessionConnected) && !!nr.sourceGroupId;
   const canGoStep3 = !!nr.destSessionId && (isEditing || destSessionConnected) && (
@@ -156,7 +156,7 @@ export default function RoutesPage() {
     try {
       const hasConnectedSession = allSessions.some((session) => session.status === "online");
       if (!hasConnectedSession) {
-        toast.error("Nenhuma sess�o conectada pra atualizar as rotas.");
+        toast.error("Nenhuma sessão conectada pra atualizar as rotas.");
         return;
       }
 
@@ -200,7 +200,7 @@ export default function RoutesPage() {
         blockers.push("Mercado Livre offline");
       }
       if (usesMeli && !hasAnyActiveMeliSession) {
-        blockers.push("Sess�o do Mercado Livre n�o est� pronta");
+        blockers.push("Sessão do Mercado Livre não está pronta");
       }
 
       for (const route of activeRoutes) {
@@ -209,17 +209,17 @@ export default function RoutesPage() {
         const destinationSession = route.rules.sessionId ? sessionsById.get(route.rules.sessionId) : null;
 
         if (!sourceSession || sourceSession.status !== "online") {
-          blockers.push(`Rota "${route.name}": sess�o de captura offline`);
+          blockers.push(`Rota "${route.name}": sessão de captura offline`);
         }
 
         if (!destinationSession || destinationSession.status !== "online") {
-          blockers.push(`Rota "${route.name}": sess�o de envio offline`);
+          blockers.push(`Rota "${route.name}": sessão de envio offline`);
         }
       }
 
       if (blockers.length > 0) {
         const uniqueBlockers = Array.from(new Set(blockers));
-        toast.error(`N�o deu pra atualizar: ${uniqueBlockers.length} problema(s).`);
+        toast.error(`Não deu pra atualizar: ${uniqueBlockers.length} problema(s).`);
         toast.error(uniqueBlockers.slice(0, 3).join(" | "));
         return;
       }
@@ -235,7 +235,7 @@ export default function RoutesPage() {
       const meliStatus = meliHealthResult?.online === true ? "Mercado Livre online" : "Mercado Livre offline";
       toast.success(`Tudo atualizado! ${whatsappStatus} | ${telegramStatus} | ${shopeeStatus} | ${meliStatus}`);
     } catch {
-      toast.error("N�o deu pra atualizar");
+      toast.error("Não deu pra atualizar");
     } finally {
       setIsSyncing(false);
     }
@@ -260,13 +260,13 @@ export default function RoutesPage() {
 
     if (nr.destinationType === "groups" && normalizedDestinationGroupIds.length === 0) {
       setNr(normalizedNr);
-      toast.error("Escolha pelo menos um grupo de destino pra essa sess�o.");
+      toast.error("Escolha pelo menos um grupo de destino pra essa sessão.");
       return;
     }
 
     if (nr.destinationType === "master" && normalizedMasterGroupIds.length === 0) {
       setNr(normalizedNr);
-      toast.error("Escolha pelo menos um grupo mestre pra essa sess�o.");
+      toast.error("Escolha pelo menos um grupo mestre pra essa sessão.");
       return;
     }
 
@@ -336,7 +336,7 @@ export default function RoutesPage() {
   const allPaused = routes.length > 0 && routes.every((route) => route.status !== "active");
   const handleRefreshRoute = (routeId: string, currentStatus: AppRoute["status"]) => {
     if (currentStatus !== "active") {
-      toast.info("S� rotas ligadas podem ser atualizadas. Ligue a rota primeiro.");
+      toast.info("Só rotas ligadas podem ser atualizadas. Ligue a rota primeiro.");
       return;
     }
 
@@ -472,16 +472,16 @@ export default function RoutesPage() {
                     {/* -- Row 2: flow -- */}
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
                       {sourceSession && <ChannelPlatformIcon platform={sourceSession.platform} className="h-3 w-3 shrink-0" />}
-                      <span className="font-medium text-foreground truncate max-w-[130px]">{source?.name || "�"}</span>
+                      <span className="font-medium text-foreground truncate max-w-[130px]">{source?.name || "—"}</span>
                       {sourceSession?.label.split(" - ")[1] && (
-                        <span className="hidden sm:inline shrink-0 truncate max-w-[90px]">� {sourceSession.label.split(" - ")[1]}</span>
+                        <span className="hidden sm:inline shrink-0 truncate max-w-[90px]">· {sourceSession.label.split(" - ")[1]}</span>
                       )}
                       <ArrowRight className="h-3 w-3 shrink-0 text-primary" />
                       {session && <ChannelPlatformIcon platform={session.platform} className="h-3 w-3 shrink-0" />}
                       {masterTargets.length > 0 && !session && <Layers className="h-3 w-3 shrink-0" />}
                       <span className="font-medium text-foreground truncate max-w-[130px]">{destinationPreview}</span>
                       {session?.label.split(" - ")[1] && (
-                        <span className="hidden sm:inline shrink-0 truncate max-w-[90px]">� {session.label.split(" - ")[1]}</span>
+                        <span className="hidden sm:inline shrink-0 truncate max-w-[90px]">· {session.label.split(" - ")[1]}</span>
                       )}
                     </div>
 
@@ -570,17 +570,17 @@ export default function RoutesPage() {
               <div className="space-y-2">
                 <Label>Nome da Rota</Label>
                 <Input placeholder="Ex: Ofertas Tech -> Grupos VIP" value={nr.name} onChange={(e) => setNr({ ...nr, name: e.target.value })} />
-                <p className="text-xs text-muted-foreground">Um nome para voc� identificar esta rota facilmente.</p>
+                <p className="text-xs text-muted-foreground">Um nome para você identificar esta rota facilmente.</p>
               </div>
 
               <div className="space-y-2">
-                <Label>Sess�o de Captura</Label>
+                <Label>Sessão de Captura</Label>
                 {!isEditing && connectedSessions.length === 0 ? (
                   <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/5 border border-destructive/20">
                     <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
                     <div>
-                      <p className="text-xs font-medium text-destructive">Nenhuma sess�o conectada</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">Conecte uma sess�o WhatsApp ou Telegram antes de criar uma rota.</p>
+                      <p className="text-xs font-medium text-destructive">Nenhuma sessão conectada</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Conecte uma sessão WhatsApp ou Telegram antes de criar uma rota.</p>
                     </div>
                   </div>
                 ) : (
@@ -589,9 +589,9 @@ export default function RoutesPage() {
                       value={nr.sourceSessionId}
                       onValueChange={(v) => setNr({ ...nr, sourceSessionId: v, sourceGroupId: "" })}
                       sessions={isEditing ? allSessions : connectedSessions}
-                      placeholder="Escolha a sess�o de captura..."
+                      placeholder="Escolha a sessão de captura..."
                     />
-                    <p className="text-xs text-muted-foreground">A sess�o que vai monitorar e capturar as mensagens do grupo de origem.</p>
+                    <p className="text-xs text-muted-foreground">A sessão que vai monitorar e capturar as mensagens do grupo de origem.</p>
                   </>
                 )}
               </div>
@@ -601,11 +601,11 @@ export default function RoutesPage() {
                   <Label>Grupo de Origem (monitorado)</Label>
                   {!sourceSessionConnected && (
                     <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                      Sess�o offline � mostrando grupos do �ltimo estado. A rota n�o vai capturar mensagens enquanto a sess�o estiver desconectada.
+                      Sessão offline — mostrando grupos do último estado. A rota não vai capturar mensagens enquanto a sessão estiver desconectada.
                     </p>
                   )}
                   {sourceGroups.length === 0 ? (
-                    <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">Nenhum grupo sincronizado pra essa sess�o. Sincronize os grupos primeiro.</p>
+                    <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">Nenhum grupo sincronizado pra essa sessão. Sincronize os grupos primeiro.</p>
                   ) : (
                     <>
                       <Select value={nr.sourceGroupId} onValueChange={(v) => setNr({ ...nr, sourceGroupId: v })}>
@@ -621,7 +621,7 @@ export default function RoutesPage() {
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">As mensagens que chegarem nesse grupo v�o ser processadas pela rota.</p>
+                      <p className="text-xs text-muted-foreground">As mensagens que chegarem nesse grupo vão ser processadas pela rota.</p>
                     </>
                   )}
                 </div>
@@ -634,15 +634,15 @@ export default function RoutesPage() {
                 <div className="space-y-5">
               {/* Destination Session */}
               <div className="space-y-2">
-                <Label>Sess�o de Envio</Label>
+                <Label>Sessão de Envio</Label>
                 <SessionSelect
                   value={nr.destSessionId}
                   onValueChange={(v) => setNr({ ...nr, destSessionId: v, destinationGroupIds: [], masterGroupIds: [] })}
                   sessions={isEditing ? allSessions : connectedSessions}
-                  placeholder="Escolha a sess�o de envio..."
+                  placeholder="Escolha a sessão de envio..."
                 />
                 <p className="text-xs text-muted-foreground">
-                  As mensagens v�o ser enviadas por essa sess�o. Pode ser diferente da sess�o de captura.
+                  As mensagens vão ser enviadas por essa sessão. Pode ser diferente da sessão de captura.
                 </p>
               </div>
 
@@ -650,7 +650,7 @@ export default function RoutesPage() {
               {nr.destSessionId && (destSessionConnected || isEditing) && (
                 !destSessionConnected && (
                   <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                    Sess�o de envio offline � mostrando grupos do �ltimo estado. As mensagens n�o v�o ser enviadas enquanto a sess�o estiver desconectada.
+                    Sessão de envio offline — mostrando grupos do último estado. As mensagens não vão ser enviadas enquanto a sessão estiver desconectada.
                   </p>
                 )
               )}
@@ -669,7 +669,7 @@ export default function RoutesPage() {
                         <Users className={cn("h-5 w-5", nr.destinationType === "groups" ? "text-primary" : "text-muted-foreground")} />
                         <div className="text-center">
                           <p className="text-xs font-medium">Grupos Individuais</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">Escolha um ou v�rios grupos</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">Escolha um ou vários grupos</p>
                         </div>
                       </button>
                       <button
@@ -710,14 +710,14 @@ export default function RoutesPage() {
                           title="Grupos mestre"
                         />
                       )}
-                      <p className="text-xs text-muted-foreground">A mensagem vai ser enviada pros grupos dos grupos mestre que voc� escolher.</p>
+                      <p className="text-xs text-muted-foreground">A mensagem vai ser enviada pros grupos dos grupos mestre que você escolher.</p>
                     </div>
                   ) : (
                     <div className="space-y-2">
                       <Label>Grupos de Destino</Label>
                       {destGroups.length === 0 ? (
                         <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">
-                          Nenhum grupo dispon�vel pra sess�o {destSession?.label}. Sincronize os grupos primeiro.
+                          Nenhum grupo disponível pra sessão {destSession?.label}. Sincronize os grupos primeiro.
                         </p>
                       ) : (
                         <MultiOptionDropdown
@@ -730,7 +730,7 @@ export default function RoutesPage() {
                           }))}
                           placeholder="Escolher grupos"
                           selectedLabel={(count) => `${count} grupo(s)`}
-                          emptyMessage="Nenhum grupo pra essa sess�o"
+                          emptyMessage="Nenhum grupo pra essa sessão"
                           title="Grupos de destino"
                         />
                       )}
@@ -754,8 +754,8 @@ export default function RoutesPage() {
                     <div className="flex items-center gap-2 pr-3">
                       <LinkIcon className="h-4 w-4 text-primary" />
                       <div>
-                        <Label className="text-sm">Convers�o Shopee</Label>
-                        <p className="text-xs text-muted-foreground">Os links v�o ser convertidos pro seu link de afiliado.</p>
+                        <Label className="text-sm">Conversão Shopee</Label>
+                        <p className="text-xs text-muted-foreground">Os links vão ser convertidos pro seu link de afiliado.</p>
                       </div>
                     </div>
                     <Switch
@@ -774,7 +774,7 @@ export default function RoutesPage() {
                     <div className="space-y-3">
                       <div className="space-y-2">
                         <Label className="text-xs">Template Shopee</Label>
-                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da convers�o da Shopee.</p>
+                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão da Shopee.</p>
                         <Select value={nr.templateId || "original"} onValueChange={(v) => setNr({ ...nr, templateId: v })}>
                           <SelectTrigger><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -793,7 +793,7 @@ export default function RoutesPage() {
                       <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
                         <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
                         <p className="text-xs text-muted-foreground">
-                          Se marcar "Manter mensagem original", s� o link vai ser convertido pra afiliado.
+                          Se marcar "Manter mensagem original", só o link vai ser convertido pra afiliado.
                         </p>
                       </div>
                     </div>
@@ -803,8 +803,8 @@ export default function RoutesPage() {
                     <div className="flex items-center gap-2 pr-3">
                       <LinkIcon className="h-4 w-4 text-primary" />
                       <div>
-                        <Label className="text-sm">Convers�o Mercado Livre</Label>
-                        <p className="text-xs text-muted-foreground">Os links do Mercado Livre v�o ser convertidos pro seu link de afiliado.</p>
+                        <Label className="text-sm">Conversão Mercado Livre</Label>
+                        <p className="text-xs text-muted-foreground">Os links do Mercado Livre vão ser convertidos pro seu link de afiliado.</p>
                       </div>
                     </div>
                     <Switch
@@ -820,7 +820,7 @@ export default function RoutesPage() {
 
                   {nr.autoConvertMercadoLivre && !hasAvailableMeliSession && (
                     <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                      Nenhuma sess�o Mercado Livre no momento. Conecte uma sess�o pra usar a convers�o.
+                      Nenhuma sessão Mercado Livre no momento. Conecte uma sessão pra usar a conversão.
                     </p>
                   )}
 
@@ -850,7 +850,7 @@ export default function RoutesPage() {
                       onChange={(e) => setNr({ ...nr, positiveKeywords: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                          Separe por v�rgula. A mensagem s� passa se tiver pelo menos uma palavra positiva. Se n�o tiver, ela � descartada.
+                          Separe por vírgula. A mensagem só passa se tiver pelo menos uma palavra positiva. Se não tiver, ela é descartada.
                     </p>
                   </div>
 
@@ -866,7 +866,7 @@ export default function RoutesPage() {
                       onChange={(e) => setNr({ ...nr, negativeKeywords: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                          Separe por v�rgula. Se tiver qualquer palavra negativa, a mensagem � descartada.
+                          Separe por vírgula. Se tiver qualquer palavra negativa, a mensagem é descartada.
                     </p>
                   </div>
                 </CardContent>
@@ -885,7 +885,7 @@ export default function RoutesPage() {
               <div className="flex-1" />
               {step < totalSteps ? (
                 <Button onClick={() => setStep(step + 1)} disabled={step === 1 ? !canGoStep2 : !canGoStep3}>
-                  Pr�ximo
+                  Próximo
                 </Button>
               ) : (
                 <Button onClick={handleCreateRoute} disabled={!canCreate}>

@@ -9,9 +9,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { Copy, Layers, Pencil, Plus, RefreshCw, Trash2, Unlink, Users } from "lucide-react";
+import { Copy, Layers, Pencil, Plus, RefreshCw, Trash2, Users } from "lucide-react";
 import { useGrupos } from "@/hooks/useGrupos";
 import type { DistributionMode, Group, MasterGroup } from "@/lib/types";
 
@@ -19,7 +18,6 @@ type MasterFormState = {
   id: string | null;
   name: string;
   distribution: DistributionMode;
-  memberLimit: number;
   platform: "whatsapp" | "telegram";
   groupIds: string[];
 };
@@ -28,7 +26,6 @@ const EMPTY_FORM: MasterFormState = {
   id: null,
   name: "",
   distribution: "balanced",
-  memberLimit: 0,
   platform: "whatsapp",
   groupIds: [],
 };
@@ -55,7 +52,6 @@ export default function GruposMestresPage() {
     updateMasterGroup,
     setMasterGroupGroups,
     removeMasterGroup,
-    unlinkGroup,
   } = useGrupos();
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -93,7 +89,6 @@ export default function GruposMestresPage() {
       id: masterGroup.id,
       name: masterGroup.name,
       distribution: normalizeDistribution(masterGroup.distribution),
-      memberLimit: masterGroup.memberLimit || 0,
       platform: platform === "telegram" ? "telegram" : "whatsapp",
       groupIds: linkedGroups
         .filter((group) => group.platform === (platform === "telegram" ? "telegram" : "whatsapp"))
@@ -134,14 +129,13 @@ export default function GruposMestresPage() {
         const updated = await updateMasterGroup(form.id, {
           name: form.name,
           distribution: normalizeDistribution(form.distribution),
-          memberLimit: form.memberLimit,
         });
         if (!updated) return;
       } else {
         masterGroupId = await createMasterGroup(
           form.name,
           normalizeDistribution(form.distribution),
-          form.memberLimit,
+          0,
           90,
         );
         if (!masterGroupId) return;
@@ -162,15 +156,6 @@ export default function GruposMestresPage() {
     try {
       await navigator.clipboard.writeText(link);
       toast.success("Link do grupo mestre copiado");
-    } catch {
-      toast.error("Não foi possível copiar o link agora");
-    }
-  };
-
-  const handleCopyGroupInvite = async (inviteLink: string) => {
-    try {
-      await navigator.clipboard.writeText(inviteLink);
-      toast.success("Link de convite copiado");
     } catch {
       toast.error("Não foi possível copiar o link agora");
     }
@@ -213,13 +198,13 @@ export default function GruposMestresPage() {
             const distributionLabel = normalizeDistribution(masterGroup.distribution) === "random" ? "Aleatório" : "Equilibrado";
 
             return (
-              <Card key={masterGroup.id} className="glass">
-                <CardHeader className="space-y-3 pb-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-base">{masterGroup.name}</CardTitle>
+              <Card key={masterGroup.id} className="glass border-border/60">
+                <CardHeader className="space-y-3 pb-1">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <CardTitle className="truncate pr-2 text-base">{masterGroup.name}</CardTitle>
                     </div>
-                    <div className="flex gap-1.5">
+                    <div className="flex shrink-0 items-center gap-1.5">
                       <Badge variant="outline">{distributionLabel}</Badge>
                       <Badge variant="secondary">
                         {displayPlatform === "whatsapp" ? "WhatsApp" : displayPlatform === "telegram" ? "Telegram" : "Misto"}
@@ -227,81 +212,33 @@ export default function GruposMestresPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-1 rounded-md border px-2 py-1">
+                  <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <span className="inline-flex h-8 items-center gap-1 rounded-md border border-border/70 bg-muted/20 px-2.5 text-muted-foreground">
                       <Users className="h-3.5 w-3.5" />
                       {linkedGroups.length} grupo(s)
                     </span>
-                    <span className="inline-flex items-center gap-1 rounded-md border px-2 py-1">
+                    <span className="inline-flex h-8 items-center gap-1 rounded-md border border-border/70 bg-muted/20 px-2.5 text-muted-foreground">
                       <Layers className="h-3.5 w-3.5" />
                       {totalMembers.toLocaleString("pt-BR")} membros
                     </span>
                   </div>
+                </CardHeader>
 
-                  <div className="flex items-center gap-2">
-                    <Input readOnly value={`${window.location.origin}/mg/${masterGroup.id}`} className="h-8 text-xs" />
-                    <Button size="sm" variant="outline" onClick={() => void handleCopyMasterLink(masterGroup.id)}>
+                <CardContent className="space-y-3 pt-1">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <Input readOnly value={`${window.location.origin}/mg/${masterGroup.id}`} className="h-10 text-xs" />
+                    <Button size="sm" variant="outline" className="h-10 sm:w-auto" onClick={() => void handleCopyMasterLink(masterGroup.id)}>
                       <Copy className="mr-1 h-3.5 w-3.5" />
                       Copiar
                     </Button>
                   </div>
-                </CardHeader>
 
-                <CardContent className="space-y-3 pt-0">
-                  <Separator />
-                  <div className="space-y-2">
-                    {linkedGroups.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">Sem grupos filhos vinculados.</p>
-                    ) : (
-                      linkedGroups.map((group) => {
-                        return (
-                          <div key={`${masterGroup.id}-${group.id}`} className="rounded-lg border p-2">
-                            <div className="mb-2 flex items-center justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-medium">{group.name}</p>
-                                <p className="text-xs text-muted-foreground">{group.memberCount} membros</p>
-                              </div>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-8 w-8 shrink-0 text-muted-foreground"
-                                onClick={() => void unlinkGroup(masterGroup.id, group.id)}
-                                title="Desvincular grupo"
-                              >
-                                <Unlink className="h-4 w-4" />
-                              </Button>
-                            </div>
-                            <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-2.5 py-2">
-                              {group.inviteLink ? (
-                                <p className="truncate text-xs text-muted-foreground">Convite sincronizado automaticamente</p>
-                              ) : (
-                                <p className="truncate text-xs text-muted-foreground">
-                                  Convite automático pendente. Verifique se a sessão é admin do grupo.
-                                </p>
-                              )}
-                              {group.inviteLink ? (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 px-2"
-                                  onClick={() => void handleCopyGroupInvite(group.inviteLink || "")}
-                                >
-                                  <Copy className="h-3.5 w-3.5" />
-                                </Button>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2">
-                    <Button size="sm" variant="outline" onClick={() => openEditDialog(masterGroup)}>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <Button size="sm" variant="outline" className="h-10" onClick={() => openEditDialog(masterGroup)}>
                       <Pencil className="mr-1.5 h-3.5 w-3.5" />
                       Editar
                     </Button>
-                    <Button size="sm" variant="destructive" onClick={() => setDeletingId(masterGroup.id)}>
+                    <Button size="sm" variant="destructive" className="h-10" onClick={() => setDeletingId(masterGroup.id)}>
                       <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                       Excluir
                     </Button>
@@ -333,7 +270,7 @@ export default function GruposMestresPage() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12">
-              <div className="space-y-2 lg:col-span-4">
+              <div className="space-y-2 lg:col-span-6">
                 <Label>Rede</Label>
                 <Select
                   value={form.platform}
@@ -356,7 +293,7 @@ export default function GruposMestresPage() {
                 </Select>
               </div>
 
-              <div className="space-y-2 lg:col-span-4">
+              <div className="space-y-2 lg:col-span-6">
                 <Label>Distribuição de entrada</Label>
                 <Select
                   value={selectedDistribution}
@@ -375,23 +312,6 @@ export default function GruposMestresPage() {
                 </Select>
                 <p className="text-xs text-muted-foreground">
                   {distributionHelpText}
-                </p>
-              </div>
-
-              <div className="space-y-2 sm:col-span-2 lg:col-span-4">
-                <Label>Limite de membros (opcional)</Label>
-                <Input
-                  className="h-10"
-                  type="number"
-                  min={0}
-                  value={form.memberLimit}
-                  onChange={(event) => setForm((prev) => ({
-                    ...prev,
-                    memberLimit: Number.isFinite(Number(event.target.value)) ? Math.max(0, Number(event.target.value)) : 0,
-                  }))}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Hoje é apenas referência visual. Ainda não bloqueia entradas automaticamente.
                 </p>
               </div>
             </div>
@@ -457,3 +377,4 @@ export default function GruposMestresPage() {
     </div>
   );
 }
+

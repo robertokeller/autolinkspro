@@ -1,7 +1,7 @@
 import "dotenv/config";
 import path from "node:path";
 import process from "node:process";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
@@ -65,6 +65,7 @@ interface SendMessageBody {
   message?: string;
   media?: {
     kind?: "image";
+    token?: string;
     base64?: string;
     mimeType?: string;
     fileName?: string;
@@ -73,6 +74,7 @@ interface SendMessageBody {
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || "3112");
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "12mb";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 const NODE_ENV = process.env.NODE_ENV || "development";
 const ALLOW_INSECURE_NO_SECRET = process.env.ALLOW_INSECURE_NO_SECRET === "true";
@@ -91,6 +93,15 @@ const logger = pino({ level: LOG_LEVEL });
 const app = express();
 const sessionStates = new Map<string, SessionState>();
 const inFlightSends = new Map<string, Promise<{ id: number | null }>>();
+const mediaStore = new Map<string, {
+  token: string;
+  userId: string;
+  data: Buffer;
+  mimeType: string;
+  fileName: string;
+  createdAt: number;
+  deleteAt: number | null;
+}>();
 const recentOutboundEchoes = new Map<string, number>();
 let httpServer: ReturnType<typeof app.listen> | null = null;
 let shuttingDown = false;
@@ -113,7 +124,7 @@ app.use(cors({
     callback(null, isLocalhost);
   },
 }));
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 // --- Security headers -----------------------------------------------------
 app.use((_req, res, next) => {
@@ -384,6 +395,60 @@ function formatEntityId(entity: unknown): string {
   return id;
 }
 
+function readTelegramMediaMimeType(media: unknown): string {
+  if (!media || typeof media !== "object") return "";
+  const row = media as Record<string, unknown>;
+  if (typeof row.mimeType === "string" && row.mimeType.trim()) {
+    return row.mimeType.trim().toLowerCase();
+  }
+  const document = row.document;
+  if (document && typeof document === "object") {
+    const doc = document as Record<string, unknown>;
+    if (typeof doc.mimeType === "string" && doc.mimeType.trim()) {
+      return doc.mimeType.trim().toLowerCase();
+    }
+  }
+  return "";
+}
+
+function isTelegramImageMedia(media: unknown): boolean {
+  if (!media || typeof media !== "object") return false;
+  const row = media as Record<string, unknown>;
+  const className = String(row.className || "").trim();
+  if (className === "MessageMediaPhoto") return true;
+  if (className === "MessageMediaDocument") {
+    const mimeType = readTelegramMediaMimeType(media);
+    return mimeType.startsWith("image/");
+  }
+  return false;
+}
+
+async function downloadIncomingTelegramImageBuffer(args: {
+  client: TelegramClient;
+  message: Api.Message;
+  media: unknown;
+  sessionId: string;
+}): Promise<Buffer | null> {
+  const { client, message, media, sessionId } = args;
+  const attempts: Array<() => Promise<unknown>> = [
+    () => client.downloadMedia(message, {}),
+    () => client.downloadMedia(media as Api.TypeMessageMedia, {}),
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const downloaded = await attempt();
+      if (Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= AUTO_IMAGE_MAX_BYTES) {
+        return downloaded;
+      }
+    } catch (error) {
+      logger.warn({ sessionId, error: sanitizeError(error) }, "failed to download incoming telegram image on one attempt");
+    }
+  }
+
+  return null;
+}
+
 function parseChatTarget(chatId: string): string {
   return chatId.trim();
 }
@@ -501,6 +566,55 @@ function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
 
   return null;
 }
+
+function generateMediaToken(): string {
+  return `tgm_${randomBytes(18).toString("hex")}`;
+}
+
+function storeTemporaryImage(
+  buffer: Buffer,
+  userId: string,
+  mimeType: string,
+  fileName?: string,
+): { token: string; fileName: string } {
+  const token = generateMediaToken();
+  const nowMs = Date.now();
+  const safeMimeType = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+  const extension = mimeTypeToFileExtension(safeMimeType);
+  const rawName = (fileName || DEFAULT_AUTO_IMAGE_FILE_NAME).trim();
+  const hasExtension = /\.[a-zA-Z0-9]+$/.test(rawName);
+  const finalFileName = hasExtension ? rawName : `${rawName || "route_image"}.${extension}`;
+
+  mediaStore.set(token, {
+    token,
+    userId,
+    data: buffer,
+    mimeType: safeMimeType,
+    fileName: finalFileName,
+    createdAt: nowMs,
+    deleteAt: null,
+  });
+
+  return { token, fileName: finalFileName };
+}
+
+function scheduleMediaDeletion(token: string, delayMs = 120_000): boolean {
+  const current = mediaStore.get(token);
+  if (!current) return false;
+  const deleteAt = Date.now() + Math.max(1_000, Number(delayMs) || 120_000);
+  current.deleteAt = deleteAt;
+  mediaStore.set(token, current);
+  return true;
+}
+
+setInterval(() => {
+  const nowMs = Date.now();
+  for (const [token, item] of mediaStore.entries()) {
+    if (item.deleteAt && item.deleteAt <= nowMs) {
+      mediaStore.delete(token);
+    }
+  }
+}, 30_000).unref();
 
 function getFileNameFromUrl(imageUrl: string, mimeType: string): string {
   try {
@@ -734,11 +848,11 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       const contentRaw = (message as { message?: unknown }).message;
       const content = typeof contentRaw === "string" ? contentRaw.trim() : "";
 
-      // Detect photo media attached to the message.
-      const messageMedia = (message as { media?: { className?: string } }).media;
-      const hasPhoto = messageMedia?.className === "MessageMediaPhoto";
+      // Detect photo/image media attached to the message.
+      const messageMedia = (message as { media?: unknown }).media;
+      const hasImageMedia = isTelegramImageMedia(messageMedia);
 
-      if (!content && !hasPhoto) return;
+      if (!content && !hasImageMedia) return;
 
       if (!maybe.getChat) return;
       const chat = await maybe.getChat();
@@ -747,7 +861,7 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       const groupId = formatEntityId(chat);
       const groupName = getEntityName(chat, groupId);
 
-      if (isOutgoing && isRecentOutboundEcho(state.config.sessionId, groupId, content, hasPhoto)) {
+      if (isOutgoing && isRecentOutboundEcho(state.config.sessionId, groupId, content, hasImageMedia)) {
         return;
       }
 
@@ -762,19 +876,26 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       }
 
       let mediaData: Record<string, unknown> | undefined;
-      if (hasPhoto && state.client) {
-        try {
-          const buffer = await state.client.downloadMedia(message as Api.Message, {});
-          if (Buffer.isBuffer(buffer) && buffer.length > 0 && buffer.length <= AUTO_IMAGE_MAX_BYTES) {
-            const mimeType = detectImageMimeTypeFromBuffer(buffer) || "image/jpeg";
-            mediaData = {
-              kind: "image",
-              base64: buffer.toString("base64"),
-              mimeType,
-            };
-          }
-        } catch (dlErr) {
-          logger.warn({ sessionId: state.config.sessionId, error: sanitizeError(dlErr) }, "failed to download incoming telegram photo");
+      if (hasImageMedia && state.client) {
+        const buffer = await downloadIncomingTelegramImageBuffer({
+          client: state.client,
+          message: message as Api.Message,
+          media: messageMedia,
+          sessionId: state.config.sessionId,
+        });
+        if (buffer && buffer.length > 0) {
+          const mimeTypeHint = readTelegramMediaMimeType(messageMedia);
+          const mimeType = detectImageMimeTypeFromBuffer(buffer) || (mimeTypeHint.startsWith("image/") ? mimeTypeHint : "image/jpeg");
+          const stored = storeTemporaryImage(buffer, state.config.userId, mimeType);
+          mediaData = {
+            kind: "image",
+            token: stored.token,
+            mimeType,
+            fileName: stored.fileName,
+            sourcePlatform: "telegram",
+          };
+        } else {
+          logger.warn({ sessionId: state.config.sessionId, groupId }, "incoming telegram image detected but payload could not be downloaded");
         }
       }
 
@@ -1177,6 +1298,62 @@ app.get("/api/telegram/events/:sessionId", async (req: Request<{ sessionId: stri
   res.json({ ok: true, events });
 });
 
+app.get("/api/telegram/media/:token", async (req: Request<{ token: string }>, res) => {
+  const requestUserId = readRequestUserId(req, res);
+  if (!requestUserId) return;
+
+  const token = req.params.token;
+  const item = mediaStore.get(token);
+  if (!item) {
+    res.status(404).json({ error: "Mídia não encontrada" });
+    return;
+  }
+
+  if (item.userId !== requestUserId) {
+    res.status(403).json({ error: "Mídia não pertence ao usuário informado" });
+    return;
+  }
+
+  res.json({
+    ok: true,
+    token: item.token,
+    mimeType: item.mimeType,
+    fileName: item.fileName,
+    base64: item.data.toString("base64"),
+    createdAt: item.createdAt,
+    deleteAt: item.deleteAt,
+  });
+});
+
+app.post("/api/telegram/media/:token/schedule-delete", async (req: Request<{ token: string }>, res) => {
+  const requestUserId = readRequestUserId(req, res);
+  if (!requestUserId) return;
+
+  const token = req.params.token;
+  const item = mediaStore.get(token);
+  if (!item) {
+    res.status(404).json({ error: "Mídia não encontrada" });
+    return;
+  }
+
+  if (item.userId !== requestUserId) {
+    res.status(403).json({ error: "Mídia não pertence ao usuário informado" });
+    return;
+  }
+
+  const delayRaw = req.body && typeof req.body === "object"
+    ? Number((req.body as Record<string, unknown>).delayMs)
+    : NaN;
+  const delayMs = Number.isFinite(delayRaw) ? Math.max(1_000, delayRaw) : 120_000;
+  const ok = scheduleMediaDeletion(token, delayMs);
+  if (!ok) {
+    res.status(404).json({ error: "Mídia não encontrada" });
+    return;
+  }
+
+  res.json({ ok: true, token, deleteInMs: delayMs });
+});
+
 app.post("/api/telegram/send_code", async (req: Request<unknown, unknown, ActionBody>, res) => {
   const requestUserId = readRequestUserId(req, res);
   if (!requestUserId) return;
@@ -1389,9 +1566,10 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
   if (!requestUserId) return;
 
   const { sessionId = "", chatId = "", message = "", media } = req.body || {};
+  const hasImageMedia = media?.kind === "image";
 
-  if (!sessionId || !chatId || !message.trim()) {
-    res.status(400).json({ error: "sessionId, chatId e message são obrigatórios" });
+  if (!sessionId || !chatId || (!message.trim() && !hasImageMedia)) {
+    res.status(400).json({ error: "sessionId e chatId são obrigatórios, com message ou media de imagem" });
     return;
   }
 
@@ -1417,6 +1595,7 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
   const trimmedMessage = message.trim();
   const mediaSignature = media?.kind === "image"
     ? [
+      String(media.token || ""),
       String(media.fileName || ""),
       String(media.mimeType || ""),
       String(media.base64 || "").slice(0, 128),
@@ -1445,13 +1624,26 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
     let mediaFileName = media?.fileName || DEFAULT_AUTO_IMAGE_FILE_NAME;
     let mediaMimeType = media?.mimeType || "image/jpeg";
 
-    if (mediaKind === "image" && media?.base64) {
-      const fileBuffer = Buffer.from(media.base64, "base64");
-      const detectedMimeType = detectImageMimeTypeFromBuffer(fileBuffer);
-      const mimeTypeFromPayload = (media?.mimeType || "").trim().toLowerCase();
-      if (detectedMimeType || mimeTypeFromPayload.startsWith("image/")) {
-        mediaFileBuffer = fileBuffer;
-        mediaMimeType = detectedMimeType || mimeTypeFromPayload || "image/jpeg";
+    if (mediaKind === "image") {
+      if (media?.token) {
+        const stored = mediaStore.get(media.token);
+        if (!stored) {
+          throw new Error("Mídia temporária não encontrada para envio");
+        }
+        if (stored.userId !== state.config.userId) {
+          throw new Error("Mídia temporária não pertence ao usuário da sessão");
+        }
+        mediaFileBuffer = stored.data;
+        mediaMimeType = stored.mimeType || mediaMimeType;
+        mediaFileName = stored.fileName || mediaFileName;
+      } else if (media?.base64) {
+        const fileBuffer = Buffer.from(media.base64, "base64");
+        const detectedMimeType = detectImageMimeTypeFromBuffer(fileBuffer);
+        const mimeTypeFromPayload = (media?.mimeType || "").trim().toLowerCase();
+        if (detectedMimeType || mimeTypeFromPayload.startsWith("image/")) {
+          mediaFileBuffer = fileBuffer;
+          mediaMimeType = detectedMimeType || mimeTypeFromPayload || "image/jpeg";
+        }
       }
     } else {
       const urls = extractUrlsFromMessage(outboundMessage);
@@ -1529,12 +1721,21 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
     const result = await sendPromise;
     res.json({ ok: true, id: result.id });
   } catch (error) {
+    const messageError = sanitizeError(error);
+    if (messageError === "Mídia temporária não encontrada para envio") {
+      res.status(404).json({ error: messageError });
+      return;
+    }
+    if (messageError === "Mídia temporária não pertence ao usuário da sessão") {
+      res.status(403).json({ error: messageError });
+      return;
+    }
     logger.error({
       sessionId,
       chatId,
-      error: sanitizeError(error),
+      error: messageError,
     }, "telegram send-message failed");
-    res.status(500).json({ error: sanitizeError(error) });
+    res.status(500).json({ error: messageError });
   } finally {
     if (inFlightSends.get(sendKey) === sendPromise) {
       inFlightSends.delete(sendKey);

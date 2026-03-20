@@ -147,7 +147,7 @@ if (!WEBHOOK_SECRET && !insecureSecretBypass) {
 }
 
 if (insecureSecretBypass) {
-  console.warn("[shopee] WEBHOOK_SECRET not set ââ‚¬â€ insecure development bypass is enabled via ALLOW_INSECURE_NO_SECRET=true.");
+  console.warn("[shopee] WEBHOOK_SECRET not set - insecure development bypass is enabled via ALLOW_INSECURE_NO_SECRET=true.");
 }
 if (WEBHOOK_SECRET && WEBHOOK_SECRET.toLowerCase() === "change-me" && NODE_ENV === "production") {
   throw new Error("WEBHOOK_SECRET is set to the default placeholder 'change-me'. Set a strong secret before running in production.");

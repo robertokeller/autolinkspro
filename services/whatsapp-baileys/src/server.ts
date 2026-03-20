@@ -78,6 +78,7 @@ interface SendResponsePayload {
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || "3111");
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "12mb";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 const NODE_ENV = process.env.NODE_ENV || "development";
 const ALLOW_INSECURE_NO_SECRET = process.env.ALLOW_INSECURE_NO_SECRET === "true";
@@ -120,7 +121,7 @@ app.use(cors({
     callback(null, isLocalhost);
   },
 }));
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 // ─── Security headers ─────────────────────────────────────────────────────
 app.use((_req, res, next) => {
@@ -304,9 +305,10 @@ function normalizeJid(rawJid: string): string {
 function buildSendDedupKey(body: {
   sessionId: string;
   jid: string;
-  content: string;
+  content?: string;
   media?: SendBody["media"];
 }): string {
+  const content = String(body.content ?? "");
   const media = body.media;
   const mediaDescriptor = media
     ? [
@@ -319,7 +321,7 @@ function buildSendDedupKey(body: {
     ].join("|")
     : "";
 
-  return [body.sessionId, body.jid, body.content.trim(), mediaDescriptor].join("::");
+  return [body.sessionId, body.jid, content.trim(), mediaDescriptor].join("::");
 }
 
 function extractMessageText(message: proto.IMessage | null | undefined): string {
@@ -813,6 +815,7 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
               token: stored.token,
               mimeType: imagePayload.mimetype || "image/jpeg",
               fileName: stored.fileName,
+              sourcePlatform: "whatsapp",
             };
           } else {
             logger.warn({ sessionId, groupId: remoteJid }, "incoming image detected but media payload could not be downloaded");
@@ -1231,9 +1234,11 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
   if (!requestUserId) return;
 
   const { sessionId, jid, content, media } = req.body || {};
+  const messageContent = typeof content === "string" ? content : "";
+  const hasImageMedia = media?.kind === "image";
 
-  if (!sessionId || !jid || !content) {
-    res.status(400).json({ error: "sessionId, jid e content são obrigatórios" });
+  if (!sessionId || !jid || (!messageContent.trim() && !hasImageMedia)) {
+    res.status(400).json({ error: "sessionId e jid são obrigatórios, com content ou media de imagem" });
     return;
   }
 
@@ -1254,7 +1259,7 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
     const sendKey = buildSendDedupKey({
       sessionId,
       jid: targetJid,
-      content,
+      content: messageContent,
       media,
     });
 
@@ -1292,11 +1297,11 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
 
         sendResult = await state.socket!.sendMessage(targetJid, {
           image: imageBuffer,
-          caption: content,
+          caption: messageContent,
           mimetype: imageMimeType,
         });
       } else {
-        sendResult = await state.socket!.sendMessage(targetJid, { text: content });
+        sendResult = await state.socket!.sendMessage(targetJid, { text: messageContent });
       }
 
       const groupName = targetJid.endsWith("@g.us") ? await resolveGroupName(state, targetJid) : undefined;
@@ -1305,7 +1310,7 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
         to: targetJid,
         groupName,
         messageType: mediaKind === "image" ? "image" : "text",
-        message: content,
+        message: messageContent,
       });
 
       return { id: sendResult?.key?.id || null };

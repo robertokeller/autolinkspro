@@ -332,7 +332,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
               await ensureMasterGroupPlatformConsistency(client, masterGroupId, owned.platform);
             }
           } catch (error) {
-            const message = error instanceof Error ? error.message : "Grupo invÃ¡lido";
+            const message = error instanceof Error ? error.message : "Grupo inválido";
             res.status(403).json({ data: null, count: null, error: { message } }); return;
           }
         }

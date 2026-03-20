@@ -54,16 +54,18 @@ function humanizeErrorMessage(value: string): string {
   if (!key) return "";
 
   const map: Record<string, string> = {
-    source_group_not_found: "Grupo de origem não encontrado no sistema",
+    source_group_not_found: "Grupo de origem nao encontrado no sistema",
     no_active_routes: "Nenhuma rota ativa para esta origem",
     no_routes_configured: "Grupo de origem sem nenhuma rota configurada",
-    all_routes_inactive: "Rota existe mas está inativa — ative a rota nas configurações",
+    all_routes_inactive: "Rota existe mas esta inativa - ative a rota nas configuracoes",
     negative_keyword: "Bloqueada por palavra-chave negativa",
-    positive_keyword_missing: "Bloqueada: ausência de palavra-chave obrigatória",
-    partner_link_required: "Bloqueada: mensagem sem link de afiliado obrigatório",
+    positive_keyword_missing: "Bloqueada: ausencia de palavra-chave obrigatoria",
+    partner_link_required: "Bloqueada: mensagem sem link de afiliado obrigatorio",
     no_destination_groups: "Rota sem grupos de destino configurados",
-    destination_not_found: "Grupo de destino não encontrado",
-    destination_session_offline: "Sessão do grupo de destino está offline",
+    destination_not_found: "Grupo de destino nao encontrado",
+    destination_session_offline: "Sessao do grupo de destino esta offline",
+    missing_image_required: "Bloqueada: rota exige imagem obrigatoria",
+    missing_text_required: "Bloqueada: rota exige texto obrigatorio",
   };
 
   if (map[key]) return map[key];

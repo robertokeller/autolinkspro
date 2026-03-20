@@ -260,7 +260,7 @@ const auth = {
       }
       return res;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Servi?o indispon?vel ? verifique se o servidor est? rodando";
+      const msg = e instanceof Error ? e.message : "Serviço indisponível - verifique se o servidor está rodando";
       return { data: { user: null, session: null }, error: { message: msg } };
     }
   },

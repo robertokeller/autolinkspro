@@ -277,7 +277,30 @@ function parseDecimalNumber(value: unknown): number | null {
 }
 
 function parseStringifiedNumber(value: unknown): number | null {
-  const parsed = Number(value);
+  const raw = normalizeText(String(value || ""));
+  if (!raw) return null;
+
+  let normalized = raw
+    .replace(/[R$\s]/gi, "")
+    .replace(/[^0-9.,-]/g, "");
+
+  if (!normalized) return null;
+
+  // 1.234,56 -> 1234.56
+  if (/^-?\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  // 1,234.56 -> 1234.56
+  } else if (/^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/,/g, "");
+  // 1234,56 -> 1234.56
+  } else if (/^-?\d+,\d+$/.test(normalized)) {
+    normalized = normalized.replace(",", ".");
+  // 7.706 (reviews count) -> 7706
+  } else if (/^-?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "");
+  }
+
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
@@ -464,6 +487,36 @@ function pickFirstPositiveNumber(...values: Array<number | null | undefined>): n
   return null;
 }
 
+function hasSnapshotCoreFields(snapshot: MeliProductSnapshot | null | undefined): snapshot is MeliProductSnapshot {
+  if (!snapshot) return false;
+  return (
+    String(snapshot.title || "").trim().length > 0
+    && Number.isFinite(Number(snapshot.price))
+    && Number(snapshot.price) > 0
+  );
+}
+
+function mergeSnapshotData(
+  primary: MeliProductSnapshot | null | undefined,
+  fallback: MeliProductSnapshot | null | undefined,
+): MeliProductSnapshot | null {
+  if (!primary && !fallback) return null;
+  if (!primary) return fallback || null;
+  if (!fallback) return primary || null;
+
+  return {
+    productUrl: pickFirstNonEmptyString(primary.productUrl, fallback.productUrl),
+    title: pickFirstNonEmptyString(primary.title, fallback.title),
+    imageUrl: pickFirstNonEmptyString(primary.imageUrl, fallback.imageUrl),
+    price: pickFirstPositiveNumber(primary.price, fallback.price),
+    oldPrice: pickFirstPositiveNumber(primary.oldPrice, fallback.oldPrice),
+    installmentsText: pickFirstNonEmptyString(primary.installmentsText, fallback.installmentsText),
+    seller: pickFirstNonEmptyString(primary.seller, fallback.seller),
+    rating: pickFirstPositiveNumber(primary.rating, fallback.rating),
+    reviewsCount: pickFirstPositiveNumber(primary.reviewsCount, fallback.reviewsCount),
+  };
+}
+
 function extractPriceFromMoneyNode($: ReturnType<typeof load>, selector: string): number | null {
   const node = $(selector).first();
   if (node.length === 0) return null;
@@ -477,11 +530,22 @@ function extractPriceFromMoneyNode($: ReturnType<typeof load>, selector: string)
   return fromText > 0 ? priceFromCents(fromText) : null;
 }
 
-function extractInstallmentsFromProductPage($: ReturnType<typeof load>): string {
-  return normalizeInstallmentsText(pickFirstNonEmptyString(
+function extractInstallmentsFromProductPage($: ReturnType<typeof load>, html: string): string {
+  const fromDom = normalizeInstallmentsText(pickFirstNonEmptyString(
     $("#pricing_price_subtitle").first().text(),
     $(".ui-pdp-price__subtitles").first().text(),
+    $(".ui-installments__payment").first().text(),
   ));
+  if (fromDom) return fromDom;
+
+  const installments = extractRegexNumber(html, /"installments":([0-9]+)/i);
+  const installmentAmount = extractRegexNumber(html, /"installment_amount":([0-9]+(?:\.[0-9]+)?)/i);
+  if (Number.isFinite(Number(installments)) && Number(installments) > 0 && Number.isFinite(Number(installmentAmount)) && Number(installmentAmount) > 0) {
+    const amount = Number(installmentAmount).toFixed(2).replace(".", ",");
+    return `${Math.floor(Number(installments))}x de R$${amount}`;
+  }
+
+  return "";
 }
 
 function extractSellerFromProductPage($: ReturnType<typeof load>, html: string): string {
@@ -513,7 +577,13 @@ async function findSnapshotInVitrine(productUrl: string): Promise<MeliProductSna
     `SELECT product_url, title, image_url, price_cents, old_price_cents, installments_text, seller, rating, reviews_count
        FROM meli_vitrine_products
       WHERE product_url = $1
-      ORDER BY is_active DESC, updated_at DESC
+      ORDER BY
+        CASE WHEN price_cents > 0 THEN 1 ELSE 0 END DESC,
+        CASE WHEN title <> '' THEN 1 ELSE 0 END DESC,
+        CASE WHEN image_url <> '' THEN 1 ELSE 0 END DESC,
+        CASE WHEN seller <> '' THEN 1 ELSE 0 END DESC,
+        is_active DESC,
+        updated_at DESC
       LIMIT 1`,
     [productUrl],
   );
@@ -533,17 +603,7 @@ async function findSnapshotInVitrine(productUrl: string): Promise<MeliProductSna
   };
 }
 
-export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProductSnapshot> {
-  const canonicalUrl = canonicalizeProductUrl(rawUrl);
-  if (!canonicalUrl) {
-    throw new Error("URL do produto invalida para extracao.");
-  }
-
-  const fromVitrine = await findSnapshotInVitrine(canonicalUrl).catch(() => null);
-  if (fromVitrine) {
-    return fromVitrine;
-  }
-
+async function extractSnapshotFromLivePage(canonicalUrl: string): Promise<MeliProductSnapshot> {
   const html = await fetchHtml(canonicalUrl, { expectCards: false });
   const $ = load(html);
   const jsonLdProduct = findJsonLdProductRecord(html);
@@ -554,7 +614,7 @@ export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProduc
     ? jsonLdProduct.aggregateRating as Record<string, unknown>
     : null;
 
-  const snapshot: MeliProductSnapshot = {
+  return {
     productUrl: canonicalizeProductUrl(
       pickFirstNonEmptyString(
         $("link[rel='canonical']").attr("href"),
@@ -566,27 +626,33 @@ export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProduc
       jsonLdProduct?.name,
       $("meta[property='og:title']").attr("content"),
       $(".ui-pdp-title").first().text(),
+      $("h1").first().text(),
     ),
     imageUrl: toAbsoluteUrl(pickFirstNonEmptyString(
       Array.isArray(jsonLdProduct?.image) ? jsonLdProduct?.image[0] : jsonLdProduct?.image,
       $("meta[property='og:image']").attr("content"),
       $("img.ui-pdp-image").first().attr("src"),
+      $("img[data-zoom]").first().attr("src"),
     )),
     price: pickFirstPositiveNumber(
       extractPriceFromMoneyNode($, ".ui-pdp-price__second-line .andes-money-amount"),
+      extractPriceFromMoneyNode($, ".ui-pdp-price__main-container .andes-money-amount"),
+      extractPriceFromMoneyNode($, ".ui-pdp-price__current .andes-money-amount"),
       parseStringifiedNumber(offers?.price),
       extractRegexNumber(html, /"price":([0-9]+(?:\.[0-9]+)?)/i),
     ),
     oldPrice: pickFirstPositiveNumber(
       extractPriceFromMoneyNode($, ".ui-pdp-price__original-value"),
+      extractPriceFromMoneyNode($, ".andes-money-amount--previous"),
       extractRegexNumber(html, /"original_price":([0-9]+(?:\.[0-9]+)?)/i),
       extractRegexNumber(html, /"originalPrice":([0-9]+(?:\.[0-9]+)?)/i),
     ),
-    installmentsText: extractInstallmentsFromProductPage($),
+    installmentsText: extractInstallmentsFromProductPage($, html),
     seller: extractSellerFromProductPage($, html),
     rating: pickFirstPositiveNumber(
       parseDecimalNumber(aggregateRating?.ratingValue),
       parseDecimalNumber($(".ui-pdp-review__rating").first().text()),
+      parseDecimalNumber($("[data-testid='rating-value']").first().text()),
       extractRegexNumber(html, /"rating_average_formatted":"([0-9]+(?:\.[0-9]+)?)"/i),
       extractRegexNumber(html, /"rate":([0-9]+(?:\.[0-9]+)?)/i),
     ),
@@ -594,11 +660,57 @@ export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProduc
       parseStringifiedNumber(aggregateRating?.ratingCount),
       parseStringifiedNumber(aggregateRating?.reviewCount),
       parseStringifiedNumber(parseReviewsCount($(".ui-pdp-review__amount").first().text())),
+      parseStringifiedNumber($("[data-testid='reviews-amount']").first().text()),
       extractRegexNumber(html, /"count":([0-9]+)/i),
     ),
   };
+}
 
-  return snapshot;
+export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProductSnapshot> {
+  const canonicalUrl = canonicalizeProductUrl(rawUrl);
+  if (!canonicalUrl) {
+    throw new Error("URL do produto invalida para extracao.");
+  }
+
+  const fromVitrine = await findSnapshotInVitrine(canonicalUrl).catch(() => null);
+  const shouldEnrichFromLive = (
+    !fromVitrine
+    || !hasSnapshotCoreFields(fromVitrine)
+    || !fromVitrine.seller
+    || !fromVitrine.installmentsText
+    || !fromVitrine.imageUrl
+    || !Number.isFinite(Number(fromVitrine.oldPrice))
+    || !Number.isFinite(Number(fromVitrine.rating))
+    || !Number.isFinite(Number(fromVitrine.reviewsCount))
+  );
+
+  if (!shouldEnrichFromLive) {
+    return fromVitrine;
+  }
+
+  let fromLive: MeliProductSnapshot | null = null;
+  try {
+    fromLive = await extractSnapshotFromLivePage(canonicalUrl);
+  } catch (error) {
+    if (!fromVitrine) {
+      throw error;
+    }
+  }
+
+  const merged = mergeSnapshotData(fromLive, fromVitrine);
+  if (merged && hasSnapshotCoreFields(merged)) {
+    return merged;
+  }
+
+  if (fromVitrine) {
+    return fromVitrine;
+  }
+
+  if (merged) {
+    return merged;
+  }
+
+  throw new Error("Nao foi possivel extrair dados do produto.");
 }
 
 function shuffleArray<T>(input: T[]): T[] {

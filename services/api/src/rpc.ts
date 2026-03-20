@@ -1127,6 +1127,7 @@ function buildUserScopedHeaders(userId: string) {
 
 type RouteForwardMedia = {
   kind: "image";
+  sourcePlatform?: "whatsapp" | "telegram" | "auto";
   token?: string;
   base64?: string;
   mimeType?: string;
@@ -1141,9 +1142,14 @@ function parseRouteForwardMedia(raw: unknown): RouteForwardMedia | null {
   const token = typeof row.token === "string" ? row.token.trim() : "";
   const base64 = typeof row.base64 === "string" ? row.base64.trim() : "";
   if (!token && !base64) return null;
+  const sourcePlatformRaw = typeof row.sourcePlatform === "string" ? row.sourcePlatform.trim().toLowerCase() : "";
+  const sourcePlatform = sourcePlatformRaw === "whatsapp" || sourcePlatformRaw === "telegram" || sourcePlatformRaw === "auto"
+    ? sourcePlatformRaw as "whatsapp" | "telegram" | "auto"
+    : undefined;
 
   return {
     kind: "image",
+    sourcePlatform,
     token: token || undefined,
     base64: base64 || undefined,
     mimeType: typeof row.mimeType === "string" && row.mimeType.trim() ? row.mimeType.trim() : "image/jpeg",
@@ -1440,47 +1446,93 @@ async function resolveRouteForwardMediaForPlatform(input: {
 }): Promise<RouteForwardMedia | null> {
   const { userId, platform, media } = input;
   if (!media || media.kind !== "image") return null;
+  if (platform !== "whatsapp" && platform !== "telegram") return null;
 
-  if (platform === "whatsapp") return media;
-  if (platform !== "telegram") return null;
+  const withDefaults = (partial: RouteForwardMedia): RouteForwardMedia => ({
+    kind: "image",
+    sourcePlatform: partial.sourcePlatform || media.sourcePlatform,
+    token: partial.token,
+    base64: partial.base64,
+    mimeType: partial.mimeType || media.mimeType || "image/jpeg",
+    fileName: partial.fileName || media.fileName || "route_image.jpg",
+  });
+
+  const fetchFromServiceByToken = async (
+    service: "whatsapp" | "telegram",
+    token: string,
+  ): Promise<RouteForwardMedia | null> => {
+    const baseUrl = service === "whatsapp" ? WHATSAPP_URL : TELEGRAM_URL;
+    if (!baseUrl) return null;
+    const path = service === "whatsapp"
+      ? `/api/media/${encodeURIComponent(token)}`
+      : `/api/telegram/media/${encodeURIComponent(token)}`;
+    const mediaResponse = await proxyMicroservice(
+      baseUrl,
+      path,
+      "GET",
+      null,
+      buildUserScopedHeaders(userId),
+      8000,
+    );
+    if (mediaResponse.error) return null;
+
+    const payload = (mediaResponse.data && typeof mediaResponse.data === "object")
+      ? mediaResponse.data as Record<string, unknown>
+      : {};
+    const base64 = typeof payload.base64 === "string" ? payload.base64.trim() : "";
+    if (!base64) return null;
+
+    return withDefaults({
+      kind: "image",
+      sourcePlatform: service,
+      base64,
+      mimeType: typeof payload.mimeType === "string" && payload.mimeType.trim()
+        ? payload.mimeType.trim()
+        : undefined,
+      fileName: typeof payload.fileName === "string" && payload.fileName.trim()
+        ? payload.fileName.trim()
+        : undefined,
+    });
+  };
 
   if (media.base64) {
-    return {
+    return withDefaults({
       kind: "image",
+      sourcePlatform: media.sourcePlatform,
       base64: media.base64,
-      mimeType: media.mimeType || "image/jpeg",
-      fileName: media.fileName || "route_image.jpg",
-    };
+    });
   }
 
-  if (!media.token || !WHATSAPP_URL) return null;
+  if (!media.token) return null;
 
-  const mediaResponse = await proxyMicroservice(
-    WHATSAPP_URL,
-    `/api/media/${encodeURIComponent(media.token)}`,
-    "GET",
-    null,
-    buildUserScopedHeaders(userId),
-    8000,
-  );
-  if (mediaResponse.error) return null;
+  // Fast paths preserving provider-native token when destination is the same provider.
+  if (platform === "whatsapp" && media.sourcePlatform === "whatsapp") {
+    return withDefaults({
+      kind: "image",
+      sourcePlatform: "whatsapp",
+      token: media.token,
+    });
+  }
+  if (platform === "telegram" && media.sourcePlatform === "telegram") {
+    return withDefaults({
+      kind: "image",
+      sourcePlatform: "telegram",
+      token: media.token,
+    });
+  }
 
-  const payload = (mediaResponse.data && typeof mediaResponse.data === "object")
-    ? mediaResponse.data as Record<string, unknown>
-    : {};
-  const base64 = typeof payload.base64 === "string" ? payload.base64.trim() : "";
-  if (!base64) return null;
+  const source = media.sourcePlatform;
+  if (source === "whatsapp") {
+    return fetchFromServiceByToken("whatsapp", media.token);
+  }
+  if (source === "telegram") {
+    return fetchFromServiceByToken("telegram", media.token);
+  }
 
-  return {
-    kind: "image",
-    base64,
-    mimeType: typeof payload.mimeType === "string" && payload.mimeType.trim()
-      ? payload.mimeType.trim()
-      : (media.mimeType || "image/jpeg"),
-    fileName: typeof payload.fileName === "string" && payload.fileName.trim()
-      ? payload.fileName.trim()
-      : (media.fileName || "route_image.jpg"),
-  };
+  // Unknown token origin: try WhatsApp first for backwards compatibility, then Telegram.
+  const fetchedFromWhatsApp = await fetchFromServiceByToken("whatsapp", media.token);
+  if (fetchedFromWhatsApp) return fetchedFromWhatsApp;
+  return fetchFromServiceByToken("telegram", media.token);
 }
 
 async function scheduleRouteForwardMediaDeletion(input: {
@@ -1489,20 +1541,39 @@ async function scheduleRouteForwardMediaDeletion(input: {
   delayMs?: number;
 }): Promise<void> {
   const { userId, media } = input;
-  if (!media?.token || !WHATSAPP_URL) return;
+  if (!media?.token) return;
 
   const delayMs = Number.isFinite(Number(input.delayMs))
     ? Math.max(1_000, Number(input.delayMs))
     : 120_000;
 
-  await proxyMicroservice(
-    WHATSAPP_URL,
-    `/api/media/${encodeURIComponent(media.token)}/schedule-delete`,
-    "POST",
-    { delayMs },
-    buildUserScopedHeaders(userId),
-    8_000,
-  );
+  const headers = buildUserScopedHeaders(userId);
+  const callScheduleDelete = async (service: "whatsapp" | "telegram") => {
+    const baseUrl = service === "whatsapp" ? WHATSAPP_URL : TELEGRAM_URL;
+    if (!baseUrl) return;
+    const path = service === "whatsapp"
+      ? `/api/media/${encodeURIComponent(media.token || "")}/schedule-delete`
+      : `/api/telegram/media/${encodeURIComponent(media.token || "")}/schedule-delete`;
+    await proxyMicroservice(
+      baseUrl,
+      path,
+      "POST",
+      { delayMs },
+      headers,
+      8_000,
+    );
+  };
+
+  if (media.sourcePlatform === "whatsapp") {
+    await callScheduleDelete("whatsapp");
+    return;
+  }
+  if (media.sourcePlatform === "telegram") {
+    await callScheduleDelete("telegram");
+    return;
+  }
+
+  await Promise.allSettled([callScheduleDelete("whatsapp"), callScheduleDelete("telegram")]);
 }
 
 const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
@@ -2252,6 +2323,30 @@ function extractRouteLinks(content: string): string[] {
   return String(content || "").match(ROUTE_LINK_REGEX) || [];
 }
 
+function buildSourceExternalIdCandidates(rawValue: string): string[] {
+  const base = String(rawValue || "").trim();
+  if (!base) return [];
+
+  const candidates = new Set<string>([base]);
+  const unsigned = base.replace(/^-/, "");
+  const numeric = /^\d+$/.test(unsigned);
+
+  if (base.startsWith("-100") && /^\d+$/.test(base.slice(4))) {
+    candidates.add(`-${base.slice(4)}`);
+    candidates.add(base.slice(4));
+  }
+  if (base.startsWith("-") && numeric) {
+    candidates.add(unsigned);
+    candidates.add(`-100${unsigned}`);
+  }
+  if (numeric) {
+    candidates.add(`-${unsigned}`);
+    candidates.add(`-100${unsigned}`);
+  }
+
+  return [...candidates];
+}
+
 function normalizeRouteMarketplaceList(value: unknown): string[] {
   if (!Array.isArray(value)) return ["shopee"];
   const cleaned = value
@@ -2358,35 +2453,70 @@ async function processRouteMessageForUser(input: {
   const routeMeliSessionCache = new Map<string, string>();
   const routeTemplateCache = new Map<string, string | null>();
 
-  const sourceCandidates = new Set<string>([sourceExternalId, sessionId].filter(Boolean));
+  const sourceExternalCandidates = buildSourceExternalIdCandidates(sourceExternalId);
+  const sourceCandidates = new Set<string>([sessionId, ...sourceExternalCandidates].filter(Boolean));
+
   const sourceGroupRows = await query<{ id: string }>(
     `SELECT id
-     FROM groups
-     WHERE user_id = $1
-       AND session_id = $2
-       AND external_id = $3
-       AND deleted_at IS NULL`,
-    [userId, sessionId, sourceExternalId],
+       FROM groups
+      WHERE user_id = $1
+        AND session_id = $2
+        AND external_id = ANY($3)
+        AND deleted_at IS NULL`,
+    [userId, sessionId, sourceExternalCandidates],
   );
   for (const row of sourceGroupRows) {
     if (row?.id) sourceCandidates.add(String(row.id));
   }
+  if (sourceGroupRows.length === 0 && sourceExternalCandidates.length > 0) {
+    const fallbackSourceRows = await query<{ id: string }>(
+      `SELECT id
+         FROM groups
+        WHERE user_id = $1
+          AND external_id = ANY($2)
+          AND deleted_at IS NULL`,
+      [userId, sourceExternalCandidates],
+    );
+    for (const row of fallbackSourceRows) {
+      if (row?.id) sourceCandidates.add(String(row.id));
+    }
+  }
 
-  const routes = await query<{ id: string; name: string; source_group_id: string; rules: unknown; dest_ids: string[] }>(
+  const sourceExternalCandidateSet = new Set(sourceExternalCandidates);
+
+  const routes = await query<{
+    id: string;
+    name: string;
+    source_group_id: string;
+    source_external_id: string;
+    rules: unknown;
+    dest_ids: string[];
+  }>(
     `SELECT
        r.id,
        r.name,
        r.source_group_id,
+       COALESCE(sg.external_id, '') AS source_external_id,
        r.rules,
        COALESCE(json_agg(rd.group_id) FILTER (WHERE rd.group_id IS NOT NULL),'[]') AS dest_ids
      FROM routes r
+     LEFT JOIN groups sg ON sg.id = r.source_group_id AND sg.user_id = r.user_id
      LEFT JOIN route_destinations rd ON rd.route_id = r.id
      WHERE r.user_id = $1 AND r.status = 'active'
-     GROUP BY r.id`,
+     GROUP BY r.id, sg.external_id`,
     [userId],
   );
 
-  const matching = routes.filter((route) => sourceCandidates.has(String(route.source_group_id || "")));
+  const matching = routes.filter((route) => {
+    const routeSourceGroupId = String(route.source_group_id || "").trim();
+    if (routeSourceGroupId && sourceCandidates.has(routeSourceGroupId)) return true;
+
+    const routeSourceExternalId = String(route.source_external_id || "").trim();
+    if (!routeSourceExternalId) return false;
+
+    const routeSourceExternalCandidates = buildSourceExternalIdCandidates(routeSourceExternalId);
+    return routeSourceExternalCandidates.some((candidate) => sourceExternalCandidateSet.has(candidate));
+  });
   if (matching.length === 0) {
     await execute(
       "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','warning',$4,'inbound',$5,'blocked','no_active_routes','route_match')",
@@ -2773,20 +2903,33 @@ async function processRouteMessageForUser(input: {
       routeMedia = await tryAutoDownloadImageFromMessage(outboundText);
       if (routeMedia) autoImageSource = "url_extraction";
     }
+    const routeMessageType = routeMedia ? "image" : "text";
     if (!routeMedia) {
       await execute(
-        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound','text','blocked','missing_image_required','media_requirements')",
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','missing_image_required','media_requirements')",
         [uuid(), userId, sourceName, route.name, JSON.stringify({
           message: outboundText,
           routeId: route.id,
           routeName: route.name,
           reason: "missing_image_required",
           hasMedia: false,
+        }), routeMessageType],
+      );
+      continue;
+    }
+    if (!String(outboundText || "").trim()) {
+      await execute(
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound','text','blocked','missing_text_required','message_validation')",
+        [uuid(), userId, sourceName, route.name, JSON.stringify({
+          message: outboundText,
+          routeId: route.id,
+          routeName: route.name,
+          reason: "missing_text_required",
+          hasMedia: true,
         })],
       );
       continue;
     }
-    const routeMessageType = "image";
 
     const targetIds = targetByRoute.get(route.id) ?? [];
     const destinationSessionFilter = typeof rules.sessionId === "string" ? rules.sessionId.trim() : "";
@@ -2833,7 +2976,9 @@ async function processRouteMessageForUser(input: {
       }
 
       const scopedHeaders = buildUserScopedHeaders(userId);
-      const mediaForDestination = await resolveRouteForwardMediaForPlatform({ userId, platform, media: routeMedia });
+      const mediaForDestination = routeMedia
+        ? await resolveRouteForwardMediaForPlatform({ userId, platform, media: routeMedia })
+        : null;
       if (!mediaForDestination) {
         await execute(
           "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'outbound','text','blocked','missing_image_required','media_requirements')",
@@ -2848,7 +2993,22 @@ async function processRouteMessageForUser(input: {
         );
         continue;
       }
-      const outboundTextSafe = formatMessageForDestinationPlatform(outboundText, platform) || " ";
+      const formattedOutboundText = formatMessageForDestinationPlatform(outboundText, platform);
+      const outboundTextSafe = formattedOutboundText.trim();
+      if (!outboundTextSafe) {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'outbound','text','blocked','missing_text_required','message_validation')",
+          [uuid(), userId, sourceName, group.name, JSON.stringify({
+            message: outboundText,
+            routeId: route.id,
+            routeName: route.name,
+            platform,
+            reason: "missing_text_required",
+            hasMedia: true,
+          })],
+        );
+        continue;
+      }
       let result = { data: null as unknown, error: { message: "Plataforma inválida" } as { message: string } | null };
       if (platform === "whatsapp" && WHATSAPP_URL) {
         result = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
@@ -2868,8 +3028,8 @@ async function processRouteMessageForUser(input: {
 
       if (result.error) {
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_send_failed','send_message')",
-          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform })],
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound',$6,'failed','destination_send_failed','send_message')",
+          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform, hasMedia: !!mediaForDestination }), mediaForDestination ? "image" : "text"],
         );
         continue;
       }
