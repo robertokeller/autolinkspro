@@ -618,7 +618,7 @@ export default function SettingsPage() {
         </Tabs>
 
         <Dialog open={plansModalOpen} onOpenChange={setPlansModalOpen}>
-          <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogContent className="max-h-[92dvh] w-[min(calc(100vw-1rem),56rem)] max-w-none overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
             <DialogHeader>
               <DialogTitle>Escolha seu plano</DialogTitle>
               <p className="text-sm text-muted-foreground">
@@ -632,7 +632,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setPlansBillingPeriod("monthly")}
-                  className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all sm:px-4 sm:text-sm ${
                     plansBillingPeriod === "monthly"
                       ? "bg-background shadow text-foreground"
                       : "text-muted-foreground hover:text-foreground"
@@ -643,14 +643,14 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setPlansBillingPeriod("annual")}
-                  className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all flex items-center gap-1.5 ${
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all flex items-center gap-1 sm:px-4 sm:text-sm sm:gap-1.5 ${
                     plansBillingPeriod === "annual"
                       ? "bg-background shadow text-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   Anual
-                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary">2 meses grátis 🔥</span>
+                  <span className="hidden rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary min-[420px]:inline">2 meses grátis 🔥</span>
                 </button>
               </div>
             </div>

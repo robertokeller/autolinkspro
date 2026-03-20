@@ -57,6 +57,8 @@ type LinkHubGroup = {
   name: string;
   platform: string;
   external_id: string | null;
+  invite_link?: string | null;
+  redirect_url?: string | null;
   member_count: number;
 };
 
@@ -78,6 +80,8 @@ type LinkHubPublicResponse = {
 };
 
 function getInviteLink(group: LinkHubGroup) {
+  if (group.redirect_url) return group.redirect_url;
+  if (group.invite_link && /^https?:\/\//i.test(group.invite_link)) return group.invite_link;
   if (!group.external_id) return null;
   return group.platform === "whatsapp"
     ? `https://chat.whatsapp.com/${group.external_id}`
@@ -263,7 +267,7 @@ export default function LinkHubPublicPage() {
                 <motion.a
                   key={group.id}
                   variants={fadeUp}
-                  href={inviteLink || "#"}
+                  href={inviteLink || undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="group relative flex items-center gap-3.5 p-4 rounded-2xl border transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] overflow-hidden"
@@ -421,7 +425,7 @@ export default function LinkHubPublicPage() {
         >
           <div className="ds-linkhub-shell px-0">
             <a
-              href={primaryInviteLink || "#"}
+              href={primaryInviteLink || undefined}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center justify-center gap-2.5 w-full py-4 rounded-2xl text-sm font-bold transition-all duration-300 active:scale-[0.97]"

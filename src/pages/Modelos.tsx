@@ -568,9 +568,9 @@ export default function Templates() {
             <DialogTitle>{editing ? "Editar template" : "Novo template"}</DialogTitle>
           </DialogHeader>
 
-          <div className="grid md:grid-cols-2 overflow-hidden">
+          <div className="grid md:grid-cols-2 overflow-y-auto md:overflow-hidden">
             {/* ─ Esquerda: formulário ─ */}
-            <div className="space-y-4 px-6 py-5 overflow-y-auto max-h-[72dvh]">
+            <div className="space-y-4 px-6 py-5 overflow-y-auto max-h-[50dvh] md:max-h-[72dvh]">
               <div className="space-y-2">
                 <Label>Nome</Label>
                 <Input
@@ -651,7 +651,7 @@ export default function Templates() {
             </div>
 
             {/* ─ Direita: preview ao vivo ─ */}
-            <div className="border-t md:border-t-0 md:border-l bg-muted/20 px-6 py-5 space-y-3 flex flex-col overflow-hidden max-h-[72dvh]">
+            <div className="border-t md:border-t-0 md:border-l bg-muted/20 px-6 py-5 space-y-3 flex flex-col overflow-hidden max-h-[50dvh] md:max-h-[72dvh]">
               <div className="shrink-0">
                 <Label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <Eye className="h-3 w-3" />

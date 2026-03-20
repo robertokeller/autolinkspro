@@ -35,7 +35,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "2mb" }));
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Security headers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─── Security headers ────────────────────────────────────────────────────────
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -44,7 +44,7 @@ app.use((_req, res, next) => {
   next();
 });
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Rate limiting (in-memory, per IP) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ââ€â‚¬ââ€â‚¬ââ€â‚¬ Rate limiting (in-memory, per IP) ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_REQUESTS = 300;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -147,7 +147,7 @@ if (!WEBHOOK_SECRET && !insecureSecretBypass) {
 }
 
 if (insecureSecretBypass) {
-  console.warn("[shopee] WEBHOOK_SECRET not set Ã¢â‚¬â€ insecure development bypass is enabled via ALLOW_INSECURE_NO_SECRET=true.");
+  console.warn("[shopee] WEBHOOK_SECRET not set ââ‚¬â€ insecure development bypass is enabled via ALLOW_INSECURE_NO_SECRET=true.");
 }
 if (WEBHOOK_SECRET && WEBHOOK_SECRET.toLowerCase() === "change-me" && NODE_ENV === "production") {
   throw new Error("WEBHOOK_SECRET is set to the default placeholder 'change-me'. Set a strong secret before running in production.");
@@ -181,7 +181,7 @@ function requireCredentials(payload: unknown): { ok: true; credentials: ShopeeCr
   const region = normalizeRegion(body.region);
 
   if (!appId || !secret) {
-    return { ok: false, error: "Credenciais Shopee invalidas (appId/secret)." };
+    return { ok: false, error: "Credenciais Shopee inválidas (appId/secret)." };
   }
 
   return {
@@ -305,7 +305,7 @@ async function callShopeeGraphql(
 
       const data = parsed.data;
       if (!data || typeof data !== "object") {
-        throw new Error("Resposta invalida da Shopee API");
+        throw new Error("Resposta inválida da Shopee API");
       }
 
       return data as Record<string, unknown>;
@@ -610,7 +610,7 @@ app.post("/api/shopee/convert-link", async (req, res) => {
     return;
   }
   if (!looksLikeShopeeUrl(sourceUrl)) {
-    res.status(400).json({ error: "URL informada nao parece ser da Shopee" });
+    res.status(400).json({ error: "URL informada não parece ser da Shopee" });
     return;
   }
 
@@ -634,7 +634,7 @@ app.post("/api/shopee/convert-link", async (req, res) => {
     const linkNode = converted.generateShortLink as Record<string, unknown> | undefined;
     const rawAffiliateLink = String(linkNode?.shortLink || "").trim();
     if (!rawAffiliateLink) {
-      throw new Error("Shopee nÃƒÂ£o retornou link de afiliado");
+      throw new Error("Shopee não retornou link de afiliado");
     }
 
     const affiliateLink = stripLpAff(rawAffiliateLink);
@@ -674,7 +674,7 @@ app.post("/api/shopee/convert-link", async (req, res) => {
         const detailNode = (detail.productOfferV2 as Record<string, unknown> | undefined)?.nodes;
         const nodes = Array.isArray(detailNode) ? detailNode : [];
         if (nodes.length > 0 && nodes[0] && typeof nodes[0] === "object") {
-          const mapped = mapNodeToProduct(nodes[0] as Record<string, unknown>, "conversao");
+          const mapped = mapNodeToProduct(nodes[0] as Record<string, unknown>, "conversão");
           product = {
             ...mapped,
             affiliateLink,

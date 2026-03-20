@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { backend } from "@/integrations/backend/client";
-import { syncChannelGroups } from "@/lib/channel-central";
+import { invokeWhatsAppAction, syncChannelGroups } from "@/lib/channel-central";
 import { useAuth } from "@/contexts/AuthContext";
 import type { Group, MasterGroup, DistributionMode } from "@/lib/types";
 import type { Tables } from "@/integrations/backend/types";
@@ -11,6 +11,14 @@ import { logHistorico } from "@/lib/log-historico";
 type GroupRow = Tables<"groups">;
 type MasterGroupRow = Tables<"master_groups">;
 type MasterGroupLinkRow = Tables<"master_group_links">;
+
+function normalizeDistributionMode(raw: unknown): DistributionMode {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "random") return "random";
+  if (value === "balanced") return "balanced";
+  // Legacy rows may still carry "sequential". Keep runtime behavior equivalent to balanced.
+  return "balanced";
+}
 
 function resolveGroupInviteLink(row: GroupRow): string | null {
   const explicit = String(row.invite_link || "").trim();
@@ -85,7 +93,7 @@ function mapMasterGroupRow(
     slug: row.slug || "",
     platform,
     groupIds,
-    distribution: row.distribution as DistributionMode,
+    distribution: normalizeDistributionMode(row.distribution),
     memberLimit: row.member_limit,
     alertMargin: 90,
     linkedGroups: linksForMaster
@@ -265,7 +273,7 @@ export function useGrupos() {
       user_id: user.id,
       name: name.trim(),
       slug,
-      distribution,
+      distribution: normalizeDistributionMode(distribution),
       member_limit: Math.max(0, Number(memberLimit || 0)),
     }).select().single();
 
@@ -291,7 +299,7 @@ export function useGrupos() {
       payload.name = updates.name.trim();
     }
     if (typeof updates.distribution === "string") {
-      payload.distribution = updates.distribution;
+      payload.distribution = normalizeDistributionMode(updates.distribution);
     }
     if (typeof updates.memberLimit === "number" && Number.isFinite(updates.memberLimit)) {
       payload.member_limit = Math.max(0, Math.trunc(updates.memberLimit));
@@ -317,12 +325,13 @@ export function useGrupos() {
 
   const setMasterGroupGroups = useCallback(async (masterGroupId: string, nextGroupIds: string[]) => {
     if (!user) return false;
+    let activeGroups: Array<{ id: string; platform: string; deleted_at: string | null; session_id: string | null; external_id: string | null; invite_link: string | null }> = [];
 
     const uniqueIds = [...new Set(nextGroupIds.map((item) => String(item || "").trim()).filter(Boolean))];
     if (uniqueIds.length > 0) {
       const groupsRes = await backend
         .from("groups")
-        .select("id, platform, deleted_at")
+        .select("id, platform, deleted_at, session_id, external_id, invite_link")
         .eq("user_id", user.id)
         .in("id", uniqueIds);
       if (groupsRes.error) {
@@ -330,7 +339,7 @@ export function useGrupos() {
         return false;
       }
 
-      const activeGroups = (groupsRes.data || []).filter((row) => !row.deleted_at);
+      activeGroups = (groupsRes.data || []).filter((row) => !row.deleted_at);
       if (activeGroups.length !== uniqueIds.length) {
         toast.error("Um ou mais grupos não existem ou não estão ativos");
         return false;
@@ -363,6 +372,47 @@ export function useGrupos() {
       if (insertError) {
         toast.error(insertError.message || "Erro ao vincular grupos");
         return false;
+      }
+
+      const addedGroups = activeGroups.filter((row) => toAdd.includes(row.id));
+      const whatsappMissingInvite = addedGroups.filter((row) => row.platform === "whatsapp" && !String(row.invite_link || "").trim());
+
+      if (whatsappMissingInvite.length > 0) {
+        const updates: Array<{ id: string; inviteLink: string }> = [];
+        let failedCount = 0;
+
+        for (const groupRow of whatsappMissingInvite) {
+          const sessionId = String(groupRow.session_id || "").trim();
+          const groupId = String(groupRow.external_id || "").trim();
+          if (!sessionId || !groupId) {
+            failedCount += 1;
+            continue;
+          }
+
+          try {
+            const result = await invokeWhatsAppAction<{ inviteLink?: string }>("group_invite", { sessionId, groupId });
+            const inviteLink = String(result?.inviteLink || "").trim();
+            if (!inviteLink) {
+              failedCount += 1;
+              continue;
+            }
+            updates.push({ id: groupRow.id, inviteLink });
+          } catch {
+            failedCount += 1;
+          }
+        }
+
+        if (updates.length > 0) {
+          await Promise.all(updates.map((item) => backend
+            .from("groups")
+            .update({ invite_link: item.inviteLink, updated_at: new Date().toISOString() })
+            .eq("id", item.id)
+            .eq("user_id", user.id)));
+        }
+
+        if (failedCount > 0) {
+          toast.warning("Alguns convites não puderam ser coletados automaticamente (verifique permissão de admin no grupo).");
+        }
       }
     }
 

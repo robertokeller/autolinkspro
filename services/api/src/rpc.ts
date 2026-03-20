@@ -16,15 +16,41 @@ rpcRouter.post("/rpc", async (req, res, next) => {
   if (String(req.body?.name ?? "") !== "link-hub-public") { next(); return; }
   const params = req.body ?? {};
   const slug = String(params.slug ?? "").trim();
-  if (!slug) { res.json({ data: null, error: { message: "Slug obrigatÃ³rio" } }); return; }
+  if (!slug) { res.json({ data: null, error: { message: "Slug obrigatório" } }); return; }
   try {
-    const page = await queryOne("SELECT slug, title, description, config, is_active, user_id FROM link_hub_pages WHERE slug = $1 AND is_active = TRUE", [slug]);
+    const page = await queryOne("SELECT slug, title, config, is_active, user_id FROM link_hub_pages WHERE slug = $1 AND is_active = TRUE", [slug]);
     if (!page) { res.json({ data: { page: null, groups: [], groupLabels: {} }, error: null }); return; }
     const ownerUserId = String(page.user_id || "").trim();
+    const resolvePublicInviteUrl = (row: { invite_link?: unknown; external_id?: unknown; platform?: unknown }) => {
+      const explicit = String(row.invite_link ?? "").trim();
+      if (/^https?:\/\//i.test(explicit)) return explicit;
+
+      const external = String(row.external_id ?? "").trim();
+      const platform = String(row.platform ?? "").trim();
+      if (!external) return "";
+      if (/^https?:\/\//i.test(external)) return external;
+
+      if (platform === "telegram") {
+        if (/^@[A-Za-z0-9_]{3,}$/i.test(external)) {
+          return `https://t.me/${external.slice(1)}`;
+        }
+        if (/^[A-Za-z0-9_]{3,}$/i.test(external)) {
+          return `https://t.me/${external}`;
+        }
+        return "";
+      }
+
+      if (platform === "whatsapp") {
+        if (/^chat\.whatsapp\.com\/[A-Za-z0-9]+$/i.test(external)) return `https://${external}`;
+        if (/^[A-Za-z0-9]{20,32}$/.test(external)) return `https://chat.whatsapp.com/${external}`;
+        return "";
+      }
+
+      return "";
+    };
     const publicPage = {
       slug: page.slug,
       title: page.title,
-      description: page.description,
       config: page.config,
       is_active: page.is_active,
     };
@@ -34,7 +60,7 @@ rpcRouter.post("/rpc", async (req, res, next) => {
     const groupLabels = cfg.groupLabels ?? {};
     const directGroups = gids.length > 0
       ? await query(
-          `SELECT id, name, platform, member_count
+          `SELECT id, name, platform, external_id, invite_link, member_count
              FROM groups
             WHERE user_id = $1
               AND deleted_at IS NULL
@@ -57,7 +83,7 @@ rpcRouter.post("/rpc", async (req, res, next) => {
       const linkedIds = links.map((l: Record<string, unknown>) => l.group_id);
       linkedGroups = linkedIds.length > 0
         ? await query(
-            `SELECT id, name, platform, member_count
+            `SELECT id, name, platform, external_id, invite_link, member_count
                FROM groups
               WHERE user_id = $1
                 AND deleted_at IS NULL
@@ -67,7 +93,20 @@ rpcRouter.post("/rpc", async (req, res, next) => {
         : [];
     }
     const seen = new Set();
-    const groups = [...directGroups, ...linkedGroups].filter((g: Record<string, unknown>) => { if (seen.has(g.id)) return false; seen.add(g.id); return true; });
+    const groups = [...directGroups, ...linkedGroups]
+      .filter((g: Record<string, unknown>) => {
+        if (seen.has(g.id)) return false;
+        seen.add(g.id);
+        return true;
+      })
+      .map((g: Record<string, unknown>) => ({
+        ...g,
+        redirect_url: resolvePublicInviteUrl({
+          invite_link: g.invite_link,
+          external_id: g.external_id,
+          platform: g.platform,
+        }),
+      }));
     res.json({ data: { page: publicPage, groups, groupLabels }, error: null });
   } catch {
     res.status(500).json({ data: null, error: { message: "Erro interno" } });
@@ -229,7 +268,7 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
   "shopee-convert-link": {
     max: 40,
     windowMs: 60_000,
-    message: "Limite de conversao Shopee atingido. Aguarde 1 minuto.",
+    message: "Limite de conversão Shopee atingido. Aguarde 1 minuto.",
   },
   "shopee-convert-links": {
     max: 12,
@@ -249,7 +288,7 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
   "meli-convert-link": {
     max: 30,
     windowMs: 60_000,
-    message: "Limite de conversao Mercado Livre atingido. Aguarde 1 minuto.",
+    message: "Limite de conversão Mercado Livre atingido. Aguarde 1 minuto.",
   },
   "meli-convert-links": {
     max: 10,
@@ -259,7 +298,7 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
   "meli-test-session": {
     max: 24,
     windowMs: 60_000,
-    message: "Limite de validacao de sessao atingido. Aguarde 1 minuto.",
+    message: "Limite de válidacao de sessão atingido. Aguarde 1 minuto.",
   },
   "meli-automation-run": {
     max: 6,
@@ -890,9 +929,9 @@ async function collectProcessQueueSnapshot() {
        FROM shopee_automations`
     ),
     queryOne<{ active_routes: string | number }>("SELECT COUNT(*) FILTER (WHERE status = 'active') AS active_routes FROM routes"),
-    WHATSAPP_URL ? proxyMicroservice(WHATSAPP_URL, "/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "WHATSAPP_MICROSERVICE_URL nao configurado" } }),
-    TELEGRAM_URL ? proxyMicroservice(TELEGRAM_URL, "/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "TELEGRAM_MICROSERVICE_URL nao configurado" } }),
-    MELI_URL ? proxyMicroservice(MELI_URL, "/api/meli/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "MELI_RPA_URL nao configurado" } }),
+    WHATSAPP_URL ? proxyMicroservice(WHATSAPP_URL, "/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "WHATSAPP_MICROSERVICE_URL não configurado" } }),
+    TELEGRAM_URL ? proxyMicroservice(TELEGRAM_URL, "/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "TELEGRAM_MICROSERVICE_URL não configurado" } }),
+    MELI_URL ? proxyMicroservice(MELI_URL, "/api/meli/health", "GET", null, {}, 5000) : Promise.resolve({ data: null, error: { message: "MELI_RPA_URL não configurado" } }),
   ]);
 
   const waPayload = (waHealth.data && typeof waHealth.data === "object") ? waHealth.data as Record<string, unknown> : {};
@@ -1576,7 +1615,7 @@ function extractAutomationImageUrl(product: Record<string, unknown>): string {
 async function buildAutomationImageMedia(product: Record<string, unknown>): Promise<RouteForwardMedia> {
   const imageUrl = extractAutomationImageUrl(product);
   if (!imageUrl) {
-    throw new Error("Envio cancelado: oferta sem imagem valida para anexo.");
+    throw new Error("Envio cancelado: oferta sem imagem válida para anexo.");
   }
 
   const controller = new AbortController();
@@ -1594,7 +1633,7 @@ async function buildAutomationImageMedia(product: Record<string, unknown>): Prom
 
     const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     if (!isImageMime(mimeType)) {
-      throw new Error("Envio cancelado: URL da oferta nao retornou uma imagem valida.");
+      throw new Error("Envio cancelado: URL da oferta não retornou uma imagem válida.");
     }
 
     const contentLength = Number(response.headers.get("content-length") || "0");
@@ -1631,9 +1670,9 @@ function isNotFoundSessionError(message: string): boolean {
   const normalized = String(message || "").toLowerCase();
   return (
     normalized.includes("não encontrada")
-    || normalized.includes("nao encontrada")
+    || normalized.includes("não encontrada")
     || normalized.includes("sessão não encontrada")
-    || normalized.includes("sessao nao encontrada")
+    || normalized.includes("sessão não encontrada")
     || normalized.includes("session not found")
     || normalized.includes("not found")
   );
@@ -1972,6 +2011,74 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
       memberCount,
     });
   }
+}
+
+async function syncMasterGroupWhatsAppInviteLinks(userId: string, sessionId: string): Promise<{ checked: number; updated: number; failed: number }> {
+  if (!WHATSAPP_URL) return { checked: 0, updated: 0, failed: 0 };
+
+  const rows = await query<{
+    id: string;
+    external_id: string;
+    invite_link: string | null;
+  }>(
+    `SELECT g.id, g.external_id, g.invite_link
+       FROM groups g
+      WHERE g.user_id = $1
+        AND g.platform = 'whatsapp'
+        AND g.session_id = $2
+        AND g.deleted_at IS NULL
+        AND EXISTS (
+          SELECT 1
+            FROM master_group_links l
+           WHERE l.group_id = g.id
+             AND l.is_active <> FALSE
+        )`,
+    [userId, sessionId],
+  );
+
+  let checked = 0;
+  let updated = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    const currentInvite = String(row.invite_link || "").trim();
+    if (/^https?:\/\//i.test(currentInvite)) continue;
+
+    const groupId = String(row.external_id || "").trim();
+    if (!groupId) continue;
+
+    checked += 1;
+    const upstream = await proxyMicroservice(
+      WHATSAPP_URL,
+      `/api/sessions/${encodeURIComponent(sessionId)}/group-invite`,
+      "POST",
+      { groupId },
+      buildUserScopedHeaders(userId),
+      8_000,
+    );
+
+    if (upstream.error) {
+      failed += 1;
+      continue;
+    }
+
+    const payload = (upstream.data && typeof upstream.data === "object")
+      ? upstream.data as Record<string, unknown>
+      : {};
+    const inviteLink = String(payload.inviteLink ?? "").trim();
+    if (!/^https?:\/\//i.test(inviteLink)) {
+      failed += 1;
+      continue;
+    }
+
+    await execute(
+      "UPDATE groups SET invite_link = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3",
+      [inviteLink, row.id, userId],
+    );
+    updated += 1;
+  }
+
+  return { checked, updated, failed };
 }
 
 async function applyWhatsAppEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
@@ -2719,7 +2826,7 @@ async function processRouteMessageForUser(input: {
       const destinationExternalId = String(group.external_id ?? "");
       if (!destinationSessionId || !destinationExternalId) {
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_session_offline','destination_validation')",
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_session_offline','destination_válidation')",
           [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, reason: "destination_session_offline" })],
         );
         continue;
@@ -2974,7 +3081,7 @@ function spawnOpsControlLocal(targetPort: number): { ok: true; pid: number } | {
 
     const pid = Number(child.pid);
     if (!Number.isFinite(pid) || pid <= 0) {
-      return { ok: false, error: "Falha ao iniciar ops-control (PID invÃ¡lido)" };
+      return { ok: false, error: "Falha ao iniciar ops-control (PID inválido)" };
     }
 
     return { ok: true, pid };
@@ -2995,8 +3102,8 @@ async function loadControlPlane() {
   _cpCache = { value, expiresAt: Date.now() + 60_000 };
   return value;
 }
-// Invalidate the cache immediately after any write to admin_config.
-function invalidateControlPlaneCache() { _cpCache = null; }
+// Inválidate the cache immediately after any write to admin_config.
+function inválidateControlPlaneCache() { _cpCache = null; }
 
 // Built-in plan catalog â€” mirrors src/lib/plans.ts. Acts as fallback when
 // admin_config has not yet been configured via the admin panel.
@@ -3175,7 +3282,7 @@ async function listUsersWithMeta() {
   `);
   return rows.map((u) => ({
     id: u.id, user_id: u.id,
-    name: String(u.profile_name ?? u.metadata?.name ?? "UsuÃ¡rio"),
+    name: String(u.profile_name ?? u.metadata?.name ?? "Usuário"),
     email: u.email,
     plan_id: u.plan_id,
     plan_expires_at: u.plan_expires_at ?? null,
@@ -3229,11 +3336,11 @@ rpcRouter.post("/rpc", async (req, res) => {
   const isService = !!(req.currentUser)?.isService;
   const effectiveAdmin = userIsAdmin || isService;
 
-  if (!userId) { fail(res, "NÃ£o autenticado", 401); return; }
+  if (!userId) { fail(res, "Não autenticado", 401); return; }
 
   const { name, ...params } = req.body;
   const funcName = String(name ?? "");
-  if (!funcName) { fail(res, "Nome da funcao obrigatorio", 400); return; }
+  if (!funcName) { fail(res, "Nome da função obrigatório", 400); return; }
 
   if (!isService) {
     const rateScopeKey = userId || (req.ip ?? req.socket.remoteAddress ?? "unknown");
@@ -3258,7 +3365,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
     } catch {
-      fail(res, "Não foi possível validar o acesso ao módulo Mercado Livre.", 503);
+      fail(res, "Não foi possível válidar o acesso ao módulo Mercado Livre.", 503);
       return;
     }
   }
@@ -3279,9 +3386,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       const action = String(params.action ?? "");
       const sessionId = String(params.sessionId ?? "");
       if (!WHATSAPP_URL) {
-        if (action === "health") { ok(res, { online: false, url: "", uptimeSec: null, sessions: [], error: "WHATSAPP_MICROSERVICE_URL nÃ£o definido" }); return; }
+        if (action === "health") { ok(res, { online: false, url: "", uptimeSec: null, sessions: [], error: "WHATSAPP_MICROSERVICE_URL não definido" }); return; }
         if (action === "poll_events_all" || action === "poll_events") { ok(res, { success: true, sessions: 0, events: 0 }); return; }
-        fail(res, "WHATSAPP_MICROSERVICE_URL nÃ£o definido"); return;
+        fail(res, "WHATSAPP_MICROSERVICE_URL não definido"); return;
       }
       if (action === "health") {
         const r = await proxyMicroservice(
@@ -3319,7 +3426,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       // Ownership guard: verify session belongs to this user before any session-specific action
       if (sessionId && action !== "health" && action !== "poll_events_all") {
         const ownedWa = await queryOne("SELECT id FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
-        if (!ownedWa) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+        if (!ownedWa) { fail(res, "Sessão não encontrada"); return; }
       }
       if (action === "poll_events") {
         const events = await pollWhatsAppEventsForSession(userId, sessionId);
@@ -3327,7 +3434,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "connect") {
         const sess = await queryOne("SELECT auth_method, phone, name FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
-        if (!sess) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+        if (!sess) { fail(res, "Sessão não encontrada"); return; }
         const authMethod = "qr";
         const phone = String(sess.phone ?? "").trim();
         await execute(
@@ -3377,8 +3484,29 @@ rpcRouter.post("/rpc", async (req, res) => {
           ? ((r.data as Record<string, unknown>).groups as Array<Record<string, unknown>>)
           : [];
         await syncWhatsAppGroupsWithReconciliation(userId, sessionId, remoteGroups);
+        const inviteSync = await syncMasterGroupWhatsAppInviteLinks(userId, sessionId).catch(() => ({ checked: 0, updated: 0, failed: 0 }));
         const events = await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
-        ok(res, { success: true, count: remoteGroups.length, events }); return;
+        ok(res, {
+          success: true,
+          count: remoteGroups.length,
+          events,
+          masterGroupInviteSync: inviteSync,
+        }); return;
+      }
+      if (action === "group_invite") {
+        const groupId = String(params.groupId ?? "").trim();
+        if (!groupId) { fail(res, "groupId é obrigatório"); return; }
+
+        const waHeaders = buildUserScopedHeaders(userId);
+        const r = await proxyMicroservice(
+          WHATSAPP_URL,
+          `/api/sessions/${encodeURIComponent(sessionId)}/group-invite`,
+          "POST",
+          { groupId },
+          waHeaders,
+        );
+        if (r.error) { fail(res, r.error.message); return; }
+        ok(res, r.data ?? { success: true }); return;
       }
       if (action === "send_message") {
         const jid = String(params.groupId ?? params.jid ?? "").trim();
@@ -3396,7 +3524,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
         ok(res, r.data ?? { success: true }); return;
       }
-      fail(res, "AÃ§Ã£o WhatsApp invÃ¡lida"); return;
+      fail(res, "Ação WhatsApp inválida"); return;
     }
 
     // â”€â”€ telegram-connect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3404,9 +3532,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       const action = String(params.action ?? "");
       const sessionId = String(params.sessionId ?? "");
       if (!TELEGRAM_URL) {
-        if (action === "health") { ok(res, { online: false, url: "", uptimeSec: null, sessions: [], error: "TELEGRAM_MICROSERVICE_URL nÃ£o definido" }); return; }
+        if (action === "health") { ok(res, { online: false, url: "", uptimeSec: null, sessions: [], error: "TELEGRAM_MICROSERVICE_URL não definido" }); return; }
         if (action === "poll_events_all" || action === "poll_events") { ok(res, { success: true, sessions: 0, events: 0 }); return; }
-        fail(res, "TELEGRAM_MICROSERVICE_URL nÃ£o definido"); return;
+        fail(res, "TELEGRAM_MICROSERVICE_URL não definido"); return;
       }
       if (action === "health") {
         const r = await proxyMicroservice(
@@ -3457,7 +3585,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       // Ownership guard: verify session belongs to this user before any session-specific action
       if (sessionId && action !== "health" && action !== "poll_events_all") {
         const ownedTg = await queryOne("SELECT id FROM telegram_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
-        if (!ownedTg) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+        if (!ownedTg) { fail(res, "Sessão não encontrada"); return; }
       }
       if (action === "poll_events") {
         const events = await pollTelegramEventsForSession(userId, sessionId);
@@ -3465,7 +3593,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "send_code") {
         const sess = await queryOne("SELECT phone, session_string FROM telegram_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
-        if (!sess) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
+        if (!sess) { fail(res, "Sessão não encontrada"); return; }
         await execute("UPDATE telegram_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
         const tgHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send_code", "POST", {
@@ -3530,7 +3658,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
         ok(res, r.data ?? { status: "online" }); return;
       }
-      fail(res, "AÃ§Ã£o Telegram invÃ¡lida"); return;
+      fail(res, "Ação Telegram inválida"); return;
     }
 
     // â”€â”€ dispatch-messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3803,7 +3931,7 @@ rpcRouter.post("/rpc", async (req, res) => {
               message,
               platform,
               reason: "destination_session_offline",
-              errorStep: "destination_validation",
+              errorStep: "destination_válidation",
               error: "Sessão do destino offline ou grupo sem identificador externo.",
               messageType: scheduleMedia ? "image" : "text",
             });
@@ -3930,7 +4058,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       const sourceExternalId = String(params.groupId ?? params.sourceExternalId ?? "");
       const sourceName = String(params.groupName ?? params.sourceName ?? "Grupo");
       const message = String(params.message ?? "");
-      if (!sessionId || !sourceExternalId || !message) { fail(res, "sessionId, groupId e message sÃ£o obrigatÃ³rios"); return; }
+      if (!sessionId || !sourceExternalId || !message) { fail(res, "sessionId, groupId e message são obrigatórios"); return; }
       const processed = await processRouteMessageForUser({
         userId,
         sessionId,
@@ -3948,7 +4076,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           online: false,
           url: "",
           uptimeSec: null,
-          error: "Shopee microservice nÃ£o configurado.",
+          error: "Shopee microservice não configurado.",
           service: "shopee-affiliate",
           stats: null,
         });
@@ -3980,9 +4108,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
     if (funcName === "shopee-test-connection") {
-      if (!SHOPEE_URL) { ok(res, { success: false, reason: "Shopee microservice nÃ£o configurado.", region: "BR" }); return; }
+      if (!SHOPEE_URL) { ok(res, { success: false, reason: "Shopee microservice não configurado.", region: "BR" }); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
-      if (!cred) { ok(res, { success: false, reason: "Credenciais Shopee nÃ£o configuradas.", region: "BR" }); return; }
+      if (!cred) { ok(res, { success: false, reason: "Credenciais Shopee não configuradas.", region: "BR" }); return; }
       const fallbackRegion = String(cred.region || "BR").toUpperCase();
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(
@@ -3994,7 +4122,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         30_000,
       );
       if (r.error) {
-        ok(res, { success: false, reason: r.error.message || "Falha na conexÃ£o", region: fallbackRegion });
+        ok(res, { success: false, reason: r.error.message || "Falha na conexão", region: fallbackRegion });
         return;
       }
       const payload: Record<string, unknown> = (r.data && typeof r.data === "object")
@@ -4002,18 +4130,18 @@ rpcRouter.post("/rpc", async (req, res) => {
         : {};
       const success = payload.success === true || payload.connected === true;
       const region = String(payload.region || fallbackRegion || "BR").toUpperCase();
-      const reason = String(payload.reason || payload.error || payload.message || "Falha na conexÃ£o");
+      const reason = String(payload.reason || payload.error || payload.message || "Falha na conexão");
       ok(res, success ? { success: true, region } : { success: false, reason, region });
       return;
     }
     if (funcName === "shopee-convert-link") {
-      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
-      if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
+      if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
       const sourceUrl = String(params.url ?? params.link ?? "").trim();
       if (!sourceUrl) { fail(res, "URL Shopee obrigatoria"); return; }
       if (sourceUrl.length > MAX_URL_LENGTH) { fail(res, "URL Shopee excede o tamanho maximo permitido"); return; }
-      if (!isShopeeProductUrlLike(sourceUrl)) { fail(res, "URL informada nao parece ser da Shopee"); return; }
+      if (!isShopeeProductUrlLike(sourceUrl)) { fail(res, "URL informada não parece ser da Shopee"); return; }
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
         url: sourceUrl,
@@ -4025,9 +4153,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       ok(res, r.data); return;
     }
     if (funcName === "shopee-convert-links") {
-      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
-      if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
+      if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
       const urlsRaw = Array.isArray(params.urls) ? params.urls : (Array.isArray(params.links) ? params.links : []);
       const urls = urlsRaw
         .filter((item): item is string => typeof item === "string")
@@ -4037,7 +4165,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (dedupedUrls.length === 0) { fail(res, "Lista de URLs Shopee obrigatoria"); return; }
       if (dedupedUrls.length > MAX_SHOPEE_CONVERT_BATCH) { fail(res, `Limite de ${MAX_SHOPEE_CONVERT_BATCH} URLs por lote Shopee`); return; }
       if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
-      if (dedupedUrls.some((item) => !isShopeeProductUrlLike(item))) { fail(res, "Uma ou mais URLs nao parecem ser da Shopee"); return; }
+      if (dedupedUrls.some((item) => !isShopeeProductUrlLike(item))) { fail(res, "Uma ou mais URLs não parecem ser da Shopee"); return; }
       const shopeeHeaders = buildUserScopedHeaders(userId);
 
       const conversions = [];
@@ -4072,9 +4200,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       ok(res, { conversions }); return;
     }
     if (funcName === "shopee-batch") {
-      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
-      if (!cred) { fail(res, "Credenciais Shopee nÃ£o configuradas."); return; }
+      if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
       const queries = Array.isArray(params.queries) ? params.queries : [];
       if (queries.length > MAX_SHOPEE_BATCH_QUERIES) {
         fail(res, `Limite de ${MAX_SHOPEE_BATCH_QUERIES} consultas por lote Shopee`);
@@ -4093,7 +4221,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       ok(res, r.data); return;
     }
     if (funcName === "shopee-automation-run") {
-      if (!SHOPEE_URL) { fail(res, "Shopee microservice nÃ£o configurado."); return; }
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       if (!WHATSAPP_URL && !TELEGRAM_URL) {
         fail(res, "Nenhum canal de envio configurado (WhatsApp/Telegram).");
         return;
@@ -4138,7 +4266,7 @@ rpcRouter.post("/rpc", async (req, res) => {
                 [userId, limit],
               ));
 
-      if (requestedAutomationId && automations.length === 0) { fail(res, "AutomaÃ§Ã£o nÃ£o encontrada"); return; }
+      if (requestedAutomationId && automations.length === 0) { fail(res, "Automação não encontrada"); return; }
       if (automations.length === 0) {
         ok(res, {
           ok: true,
@@ -4150,7 +4278,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           skipped: 0,
           failed: 0,
           errors: [],
-          message: "Nenhuma automaÃ§Ã£o elegÃ­vel para execuÃ§Ã£o neste ciclo.",
+          message: "Nenhuma automação elegível para execução neste ciclo.",
         });
         return;
       }
@@ -4172,7 +4300,7 @@ rpcRouter.post("/rpc", async (req, res) => {
 
       for (const auto of automations) {
         const ownerUserId = String(auto.user_id || "").trim();
-        const automationName = String(auto.name || auto.id || "Automacao Shopee");
+        const automationName = String(auto.name || auto.id || "Automação Shopee");
         const automationId = String(auto.id || "").trim();
         if (!ownerUserId || !automationId) {
           skipped += 1;
@@ -4387,7 +4515,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             message: "Encontramos uma oferta, mas ela veio sem link de afiliado válido.",
             details: { automationId, source, reason: "missing_affiliate_link" },
             blockReason: "missing_affiliate_link",
-            errorStep: "offer_validate",
+            errorStep: "offer_válidate",
           });
           continue;
         }
@@ -4558,7 +4686,7 @@ rpcRouter.post("/rpc", async (req, res) => {
                 reason: "invalid_destination",
               },
               blockReason: "invalid_destination",
-              errorStep: "destination_validate",
+              errorStep: "destination_válidate",
             });
             continue;
           }
@@ -4711,7 +4839,7 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
 
     if (funcName === "meli-automation-run") {
-      if (!MELI_URL) { fail(res, "Servico Mercado Livre nao configurado."); return; }
+      if (!MELI_URL) { fail(res, "Servico Mercado Livre não configurado."); return; }
       if (!WHATSAPP_URL && !TELEGRAM_URL) {
         fail(res, "Nenhum canal de envio configurado (WhatsApp/Telegram).");
         return;
@@ -4757,7 +4885,7 @@ rpcRouter.post("/rpc", async (req, res) => {
                 [userId, limit],
               ));
 
-      if (requestedAutomationId && automations.length === 0) { fail(res, "Automacao nao encontrada"); return; }
+      if (requestedAutomationId && automations.length === 0) { fail(res, "Automação não encontrada"); return; }
       if (automations.length === 0) {
         ok(res, {
           ok: true,
@@ -4769,7 +4897,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           skipped: 0,
           failed: 0,
           errors: [],
-          message: "Nenhuma automacao ML elegivel para execucao neste ciclo.",
+          message: "Nenhuma automação ML elegível para execução neste ciclo.",
         });
         return;
       }
@@ -4783,11 +4911,11 @@ rpcRouter.post("/rpc", async (req, res) => {
 
       for (const auto of automations) {
         const ownerUserId = String(auto.user_id || "").trim();
-        const automationName = String(auto.name || auto.id || "Automacao Mercado Livre");
+        const automationName = String(auto.name || auto.id || "Automação Mercado Livre");
         const automationId = String(auto.id || "").trim();
         if (!ownerUserId || !automationId) {
           skipped += 1;
-          errors.push(`${automationName}: dados da automacao invalidos`);
+          errors.push(`${automationName}: dados da automação inválidos`);
           continue;
         }
 
@@ -4960,7 +5088,7 @@ rpcRouter.post("/rpc", async (req, res) => {
 
         if (!selectedProduct) {
           skipped += 1;
-          errors.push(`${automationName}: sem nova oferta disponivel (duplicadas descartadas: ${duplicateRejectedCount})`);
+          errors.push(`${automationName}: sem nova oferta disponível (duplicadas descartadas: ${duplicateRejectedCount})`);
           await insertAutomationHistoryEntry({
             userId: ownerUserId,
             automationName,
@@ -4985,14 +5113,14 @@ rpcRouter.post("/rpc", async (req, res) => {
         const meliSessionId = await resolveRouteMeliSessionId(ownerUserId, configuredMeliSessionId);
         if (!meliSessionId) {
           skipped += 1;
-          errors.push(`${automationName}: nenhuma sessao Mercado Livre ativa para conversao`);
+          errors.push(`${automationName}: nenhuma sessão Mercado Livre ativa para conversão`);
           await insertAutomationHistoryEntry({
             userId: ownerUserId,
             automationName,
             destination: "automation:diagnostic",
             status: "warning",
             processingStatus: "blocked",
-            message: "Nenhuma sessao Mercado Livre ativa para converter links da automacao.",
+            message: "Nenhuma sessão Mercado Livre ativa para converter links da automação.",
             details: { automationId, source, reason: "missing_meli_session" },
             blockReason: "missing_meli_session",
             errorStep: "automation_setup",
@@ -5044,7 +5172,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             destination: "automation:diagnostic",
             status: "warning",
             processingStatus: "blocked",
-            message: "Conversao sem link afiliado valido.",
+            message: "Conversão sem link afiliado válido.",
             details: { automationId, source, reason: "missing_affiliate_link" },
             blockReason: "missing_affiliate_link",
             errorStep: "link_conversion",
@@ -5083,7 +5211,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             destination: "automation:diagnostic",
             status: "error",
             processingStatus: "failed",
-            message: "Automacao sem grupos de destino configurados.",
+            message: "Automação sem grupos de destino configurados.",
             details: { automationId, source, reason: "no_destination_groups" },
             blockReason: "no_destination_groups",
             errorStep: "destination_resolve",
@@ -5108,14 +5236,14 @@ rpcRouter.post("/rpc", async (req, res) => {
 
         if (destinationGroups.length === 0) {
           failed += 1;
-          errors.push(`${automationName}: nenhum grupo de destino valido para a sessao configurada`);
+          errors.push(`${automationName}: nenhum grupo de destino válido para a sessão configurada`);
           await insertAutomationHistoryEntry({
             userId: ownerUserId,
             automationName,
             destination: "automation:diagnostic",
             status: "error",
             processingStatus: "failed",
-            message: "Nenhum grupo valido para a sessao selecionada.",
+            message: "Nenhum grupo válido para a sessão selecionada.",
             details: { automationId, source, reason: "no_destination_groups_for_session" },
             blockReason: "no_destination_groups_for_session",
             errorStep: "destination_resolve",
@@ -5203,7 +5331,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           const externalId = String(group.external_id || "").trim();
           if (!sessionId || !externalId) {
             failed += 1;
-            errors.push(`${automationName} -> ${groupName}: grupo sem sessao/external_id`);
+            errors.push(`${automationName} -> ${groupName}: grupo sem sessão/external_id`);
             await insertAutomationHistoryEntry({
               userId: ownerUserId,
               automationName,
@@ -5218,7 +5346,7 @@ rpcRouter.post("/rpc", async (req, res) => {
                 reason: "invalid_destination",
               },
               blockReason: "invalid_destination",
-              errorStep: "destination_validate",
+              errorStep: "destination_válidate",
             });
             continue;
           }
@@ -5295,7 +5423,7 @@ rpcRouter.post("/rpc", async (req, res) => {
                   message: outboundMessage,
                   media: mediaForDestination,
                 }, scopedHeaders)
-              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponivel` } };
+              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
 
           if (sendResult.error) {
             failed += 1;
@@ -5411,7 +5539,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           online: false,
           url: "",
           uptimeSec: null,
-          error: "MeLi RPA nao configurado.",
+          error: "MeLi RPA não configurado.",
           service: "mercadolivre-rpa",
           stats: null,
         });
@@ -5444,19 +5572,19 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
     if (funcName === "meli-save-session") {
-      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+      if (!MELI_URL) { fail(res, "MeLi RPA não configurado."); return; }
 
       const sessionId = String(params.sessionId ?? "").trim();
-      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
-      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
-      if (params.cookies == null) { fail(res, "cookies e obrigatorio"); return; }
+      if (!sessionId) { fail(res, "sessionId e obrigatório"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId inválido"); return; }
+      if (params.cookies == null) { fail(res, "cookies e obrigatório"); return; }
 
       const existingSession = await queryOne<{ user_id: string; name: string }>(
         "SELECT user_id, name FROM meli_sessions WHERE id = $1",
         [sessionId],
       );
       if (existingSession && String(existingSession.user_id) !== userId) {
-        fail(res, "Sessao ja pertence a outro usuario", 403);
+        fail(res, "Sessão ja pertence a outro usuario", 403);
         return;
       }
 
@@ -5495,7 +5623,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       const fallbackName = `Conta ${canonicalSessionId.slice(0, 8)}`;
       const finalName = inputName || String(canonicalSessionName || existingSession?.name || "").trim() || fallbackName;
       const unknownStatusMessage = rawStatus && !allowedStatuses.has(rawStatus)
-        ? `Status invalido retornado pelo servico Mercado Livre (${rawStatus})`
+        ? `Status inválido retornado pelo servico Mercado Livre (${rawStatus})`
         : "";
       const errorMessage = status === "error"
         ? String((upstreamData as { error?: unknown }).error || unknownStatusMessage || "Falha ao salvar cookies")
@@ -5542,17 +5670,17 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
     if (funcName === "meli-test-session") {
-      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+      if (!MELI_URL) { fail(res, "MeLi RPA não configurado."); return; }
 
       const sessionId = String(params.sessionId ?? "").trim();
-      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
-      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
+      if (!sessionId) { fail(res, "sessionId e obrigatório"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId inválido"); return; }
 
       const owned = await queryOne<{ id: string }>(
         "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
         [sessionId, userId],
       );
-      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+      if (!owned) { fail(res, "Sessão não encontrada"); return; }
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
@@ -5570,7 +5698,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         if (transientFailure) {
           await execute(
             "UPDATE meli_sessions SET last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
-            [`Falha temporaria ao validar sessao: ${upstream.error.message}`, sessionId, userId],
+            [`Falha temporária ao válidar sessão: ${upstream.error.message}`, sessionId, userId],
           );
         } else {
           await execute(
@@ -5601,7 +5729,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           || ((firstErrorLog && typeof firstErrorLog === "object")
             ? (firstErrorLog as { message?: unknown }).message
             : "")
-          || "Sessao expirada",
+          || "Sessão expirada",
         );
 
       const transientValidationFailure = isTransientMeliSessionValidationResult({
@@ -5612,9 +5740,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (transientValidationFailure) {
         await execute(
           "UPDATE meli_sessions SET last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
-          [`Falha temporaria ao validar sessao: ${errorMessage || "instabilidade no servico Mercado Livre"}`, sessionId, userId],
+          [`Falha temporária ao válidar sessão: ${errorMessage || "instabilidade no serviço Mercado Livre"}`, sessionId, userId],
         );
-        fail(res, errorMessage || "Falha temporaria ao validar sessao automaticamente", 503);
+        fail(res, errorMessage || "Falha temporária ao válidar sessão automaticamente", 503);
         return;
       }
 
@@ -5661,14 +5789,14 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
     if (funcName === "meli-delete-session") {
       const sessionId = String(params.sessionId ?? "").trim();
-      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
-      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
+      if (!sessionId) { fail(res, "sessionId e obrigatório"); return; }
+      if (!isUuid(sessionId)) { fail(res, "sessionId inválido"); return; }
 
       const owned = await queryOne<{ id: string }>(
         "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
         [sessionId, userId],
       );
-      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+      if (!owned) { fail(res, "Sessão não encontrada"); return; }
 
       let warning: string | null = null;
       if (MELI_URL) {
@@ -5690,15 +5818,15 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
     if (funcName === "meli-convert-link") {
-      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+      if (!MELI_URL) { fail(res, "MeLi RPA não configurado."); return; }
 
       const productUrl = String(params.productUrl ?? params.url ?? "").trim();
       const requestedSessionId = String(params.sessionId ?? "").trim();
       if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
       if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
-      if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada nao parece ser do Mercado Livre"); return; }
+      if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada não parece ser do Mercado Livre"); return; }
       const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
-      if (!sessionId) { fail(res, "Nenhuma sessao Mercado Livre disponivel para conversao."); return; }
+      if (!sessionId) { fail(res, "Nenhuma sessão Mercado Livre disponível para conversão."); return; }
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
@@ -5723,6 +5851,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       ok(res, {
         success: true,
         originalLink: String(payload.originalUrl || productUrl),
+        resolvedLink: String(payload.resolvedUrl || payload.originalUrl || productUrl),
         affiliateLink: String(payload.affiliateLink || productUrl),
         cached: payload.cached === true,
         conversionTimeMs: Number.isFinite(Number(payload.conversionTimeMs))
@@ -5735,7 +5864,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       const productUrl = String(params.productUrl ?? params.url ?? "").trim();
       if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
       if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
-      if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada nao parece ser do Mercado Livre"); return; }
+      if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada não parece ser do Mercado Livre"); return; }
 
       try {
         const snapshot = await getMeliProductSnapshot(productUrl);
@@ -5749,19 +5878,19 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
     if (funcName === "meli-convert-links") {
-      if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+      if (!MELI_URL) { fail(res, "MeLi RPA não configurado."); return; }
 
       const urls = Array.isArray(params.urls)
         ? params.urls.map((item) => String(item || "").trim()).filter(Boolean)
         : [];
       const requestedSessionId = String(params.sessionId ?? "").trim();
       const dedupedUrls: string[] = [...new Set<string>(urls)];
-      if (dedupedUrls.length === 0) { fail(res, "urls deve ser um array nao vazio"); return; }
+      if (dedupedUrls.length === 0) { fail(res, "urls deve ser um array não vazio"); return; }
       if (dedupedUrls.length > MAX_MELI_CONVERT_BATCH) { fail(res, `Limite de ${MAX_MELI_CONVERT_BATCH} URLs por lote Mercado Livre`); return; }
       if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
-      if (dedupedUrls.some((item) => !isMercadoLivreProductUrlLike(item))) { fail(res, "Uma ou mais URLs nao parecem ser do Mercado Livre"); return; }
+      if (dedupedUrls.some((item) => !isMercadoLivreProductUrlLike(item))) { fail(res, "Uma ou mais URLs não parecem ser do Mercado Livre"); return; }
       const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
-      if (!sessionId) { fail(res, "Nenhuma sessao Mercado Livre disponivel para conversao."); return; }
+      if (!sessionId) { fail(res, "Nenhuma sessão Mercado Livre disponível para conversão."); return; }
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
@@ -5789,7 +5918,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           conversionTimeMs: Number.isFinite(Number(row.conversionTimeMs))
             ? Number(row.conversionTimeMs)
             : undefined,
-          error: row.success === true ? undefined : String(row.error || "Falha na conversao"),
+          error: row.success === true ? undefined : String(row.error || "Falha na conversão"),
         };
       });
 
@@ -5814,11 +5943,11 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
     if (funcName === "ops-service-control") {
       if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
-      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+      if (!OPS_URL) { fail(res, "Ops Control não configurado."); return; }
       const svc = String(params.service ?? "").trim().toLowerCase();
       const op = String(params.operation ?? params.action ?? "").trim().toLowerCase();
-      if (!svc || !["whatsapp","telegram","shopee","meli","all"].includes(svc)) { fail(res, "ServiÃ§o invÃ¡lido"); return; }
-      if (!["start","stop","restart"].includes(op)) { fail(res, "AÃ§Ã£o invÃ¡lida"); return; }
+      if (!svc || !["whatsapp","telegram","shopee","meli","all"].includes(svc)) { fail(res, "Serviço inválido"); return; }
+      if (!["start","stop","restart"].includes(op)) { fail(res, "Ação inválida"); return; }
       const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
       const r = await proxyMicroservice(OPS_URL, `/api/services/${encodeURIComponent(svc)}/${encodeURIComponent(op)}`, "POST", { source: "admin-panel-api" }, opsHeaders, svc === "all" ? 120_000 : 60_000);
       if (r.error) { fail(res, r.error.message); return; }
@@ -5827,7 +5956,7 @@ rpcRouter.post("/rpc", async (req, res) => {
 
     if (funcName === "ops-service-ports") {
       if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
-      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+      if (!OPS_URL) { fail(res, "Ops Control não configurado."); return; }
       const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
       const r = await proxyMicroservice(OPS_URL, "/api/config/ports", "GET", null, opsHeaders, 20_000);
       if (r.error) { fail(res, r.error.message); return; }
@@ -5836,12 +5965,12 @@ rpcRouter.post("/rpc", async (req, res) => {
 
     if (funcName === "ops-service-port") {
       if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
-      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+      if (!OPS_URL) { fail(res, "Ops Control não configurado."); return; }
       const svc = String(params.service ?? params.id ?? "").trim().toLowerCase();
       const portRaw = params.port;
       const port = Number(portRaw);
-      if (!svc || !["whatsapp","telegram","shopee","meli"].includes(svc)) { fail(res, "ServiÃ§o invÃ¡lido"); return; }
-      if (!Number.isInteger(port) || port < 1 || port > 65535) { fail(res, "Porta invÃ¡lida"); return; }
+      if (!svc || !["whatsapp","telegram","shopee","meli"].includes(svc)) { fail(res, "Serviço inválido"); return; }
+      if (!Number.isInteger(port) || port < 1 || port > 65535) { fail(res, "Porta inválida"); return; }
       const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
       const r = await proxyMicroservice(OPS_URL, "/api/config/ports", "POST", { service: svc, port }, opsHeaders, 20_000);
       if (r.error) { fail(res, r.error.message); return; }
@@ -5853,7 +5982,7 @@ rpcRouter.post("/rpc", async (req, res) => {
     // to localhost and ops-control is down, we attempt to spawn it.
     if (funcName === "ops-bootstrap") {
       if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
-      if (!OPS_URL) { fail(res, "Ops Control nÃ£o configurado."); return; }
+      if (!OPS_URL) { fail(res, "Ops Control não configurado."); return; }
 
       const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
       const probe = await proxyMicroservice(OPS_URL, `/api/services?_ts=${Date.now()}`, "GET", null, opsHeaders, 5000);
@@ -5863,7 +5992,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
 
       if (!isLocalhostUrl(OPS_URL)) {
-        fail(res, `Ops Control offline em ${OPS_URL}. Bootstrap automÃ¡tico sÃ³ Ã© suportado quando OPS_CONTROL_URL aponta para localhost.`);
+        fail(res, `Ops Control offline em ${OPS_URL}. Bootstrap automático só é suportado quando OPS_CONTROL_URL aponta para localhost.`);
         return;
       }
 
@@ -5887,7 +6016,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         await sleep(800);
       }
 
-      fail(res, `Ops Control nÃ£o respondeu apÃ³s iniciar (pid=${started.pid}). Ãšltimo erro: ${lastError}`);
+      fail(res, `Ops Control não respondeu após iniciar (pid=${started.pid}). Último erro: ${lastError}`);
       return;
     }
     if (funcName === "admin-system-observability") {
@@ -6156,7 +6285,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       global.errors24hGrowthRatio = safeGrowthRatio(global.errors24h, global.errors24hExpectedFrom7dAvg);
 
       // Fetch ops-control health
-      let ops: Record<string, unknown> = { online: false, url: OPS_URL, error: "Ops Control nao configurado", system: null, services: [] };
+      let ops: Record<string, unknown> = { online: false, url: OPS_URL, error: "Ops Control não configurado", system: null, services: [] };
       if (OPS_URL) {
         const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
         const opsResult = await proxyMicroservice(OPS_URL, `/api/services?_ts=${Date.now()}`, "GET", null, opsHeaders, 20_000);
@@ -6222,7 +6351,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         anomalies.push({
           id: "maintenance-enabled",
           severity: "warning",
-          title: "Modo manutencao ativo",
+          title: "Modo manutenção ativo",
           message: "Clientes podem ter funcionalidades limitadas ate o retorno operacional.",
           metric: "maintenance",
         });
@@ -6232,8 +6361,8 @@ rpcRouter.post("/rpc", async (req, res) => {
         anomalies.push({
           id: "ops-offline",
           severity: "critical",
-          title: "Ops Control indisponivel",
-          message: String(ops.error || "Nao foi possivel obter telemetria do Ops Control."),
+          title: "Ops Control indisponível",
+          message: String(ops.error || "Não foi possivel obter telemetria do Ops Control."),
           metric: "ops",
         });
       } else {
@@ -6261,7 +6390,7 @@ rpcRouter.post("/rpc", async (req, res) => {
               id: `service-${serviceId}-process-offline`,
               severity: "critical",
               title: `${serviceLabel} parado`,
-              message: "Processo principal indisponivel no orchestrator.",
+              message: "Processo principal indisponível no orchestrator.",
               metric: "service_process",
             });
           } else if (!componentOnline) {
@@ -6286,7 +6415,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       const queueThresholds = [
         { id: "dispatch", title: "Fila de agendamentos", bucket: queueBuckets.dispatch },
         { id: "automation", title: "Fila de automacoes", bucket: queueBuckets.automation },
-        { id: "convert", title: "Fila de conversao MeLi", bucket: queueBuckets.convert },
+        { id: "convert", title: "Fila de conversão MeLi", bucket: queueBuckets.convert },
         { id: "route", title: "Fila de roteamento", bucket: queueBuckets.route },
       ];
       for (const item of queueThresholds) {
@@ -6395,7 +6524,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (action === "set") {
         const upd: Record<string, unknown> = {};
         if (typeof params.maintenance_enabled === "boolean") upd.maintenance_enabled = params.maintenance_enabled;
-        if (typeof params.maintenance_title === "string") upd.maintenance_title = params.maintenance_title.trim() || "Sistema em manutenÃ§Ã£o";
+        if (typeof params.maintenance_title === "string") upd.maintenance_title = params.maintenance_title.trim() || "Sistema em manutenção";
         if (typeof params.maintenance_message === "string") upd.maintenance_message = params.maintenance_message.trim() || "Estamos realizando melhorias.";
         if (params.maintenance_eta !== undefined) upd.maintenance_eta = params.maintenance_eta || null;
         if (typeof params.allow_admin_bypass === "boolean") upd.allow_admin_bypass = params.allow_admin_bypass;
@@ -6411,7 +6540,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         const data = await queryOne("SELECT * FROM app_runtime_flags WHERE id = 'global'");
         ok(res, data); return;
       }
-      fail(res, "AÃ§Ã£o de manutenÃ§Ã£o invÃ¡lida"); return;
+      fail(res, "Ação de manutenção inválida"); return;
     }
 
     // â”€â”€ user-notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -6434,7 +6563,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "mark_read") {
         const ids = Array.isArray(params.ids) ? params.ids : (params.id ? [String(params.id)] : []);
-        if (!ids.length) { fail(res, "ID obrigatÃ³rio"); return; }
+        if (!ids.length) { fail(res, "ID obrigatório"); return; }
         await execute("UPDATE user_notifications SET status='read', read_at=NOW(), updated_at=NOW() WHERE user_id=$1 AND id=ANY($2) AND status='unread'", [userId, ids]);
         ok(res, { success: true }); return;
       }
@@ -6443,7 +6572,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         ok(res, { success: true }); return;
       }
       if (action === "dismiss") {
-        const nid = String(params.id ?? ""); if (!nid) { fail(res, "ID obrigatÃ³rio"); return; }
+        const nid = String(params.id ?? ""); if (!nid) { fail(res, "ID obrigatório"); return; }
         await execute("UPDATE user_notifications SET status='dismissed', dismissed_at=NOW(), updated_at=NOW() WHERE id=$1 AND user_id=$2", [nid, userId]);
         ok(res, { success: true }); return;
       }
@@ -6459,7 +6588,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         await execute("UPDATE user_notifications SET status='read', read_at=NOW(), updated_at=NOW() WHERE id=$1", [candidate.id]);
         ok(res, { item: candidate }); return;
       }
-      fail(res, "AÃ§Ã£o de notificaÃ§Ã£o invÃ¡lida"); return;
+      fail(res, "Ação de notificação inválida"); return;
     }
 
     // â”€â”€ admin-announcements â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -6486,7 +6615,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "create") {
         const title = String(params.title ?? "").trim(); const message = String(params.message ?? "").trim();
-        if (!title) { fail(res, "TÃ­tulo obrigatÃ³rio"); return; } if (!message) { fail(res, "Mensagem obrigatÃ³ria"); return; }
+        if (!title) { fail(res, "Título obrigatório"); return; } if (!message) { fail(res, "Mensagem obrigatória"); return; }
         const id = uuid();
         await execute("INSERT INTO system_announcements (id, created_by_user_id, title, message, severity, channel, auto_popup_on_login, starts_at, ends_at, is_active, target_filter) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
           [id, userId, title, message, ["critical","warning"].includes(String(params.severity)) ? params.severity : "info", ["modal","both"].includes(String(params.channel)) ? params.channel : "bell", params.auto_popup_on_login === true, params.starts_at || null, params.ends_at || null, params.is_active !== false, JSON.stringify(normalizeTargetFilter(params.target_filter))]);
@@ -6497,7 +6626,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         ok(res, { announcement: row, delivery }); return;
       }
       if (action === "update") {
-        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatório"); return; }
         const updates: Record<string, unknown> = {};
         if (params.title) updates.title = String(params.title).trim();
         if (params.message) updates.message = String(params.message).trim();
@@ -6520,21 +6649,21 @@ rpcRouter.post("/rpc", async (req, res) => {
         ok(res, { success: true, delivery }); return;
       }
       if (action === "deactivate") {
-        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatório"); return; }
         await execute("UPDATE system_announcements SET is_active=FALSE, updated_at=NOW() WHERE id=$1", [aid]);
         ok(res, { success: true }); return;
       }
       if (action === "delete") {
-        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatório"); return; }
         await execute("DELETE FROM user_notifications WHERE announcement_id=$1", [aid]);
         await execute("DELETE FROM system_announcements WHERE id=$1", [aid]);
         await appendAudit("delete_announcement", userId, null, { announcement_id: aid });
         ok(res, { success: true }); return;
       }
       if (action === "deliver_now") {
-        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatÃ³rio"); return; }
+        const aid = String(params.id ?? ""); if (!aid) { fail(res, "ID obrigatório"); return; }
         const row = await queryOne("SELECT * FROM system_announcements WHERE id=$1", [aid]);
-        if (!row) { fail(res, "Comunicado nÃ£o encontrado"); return; }
+        if (!row) { fail(res, "Comunicado não encontrado"); return; }
         const lastMs = row.last_delivered_at ? Date.parse(row.last_delivered_at) : 0;
         if (Date.now() - lastMs < 30000) { fail(res, "Aguarde 30s antes de reenviar."); return; }
         const delivery = await deliverAnnouncement(row);
@@ -6545,7 +6674,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         const users = (await listUsersWithMeta()).filter((u) => !["inactive","blocked","archived"].includes(u.account_status)).filter((u) => filter.planIds.length === 0 || filter.planIds.includes(u.plan_id)).slice(0, 200).map((u) => ({ user_id: u.user_id, email: u.email, name: u.name, plan_id: u.plan_id }));
         ok(res, { count: users.length, users }); return;
       }
-      fail(res, "AÃ§Ã£o de comunicados invÃ¡lida"); return;
+      fail(res, "Ação de comunicados inválida"); return;
     }
 
     // â”€â”€ admin-users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -6567,7 +6696,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         const roleRow = await queryOne("SELECT role FROM user_roles WHERE user_id=$1", [tid]);
         const targetRole = String(roleRow?.role ?? "user") === "admin" ? "admin" : "user";
         if (targetRole === "admin") { fail(res, "Admins não possuem plano. Ajuste a permissão para usuário se quiser aplicar plano."); return; }
-        if (!planId || !validPlanIds.has(planId)) { fail(res, "Plano invÃ¡lido"); return; }
+        if (!planId || !validPlanIds.has(planId)) { fail(res, "Plano inválido"); return; }
         const expiresAt = planExpiresAt(cp, planId);
         const upd = await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [planId, expiresAt, tid]);
         if (upd.rowCount <= 0) { fail(res, "Perfil não encontrado"); return; }
@@ -6587,7 +6716,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         const nextUserPlanExpiry = (shouldReassignUserPlan || !hasValidExpiry)
           ? planExpiresAt(cp, nextUserPlan)
           : (profile.plan_expires_at ?? null);
-        // Wrap role change + token invalidation in a transaction â€” DELETE without INSERT leaves user roleless
+        // Wrap role change + token inválidation in a transaction â€” DELETE without INSERT leaves user roleless
         await transaction(async (client) => {
           if (role === "admin") {
             await client.query(
@@ -6602,9 +6731,9 @@ rpcRouter.post("/rpc", async (req, res) => {
           }
           await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
-          // Invalidate all active tokens for the target user â€” JWT embeds role, so old tokens
+          // Inválidate all active tokens for the target user â€” JWT embeds role, so old tokens
           // would otherwise remain valid with the previous role until natural expiry.
-          await client.query("UPDATE users SET token_invalidated_before = NOW() WHERE id = $1", [tid]);
+          await client.query("UPDATE users SET token_inválidated_before = NOW() WHERE id = $1", [tid]);
         });
         await appendAudit("set_role", userId, tid, {
           role,
@@ -6614,7 +6743,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "set_name") {
         const tid = String(params.user_id ?? ""); const name = String(params.name ?? "").trim();
-        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (!name) { fail(res, "Nome obrigatÃ³rio"); return; }
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (!name) { fail(res, "Nome obrigatório"); return; }
         await execute("UPDATE users SET metadata = metadata || $1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify({ name }), tid]);
         await execute("UPDATE profiles SET name=$1, updated_at=NOW() WHERE user_id=$2", [name, tid]);
         await appendAudit("set_name", userId, tid, { name });
@@ -6622,16 +6751,16 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "set_status") {
         const tid = String(params.user_id ?? ""); const status = String(params.account_status ?? "active");
-        if (!["active","inactive","blocked","archived"].includes(status)) { fail(res, "Status invÃ¡lido"); return; }
-        if (tid === userId && status !== "active") { fail(res, "NÃ£o Ã© permitido alterar o prÃ³prio status"); return; }
-        const setInv = status !== "active" ? ", token_invalidated_before = NOW()" : "";
+        if (!["active","inactive","blocked","archived"].includes(status)) { fail(res, "Status inválido"); return; }
+        if (tid === userId && status !== "active") { fail(res, "Não é permitido alterar o próprio status"); return; }
+        const setInv = status !== "active" ? ", token_inválidated_before = NOW()" : "";
         await execute(`UPDATE users SET metadata = metadata || $1::jsonb${setInv}, updated_at=NOW() WHERE id=$2`, [JSON.stringify({ account_status: status, status_updated_at: nowIso() }), tid]);
         await appendAudit("set_status", userId, tid, { account_status: status });
         ok(res, { success: true }); return;
       }
       if (action === "archive_user") {
-        const tid = String(params.user_id ?? ""); if (tid === userId) { fail(res, "NÃ£o Ã© permitido arquivar o prÃ³prio usuÃ¡rio"); return; }
-        await execute("UPDATE users SET metadata = metadata || $1::jsonb, token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$2", [JSON.stringify({ account_status: "archived", archived_at: nowIso(), status_updated_at: nowIso() }), tid]);
+        const tid = String(params.user_id ?? ""); if (tid === userId) { fail(res, "Não é permitido arquivar o próprio usuário"); return; }
+        await execute("UPDATE users SET metadata = metadata || $1::jsonb, token_inválidated_before = NOW(), updated_at=NOW() WHERE id=$2", [JSON.stringify({ account_status: "archived", archived_at: nowIso(), status_updated_at: nowIso() }), tid]);
         await appendAudit("archive_user", userId, tid, {});
         ok(res, { success: true }); return;
       }
@@ -6642,24 +6771,24 @@ rpcRouter.post("/rpc", async (req, res) => {
         ok(res, { success: true }); return;
       }
       if (action === "delete_user") {
-        const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (tid === userId) { fail(res, "NÃ£o Ã© permitido apagar o prÃ³prio usuÃ¡rio"); return; }
+        const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (tid === userId) { fail(res, "Não é permitido apagar o próprio usuário"); return; }
         const target = await queryOne("SELECT email FROM users WHERE id=$1", [tid]);
-        if (!target) { fail(res, "UsuÃ¡rio nÃ£o encontrado"); return; }
+        if (!target) { fail(res, "Usuário não encontrado"); return; }
         await execute("DELETE FROM users WHERE id=$1", [tid]);
         await appendAudit("delete_user", userId, tid, { deleted_user_id: tid, email: target.email ?? null });
         ok(res, { success: true }); return;
       }
       if (action === "create_user") {
         const email = normalizeEmail(params.email); const password = String(params.password ?? "");
-        const name = String(params.name ?? "UsuÃ¡rio").trim() || "UsuÃ¡rio"; const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
+        const name = String(params.name ?? "Usuário").trim() || "Usuário"; const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
         const requestedPlanId = String(params.plan_id ?? "").trim();
         const planId = role === "admin"
           ? ADMIN_PANEL_PLAN_ID
           : (requestedPlanId && validPlanIds.has(requestedPlanId) ? requestedPlanId : fallbackPlan);
         const createPasswordError = getPasswordPolicyError(password);
-        if (!email || !isValidEmail(email) || createPasswordError) { fail(res, createPasswordError ? `Senha invalida: ${createPasswordError}` : "Informe email valido"); return; }
+        if (!email || !isValidEmail(email) || createPasswordError) { fail(res, createPasswordError ? `Senha inválida: ${createPasswordError}` : "Informe email válido"); return; }
         const exists = await queryOne("SELECT id FROM users WHERE email=$1", [email]);
-        if (exists) { fail(res, "Email jÃ¡ cadastrado"); return; }
+        if (exists) { fail(res, "Email já cadastrado"); return; }
         const hash = await bcrypt.hash(password, 10);
         const newId = uuid();
         // Wrap 3 INSERTs in a transaction â€” if any fails, roll back to avoid orphan user/role/profile
@@ -6686,29 +6815,29 @@ rpcRouter.post("/rpc", async (req, res) => {
         }); return;
       }
       if (action === "update_user") {
-        const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; }
+        const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
         const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
-        if (tid === userId && role !== "admin") { fail(res, "NÃ£o Ã© permitido remover a prÃ³pria permissÃ£o admin"); return; }
+        if (tid === userId && role !== "admin") { fail(res, "Não é permitido remover a própria permissão admin"); return; }
 
         const name = String(params.name ?? "").trim();
         const emailProvided = params.email !== undefined;
         const email = normalizeEmail(params.email);
         if (emailProvided) {
-          if (!email || !isValidEmail(email)) { fail(res, "Email invÃ¡lido"); return; }
+          if (!email || !isValidEmail(email)) { fail(res, "Email inválido"); return; }
           const duplicate = await queryOne("SELECT id FROM users WHERE email=$1 AND id<>$2", [email, tid]);
-          if (duplicate) { fail(res, "Email jÃ¡ cadastrado"); return; }
+          if (duplicate) { fail(res, "Email já cadastrado"); return; }
         }
 
         const accountStatusRaw = String(params.account_status ?? "").trim();
         const hasAccountStatus = accountStatusRaw.length > 0;
         const accountStatus = hasAccountStatus ? accountStatusRaw : null;
         if (hasAccountStatus) {
-          if (!["active","inactive","blocked","archived"].includes(accountStatusRaw)) { fail(res, "Status invÃ¡lido"); return; }
-          if (tid === userId && accountStatusRaw !== "active") { fail(res, "NÃ£o Ã© permitido alterar o prÃ³prio status"); return; }
+          if (!["active","inactive","blocked","archived"].includes(accountStatusRaw)) { fail(res, "Status inválido"); return; }
+          if (tid === userId && accountStatusRaw !== "active") { fail(res, "Não é permitido alterar o próprio status"); return; }
         }
 
         const profile = await queryOne("SELECT plan_id, plan_expires_at FROM profiles WHERE user_id=$1", [tid]);
-        if (!profile) { fail(res, "Perfil nÃ£o encontrado"); return; }
+        if (!profile) { fail(res, "Perfil não encontrado"); return; }
 
         const requestedPlanId = String(params.plan_id ?? "").trim();
         let nextPlanId = String(profile.plan_id ?? "").trim();
@@ -6717,7 +6846,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           nextPlanId = ADMIN_PANEL_PLAN_ID;
           nextPlanExpiry = null;
         } else if (requestedPlanId) {
-          if (!validPlanIds.has(requestedPlanId)) { fail(res, "Plano invÃ¡lido"); return; }
+          if (!validPlanIds.has(requestedPlanId)) { fail(res, "Plano inválido"); return; }
           nextPlanId = requestedPlanId;
           nextPlanExpiry = planExpiresAt(cp, requestedPlanId);
         } else if (!nextPlanId || nextPlanId === ADMIN_PANEL_PLAN_ID || !validPlanIds.has(nextPlanId)) {
@@ -6748,8 +6877,8 @@ rpcRouter.post("/rpc", async (req, res) => {
           await client.query("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [nextPlanId, nextPlanExpiry, tid]);
           await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
-          // Always invalidate tokens: role is re-set above (JWT embeds role), so existing tokens must be rotated
-          await client.query("UPDATE users SET token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$1", [tid]);
+          // Always inválidate tokens: role is re-set above (JWT embeds role), so existing tokens must be rotated
+          await client.query("UPDATE users SET token_inválidated_before = NOW(), updated_at=NOW() WHERE id=$1", [tid]);
         });
         await appendAudit("update_user", userId, tid, {
           name: name || undefined,
@@ -6762,12 +6891,12 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "extend_plan") {
         const tid = String(params.user_id ?? "");
-        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; }
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
         const p = await queryOne("SELECT p.plan_id, p.plan_expires_at, COALESCE(r.role, 'user') AS role FROM profiles p LEFT JOIN user_roles r ON r.user_id = p.user_id WHERE p.user_id=$1", [tid]);
-        if (!p) { fail(res, "Perfil nÃ£o encontrado"); return; }
-        if (String(p.role ?? "user") === "admin") { fail(res, "Admins nÃ£o possuem plano para renovar."); return; }
+        if (!p) { fail(res, "Perfil não encontrado"); return; }
+        if (String(p.role ?? "user") === "admin") { fail(res, "Admins não possuem plano para renovar."); return; }
         const currentPlan = String(p.plan_id ?? "").trim();
-        if (!currentPlan || !validPlanIds.has(currentPlan)) { fail(res, "Plano invÃ¡lido"); return; }
+        if (!currentPlan || !validPlanIds.has(currentPlan)) { fail(res, "Plano inválido"); return; }
         const base = p.plan_expires_at && Date.parse(p.plan_expires_at) > Date.now() ? Date.parse(p.plan_expires_at) : Date.now();
         const newExpiry = planExpiresAt(cp, currentPlan, base);
         await execute("UPDATE profiles SET plan_expires_at=$1, updated_at=NOW() WHERE user_id=$2", [newExpiry, tid]);
@@ -6776,13 +6905,13 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "set_plan_expiry") {
         const tid = String(params.user_id ?? ""); const rawDate = params.expires_at;
-        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; }
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
         const roleRow = await queryOne("SELECT role FROM user_roles WHERE user_id=$1", [tid]);
-        if (String(roleRow?.role ?? "user") === "admin") { fail(res, "Admins nÃ£o possuem vencimento de plano."); return; }
+        if (String(roleRow?.role ?? "user") === "admin") { fail(res, "Admins não possuem vencimento de plano."); return; }
         let expiresAt = null;
         if (rawDate !== null && rawDate !== undefined && rawDate !== "" && rawDate !== "never") {
           const ms = Date.parse(String(rawDate));
-          if (!Number.isFinite(ms)) { fail(res, "Data de vencimento invÃ¡lida"); return; }
+          if (!Number.isFinite(ms)) { fail(res, "Data de vencimento inválida"); return; }
           expiresAt = new Date(ms).toISOString();
         }
         await execute("UPDATE profiles SET plan_expires_at=$1, updated_at=NOW() WHERE user_id=$2", [expiresAt, tid]);
@@ -6792,37 +6921,37 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (action === "reset_password") {
         const tid = String(params.user_id ?? ""); const pwd = String(params.password ?? "").trim();
         const resetPasswordError = getPasswordPolicyError(pwd);
-        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (resetPasswordError) { fail(res, resetPasswordError); return; }
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (resetPasswordError) { fail(res, resetPasswordError); return; }
         const hash = await bcrypt.hash(pwd, 10);
-        // Invalidate all existing tokens immediately â€” the account must be secured after password reset
-        await execute("UPDATE users SET password_hash=$1, token_invalidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
+        // Inválidate all existing tokens immediately â€” the account must be secured after password reset
+        await execute("UPDATE users SET password_hash=$1, token_inválidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
         await appendAudit("reset_password", userId, tid, {});
         ok(res, { success: true }); return;
       }
       if (action === "add_billing_note") {
         const tid = String(params.user_id ?? ""); const reason = String(params.reason ?? "").trim();
-        if (!tid) { fail(res, "UsuÃ¡rio alvo obrigatÃ³rio"); return; } if (!reason) { fail(res, "Motivo obrigatÃ³rio"); return; }
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (!reason) { fail(res, "Motivo obrigatório"); return; }
         const noteType = ["refund","credit","note"].includes(String(params.note_type)) ? String(params.note_type) : "note";
         await appendAudit(`billing_${noteType}`, userId, tid, { note_type: noteType, amount: Number(params.amount ?? 0), reason });
         ok(res, { success: true }); return;
       }
-      fail(res, "AÃ§Ã£o administrativa invÃ¡lida"); return;
+      fail(res, "Ação administrativa inválida"); return;
     }
 
     // â”€â”€ account-plan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (funcName === "account-plan") {
       const action = String(params.action ?? "");
-      if (action !== "change_plan") { fail(res, "AÃ§Ã£o de conta invÃ¡lida"); return; }
-      if (userIsAdmin) { fail(res, "Conta admin nÃ£o possui plano de assinatura."); return; }
-      const nextPlanId = String(params.plan_id ?? "").trim(); if (!nextPlanId) { fail(res, "Plano obrigatÃ³rio"); return; }
+      if (action !== "change_plan") { fail(res, "Ação de conta inválida"); return; }
+      if (userIsAdmin) { fail(res, "Conta admin não possui plano de assinatura."); return; }
+      const nextPlanId = String(params.plan_id ?? "").trim(); if (!nextPlanId) { fail(res, "Plano obrigatório"); return; }
       const cp = await loadControlPlane();
       const plans = Array.isArray(cp.plans) ? cp.plans : [];
       const targetPlan = plans.find((p) => String(p.id) === nextPlanId);
       // Only allow self-service if the plan is explicitly marked allowSelfServiceChange.
       // Upgrades to paid plans must go through the admin panel (prevents free upgrades).
-      if (!targetPlan || !targetPlan.isActive || !targetPlan.visibleInAccount || !targetPlan.allowSelfServiceChange) { fail(res, "Troca de plano requer aÃ§Ã£o do administrador. Entre em contato com o suporte em suporte@autolinks.pro."); return; }
+      if (!targetPlan || !targetPlan.isActive || !targetPlan.visibleInAccount || !targetPlan.allowSelfServiceChange) { fail(res, "Troca de plano requer ação do administrador. Entre em contato com o suporte em suporte@autolinks.pro."); return; }
       const profile = await queryOne("SELECT * FROM profiles WHERE user_id=$1", [userId]);
-      if (!profile) { fail(res, "Perfil nÃ£o encontrado"); return; }
+      if (!profile) { fail(res, "Perfil não encontrado"); return; }
       const newExpiry = planExpiresAt(cp, nextPlanId);
       await execute("UPDATE profiles SET plan_id=$1, plan_expires_at=$2, updated_at=NOW() WHERE user_id=$3", [nextPlanId, newExpiry, userId]);
       await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'session_event','Conta','Plano','success',$3,'system','text','processed','','')",
@@ -6830,7 +6959,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       ok(res, { success: true, plan_id: nextPlanId, plan_expires_at: newExpiry }); return;
     }
 
-    fail(res, `FunÃ§Ã£o nÃ£o implementada: ${funcName}`);
+    fail(res, `Função não implementada: ${funcName}`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[rpc] ${funcName} error:`, msg);

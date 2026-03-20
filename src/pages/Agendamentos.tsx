@@ -388,8 +388,8 @@ export default function Schedules() {
       >
         <div className={`h-0.5 w-full ${rowAccent}`} />
         <CardContent className="px-3 py-2.5 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <div className="min-w-0 flex-1 flex items-center gap-1.5 overflow-hidden">
+          <div className="flex items-start gap-2 min-[420px]:items-center">
+            <div className="min-w-0 flex-1 flex items-center gap-1.5 overflow-hidden flex-wrap">
               {typeof position === "number" && (
                 <Badge variant="outline" className="text-xs">#{position}</Badge>
               )}
@@ -412,7 +412,7 @@ export default function Schedules() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
             <Clock className="h-3 w-3 shrink-0" />
             <span className="font-medium text-foreground">{formatBRT(post.scheduledAt, "dd/MM/yyyy HH:mm")}</span>
             <span className="text-muted-foreground/60">•</span>

@@ -83,6 +83,7 @@ export function useWhatsAppSessions() {
       .finally(() => {
         qc.invalidateQueries({ queryKey: ["whatsapp-sessions"] });
         qc.invalidateQueries({ queryKey: ["groups"] });
+        qc.invalidateQueries({ queryKey: ["master_groups"] });
       });
   };
 
@@ -177,6 +178,7 @@ export function useWhatsAppSessions() {
     onSuccess: (data) => {
       invalidateSessions();
       qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["master_groups"] });
 
       const blockedGroups = Number((data as Record<string, unknown> | undefined)?.blockedGroups || 0);
       if (blockedGroups > 0) {

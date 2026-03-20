@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS master_groups (
   user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name         TEXT NOT NULL DEFAULT '',
   slug         TEXT,
-  distribution TEXT NOT NULL DEFAULT 'sequential',
+  distribution TEXT NOT NULL DEFAULT 'balanced' CHECK (distribution IN ('balanced','random')),
   member_limit INTEGER NOT NULL DEFAULT 0,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()

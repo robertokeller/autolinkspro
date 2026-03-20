@@ -214,7 +214,7 @@ export default function MercadoLivreVitrine() {
     source: string;
   }) => {
     if (!hasActiveMeliSession) {
-      throw new Error("Nenhuma sessao Mercado Livre ativa para conversao.");
+      throw new Error("Nenhuma sessão Mercado Livre ativa para conversão.");
     }
 
     const response = await invokeBackendRpc<{
@@ -229,7 +229,7 @@ export default function MercadoLivreVitrine() {
 
     const affiliateLink = String(response.affiliateLink || "").trim();
     if (!affiliateLink) {
-      throw new Error("Conversao retornou link vazio.");
+      throw new Error("Conversão retornou link vazio.");
     }
 
     return {
@@ -240,7 +240,7 @@ export default function MercadoLivreVitrine() {
 
   const handleConvertClick = async (item: MeliVitrineItem) => {
     if (!hasActiveMeliSession) {
-      toast.error("Nenhuma sessao Mercado Livre ativa para conversao.");
+      toast.error("Nenhuma sessão Mercado Livre ativa para conversão.");
       return;
     }
 
@@ -267,7 +267,7 @@ export default function MercadoLivreVitrine() {
 
   const handleScheduleClick = async (item: MeliVitrineItem) => {
     if (!hasActiveMeliSession) {
-      toast.error("Conecte uma sessao Mercado Livre ativa para agendar com link afiliado.");
+      toast.error("Conecte uma sessão Mercado Livre ativa para agendar com link afiliado.");
       return;
     }
 
@@ -300,7 +300,7 @@ export default function MercadoLivreVitrine() {
       await navigator.clipboard.writeText(link);
       toast.success("Link afiliado copiado.");
     } catch {
-      toast.error("Nao foi possivel copiar o link.");
+      toast.error("Não foi possivel copiar o link.");
     }
   };
 
@@ -317,7 +317,7 @@ export default function MercadoLivreVitrine() {
         },
       });
     } catch (syncError) {
-      const message = syncError instanceof Error ? syncError.message : "Nao foi possivel atualizar a vitrine ML.";
+      const message = syncError instanceof Error ? syncError.message : "Não foi possivel atualizar a vitrine ML.";
       toast.error(message);
     } finally {
       await refetch();
@@ -344,7 +344,7 @@ export default function MercadoLivreVitrine() {
       {activeSessions.length === 0 && (
         <Card className="border-amber-500/30">
           <CardContent className="pt-4 text-sm text-muted-foreground">
-            Conecte uma sessao Mercado Livre ativa em Configuracoes para habilitar a conversao e agendamento de links nesta vitrine.
+            Conecte uma sessão Mercado Livre ativa em Configurações para habilitar a conversão e agendamento de links nesta vitrine.
           </CardContent>
         </Card>
       )}
@@ -380,7 +380,7 @@ export default function MercadoLivreVitrine() {
         {error && (
           <Card>
             <CardContent className="pt-6 text-sm text-destructive">
-              {error instanceof Error ? error.message : "Nao foi possivel carregar a vitrine ML."}
+              {error instanceof Error ? error.message : "Não foi possivel carregar a vitrine ML."}
             </CardContent>
           </Card>
         )}
@@ -558,7 +558,7 @@ export default function MercadoLivreVitrine() {
 
             {!!convertedPreview?.conversionTimeMs && (
               <p className="text-xs text-muted-foreground">
-                Tempo de conversao: {convertedPreview.conversionTimeMs} ms
+                Tempo de conversão: {convertedPreview.conversionTimeMs} ms
               </p>
             )}
           </div>

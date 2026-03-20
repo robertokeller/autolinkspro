@@ -511,19 +511,19 @@ export default function Dashboard() {
       )}
 
       {compactDashboard ? (
-        <ScrollArea className="w-full whitespace-nowrap">
-          <div className="flex gap-3 pb-2">
+        <ScrollArea className="w-full whitespace-nowrap -mx-[var(--app-page-x)] px-[var(--app-page-x)]">
+          <div className="flex gap-2.5 pb-2 min-[420px]:gap-3">
             {isLoading
               ? Array.from({ length: 4 }).map((_, idx) => (
-                  <Card key={idx} className="glass min-w-[220px] max-w-[260px]">
-                    <CardContent className="p-4">
+                  <Card key={idx} className="glass min-w-[180px] max-w-[240px] min-[420px]:min-w-[220px] min-[420px]:max-w-[260px]">
+                    <CardContent className="p-3 min-[420px]:p-4">
                       <Skeleton className="h-16 w-full" />
                     </CardContent>
                   </Card>
                 ))
               : metricCards.map((item) => (
-                  <Card key={item.label} className="glass min-w-[220px] max-w-[260px] border-border/60">
-                    <CardContent className="space-y-2.5 p-4">
+                  <Card key={item.label} className="glass min-w-[180px] max-w-[240px] border-border/60 min-[420px]:min-w-[220px] min-[420px]:max-w-[260px]">
+                    <CardContent className="space-y-2 p-3 min-[420px]:space-y-2.5 min-[420px]:p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-xs text-muted-foreground">{item.label}</p>
@@ -684,10 +684,10 @@ export default function Dashboard() {
             {isLoading ? (
               <Skeleton className="h-28 w-full" />
             ) : (
-              <div className={cn("grid h-full grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-2.5 sm:auto-rows-fr", compactDashboard && "sm:grid-cols-1")}>
+              <div className={cn("grid h-full grid-cols-1 gap-2 min-[420px]:grid-cols-2 min-[420px]:gap-2.5 min-[420px]:auto-rows-fr", compactDashboard && "min-[420px]:grid-cols-1")}>
                 {quickActions.map((action) => (
                   <Link key={action.label} to={action.href} className="group h-full">
-                    <div className="flex h-full min-h-[92px] items-center gap-3 rounded-xl bg-secondary/50 p-3 transition-all hover:bg-secondary hover:ring-1 hover:ring-border sm:min-h-[86px]">
+                    <div className="flex h-full min-h-[76px] items-center gap-3 rounded-xl bg-secondary/50 p-2.5 transition-all hover:bg-secondary hover:ring-1 hover:ring-border min-[420px]:min-h-[86px] min-[420px]:p-3 sm:min-h-[86px]">
                       <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", accentBg[action.accent])}>
                         <action.icon className="h-4 w-4" />
                       </div>

@@ -34,6 +34,7 @@ interface FormState {
   description: string;
   themeColor: string;
   logoUrl: string | null;
+  destinationMode: "group" | "master";
   groupIds: string[];
   masterGroupIds: string[];
   groupLabels: Record<string, string>;
@@ -41,7 +42,7 @@ interface FormState {
 
 const emptyForm: FormState = {
   slug: "", title: "", description: "", themeColor: LINK_HUB_DEFAULT_THEME_COLOR,
-  logoUrl: null, groupIds: [], masterGroupIds: [], groupLabels: {},
+  logoUrl: null, destinationMode: "group", groupIds: [], masterGroupIds: [], groupLabels: {},
 };
 
 export default function LinkHub() {
@@ -64,6 +65,7 @@ export default function LinkHub() {
     setForm({
       slug: page.slug, title: page.title, description: page.description,
       themeColor: page.themeColor, logoUrl: page.logoUrl,
+      destinationMode: (page.masterGroupIds?.length || 0) > 0 ? "master" : "group",
       groupIds: [...page.groupIds], masterGroupIds: [...(page.masterGroupIds || [])],
       groupLabels: { ...(page.groupLabels || {}) },
     });
@@ -71,13 +73,19 @@ export default function LinkHub() {
   };
 
   const handleSave = async () => {
-    if (form.groupIds.length === 0 && form.masterGroupIds.length === 0) {
-      toast.error("Escolha pelo menos um grupo"); return;
+    if (form.destinationMode === "group" && form.groupIds.length === 0) {
+      toast.error("Escolha pelo menos um grupo individual"); return;
     }
+    if (form.destinationMode === "master" && form.masterGroupIds.length === 0) {
+      toast.error("Escolha pelo menos um grupo mestre"); return;
+    }
+
+    const selectedGroupIds = form.destinationMode === "group" ? form.groupIds : [];
+    const selectedMasterGroupIds = form.destinationMode === "master" ? form.masterGroupIds : [];
     const payload = {
       slug: form.slug, title: form.title, description: form.description,
       themeColor: form.themeColor, logoUrl: form.logoUrl,
-      groupIds: form.groupIds, masterGroupIds: form.masterGroupIds,
+      groupIds: selectedGroupIds, masterGroupIds: selectedMasterGroupIds,
       groupLabels: form.groupLabels,
     };
     if (editingId) {
@@ -115,13 +123,17 @@ export default function LinkHub() {
   };
 
   const previewGroupCount = useMemo(() => {
-    const ids = new Set(form.groupIds);
-    form.masterGroupIds.forEach((mgId) => {
-      const mg = masterGroups.find((m) => m.id === mgId);
-      if (mg) mg.groupIds.forEach((gid) => ids.add(gid));
-    });
+    const ids = new Set<string>();
+    if (form.destinationMode === "group") {
+      form.groupIds.forEach((gid) => ids.add(gid));
+    } else {
+      form.masterGroupIds.forEach((mgId) => {
+        const mg = masterGroups.find((m) => m.id === mgId);
+        if (mg) mg.groupIds.forEach((gid) => ids.add(gid));
+      });
+    }
     return ids.size;
-  }, [form.groupIds, form.masterGroupIds, masterGroups]);
+  }, [form.destinationMode, form.groupIds, form.masterGroupIds, masterGroups]);
 
   if (isLoading) {
     return (
@@ -211,117 +223,171 @@ export default function LinkHub() {
 
       {/* Dialog Editor */}
       <Dialog open={dialogOpen} onOpenChange={(o) => { if (!o) resetAndClose(); }}>
-        <DialogContent className="max-w-lg max-h-[92dvh] flex flex-col p-0 gap-0">
-          <DialogHeader className="px-5 pt-5 pb-3">
+        <DialogContent className="w-[min(96vw,1040px)] max-w-4xl max-h-[92dvh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b">
             <DialogTitle>{editingId ? "Editar página" : "Nova página"}</DialogTitle>
             <DialogDescription>Monte sua página com os grupos que você quer mostrar.</DialogDescription>
           </DialogHeader>
 
-          <ScrollArea className="flex-1 px-5 overflow-y-auto">
-            <div className="space-y-5 pb-4">
+          <ScrollArea className="flex-1 px-6 overflow-y-auto">
+            <div className="grid grid-cols-1 gap-6 py-5 lg:grid-cols-12">
+              <div className="space-y-5 lg:col-span-6">
+                <div className="rounded-xl border p-4 space-y-4">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Informações da página</p>
 
-              {/* Title */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium">Título da página</Label>
-                <Input className="h-9 text-sm" placeholder="Ofertas Tech" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-              </div>
-
-              {/* Slug */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium">Endereço da página</Label>
-                <div className="flex items-center rounded-md border border-input overflow-hidden bg-background">
-                  <span className="px-3 py-2 text-xs text-muted-foreground bg-muted/50 border-r border-input shrink-0 select-none">/hub/</span>
-                  <Input className="h-9 text-sm border-0 shadow-none focus-visible:ring-0 rounded-none" placeholder="ofertas" value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} />
-                </div>
-              </div>
-
-              {/* Description */}
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium">Descrição curta</Label>
-                <Textarea
-                  placeholder="Descontos e cupons em tempo real."
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  rows={2}
-                  className="resize-none text-sm"
-                />
-              </div>
-
-              {/* Logo */}
-              <div className="space-y-2">
-                <Label className="text-xs font-medium flex items-center gap-1.5"><ImageIcon className="h-3.5 w-3.5" />Logo</Label>
-                <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleLogoUpload(f); e.target.value = ""; }} />
-                {form.logoUrl ? (
-                  <div className="flex items-center gap-3">
-                    <img src={form.logoUrl} alt="" className="h-12 w-12 rounded-xl object-cover ring-1 ring-border/50" />
-                    <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={() => setForm(prev => ({ ...prev, logoUrl: null }))}>
-                      <X className="h-3 w-3" />Remover
-                    </Button>
+                  {/* Title */}
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium">Título da página</Label>
+                    <Input className="h-10 text-sm" placeholder="Ofertas Tech" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
                   </div>
-                ) : (
-                  <Button variant="outline" size="sm" className="h-9 text-xs gap-1.5" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-                    <Upload className="h-3.5 w-3.5" />{uploading ? "Enviando..." : "Escolher imagem"}
-                  </Button>
-                )}
-              </div>
 
-              {/* Color */}
-              <div className="space-y-2">
-                <Label className="text-xs font-medium">Cor da página</Label>
-                <div className="flex items-center gap-3">
-                  <input type="color" value={form.themeColor} onChange={(e) => setForm({ ...form, themeColor: e.target.value })} className="h-9 w-9 rounded-lg cursor-pointer border border-input p-0.5" />
-                  <div className="flex gap-1.5 flex-wrap">
-                    {LINK_HUB_PRESET_COLORS.map((color) => (
-                      <button key={color} className={cn("h-7 w-7 rounded-full border-2 transition-all hover:scale-110", form.themeColor === color ? "border-foreground scale-110 ring-2 ring-primary/20" : "border-transparent")} style={{ backgroundColor: color }} onClick={() => setForm({ ...form, themeColor: color })} />
-                    ))}
+                  {/* Slug */}
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium">Endereço da página</Label>
+                    <div className="flex items-center rounded-md border border-input overflow-hidden bg-background">
+                      <span className="px-3 py-2.5 text-xs text-muted-foreground bg-muted/50 border-r border-input shrink-0 select-none">/hub/</span>
+                      <Input className="h-10 text-sm border-0 shadow-none focus-visible:ring-0 rounded-none" placeholder="ofertas" value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} />
+                    </div>
+                  </div>
+
+                  {/* Description */}
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium">Descrição curta</Label>
+                    <Textarea
+                      placeholder="Descontos e cupons em tempo real."
+                      value={form.description}
+                      onChange={(e) => setForm({ ...form, description: e.target.value })}
+                      rows={3}
+                      className="resize-none text-sm"
+                    />
+                  </div>
+
+                  {/* Logo */}
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium flex items-center gap-1.5"><ImageIcon className="h-3.5 w-3.5" />Logo</Label>
+                    <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleLogoUpload(f); e.target.value = ""; }} />
+                    {form.logoUrl ? (
+                      <div className="flex items-center gap-3 rounded-lg border p-2.5">
+                        <img src={form.logoUrl} alt="" className="h-12 w-12 rounded-xl object-cover ring-1 ring-border/50" />
+                        <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={() => setForm(prev => ({ ...prev, logoUrl: null }))}>
+                          <X className="h-3 w-3" />Remover
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button variant="outline" size="sm" className="h-9 text-xs gap-1.5" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                        <Upload className="h-3.5 w-3.5" />{uploading ? "Enviando..." : "Escolher imagem"}
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
 
-              <Separator />
+              <div className="space-y-5 lg:col-span-6">
+                <div className="rounded-xl border p-4 space-y-4">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Aparência e grupos</p>
 
-              {/* Master Groups */}
-              {masterGroups.length > 0 && (
-                <div className="space-y-2">
-                  <Label className="text-xs font-medium flex items-center gap-1.5"><Layers className="h-3.5 w-3.5" />Grupos Mestres</Label>
-                  <MultiOptionDropdown
-                    value={form.masterGroupIds}
-                    onChange={(ids) => setForm((prev) => ({ ...prev, masterGroupIds: ids }))}
-                    items={masterGroups.map((masterGroup) => ({
-                      id: masterGroup.id,
-                      label: masterGroup.name,
-                      meta: `${masterGroup.linkedGroups.length} grupos`,
-                    }))}
-                    placeholder="Escolher grupos mestres"
-                    selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
-                    emptyMessage="Nenhum grupo mestre criado"
-                    title="Grupos mestre"
-                    maxHeightClassName="max-h-52"
-                  />
+                  {/* Color */}
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium">Cor da página</Label>
+                    <div className="flex gap-2 flex-wrap">
+                      {LINK_HUB_PRESET_COLORS.map((color) => (
+                        <button
+                          key={color}
+                          type="button"
+                          className={cn(
+                            "h-8 w-8 rounded-full border-2 transition-all",
+                            form.themeColor === color ? "border-foreground scale-105 ring-2 ring-primary/25" : "border-transparent hover:scale-105",
+                          )}
+                          style={{ backgroundColor: color }}
+                          onClick={() => setForm({ ...form, themeColor: color })}
+                        >
+                          {form.themeColor === color ? <Check className="h-3.5 w-3.5 text-white mx-auto" /> : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label className="text-xs font-medium">Tipo de destino</Label>
+                    <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setForm((prev) => ({ ...prev, destinationMode: "group", masterGroupIds: [] }))}
+                        className={cn(
+                          "h-10 rounded-lg border text-xs font-medium transition-colors",
+                          form.destinationMode === "group"
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:border-primary/40",
+                        )}
+                      >
+                        <span className="inline-flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Grupo individual</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setForm((prev) => ({ ...prev, destinationMode: "master", groupIds: [] }))}
+                        className={cn(
+                          "h-10 rounded-lg border text-xs font-medium transition-colors",
+                          form.destinationMode === "master"
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:border-primary/40",
+                        )}
+                        disabled={masterGroups.length === 0}
+                        title={masterGroups.length === 0 ? "Crie um grupo mestre para usar esta opção" : undefined}
+                      >
+                        <span className="inline-flex items-center gap-1.5"><Layers className="h-3.5 w-3.5" />Grupo mestre</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {form.destinationMode === "master" ? (
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium flex items-center gap-1.5"><Layers className="h-3.5 w-3.5" />Selecionar grupo mestre</Label>
+                      <MultiOptionDropdown
+                        value={form.masterGroupIds}
+                        onChange={(ids) => setForm((prev) => ({ ...prev, masterGroupIds: ids }))}
+                        items={masterGroups.map((masterGroup) => ({
+                          id: masterGroup.id,
+                          label: masterGroup.name,
+                          meta: `${masterGroup.linkedGroups.length} grupos`,
+                        }))}
+                        placeholder="Escolher grupos mestres"
+                        selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                        emptyMessage="Nenhum grupo mestre criado"
+                        title="Grupos mestre"
+                        maxHeightClassName="max-h-56"
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Selecionar grupos individuais</Label>
+                      <MultiOptionDropdown
+                        value={form.groupIds}
+                        onChange={(ids) => setForm((prev) => ({ ...prev, groupIds: ids }))}
+                        items={groups.map((group) => ({
+                          id: group.id,
+                          label: group.name,
+                          meta: `${group.memberCount}`,
+                        }))}
+                        placeholder="Escolher grupos"
+                        selectedLabel={(count) => `${count} grupo(s)`}
+                        emptyMessage="Nenhum grupo sincronizado"
+                        title="Grupos"
+                        maxHeightClassName="max-h-56"
+                      />
+                    </div>
+                  )}
+
+                  <p className="text-2xs text-muted-foreground">
+                    {previewGroupCount} grupo{previewGroupCount !== 1 ? "s" : ""} selecionado{previewGroupCount !== 1 ? "s" : ""} para a página.
+                  </p>
                 </div>
-              )}
 
-              {/* Individual Groups */}
-              <div className="space-y-2">
-                <Label className="text-xs font-medium flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Grupos ({previewGroupCount} escolhidos)</Label>
-                <MultiOptionDropdown
-                  value={form.groupIds}
-                  onChange={(ids) => setForm((prev) => ({ ...prev, groupIds: ids }))}
-                  items={groups.map((group) => ({
-                    id: group.id,
-                    label: group.name,
-                    meta: `${group.memberCount}`,
-                  }))}
-                  placeholder="Escolher grupos"
-                  selectedLabel={(count) => `${count} grupo(s)`}
-                  emptyMessage="Nenhum grupo sincronizado"
-                  title="Grupos"
-                  maxHeightClassName="max-h-64"
-                />
-
-                <div className="rounded-md border">
-                  <ScrollArea className="max-h-[200px]">
-                    <div className="p-1.5 space-y-0.5">
+                <div className="rounded-xl border">
+                  <div className="px-3 py-2.5 border-b">
+                    <p className="text-xs font-medium text-muted-foreground">Prévia dos grupos selecionados</p>
+                  </div>
+                  <ScrollArea className="max-h-[260px]">
+                    <div className="p-2 space-y-1">
                       {groups.length > 0 ? groups.map((g) => {
                         const includedViaMaster = form.masterGroupIds.some((mgId) => {
                           const mg = masterGroups.find((m) => m.id === mgId);
@@ -330,8 +396,8 @@ export default function LinkHub() {
                         const isSelected = form.groupIds.includes(g.id) || includedViaMaster;
                         if (!isSelected) return null;
                         return (
-                          <div key={g.id} className="space-y-1 pb-1">
-                            <div className="flex items-center gap-2 text-xs p-1.5 rounded bg-secondary/40">
+                          <div key={g.id} className="space-y-1.5 rounded-lg border p-2">
+                            <div className="flex items-center gap-2 text-xs">
                               <div className="h-5 w-5 rounded flex items-center justify-center text-white shrink-0" style={{ backgroundColor: g.platform === "whatsapp" ? "hsl(var(--brand-whatsapp))" : "hsl(var(--brand-telegram))" }}>
                                 <ChannelPlatformIcon platform={g.platform} className="h-2.5 w-2.5" />
                               </div>
@@ -339,21 +405,19 @@ export default function LinkHub() {
                               <span className="text-muted-foreground shrink-0">{g.memberCount}</span>
                               {includedViaMaster && <span className="text-2xs text-muted-foreground shrink-0">mestre</span>}
                             </div>
-                            <div className="pl-7 pr-1.5">
-                              <Input
-                                placeholder="Nome na página (se quiser mudar)"
-                                value={form.groupLabels[g.id] || ""}
-                                onChange={(e) => setForm((prev) => ({
-                                  ...prev,
-                                  groupLabels: { ...prev.groupLabels, [g.id]: e.target.value },
-                                }))}
-                                className="h-8 text-xs"
-                              />
-                            </div>
+                            <Input
+                              placeholder="Nome na página (se quiser mudar)"
+                              value={form.groupLabels[g.id] || ""}
+                              onChange={(e) => setForm((prev) => ({
+                                ...prev,
+                                groupLabels: { ...prev.groupLabels, [g.id]: e.target.value },
+                              }))}
+                              className="h-8 text-xs"
+                            />
                           </div>
                         );
                       }) : (
-                <p className="text-xs text-muted-foreground p-2">Sem grupos sincronizados.</p>
+                        <p className="text-xs text-muted-foreground p-2">Sem grupos sincronizados.</p>
                       )}
                     </div>
                   </ScrollArea>
@@ -362,7 +426,7 @@ export default function LinkHub() {
             </div>
           </ScrollArea>
 
-          <DialogFooter className="px-5 py-4 border-t gap-2">
+          <DialogFooter className="px-6 py-4 border-t gap-2">
             <Button variant="ghost" size="sm" onClick={resetAndClose}>Cancelar</Button>
             <Button size="sm" onClick={handleSave}>{editingId ? "Salvar" : "Criar página"}</Button>
           </DialogFooter>

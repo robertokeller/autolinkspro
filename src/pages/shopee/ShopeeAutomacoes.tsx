@@ -331,11 +331,11 @@ export default function ShopeeAutomacoes() {
 
             return (
               <Card key={auto.id} className="glass">
-                <CardContent className="space-y-4 p-5">
-                  <div className="flex items-center justify-between">
+                <CardContent className="space-y-4 p-4 min-[420px]:p-5">
+                  <div className="flex flex-col gap-3 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between">
                     <div className="min-w-0 flex-1">
-                      <p className="text-base font-medium leading-snug">{auto.name}</p>
-                      <p className="mt-1 text-sm text-muted-foreground leading-relaxed">
+                      <p className="text-sm font-medium leading-snug min-[420px]:text-base">{auto.name}</p>
+                      <p className="mt-1 text-xs text-muted-foreground leading-relaxed min-[420px]:text-sm">
                         Janela {activeStart}-{activeEnd} - A cada {auto.interval_minutes}min
                         {auto.min_discount > 0 && ` - >=${auto.min_discount}% OFF`}
                         {auto.min_commission > 0 && ` - Comissão >=${auto.min_commission}%`}
@@ -343,7 +343,7 @@ export default function ShopeeAutomacoes() {
                         {Number(auto.max_price) < 9999 && ` - <=R$${auto.max_price}`}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <Badge variant="secondary" className={`text-xs ${auto.is_active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
                         {auto.is_active ? "Ativa" : "Pausada"}
                       </Badge>

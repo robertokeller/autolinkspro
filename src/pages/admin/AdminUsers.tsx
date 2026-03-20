@@ -567,7 +567,7 @@ export default function AdminUsers() {
             {!loading && filtered.map((user) => (
               <div
                 key={user.user_id}
-                className="flex items-start justify-between gap-3 p-4 transition-colors hover:bg-secondary/30 sm:items-center"
+                className="flex flex-col gap-3 p-4 transition-colors hover:bg-secondary/30 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{user.name || "Sem nome"}</p>
@@ -604,7 +604,7 @@ export default function AdminUsers() {
                   })()}
                 </div>
 
-                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
+                <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end sm:flex-nowrap">
                   <Badge variant="outline" className="admin-chip">
                     {user.role === "admin"
                       ? "Sem plano (admin)"

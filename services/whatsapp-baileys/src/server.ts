@@ -1175,6 +1175,57 @@ app.post("/api/sessions/:sessionId/sync-groups", async (req: Request<{ sessionId
   }
 });
 
+app.post("/api/sessions/:sessionId/group-invite", async (req: Request<{ sessionId: string }, unknown, { groupId?: string }>, res) => {
+  const requestUserId = readRequestUserId(req, res);
+  if (!requestUserId) return;
+
+  const sessionId = req.params.sessionId;
+  const rawGroupId = String(req.body?.groupId ?? "").trim();
+  if (!rawGroupId) {
+    res.status(400).json({ error: "groupId é obrigatório" });
+    return;
+  }
+
+  const normalizedGroupId = normalizeJid(rawGroupId);
+  if (!normalizedGroupId.endsWith("@g.us")) {
+    res.status(400).json({ error: "groupId inválido para grupo do WhatsApp" });
+    return;
+  }
+
+  try {
+    const state = await loadStateFromDisk(sessionId);
+    if (!state || !state.socket || state.status !== "online") {
+      res.status(409).json({ error: "Sessão não está online" });
+      return;
+    }
+
+    if (state.config.userId !== requestUserId) {
+      res.status(403).json({ error: "Sessão não pertence ao usuário informado" });
+      return;
+    }
+
+    const inviteCode = String(await state.socket.groupInviteCode(normalizedGroupId) || "").trim();
+    if (!inviteCode) {
+      res.status(404).json({ error: "Convite não disponível para este grupo" });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      groupId: normalizedGroupId,
+      inviteCode,
+      inviteLink: `https://chat.whatsapp.com/${inviteCode}`,
+    });
+  } catch (error) {
+    const message = sanitizeError(error);
+    if (/not-authorized|forbidden|401|403|admin/i.test(message)) {
+      res.status(403).json({ error: "Sem permissão para obter convite deste grupo" });
+      return;
+    }
+    res.status(500).json({ error: message });
+  }
+});
+
 app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, res) => {
   const requestUserId = readRequestUserId(req, res);
   if (!requestUserId) return;

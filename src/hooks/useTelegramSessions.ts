@@ -91,6 +91,7 @@ export function useTelegramSessions() {
       .finally(() => {
         qc.invalidateQueries({ queryKey: ["telegram-sessions"] });
         qc.invalidateQueries({ queryKey: ["groups"] });
+        qc.invalidateQueries({ queryKey: ["master_groups"] });
       });
   }, [qc]);
 
@@ -220,6 +221,7 @@ export function useTelegramSessions() {
     onSuccess: (data) => {
       invalidateSessions();
       qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["master_groups"] });
 
       const blockedGroups = Number((data as Record<string, unknown> | undefined)?.blockedGroups || 0);
       if (blockedGroups > 0) {

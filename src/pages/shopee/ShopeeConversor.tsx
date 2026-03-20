@@ -148,93 +148,98 @@ export default function ShopeeConversor() {
 
   return (
     <div className="ds-page">
-      <div className="mx-auto w-full max-w-4xl space-y-6">
-      <PageHeader
-        title="Conversor de links"
-        description="Cole um link da Shopee ou Mercado Livre e gere seu link de afiliado pronto pra compartilhar."
-      />
-      {!isConfigured && <ShopeeCredentialsBanner />}
+      <div className="mx-auto w-full max-w-5xl space-y-6">
+        <PageHeader
+          title="Conversor de links"
+          description="Cole um link da Shopee ou Mercado Livre e gere seu link de afiliado pronto pra compartilhar."
+        />
+        {!isConfigured && <ShopeeCredentialsBanner />}
 
-      <Card className="glass w-full">
-        <CardHeader className="space-y-3 pb-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={isConfigured ? "default" : "secondary"} className="gap-1.5">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              Shopee {isConfigured ? "configurada" : "não configurada"}
-            </Badge>
-            <Badge variant={hasMeliSession ? "default" : "secondary"} className="gap-1.5">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              Mercado Livre {hasMeliSession ? "com sessão ativa" : "sem sessão ativa"}
-            </Badge>
-          </div>
-          <CardTitle className="text-base">Conversão rápida</CardTitle>
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            O sistema detecta a loja do link e converte com a conta que você conectou.
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <div className="space-y-2">
-            <Label className="text-sm text-muted-foreground">Cole o link para converter</Label>
-            <div className="flex flex-col gap-2.5 sm:flex-row">
-              <Input
-                placeholder="Cole aqui o link da Shopee ou Mercado Livre"
-                value={converterInput}
-                onChange={(e) => setConverterInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleConvert()}
-                disabled={converting}
-              />
-              <Button onClick={handleConvert} disabled={converting || (!isConfigured && !hasMeliSession)} className="sm:min-w-32">
-                {converting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
-                <span className="ml-2">{converting ? "Convertendo..." : "Converter link"}</span>
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Dica: aperte Enter pra converter sem clicar no botão.
-            </p>
-          </div>
-
-          {!hasMeliSession && (
-            <p className="text-sm leading-relaxed text-muted-foreground">
-              Para converter links do Mercado Livre, conecte uma conta em{" "}
-              <Link to={ROUTES.app.mercadolivreConfiguracoes} className="text-primary hover:underline">
-                Configurações ML
-              </Link>
-              .
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      {convertedLink && (
         <Card className="glass w-full">
-          <CardHeader className="space-y-2 pb-3">
-            <CardTitle className="text-base">Link convertido com sucesso</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Confira a plataforma detectada e copie a URL para usar em mensagens, grupos ou automações.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center gap-2">
-              <Label className="text-sm text-muted-foreground">Plataforma</Label>
-              <Badge variant="secondary">
-                {convertedPlatform === "mercadolivre" ? "Mercado Livre" : "Shopee"}
+          <CardHeader className="space-y-3 pb-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={isConfigured ? "default" : "secondary"} className="gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Shopee {isConfigured ? "configurada" : "não configurada"}
+              </Badge>
+              <Badge variant={hasMeliSession ? "default" : "secondary"} className="gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Mercado Livre {hasMeliSession ? "com sessão ativa" : "sem sessão ativa"}
               </Badge>
             </div>
-            <div className="rounded-md border border-primary/20 bg-primary/5 p-3">
-              <Label className="mb-1.5 block text-sm text-muted-foreground">Link de afiliado gerado</Label>
-              <p className="break-all font-mono text-sm leading-relaxed text-primary">{convertedLink}</p>
+            <CardTitle className="text-base">Conversão rápida</CardTitle>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              O sistema detecta a loja do link e converte com a conta que você conectou.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="space-y-2.5">
+              <Label className="text-sm text-muted-foreground">Cole o link para converter</Label>
+              <div className="flex flex-col items-stretch gap-2.5 sm:flex-row sm:items-center">
+                <Input
+                  className="h-11"
+                  placeholder="Cole aqui o link da Shopee ou Mercado Livre"
+                  value={converterInput}
+                  onChange={(e) => setConverterInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleConvert()}
+                  disabled={converting}
+                />
+                <Button
+                  onClick={handleConvert}
+                  disabled={converting || (!isConfigured && !hasMeliSession)}
+                  className="h-11 w-full justify-center sm:w-auto sm:min-w-40"
+                >
+                  {converting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+                  <span className="ml-2">{converting ? "Convertendo..." : "Converter link"}</span>
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Dica: aperte Enter pra converter sem clicar no botão.
+              </p>
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <Button size="sm" onClick={handleCopyConvertedLink} className="sm:w-auto">
-                <Copy className="mr-1.5 h-3.5 w-3.5" />
-                Copiar link
-              </Button>
-              <span className="text-xs text-muted-foreground">Copie e cole onde quiser, mantendo o rastreamento de afiliado.</span>
-            </div>
+            {!hasMeliSession && (
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                Para converter links do Mercado Livre, conecte uma conta em{" "}
+                <Link to={ROUTES.app.mercadolivreConfiguracoes} className="text-primary hover:underline">
+                  Configurações ML
+                </Link>
+                .
+              </p>
+            )}
           </CardContent>
         </Card>
-      )}
+
+        {convertedLink && (
+          <Card className="glass w-full">
+            <CardHeader className="space-y-2 pb-3">
+              <CardTitle className="text-base">Link convertido com sucesso</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Confira a plataforma detectada e copie a URL para usar em mensagens, grupos ou automações.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+                <Label className="text-sm text-muted-foreground">Plataforma</Label>
+                <Badge variant="secondary" className="w-fit">
+                  {convertedPlatform === "mercadolivre" ? "Mercado Livre" : "Shopee"}
+                </Badge>
+              </div>
+              <div className="rounded-md border border-primary/20 bg-primary/5 p-3.5">
+                <Label className="mb-1.5 block text-sm text-muted-foreground">Link de afiliado gerado</Label>
+                <p className="break-all font-mono text-sm leading-relaxed text-primary">{convertedLink}</p>
+              </div>
+
+              <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+                <Button size="sm" onClick={handleCopyConvertedLink} className="w-full sm:w-auto">
+                  <Copy className="mr-1.5 h-3.5 w-3.5" />
+                  Copiar link
+                </Button>
+                <span className="text-xs text-muted-foreground">Copie e cole onde quiser, mantendo o rastreamento de afiliado.</span>
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );

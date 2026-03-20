@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Loader2, ShoppingBag, SlidersHorizontal, ChevronDown, ChevronRight } from "lucide-react";
+import { Search, Loader2, ShoppingBag, SlidersHorizontal, ChevronDown, ChevronRight, LayoutList } from "lucide-react";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { ShopeeCredentialsBanner } from "@/components/ShopeeCredentialsBanner";
 import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
@@ -20,6 +20,7 @@ import { SHOPEE_CATEGORIES, deduplicateProducts, type ShopeeCategory } from "@/l
 import { toScheduleProduct } from "@/lib/schedule-product-helpers";
 import { cn } from "@/lib/utils";
 import { RoutePendingState } from "@/components/RoutePendingState";
+import { useViewportProfile } from "@/hooks/useViewportProfile";
 
 function isEligibleAffiliateProduct(product: ShopeeProduct): boolean {
   const affiliateLink = String(product.affiliateLink || "").trim();
@@ -39,6 +40,9 @@ function getVisualCategoryIcon(icon: string) {
 
 export default function ShopeePesquisa() {
   const { isConfigured, isLoading } = useShopeeCredentials();
+  const viewport = useViewportProfile();
+  const isMobileView = viewport.isMobile || viewport.isTiny;
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
@@ -335,13 +339,22 @@ export default function ShopeePesquisa() {
           {/* Main layout: sidebar + content */}
           <div className="flex flex-col items-start gap-5 lg:flex-row">
 
-            {/* Category Sidebar */}
-            <aside className="sticky top-4 w-full shrink-0 overflow-hidden rounded-xl border bg-card lg:w-60">
-              <div className="px-3 py-2.5 border-b bg-muted/40">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Categorias</p>
-              </div>
-              <ScrollArea className="h-64 lg:h-[calc(100vh-220px)]">
-                <nav className="p-1.5 space-y-0.5">
+            {/* Category Sidebar - collapsible on mobile */}
+            {isMobileView ? (
+              <Collapsible open={categoriesOpen} onOpenChange={setCategoriesOpen} className="w-full">
+                <CollapsibleTrigger asChild>
+                  <Button variant="outline" className="w-full justify-between gap-2 h-11">
+                    <span className="flex items-center gap-2 text-sm font-medium">
+                      <LayoutList className="h-4 w-4" />
+                      {activeLabel || "Categorias"}
+                    </span>
+                    <ChevronDown className={cn("h-4 w-4 transition-transform", categoriesOpen && "rotate-180")} />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-2">
+                  <div className="rounded-xl border bg-card overflow-hidden">
+                    <ScrollArea className="h-56">
+                      <nav className="p-1.5 space-y-0.5">
                   {SHOPEE_CATEGORIES.map((cat) => {
                     const isExpanded = expandedCatIds.has(cat.id);
                     const isCatActive = activeCatId === cat.id && !activeSubId;
@@ -403,7 +416,77 @@ export default function ShopeePesquisa() {
                   })}
                 </nav>
               </ScrollArea>
-            </aside>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            ) : (
+              <aside className="sticky top-4 w-full shrink-0 overflow-hidden rounded-xl border bg-card lg:w-60">
+                <div className="px-3 py-2.5 border-b bg-muted/40">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Categorias</p>
+                </div>
+                <ScrollArea className="h-64 lg:h-[calc(100vh-220px)]">
+                  <nav className="p-1.5 space-y-0.5">
+                    {SHOPEE_CATEGORIES.map((cat) => {
+                      const isExpanded = expandedCatIds.has(cat.id);
+                      const isCatActive = activeCatId === cat.id && !activeSubId;
+                      const hasSubs = cat.subcategories.length > 0;
+                      const visualIcon = getVisualCategoryIcon(cat.icon);
+
+                      return (
+                        <div key={cat.id}>
+                          <button
+                            onClick={() => handleCategoryClick(cat)}
+                            disabled={searching}
+                            className={cn(
+                              "w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm transition-all duration-150 text-left group",
+                              isCatActive
+                                ? "bg-primary text-primary-foreground font-medium"
+                                : "hover:bg-accent text-foreground"
+                            )}
+                          >
+                            {visualIcon && <span className="text-base leading-none shrink-0">{visualIcon}</span>}
+                            <span className="flex-1 truncate text-xs font-medium">{cat.label}</span>
+                            {hasSubs && (
+                              <ChevronRight
+                                className={cn(
+                                  "h-3.5 w-3.5 shrink-0 transition-transform duration-200",
+                                  isExpanded ? "rotate-90" : "",
+                                  isCatActive ? "text-primary-foreground/70" : "text-muted-foreground"
+                                )}
+                              />
+                            )}
+                          </button>
+
+                          {hasSubs && isExpanded && (
+                            <div className="ml-3 mt-0.5 mb-0.5 pl-2.5 border-l border-border space-y-0.5 animate-fade-in">
+                              {cat.subcategories.map((sub) => {
+                                const isSubActive = activeSubId === sub.id;
+                                return (
+                                  <button
+                                    key={sub.id}
+                                    onClick={() => handleSubClick(cat.id, sub.id)}
+                                    disabled={searching}
+                                    className={cn(
+                                      "w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs transition-all duration-150 text-left",
+                                      isSubActive
+                                        ? "bg-primary/15 text-primary font-semibold"
+                                        : "hover:bg-accent text-muted-foreground hover:text-foreground"
+                                    )}
+                                  >
+                                    <span className="w-1 h-1 rounded-full bg-current shrink-0 opacity-60" />
+                                    {sub.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </nav>
+                </ScrollArea>
+              </aside>
+            )}
 
             {/* Products area */}
             <div className="min-w-0 flex-1 space-y-5">
@@ -438,7 +521,7 @@ export default function ShopeePesquisa() {
                     </CollapsibleTrigger>
                   </div>
                   <CollapsibleContent className="pt-3">
-                    <div className="grid grid-cols-2 gap-4 rounded-lg border bg-card p-4 md:grid-cols-4">
+                    <div className="grid grid-cols-1 gap-3 rounded-lg border bg-card p-3 min-[420px]:grid-cols-2 md:grid-cols-4 md:gap-4 md:p-4">
                       <div className="space-y-2">
                         <Label className="text-sm">Desconto mínimo: {minDiscount}%</Label>
                         <Slider value={[minDiscount]} onValueChange={([v]) => setMinDiscount(v)} max={90} step={5} />
@@ -462,7 +545,7 @@ export default function ShopeePesquisa() {
 
               {/* Loading skeletons */}
               {searching && (
-                <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
+                <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 md:gap-4 lg:grid-cols-4 xl:gap-5">
                   {Array.from({ length: 8 }).map((_, i) => <ProductCardSkeleton key={i} index={i} />)}
                 </div>
               )}
@@ -470,7 +553,7 @@ export default function ShopeePesquisa() {
               {/* Product grid */}
               {!searching && filtered.length > 0 && (
                 <>
-                  <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
+                  <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 md:gap-4 lg:grid-cols-4 xl:gap-5">
                     {filtered.map((p) => (
                       <ProductCard key={p.id} product={p} onSchedule={setScheduleProduct} />
                     ))}

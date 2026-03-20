@@ -98,7 +98,7 @@ function toPositiveInt(value: unknown, min: number, max: number): number | null 
 
 async function ensureOwnedActiveGroup(client: import("pg").PoolClient, userId: string, groupIdRaw: unknown) {
   const groupId = String(groupIdRaw ?? "").trim();
-  if (!groupId) throw new Error("group_id obrigatÃ³rio");
+  if (!groupId) throw new Error("group_id obrigatório");
   const ownedGroup = await client.query<{ id: string; platform: string }>(
     `SELECT id, platform
        FROM "groups"
@@ -107,7 +107,7 @@ async function ensureOwnedActiveGroup(client: import("pg").PoolClient, userId: s
         AND deleted_at IS NULL`,
     [groupId, userId],
   );
-  if ((ownedGroup.rowCount ?? 0) === 0) throw new Error("Grupo nÃ£o pertence ao usuÃ¡rio");
+  if ((ownedGroup.rowCount ?? 0) === 0) throw new Error("Grupo não pertence ao usuário");
   return {
     groupId,
     platform: String(ownedGroup.rows[0]?.platform || "").trim(),
@@ -120,7 +120,7 @@ async function ensureMasterGroupPlatformConsistency(
   nextPlatform: string,
 ) {
   const masterGroupId = String(masterGroupIdRaw ?? "").trim();
-  if (!masterGroupId) throw new Error("master_group_id obrigatÃ³rio");
+  if (!masterGroupId) throw new Error("master_group_id obrigatório");
   const existingPlatform = await client.query<{ platform: string }>(
     `SELECT g.platform
        FROM "master_group_links" l
@@ -135,7 +135,7 @@ async function ensureMasterGroupPlatformConsistency(
   if ((existingPlatform.rowCount ?? 0) === 0) return;
   const currentPlatform = String(existingPlatform.rows[0]?.platform || "").trim();
   if (currentPlatform && nextPlatform && currentPlatform !== nextPlatform) {
-    throw new Error("Grupo mestre sÃ³ pode conter grupos da mesma rede");
+    throw new Error("Grupo mestre só pode conter grupos da mesma rede");
   }
 }
 

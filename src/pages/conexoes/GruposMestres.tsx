@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { Copy, Layers, Pencil, Plus, RefreshCw, Save, Trash2, Unlink, Users } from "lucide-react";
+import { Copy, Layers, Pencil, Plus, RefreshCw, Trash2, Unlink, Users } from "lucide-react";
 import { useGrupos } from "@/hooks/useGrupos";
 import type { DistributionMode, Group, MasterGroup } from "@/lib/types";
 
@@ -56,13 +56,11 @@ export default function GruposMestresPage() {
     setMasterGroupGroups,
     removeMasterGroup,
     unlinkGroup,
-    upsertGroupInviteLink,
   } = useGrupos();
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [form, setForm] = useState<MasterFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
-  const [inviteDrafts, setInviteDrafts] = useState<Record<string, string>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const groupsById = useMemo(() => new Map(syncedGroups.map((group) => [group.id, group])), [syncedGroups]);
@@ -76,6 +74,10 @@ export default function GruposMestresPage() {
   );
 
   const filteredGroups = groupedByPlatform[form.platform] || [];
+  const selectedDistribution = normalizeDistribution(form.distribution);
+  const distributionHelpText = selectedDistribution === "random"
+    ? "Aleatório: sorteia um grupo filho válido a cada entrada."
+    : "Equilibrado: prioriza grupos com menos membros para dividir melhor.";
 
   const openNewDialog = () => {
     setForm(EMPTY_FORM);
@@ -165,14 +167,12 @@ export default function GruposMestresPage() {
     }
   };
 
-  const handleSaveGroupInvite = async (groupId: string, currentValue: string) => {
-    const success = await upsertGroupInviteLink(groupId, currentValue);
-    if (success) {
-      setInviteDrafts((prev) => {
-        const next = { ...prev };
-        delete next[groupId];
-        return next;
-      });
+  const handleCopyGroupInvite = async (inviteLink: string) => {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      toast.success("Link de convite copiado");
+    } catch {
+      toast.error("Não foi possível copiar o link agora");
     }
   };
 
@@ -218,7 +218,6 @@ export default function GruposMestresPage() {
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <CardTitle className="text-base">{masterGroup.name}</CardTitle>
-                      <p className="mt-1 text-xs text-muted-foreground">ID: {masterGroup.id.slice(0, 8)}</p>
                     </div>
                     <div className="flex gap-1.5">
                       <Badge variant="outline">{distributionLabel}</Badge>
@@ -255,7 +254,6 @@ export default function GruposMestresPage() {
                       <p className="text-xs text-muted-foreground">Sem grupos filhos vinculados.</p>
                     ) : (
                       linkedGroups.map((group) => {
-                        const draftInvite = inviteDrafts[group.id] ?? group.inviteLink ?? "";
                         return (
                           <div key={`${masterGroup.id}-${group.id}`} className="rounded-lg border p-2">
                             <div className="mb-2 flex items-center justify-between gap-2">
@@ -273,22 +271,24 @@ export default function GruposMestresPage() {
                                 <Unlink className="h-4 w-4" />
                               </Button>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <Input
-                                value={draftInvite}
-                                onChange={(event) => setInviteDrafts((prev) => ({ ...prev, [group.id]: event.target.value }))}
-                                placeholder="Link de convite do grupo (chat.whatsapp.com / t.me)"
-                                className="h-8 text-xs"
-                              />
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-8"
-                                onClick={() => void handleSaveGroupInvite(group.id, draftInvite)}
-                              >
-                                <Save className="mr-1 h-3.5 w-3.5" />
-                                Salvar
-                              </Button>
+                            <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-2.5 py-2">
+                              {group.inviteLink ? (
+                                <p className="truncate text-xs text-muted-foreground">Convite sincronizado automaticamente</p>
+                              ) : (
+                                <p className="truncate text-xs text-muted-foreground">
+                                  Convite automático pendente. Verifique se a sessão é admin do grupo.
+                                </p>
+                              )}
+                              {group.inviteLink ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2"
+                                  onClick={() => void handleCopyGroupInvite(group.inviteLink || "")}
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </Button>
+                              ) : null}
                             </div>
                           </div>
                         );
@@ -314,7 +314,7 @@ export default function GruposMestresPage() {
       )}
 
       <Dialog open={isDialogOpen} onOpenChange={(open) => { if (!open) closeDialog(); }}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{form.id ? "Editar grupo mestre" : "Novo grupo mestre"}</DialogTitle>
             <DialogDescription>
@@ -332,8 +332,8 @@ export default function GruposMestresPage() {
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="space-y-2 sm:col-span-1">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12">
+              <div className="space-y-2 lg:col-span-4">
                 <Label>Rede</Label>
                 <Select
                   value={form.platform}
@@ -346,7 +346,7 @@ export default function GruposMestresPage() {
                     }),
                   }))}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="h-10">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -356,16 +356,16 @@ export default function GruposMestresPage() {
                 </Select>
               </div>
 
-              <div className="space-y-2 sm:col-span-1">
+              <div className="space-y-2 lg:col-span-4">
                 <Label>Distribuição de entrada</Label>
                 <Select
-                  value={normalizeDistribution(form.distribution)}
+                  value={selectedDistribution}
                   onValueChange={(value: DistributionMode) => setForm((prev) => ({
                     ...prev,
                     distribution: normalizeDistribution(value),
                   }))}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="h-10">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -373,11 +373,15 @@ export default function GruposMestresPage() {
                     <SelectItem value="random">Aleatório</SelectItem>
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  {distributionHelpText}
+                </p>
               </div>
 
-              <div className="space-y-2 sm:col-span-1">
+              <div className="space-y-2 sm:col-span-2 lg:col-span-4">
                 <Label>Limite de membros (opcional)</Label>
                 <Input
+                  className="h-10"
                   type="number"
                   min={0}
                   value={form.memberLimit}
@@ -386,6 +390,9 @@ export default function GruposMestresPage() {
                     memberLimit: Number.isFinite(Number(event.target.value)) ? Math.max(0, Number(event.target.value)) : 0,
                   }))}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Hoje é apenas referência visual. Ainda não bloqueia entradas automaticamente.
+                </p>
               </div>
             </div>
 

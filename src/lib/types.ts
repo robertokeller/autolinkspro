@@ -40,7 +40,7 @@ export interface Group {
   telegramSessionId: string | null;
 }
 
-export type DistributionMode = "sequential" | "balanced" | "random";
+export type DistributionMode = "balanced" | "random";
 
 export interface MasterGroup {
   id: string;

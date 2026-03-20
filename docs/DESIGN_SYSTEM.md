@@ -25,6 +25,10 @@ Padronizar a interface entre paginas internas e telas de autenticacao para reduz
 - `src/components/ui/select.tsx`
 - `src/components/ui/textarea.tsx`
   - Controles de formulario com linguagem visual uniforme
+- `src/components/ui/loading-state.tsx`
+  - Componente unico para estados de carregamento (`screen`, `page`, `inline`)
+  - Mesmo spinner, tipografia e transicao em toda a aplicacao
+  - Centraliza o fallback de lazy loading de rotas e estados de validacao
 
 ## Layout global
 - `src/components/AppLayout.tsx`
@@ -47,6 +51,12 @@ Padronizar a interface entre paginas internas e telas de autenticacao para reduz
 2. Evitar estilos ad-hoc de tamanho/alinhamento em botoes e formularios.
 3. Usar utilitarios `ds-*` quando possivel antes de criar classes novas.
 4. Se um ajuste for recorrente em 2+ telas, promover para componente base ou token.
+5. Para carregamento de tela/rota, usar `loading-state` (evitar spinners ad-hoc).
+
+## Padrao de lazy loading por pagina
+- Todas as paginas em `src/pages/**` devem ser carregadas por `React.lazy` em `src/routes/lazy-pages.ts`.
+- O roteamento principal (`src/routes/AppRoutes.tsx`) deve manter `Suspense` global com fallback padronizado.
+- Guardas de rota e validacoes assicronas devem usar `RoutePendingState`, que delega para `loading-state`.
 
 ## Checklist rapido de consistencia
 - Titulo principal segue `PageHeader`?

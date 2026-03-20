@@ -136,40 +136,6 @@ function firstNonEmptyString(...values: unknown[]) {
   return "";
 }
 
-function toTitleCase(value: string): string {
-  return value
-    .split(" ")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function normalizeMeliProductUrl(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl.trim());
-    parsed.hash = "";
-    parsed.search = "";
-    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
-    return parsed.toString();
-  } catch {
-    return rawUrl.trim();
-  }
-}
-
-function deriveTitleFromMeliUrl(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl.trim());
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    const slug = parts.find((part) => part.toLowerCase() !== "p" && !/^mlb/i.test(part)) || "";
-    if (!slug) return "";
-    const decoded = decodeURIComponent(slug).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
-    if (!decoded) return "";
-    return toTitleCase(decoded);
-  } catch {
-    return "";
-  }
-}
-
 function isLikelyMeliUrl(rawUrl: string): boolean {
   try {
     const parsed = new URL(rawUrl.trim());
@@ -342,6 +308,7 @@ export default function TemplatesMeli() {
       const conversion = await invokeBackendRpc<{
         affiliateLink?: string;
         originalLink?: string;
+        resolvedLink?: string;
         conversionTimeMs?: number;
       }>("meli-convert-link", {
         body: {
@@ -350,23 +317,28 @@ export default function TemplatesMeli() {
         },
       });
 
-      const originalLink = normalizeMeliProductUrl(String(conversion.originalLink || link));
-      const affiliateLink = firstNonEmptyString(conversion.affiliateLink, originalLink);
+      const snapshotTargetUrl = firstNonEmptyString(
+        conversion.resolvedLink,
+        conversion.originalLink,
+        link,
+      );
+      const affiliateLink = firstNonEmptyString(conversion.affiliateLink, snapshotTargetUrl);
       let productSnapshot: MeliProductSnapshotResponse | null = null;
 
       try {
         productSnapshot = await invokeBackendRpc<MeliProductSnapshotResponse>("meli-product-snapshot", {
           body: {
-            productUrl: originalLink,
+            productUrl: snapshotTargetUrl,
           },
         });
       } catch {
         toast.warning("Link convertido, mas alguns dados do produto nao puderam ser carregados.");
       }
 
+      const originalLink = firstNonEmptyString(productSnapshot?.productUrl, snapshotTargetUrl);
+
       const productTitle = firstNonEmptyString(
         productSnapshot?.title,
-        deriveTitleFromMeliUrl(originalLink),
         "Oferta Mercado Livre",
       );
 

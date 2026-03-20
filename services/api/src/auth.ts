@@ -228,12 +228,12 @@ async function dispatchVerificationEmail(
   }
 
   const html = `
-    <p>Ola, ${safeName}.</p>
+    <p>Olá, ${safeName}.</p>
     <p>Confirme seu e-mail para ativar sua conta no Auto Links:</p>
     <p><a href="${verifyUrl}">Confirmar e-mail</a></p>
-    <p>Se voce nao criou essa conta, ignore esta mensagem.</p>
+    <p>Se você não criou essa conta, ignore esta mensagem.</p>
   `;
-  const text = `Ola, ${user.name}. Confirme seu e-mail: ${verifyUrl}`;
+  const text = `Olá, ${user.name}. Confirme seu e-mail: ${verifyUrl}`;
 
   return sendEmail({
     to: user.email,
@@ -270,12 +270,12 @@ async function dispatchPasswordResetEmail(
   })();
 
   const html = `
-    <p>Ola, ${safeName}.</p>
-    <p>Recebemos uma solicitacao para redefinir sua senha no Auto Links.</p>
+    <p>Olá, ${safeName}.</p>
+    <p>Recebemos uma solicitação para redefinir sua senha no Auto Links.</p>
     <p><a href="${resetUrl}">Redefinir senha</a></p>
-    <p>Se voce nao solicitou essa troca, ignore este e-mail.</p>
+    <p>Se você não solicitou essa troca, ignore este e-mail.</p>
   `;
-  const text = `Ola, ${user.name}. Redefina sua senha: ${resetUrl}`;
+  const text = `Olá, ${user.name}. Redefina sua senha: ${resetUrl}`;
 
   return sendEmail({
     to: user.email,
@@ -725,7 +725,7 @@ authRouter.post("/reset-password", async (req, res) => {
 
     const consumed = await consumeAuthEmailToken(rawToken, "password_reset");
     if (!consumed) {
-      res.status(400).json({ data: { user: null, session: null }, error: { message: "Link invalido ou expirado" } }); return;
+      res.status(400).json({ data: { user: null, session: null }, error: { message: "Link inválido ou expirado" } }); return;
     }
 
     const hash = await bcrypt.hash(nextPassword, 10);
@@ -741,7 +741,7 @@ authRouter.post("/reset-password", async (req, res) => {
 
     const user = await getUserWithRole(consumed.user_id);
     if (!user) {
-      res.status(404).json({ data: { user: null, session: null }, error: { message: "Usuario nao encontrado" } }); return;
+      res.status(404).json({ data: { user: null, session: null }, error: { message: "Usuário não encontrado" } }); return;
     }
 
     const session = issueSessionForCookie(res, user);
@@ -756,14 +756,14 @@ authRouter.post("/reset-password", async (req, res) => {
 authRouter.get("/verify-email", async (req, res) => {
   const token = String(req.query.token || "").trim();
   if (!token) {
-    respondVerificationRedirect(res, "invalid", "Token de verificacao ausente");
+    respondVerificationRedirect(res, "invalid", "Token de verificação ausente");
     return;
   }
 
   try {
     const consumed = await consumeAuthEmailToken(token, "email_verification");
     if (!consumed) {
-      respondVerificationRedirect(res, "invalid", "Link invalido ou expirado");
+      respondVerificationRedirect(res, "invalid", "Link inválido ou expirado");
       return;
     }
 
@@ -816,7 +816,7 @@ authRouter.post("/signin", async (req, res) => {
     if (!user.email_confirmed_at) {
       const rid = (req as { rid?: string }).rid ?? "-";
       console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "email_not_confirmed", email: emailForLog, ip: req.ip ?? "-", rid }));
-      res.json({ data: { user: null, session: null }, error: { message: "E-mail ainda nao confirmado. Verifique sua caixa de entrada." } }); return;
+      res.json({ data: { user: null, session: null }, error: { message: "E-mail ainda não confirmado. Verifique sua caixa de entrada." } }); return;
     }
 
     const roleRow = await queryOne<{ role: string }>("SELECT role FROM user_roles WHERE user_id = $1", [user.id]);

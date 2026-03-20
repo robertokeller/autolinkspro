@@ -91,22 +91,22 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
         )}
       </div>
 
-      <CardContent className="flex flex-1 flex-col space-y-2.5 p-3 sm:p-3.5">
+      <CardContent className="flex flex-1 flex-col space-y-2 p-2.5 min-[420px]:space-y-2.5 min-[420px]:p-3 sm:p-3.5">
         {/* Title */}
-        <p className="min-h-[2.5rem] text-sm font-medium leading-snug line-clamp-2">
+        <p className="min-h-[2.25rem] text-xs font-medium leading-snug line-clamp-2 min-[420px]:min-h-[2.5rem] min-[420px]:text-sm">
           {product.title}
         </p>
 
         {/* Price row */}
-        <div className="flex items-end justify-between gap-2">
-          <div className="space-y-0.5">
+        <div className="flex items-end justify-between gap-1 min-[420px]:gap-2">
+          <div className="space-y-0.5 min-w-0">
             {originalPrice > salePrice && originalPrice > 0 && (
-              <span className="text-xs text-muted-foreground line-through block">
+              <span className="text-2xs text-muted-foreground line-through block min-[420px]:text-xs">
                 R$ {originalPrice.toFixed(2)}
               </span>
             )}
             {salePrice > 0 && (
-              <p className="text-base font-bold text-primary">
+              <p className="text-sm font-bold text-primary min-[420px]:text-base">
                 R$ {salePrice.toFixed(2)}
               </p>
             )}
@@ -142,34 +142,34 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
         </div>
 
         {/* Actions */}
-        <div className="mt-auto flex gap-1.5 pt-1">
+        <div className="mt-auto flex gap-1 pt-1 min-[420px]:gap-1.5">
           <Button
             size="sm"
-            className="h-9 flex-1 text-xs sm:h-8"
+            className="h-8 flex-1 text-2xs min-[420px]:h-9 min-[420px]:text-xs sm:h-8"
             onClick={copyLink}
           >
             <Copy className="h-3 w-3 mr-1" />
-            Copiar link
+            Copiar
           </Button>
           {onSchedule && (
             <Button
               size="icon"
               variant="outline"
-              className="h-9 w-9 shrink-0 sm:h-8 sm:w-8"
+              className="h-8 w-8 shrink-0 min-[420px]:h-9 min-[420px]:w-9 sm:h-8 sm:w-8"
               onClick={() => onSchedule(product)}
               title="Agendar envio"
             >
-              <CalendarDays className="h-3.5 w-3.5" />
+              <CalendarDays className="h-3 w-3 min-[420px]:h-3.5 min-[420px]:w-3.5" />
             </Button>
           )}
           <Button
             size="icon"
             variant="outline"
-            className="h-9 w-9 shrink-0 sm:h-8 sm:w-8"
+            className="h-8 w-8 shrink-0 min-[420px]:h-9 min-[420px]:w-9 sm:h-8 sm:w-8"
             onClick={openAffiliateLink}
             title="Abrir no site"
           >
-            <ExternalLink className="h-3.5 w-3.5" />
+            <ExternalLink className="h-3 w-3 min-[420px]:h-3.5 min-[420px]:w-3.5" />
           </Button>
         </div>
       </CardContent>

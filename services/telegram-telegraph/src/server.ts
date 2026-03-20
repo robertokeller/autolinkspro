@@ -82,6 +82,7 @@ const SESSION_DIR_PREFIX = "tg_";
 const URL_REGEX = /https?:\/\/[^\s<>"']+/gi;
 const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_AUTO_IMAGE_FILE_NAME = "route_image.jpg";
+const OUTBOUND_ECHO_WINDOW_MS = Math.max(10_000, Number(process.env.TELEGRAM_OUTBOUND_ECHO_WINDOW_MS || "120000"));
 // Telegram API credentials — stored in the service .env, never in the frontend bundle
 const DEFAULT_API_ID = Number(process.env.TELEGRAM_API_ID ?? 0);
 const DEFAULT_API_HASH = String(process.env.TELEGRAM_API_HASH ?? "");
@@ -90,6 +91,7 @@ const logger = pino({ level: LOG_LEVEL });
 const app = express();
 const sessionStates = new Map<string, SessionState>();
 const inFlightSends = new Map<string, Promise<{ id: number | null }>>();
+const recentOutboundEchoes = new Map<string, number>();
 let httpServer: ReturnType<typeof app.listen> | null = null;
 let shuttingDown = false;
 
@@ -386,6 +388,45 @@ function parseChatTarget(chatId: string): string {
   return chatId.trim();
 }
 
+function normalizeEchoText(message: string): string {
+  return message.trim().replace(/\s+/g, " ").slice(0, 2048);
+}
+
+function makeOutboundEchoKey(sessionId: string, groupId: string, message: string, hasImage: boolean): string {
+  return `${sessionId}|${groupId}|${normalizeEchoText(message)}|${hasImage ? "image" : "text"}`;
+}
+
+function pruneOutboundEchoes(nowMs: number): void {
+  for (const [key, expiresAt] of recentOutboundEchoes.entries()) {
+    if (expiresAt <= nowMs) {
+      recentOutboundEchoes.delete(key);
+    }
+  }
+}
+
+function rememberOutboundEcho(sessionId: string, groupId: string, message: string, hasImage: boolean): void {
+  const nowMs = Date.now();
+  pruneOutboundEchoes(nowMs);
+  recentOutboundEchoes.set(
+    makeOutboundEchoKey(sessionId, groupId, message, hasImage),
+    nowMs + OUTBOUND_ECHO_WINDOW_MS,
+  );
+}
+
+function isRecentOutboundEcho(sessionId: string, groupId: string, message: string, hasImage: boolean): boolean {
+  const nowMs = Date.now();
+  const key = makeOutboundEchoKey(sessionId, groupId, message, hasImage);
+  const expiresAt = recentOutboundEchoes.get(key);
+  if (!expiresAt) {
+    return false;
+  }
+  if (expiresAt <= nowMs) {
+    recentOutboundEchoes.delete(key);
+    return false;
+  }
+  return true;
+}
+
 function extractUrlsFromMessage(message: string): string[] {
   const rawMatches = message.match(URL_REGEX) || [];
   const urls: string[] = [];
@@ -677,7 +718,7 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       const message = maybe.message;
 
       if (!message) return;
-      if ((message as { out?: boolean }).out) return;
+      const isOutgoing = Boolean((message as { out?: boolean }).out);
 
       // Detect group title changes (service messages with a ChatEditTitle action).
       const action = (message as { action?: { className?: string; title?: string } }).action;
@@ -705,6 +746,10 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
 
       const groupId = formatEntityId(chat);
       const groupName = getEntityName(chat, groupId);
+
+      if (isOutgoing && isRecentOutboundEcho(state.config.sessionId, groupId, content, hasPhoto)) {
+        return;
+      }
 
       let from = "";
       if (maybe.getSender) {
@@ -735,6 +780,7 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
 
       await emitWebhook(state, "message_received", {
         from: from || groupName,
+        fromMe: isOutgoing,
         message: content,
         groupId,
         groupName,
@@ -1444,12 +1490,19 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
     }
 
     let groupName = chatId;
+    let groupId = chatId;
     try {
       const chat = await client.getEntity(entity);
       groupName = getEntityName(chat, chatId);
+      const formattedChatId = formatEntityId(chat);
+      if (formattedChatId) {
+        groupId = formattedChatId;
+      }
     } catch {
       // ignore entity name failures
     }
+
+    rememberOutboundEcho(state.config.sessionId, groupId, outboundMessage, mediaKind === "image");
 
     await emitWebhook(state, "message_sent", {
       to: chatId,

@@ -4138,12 +4138,71 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
           }
         });
 
+        const snapshot = loadDb();
+        const activeMasterLinkedGroupIds = new Set(
+          snapshot.tables.master_group_links
+            .filter((link) => link.is_active !== false)
+            .map((link) => String(link.group_id)),
+        );
+
+        const inviteTargets = snapshot.tables.groups
+          .filter((row) => row.user_id === userId)
+          .filter((row) => row.platform === "whatsapp")
+          .filter((row) => row.session_id === sessionId)
+          .filter((row) => !row.deleted_at)
+          .filter((row) => activeMasterLinkedGroupIds.has(String(row.id)))
+          .filter((row) => !String(row.invite_link || "").trim());
+
+        let inviteChecked = 0;
+        let inviteUpdated = 0;
+        let inviteFailed = 0;
+
+        for (const target of inviteTargets) {
+          const groupId = String(target.external_id || "").trim();
+          if (!groupId) continue;
+          inviteChecked += 1;
+
+          try {
+            const inviteResponse = await callService<{ inviteLink?: string }>(
+              WHATSAPP_MICROSERVICE_URL,
+              `/api/sessions/${encodeURIComponent(sessionId)}/group-invite`,
+              {
+                method: "POST",
+                userId,
+                body: { groupId },
+              },
+            );
+
+            const inviteLink = String(inviteResponse.inviteLink || "").trim();
+            if (!/^https?:\/\//i.test(inviteLink)) {
+              inviteFailed += 1;
+              continue;
+            }
+
+            withDb((db) => {
+              const row = db.tables.groups.find((item) => item.id === target.id && item.user_id === userId);
+              if (!row) return;
+              row.invite_link = inviteLink;
+              row.updated_at = nowIso();
+            });
+
+            inviteUpdated += 1;
+          } catch {
+            inviteFailed += 1;
+          }
+        }
+
         await pollWhatsappEventsForSession(userId, sessionId).catch(() => 0);
         return {
           data: {
             success: true,
             groups: Number(response.count || 0),
             blockedGroups,
+            masterGroupInviteSync: {
+              checked: inviteChecked,
+              updated: inviteUpdated,
+              failed: inviteFailed,
+            },
           },
           error: null,
         };
@@ -4180,6 +4239,36 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       }
     }
 
+
+          if (action === "group_invite") {
+            const groupId = String(body.groupId || "").trim();
+            if (!groupId) return fail("groupId é obrigatório");
+
+            try {
+              const response = await callService<{ groupId?: string; inviteCode?: string; inviteLink?: string }>(
+                WHATSAPP_MICROSERVICE_URL,
+                `/api/sessions/${encodeURIComponent(sessionId)}/group-invite`,
+                {
+                  method: "POST",
+                  userId,
+                  body: { groupId },
+                },
+              );
+
+              return {
+                data: {
+                  success: true,
+                  groupId: String(response.groupId || groupId),
+                  inviteCode: String(response.inviteCode || ""),
+                  inviteLink: String(response.inviteLink || ""),
+                },
+                error: null,
+              };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Falha ao obter convite do grupo";
+              return fail(message);
+            }
+          }
     if (action === "poll_events") {
       const total = await pollWhatsappEventsForSession(userId, sessionId).catch(() => 0);
       return { data: { success: true, events: total }, error: null };
@@ -6749,7 +6838,16 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         });
       });
 
-      return { data: { affiliateLink: response.affiliateLink || url, cached: response.cached, conversionTimeMs: response.conversionTimeMs }, error: null };
+      return {
+        data: {
+          originalLink: url,
+          resolvedLink: url,
+          affiliateLink: response.affiliateLink || url,
+          cached: response.cached,
+          conversionTimeMs: response.conversionTimeMs,
+        },
+        error: null,
+      };
     } catch (error) {
       return fail(error instanceof Error ? error.message : "Falha ao converter link ML");
     } finally {
@@ -6817,20 +6915,53 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       const page = db.tables.link_hub_pages.find((row) => row.slug === slug && row.is_active === true) || null;
       if (!page) return { data: { page: null, groups: [], groupLabels: {} }, error: null };
 
+      const ownerUserId = String(page.user_id || "");
+      const resolvePublicInviteUrl = (group: Record<string, unknown>) => {
+        const explicit = String(group.invite_link || "").trim();
+        if (/^https?:\/\//i.test(explicit)) return explicit;
+
+        const external = String(group.external_id || "").trim();
+        const platform = String(group.platform || "").trim();
+        if (!external) return "";
+        if (/^https?:\/\//i.test(external)) return external;
+
+        if (platform === "telegram") {
+          if (/^@[A-Za-z0-9_]{3,}$/i.test(external)) return `https://t.me/${external.slice(1)}`;
+          if (/^[A-Za-z0-9_]{3,}$/i.test(external)) return `https://t.me/${external}`;
+          return "";
+        }
+
+        if (platform === "whatsapp") {
+          if (/^chat\.whatsapp\.com\/[A-Za-z0-9]+$/i.test(external)) return `https://${external}`;
+          if (/^[A-Za-z0-9]{20,32}$/.test(external)) return `https://chat.whatsapp.com/${external}`;
+          return "";
+        }
+
+        return "";
+      };
+
       const config = (page.config || {}) as Record<string, unknown>;
       const groupIds = Array.isArray(config.groupIds) ? (config.groupIds as string[]) : [];
       const masterGroupIds = Array.isArray(config.masterGroupIds) ? (config.masterGroupIds as string[]) : [];
       const groupLabels = (config.groupLabels || {}) as Record<string, string>;
 
-      const directGroups = db.tables.groups.filter((group) => groupIds.includes(String(group.id)));
+      const directGroups = db.tables.groups.filter((group) => (
+        String(group.user_id || "") === ownerUserId
+        && !group.deleted_at
+        && groupIds.includes(String(group.id))
+      ));
       const linkedGroups = db.tables.master_group_links
-        .filter((link) => masterGroupIds.includes(String(link.master_group_id)))
-        .map((link) => db.tables.groups.find((group) => group.id === link.group_id))
+        .filter((link) => masterGroupIds.includes(String(link.master_group_id)) && link.is_active !== false)
+        .map((link) => db.tables.groups.find((group) => (
+          group.id === link.group_id
+          && String(group.user_id || "") === ownerUserId
+          && !group.deleted_at
+        )))
         .filter(Boolean) as Record<string, unknown>[];
 
-      const groups = [...directGroups, ...linkedGroups].filter(
-        (item, idx, arr) => arr.findIndex((other) => other.id === item.id) === idx,
-      );
+      const groups = [...directGroups, ...linkedGroups]
+        .filter((item, idx, arr) => arr.findIndex((other) => other.id === item.id) === idx)
+        .map((group) => ({ ...group, redirect_url: resolvePublicInviteUrl(group) }));
 
       return { data: { page, groups, groupLabels }, error: null };
     }
@@ -7050,6 +7181,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         sessionRow.error_message = "";
       } else if (action === "sync_groups") {
         return fail("Sincronização indisponível: serviço WhatsApp (Baileys) não configurado.");
+      } else if (action === "group_invite") {
+        return fail("Convite indisponível: serviço WhatsApp (Baileys) não configurado.");
       } else if (action === "send_message") {
         return fail("Envio indisponível: serviço WhatsApp (Baileys) não configurado.");
       } else {

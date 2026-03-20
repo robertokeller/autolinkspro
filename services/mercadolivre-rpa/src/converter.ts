@@ -34,6 +34,7 @@ interface QueueTask {
 export interface ConversionResult {
   success: boolean;
   originalUrl: string;
+  resolvedUrl?: string;
   affiliateLink?: string;
   error?: string;
   cached?: boolean;
@@ -567,11 +568,11 @@ export class MercadoLivreLinkConverter {
       const conversionTimeMs = Date.now() - startTime;
       logger.info({ productUrl, affiliateLink, conversionTimeMs, sessionId }, "Conversion successful");
 
-      return { success: true, originalUrl: productUrl, affiliateLink, conversionTimeMs };
+      return { success: true, originalUrl: productUrl, resolvedUrl, affiliateLink, conversionTimeMs };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error({ productUrl, sessionId, error: message }, "Conversion error");
-      return { success: false, originalUrl: productUrl, error: message };
+      return { success: false, originalUrl: productUrl, resolvedUrl, error: message };
     } finally {
       await context?.close().catch((closeError) => {
         logger.debug({ error: String(closeError) }, "Failed to close browser context");

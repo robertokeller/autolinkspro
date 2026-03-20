@@ -510,7 +510,7 @@ export default function AdminNotifications() {
 
         <TabsContent value="notifications" className="space-y-4">
           <Card className="admin-card">
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
               <CardTitle className="admin-card-title flex items-center gap-2">
                 <Megaphone className="h-4 w-4" />
                 Notificações Criadas
