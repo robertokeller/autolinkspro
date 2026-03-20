@@ -8,6 +8,7 @@ import cors from "cors";
 import pino from "pino";
 import { Api, TelegramClient } from "telegram";
 import { CustomFile } from "telegram/client/uploads.js";
+import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
 
 type SessionStatus = "offline" | "connecting" | "awaiting_code" | "awaiting_password" | "online";
@@ -824,38 +825,30 @@ function buildClient(state: SessionState): TelegramClient {
 async function bindMessageHandler(state: SessionState): Promise<void> {
   if (!state.client || state.messageHandlerBound) return;
 
+  // ── Regular message handler (NewMessage provides getChat / getSender) ──
   state.client.addEventHandler(async (event: unknown) => {
     try {
       if (state.status !== "online") return;
 
-      const maybe = event as { message?: Api.Message; getChat?: () => Promise<unknown>; getSender?: () => Promise<unknown> };
-      const message = maybe.message;
-
+      const msgEvent = event as {
+        message: Api.Message & { out?: boolean; message?: string; media?: unknown };
+        getChat?: () => Promise<unknown>;
+        getSender?: () => Promise<unknown>;
+      };
+      const message = msgEvent.message;
       if (!message) return;
-      const isOutgoing = Boolean((message as { out?: boolean }).out);
 
-      // Detect group title changes (service messages with a ChatEditTitle action).
-      const action = (message as { action?: { className?: string; title?: string } }).action;
-      if (action?.className === "MessageActionChatEditTitle" && action.title && maybe.getChat) {
-        const titleChat = await maybe.getChat();
-        if (titleChat && isGroupLike(titleChat)) {
-          const groupId = formatEntityId(titleChat);
-          await emitWebhook(state, "group_name_update", { id: groupId, name: action.title });
-        }
-        return;
-      }
+      const isOutgoing = Boolean(message.out);
 
-      const contentRaw = (message as { message?: unknown }).message;
-      const content = typeof contentRaw === "string" ? contentRaw.trim() : "";
+      const content = typeof message.message === "string" ? message.message.trim() : "";
 
       // Detect photo/image media attached to the message.
-      const messageMedia = (message as { media?: unknown }).media;
+      const messageMedia = message.media;
       const hasImageMedia = isTelegramImageMedia(messageMedia);
 
       if (!content && !hasImageMedia) return;
 
-      if (!maybe.getChat) return;
-      const chat = await maybe.getChat();
+      const chat = msgEvent.getChat ? await msgEvent.getChat() : undefined;
       if (!chat || !isGroupLike(chat)) return;
 
       const groupId = formatEntityId(chat);
@@ -866,9 +859,9 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       }
 
       let from = "";
-      if (maybe.getSender) {
+      if (msgEvent.getSender) {
         try {
-          const sender = await maybe.getSender();
+          const sender = await msgEvent.getSender();
           from = getEntityName(sender, groupName);
         } catch {
           // ignore sender lookup errors
@@ -909,6 +902,43 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       });
     } catch (error) {
       logger.warn({ sessionId: state.config.sessionId, error: sanitizeError(error) }, "failed to process incoming telegram message");
+    }
+  }, new NewMessage({}));
+
+  // ── Service-message handler (raw) — group title changes ──
+  state.client.addEventHandler(async (event: unknown) => {
+    try {
+      if (state.status !== "online") return;
+
+      const raw = event as {
+        message?: { action?: { className?: string; title?: string }; peerId?: unknown };
+        className?: string;
+      };
+
+      // Only handle UpdateNewMessage / UpdateNewChannelMessage with a service message
+      if (raw.className !== "UpdateNewMessage" && raw.className !== "UpdateNewChannelMessage") return;
+
+      const svcMsg = raw.message;
+      if (!svcMsg) return;
+
+      const action = svcMsg.action;
+      if (action?.className !== "MessageActionChatEditTitle" || !action.title) return;
+
+      // Build group ID from the service message's peerId
+      const peerId = svcMsg.peerId as { className?: string; chatId?: bigint | number; channelId?: bigint | number } | undefined;
+      if (!peerId) return;
+
+      let groupId = "";
+      if (peerId.className === "PeerChannel" && peerId.channelId != null) {
+        groupId = `-100${String(peerId.channelId)}`;
+      } else if (peerId.className === "PeerChat" && peerId.chatId != null) {
+        groupId = `-${String(peerId.chatId)}`;
+      }
+      if (!groupId) return;
+
+      await emitWebhook(state, "group_name_update", { id: groupId, name: action.title });
+    } catch {
+      // ignore service message processing errors
     }
   });
 
