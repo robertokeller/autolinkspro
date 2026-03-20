@@ -347,22 +347,22 @@ export default function ShopeeAutomacoes() {
                       <Badge variant="secondary" className={`text-xs ${auto.is_active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
                         {auto.is_active ? "Ativa" : "Pausada"}
                       </Badge>
-                      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(auto)}>
+                      <Button size="icon" variant="ghost" className="h-9 w-9 sm:h-8 sm:w-8" onClick={() => openEdit(auto)}>
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => duplicateAutomation(auto)} title="Duplicar">
+                      <Button size="icon" variant="ghost" className="h-9 w-9 sm:h-8 sm:w-8" onClick={() => duplicateAutomation(auto)} title="Duplicar">
                         <Copy className="h-3.5 w-3.5" />
                       </Button>
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8"
+                        className="h-9 w-9 sm:h-8 sm:w-8"
                         disabled={isSingleActionPending}
                         onClick={() => { void handleSingleToggleAndRefreshRoutes(auto.id, auto.is_active); }}
                       >
                         {auto.is_active ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                       </Button>
-                      <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => setDeleteId(auto.id)}>
+                      <Button size="icon" variant="ghost" className="h-9 w-9 text-destructive sm:h-8 sm:w-8" onClick={() => setDeleteId(auto.id)}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
@@ -438,7 +438,7 @@ export default function ShopeeAutomacoes() {
 
       {/* Create / Edit Modal */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="max-w-3xl max-h-[90dvh] overflow-y-auto px-6 py-5">
+        <DialogContent className="max-h-[90dvh] w-[min(calc(100vw-1rem),54rem)] max-w-none overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           <DialogHeader>
             <DialogTitle>{editingId ? "Editar automação" : "Nova automação"}</DialogTitle>
           </DialogHeader>

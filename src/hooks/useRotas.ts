@@ -19,7 +19,6 @@ interface RulesJson {
    masterGroupIds?: string[];
   autoConvertShopee?: boolean;
   autoConvertMercadoLivre?: boolean;
-  meliSessionId?: string | null;
   resolvePartnerLinks?: boolean;
   requirePartnerLink?: boolean;
   partnerMarketplaces?: string[];
@@ -52,7 +51,6 @@ function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
     rules: {
       autoConvertShopee: rules.autoConvertShopee ?? false,
       autoConvertMercadoLivre: rules.autoConvertMercadoLivre ?? false,
-      meliSessionId: rules.meliSessionId || null,
       resolvePartnerLinks: rules.resolvePartnerLinks ?? true,
       requirePartnerLink: rules.requirePartnerLink ?? true,
       partnerMarketplaces: Array.isArray(rules.partnerMarketplaces) && rules.partnerMarketplaces.length > 0

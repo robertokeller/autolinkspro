@@ -12,7 +12,7 @@ const statusConfig: Record<Status, { color: string; label: string }> = {
   awaiting_code: { color: "bg-warning", label: "Aguardando código" },
   awaiting_password: { color: "bg-warning", label: "Aguardando senha 2FA" },
   qr_code: { color: "bg-info", label: "Aguardando QR Code" },
-  pairing_code: { color: "bg-warning", label: "Aguardando Pairing Code" },
+  pairing_code: { color: "bg-warning", label: "Aguardando autenticacao" },
 };
 
 interface StatusIndicatorProps {

@@ -27,7 +27,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
-  Copy,
   Loader2,
   Plus,
   QrCode,
@@ -37,7 +36,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatPhoneDisplay, validatePhone } from "@/lib/phone-utils";
+import { formatPhoneDisplay } from "@/lib/phone-utils";
 import type { AuthMethod, SessionStatus, WhatsAppSession } from "@/lib/types";
 import { formatBRT } from "@/lib/timezone";
 import { toast } from "sonner";
@@ -86,8 +85,6 @@ export function SessoesWhatsApp({
   const [sessionFlowStep, setSessionFlowStep] = useState<SessionFlowStep>("form");
 
   const [sessionName, setSessionName] = useState("");
-  const [sessionAuthMethod, setSessionAuthMethod] = useState<AuthMethod>("qr");
-  const [sessionPhone, setSessionPhone] = useState("");
   const [authSessionId, setAuthSessionId] = useState<string | null>(null);
 
   const [editSessionId, setEditSessionId] = useState<string | null>(null);
@@ -97,9 +94,7 @@ export function SessoesWhatsApp({
 
   const previousStatusRef = useRef<Record<string, SessionStatus>>({});
 
-  const isPairingMode = sessionAuthMethod === "pairing";
-  const pairingPhoneValidation = useMemo(() => validatePhone(sessionPhone), [sessionPhone]);
-  const canCreate = sessionName.trim().length > 0 && (!isPairingMode || pairingPhoneValidation.valid) && !isCreating;
+  const canCreate = sessionName.trim().length > 0 && !isCreating;
 
   const authSession = useMemo(
     () => sessions.find((session) => session.id === authSessionId) || null,
@@ -152,8 +147,6 @@ export function SessoesWhatsApp({
   const resetSessionFlow = () => {
     setSessionFlowStep("form");
     setSessionName("");
-    setSessionAuthMethod("qr");
-    setSessionPhone("");
     setAuthSessionId(null);
   };
 
@@ -163,11 +156,6 @@ export function SessoesWhatsApp({
   };
 
   const openAuthFlowForSession = async (session: WhatsAppSession) => {
-    if (session.authMethod === "pairing" && !String(session.phoneNumber || "").trim()) {
-      toast.error("Essa sessão está em modo pairing, mas está sem telefone. Recrie a sessão informando o número.");
-      return;
-    }
-
     setAuthSessionId(session.id);
     setSessionFlowStep("auth");
     setIsSessionFlowOpen(true);
@@ -182,16 +170,10 @@ export function SessoesWhatsApp({
   const handleCreateSession = async () => {
     if (!canCreate) return;
 
-    if (isPairingMode && !pairingPhoneValidation.valid) {
-      toast.error(pairingPhoneValidation.error || "Informe um telefone válido para usar Pairing Code.");
-      return;
-    }
-
     try {
       const createdId = await onCreateSession({
         name: sessionName.trim(),
-        authMethod: sessionAuthMethod,
-        phone: isPairingMode ? pairingPhoneValidation.normalized : undefined,
+        authMethod: "qr" as AuthMethod,
       });
 
       setAuthSessionId(createdId);
@@ -258,13 +240,6 @@ export function SessoesWhatsApp({
     }
   };
 
-  const handleCopyPairingCode = async () => {
-    const code = String(authSession?.pairingCode || "").trim();
-    if (!code) return;
-    await navigator.clipboard.writeText(code);
-    toast.success("Pairing code copiado.");
-  };
-
   // ── Auth step content ──────────────────────────────────────────────────────
   const renderAuthStep = () => {
     if (!authSession) return null;
@@ -299,7 +274,7 @@ export function SessoesWhatsApp({
           </div>
           <div className="text-center">
             <p className="font-semibold">
-              {authSession.authMethod === "pairing" ? "Não deu pra gerar o Pairing Code" : "Não deu pra gerar o QR Code"}
+              Não deu pra gerar o QR Code
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
               O serviço WhatsApp parece estar fora do ar.
@@ -324,19 +299,14 @@ export function SessoesWhatsApp({
       );
     }
 
-    if (authSession.status === "pairing_code" && authSession.pairingCode) {
+    if (authSession.status === "pairing_code") {
       return (
         <div className="flex flex-col items-center gap-4 py-2">
-          <div className="w-full rounded-xl border bg-muted/20 p-4 text-center">
-            <p className="text-xs text-muted-foreground">Pairing Code</p>
-            <p className="mt-1 break-all text-3xl font-semibold tracking-[0.2em]">{authSession.pairingCode}</p>
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-warning/15">
+            <AlertTriangle className="h-8 w-8 text-warning" />
           </div>
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { void handleCopyPairingCode(); }}>
-            <Copy className="h-3.5 w-3.5" />
-            Copiar código
-          </Button>
           <p className="text-center text-sm text-muted-foreground">
-            No WhatsApp do celular: <strong>Aparelhos conectados</strong> → <strong>Conectar com número de telefone</strong> e digite o código acima.
+            O modo Pairing Code foi desativado. Desconecte e conecte novamente usando QR Code.
           </p>
         </div>
       );
@@ -348,7 +318,7 @@ export function SessoesWhatsApp({
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
         <div className="text-center">
           <p className="font-semibold">
-            {authSession.authMethod === "pairing" ? "Gerando Pairing Code..." : "Gerando QR Code..."}
+            Gerando QR Code...
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
             Esperando resposta do WhatsApp. Pode levar alguns segundos.
@@ -364,7 +334,7 @@ export function SessoesWhatsApp({
       {/* Header bar */}
       <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[70%]">
-          Conecte contas WhatsApp por QR Code ou Pairing Code. A conexão fica sendo monitorada o tempo todo.
+          Conecte contas WhatsApp por QR Code. A conexão fica sendo monitorada o tempo todo.
         </p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={onRefresh}>
@@ -388,7 +358,7 @@ export function SessoesWhatsApp({
         <EmptyState
           icon={QrCode}
           title="Nenhuma conta WhatsApp"
-          description="Crie uma conta e conecte por QR Code ou Pairing Code."
+          description="Crie uma conta e conecte por QR Code."
           actionLabel="Nova conta"
           onAction={openCreateFlow}
         />
@@ -478,7 +448,7 @@ export function SessoesWhatsApp({
                               <QrCode className="h-3 w-3" />
                             )}
                             {isBusy
-                              ? (session.authMethod === "pairing" || session.status === "pairing_code" ? "Ver código" : "Ver QR Code")
+                              ? "Ver QR Code"
                               : "Conectar"}
                           </Button>
                         )}
@@ -546,44 +516,11 @@ export function SessoesWhatsApp({
               <DialogHeader>
                 <DialogTitle>Nova conta WhatsApp</DialogTitle>
                 <DialogDescription>
-                  Dê um nome e escolha como quer conectar: QR Code ou Pairing Code.
+                  Dê um nome para a conta e conecte usando QR Code.
                 </DialogDescription>
               </DialogHeader>
 
               <div className="space-y-4 py-2">
-                <div className="space-y-2">
-                  <Label>Método de conexão</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      className={cn(
-                        "h-10 rounded-md border text-sm font-medium transition-colors",
-                        sessionAuthMethod === "qr"
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border bg-background hover:bg-muted/40",
-                      )}
-                      onClick={() => setSessionAuthMethod("qr")}
-                    >
-                      QR Code
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        "h-10 rounded-md border text-sm font-medium transition-colors",
-                        sessionAuthMethod === "pairing"
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border bg-background hover:bg-muted/40",
-                      )}
-                      onClick={() => setSessionAuthMethod("pairing")}
-                    >
-                      Pairing Code
-                    </button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Pairing Code é melhor para quem está no celular e não consegue ler QR.
-                  </p>
-                </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="wa-session-name">Nome da sessão</Label>
                   <Input
@@ -595,32 +532,10 @@ export function SessoesWhatsApp({
                     autoFocus
                     onKeyDown={(e) => e.key === "Enter" && canCreate && void handleCreateSession()}
                   />
-                  {sessionAuthMethod === "qr" && (
-                    <p className="text-xs text-muted-foreground">
-                      O número do celular aparece sozinho depois que você conectar pelo QR Code.
-                    </p>
-                  )}
+                  <p className="text-xs text-muted-foreground">
+                    O número do celular aparece sozinho depois que você conectar pelo QR Code.
+                  </p>
                 </div>
-
-                {sessionAuthMethod === "pairing" && (
-                  <div className="space-y-2">
-                    <Label htmlFor="wa-session-phone">Telefone do WhatsApp</Label>
-                    <Input
-                      id="wa-session-phone"
-                      value={sessionPhone}
-                      onChange={(e) => setSessionPhone(e.target.value)}
-                      placeholder="+55 (11) 99999-9999"
-                      className="h-10"
-                      onKeyDown={(e) => e.key === "Enter" && canCreate && void handleCreateSession()}
-                    />
-                    {!pairingPhoneValidation.valid && sessionPhone.trim().length > 0 && (
-                      <p className="text-xs text-destructive">{pairingPhoneValidation.error || "Telefone inválido"}</p>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      Use o número da conta WhatsApp que será conectada via Pairing Code.
-                    </p>
-                  </div>
-                )}
                 </div>
 
               <div className="flex justify-end gap-2 pt-2">
@@ -651,16 +566,12 @@ export function SessoesWhatsApp({
                 <DialogTitle>
                   {authSession?.status === "online"
                     ? "Conta conectada!"
-                    : authSession?.authMethod === "pairing"
-                      ? "Use o Pairing Code"
-                      : "Leia o QR Code"}
+                    : "Leia o QR Code"}
                 </DialogTitle>
                 <DialogDescription>
                   {authSession?.status === "online"
                     ? `${authSession.name} está pronta.`
-                    : authSession?.authMethod === "pairing"
-                      ? "Abra o WhatsApp no celular e conecte com código numérico."
-                      : "Use o WhatsApp no celular pra ler o código."}
+                    : "Use o WhatsApp no celular pra ler o código."}
                 </DialogDescription>
               </DialogHeader>
 
@@ -679,7 +590,7 @@ export function SessoesWhatsApp({
                     <CheckCircle2 className="mr-2 h-4 w-4" />
                     Concluir
                   </Button>
-                ) : authSession?.status === "warning" ? (
+                ) : (authSession?.status === "warning" || authSession?.status === "pairing_code") ? (
                   <>
                     <Button
                       variant="outline"

@@ -184,7 +184,7 @@ export default function ShopeeVitrine() {
   const anyLoading = state.loading;
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6">
+    <div className="mx-auto w-full max-w-7xl space-y-5 pb-[calc(var(--safe-area-bottom)+0.5rem)] sm:space-y-6">
       <PageHeader title="Vitrine de ofertas" description="Produtos em destaque com links de afiliado">
         {isConfigured && (
           <Button size="sm" variant="outline" onClick={refreshCurrent} disabled={anyLoading}>
@@ -200,7 +200,7 @@ export default function ShopeeVitrine() {
         <>
           {/* Tab bar */}
           <ScrollArea className="w-full whitespace-nowrap">
-            <div className="flex min-w-full justify-center gap-2.5 pb-2.5">
+            <div className="flex min-w-full justify-start gap-2.5 pb-2.5 sm:justify-center">
               {TABS.map((tab) => {
                 const Icon = tab.icon;
                 return (
@@ -208,7 +208,7 @@ export default function ShopeeVitrine() {
                     key={tab.key}
                     size="sm"
                     variant={activeTab === tab.key ? "default" : "outline"}
-                    className="h-9 shrink-0 gap-2 rounded-full px-4 text-sm"
+                    className="h-9 shrink-0 gap-2 rounded-full px-4 text-sm sm:h-10"
                     onClick={() => handleTabClick(tab.key)}
                     disabled={state.loading}
                   >
@@ -223,7 +223,7 @@ export default function ShopeeVitrine() {
 
           {/* Loading */}
           {state.loading && (
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
+            <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
               {Array.from({ length: 8 }).map((_, i) => <ProductCardSkeleton key={i} />)}
             </div>
           )}
@@ -231,14 +231,14 @@ export default function ShopeeVitrine() {
           {/* Products */}
           {!state.loading && state.products.length > 0 && (
             <>
-              <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
+              <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
                 {state.products.map((p, idx) => (
                   <ProductCard key={p.id} product={p} onSchedule={setScheduleProduct} priorityImage={idx < 4} />
                 ))}
               </div>
               {state.hasMore && (
                 <div className="flex justify-center pt-5">
-                  <Button variant="outline" onClick={loadMore} disabled={state.loadingMore}>
+                  <Button variant="outline" className="w-full sm:w-auto" onClick={loadMore} disabled={state.loadingMore}>
                     {state.loadingMore ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <ShoppingBag className="h-4 w-4 mr-1.5" />}
                     Carregar mais
                   </Button>

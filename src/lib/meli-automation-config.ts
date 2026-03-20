@@ -5,8 +5,9 @@ export interface MeliAutomationConfigView {
   vitrineTabs: string[];
 }
 
-const DEFAULT_MELI_VITRINE_TAB = "top_performance";
+const DEFAULT_MELI_VITRINE_TAB = "destaques";
 const MELI_VITRINE_ALLOWED_TABS = new Set([
+  "destaques",
   "top_performance",
   "mais_vendidos",
   "ofertas_quentes",
@@ -14,21 +15,22 @@ const MELI_VITRINE_ALLOWED_TABS = new Set([
 ]);
 
 const MELI_VITRINE_TAB_ALIASES: Record<string, string> = {
-  all: "top_performance",
+  all: "destaques",
+  destaques: "destaques",
   top_performance: "top_performance",
   mais_vendidos: "mais_vendidos",
   ofertas_quentes: "ofertas_quentes",
   melhor_avaliados: "melhor_avaliados",
-  beleza_cuidados: "top_performance",
-  calcados_roupas_bolsas: "top_performance",
-  casa_moveis_decoracao: "top_performance",
-  celulares_telefones: "top_performance",
-  construcao: "top_performance",
-  eletrodomesticos: "top_performance",
-  esportes_fitness: "top_performance",
-  ferramentas: "top_performance",
-  informatica: "top_performance",
-  saude: "top_performance",
+  beleza_cuidados: "destaques",
+  calcados_roupas_bolsas: "destaques",
+  casa_moveis_decoracao: "destaques",
+  celulares_telefones: "destaques",
+  construcao: "destaques",
+  eletrodomesticos: "destaques",
+  esportes_fitness: "destaques",
+  ferramentas: "destaques",
+  informatica: "destaques",
+  saude: "destaques",
 };
 
 function normalizeMarketplace(value: unknown): "meli" | "shopee" {

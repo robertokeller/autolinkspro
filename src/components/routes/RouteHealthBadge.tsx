@@ -118,17 +118,18 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
     } else if (!meliOnline) {
       steps.push({ label: "Conversão ML", status: "warn", detail: "Serviço Mercado Livre está offline" });
     } else {
-      const meliSessionId = route.rules.meliSessionId;
-      if (!meliSessionId) {
-        steps.push({ label: "Conversão ML", status: "warn", detail: "Nenhuma sessão ML configurada" });
+      const meliSessions = Array.from(meliSessionsById.values());
+      if (meliSessions.length === 0) {
+        steps.push({ label: "Conversão ML", status: "warn", detail: "Nenhuma sessão ML disponível" });
       } else {
-        const meliSession = meliSessionsById.get(meliSessionId);
-        if (!meliSession) {
-          steps.push({ label: "Conversão ML", status: "error", detail: "Sessão ML não encontrada" });
-        } else if (meliSession.status === "active") {
-          steps.push({ label: "Conversão ML", status: "ok", detail: `Sessão "${meliSession.name}" ativa` });
-        } else if (meliSession.status === "untested") {
-          steps.push({ label: "Conversão ML", status: "warn", detail: `Sessão "${meliSession.name}" não testada` });
+        const preferred = meliSessions.find((session) => session.status === "active")
+          || meliSessions.find((session) => session.status === "untested")
+          || meliSessions[0];
+
+        if (preferred.status === "active") {
+          steps.push({ label: "Conversão ML", status: "ok", detail: `Sessão "${preferred.name}" ativa` });
+        } else if (preferred.status === "untested") {
+          steps.push({ label: "Conversão ML", status: "warn", detail: `Sessão "${preferred.name}" não testada` });
         } else {
           const statusLabels: Record<string, string> = {
             expired: "expirada",
@@ -136,8 +137,8 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
             no_affiliate: "sem acesso a afiliados",
             error: "com erro",
           };
-          const label = statusLabels[meliSession.status] ?? meliSession.status;
-          steps.push({ label: "Conversão ML", status: "error", detail: `Sessão "${meliSession.name}" ${label}` });
+          const label = statusLabels[preferred.status] ?? preferred.status;
+          steps.push({ label: "Conversão ML", status: "error", detail: `Sessão "${preferred.name}" ${label}` });
         }
       }
     }

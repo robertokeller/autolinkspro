@@ -8,6 +8,7 @@ import {
   History,
   LayoutDashboard,
   LayoutGrid,
+  Layers,
   Link2,
   LogOut,
   Route,
@@ -285,6 +286,15 @@ export function AppSidebar() {
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
+
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.connectionsMasterGroups)} tooltip="Grupos Mestres">
+                  <Link to={ROUTES.app.connectionsMasterGroups} onClick={closeMobileSidebar}>
+                    <Layers className="h-4 w-4" />
+                    <span>Grupos Mestres</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -305,7 +315,7 @@ export function AppSidebar() {
               <button
                 onClick={handleSignOut}
                 title="Sair"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                className="touch-target flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive md:h-9 md:w-9"
               >
                 <LogOut className="h-4 w-4" />
               </button>

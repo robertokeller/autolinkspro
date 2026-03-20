@@ -3,12 +3,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Card, CardContent } from "@/components/ui/card";
 import { CalendarDays, Clock, Send } from "lucide-react";
 import { useTemplates } from "@/hooks/useTemplates";
 import { useGrupos } from "@/hooks/useGrupos";
@@ -16,11 +12,9 @@ import { useSessoes } from "@/hooks/useSessoes";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import { applyMeliTemplatePlaceholders, buildMeliTemplatePlaceholderData } from "@/lib/meli-template-placeholders";
-import type { RecurrenceType, ScheduledMediaAttachment, ScheduledPost, WeekDay } from "@/lib/types";
+import type { ScheduledMediaAttachment, ScheduledPost } from "@/lib/types";
 import { toast } from "sonner";
-import { WEEK_DAYS, mergeDateWithScheduleTime, normalizeScheduleTime } from "@/lib/scheduling";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
-import { TimePickerField } from "@/components/scheduling/TimePickerField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
 import { formatBRT } from "@/lib/timezone";
@@ -49,12 +43,6 @@ const MAX_SCHEDULE_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function dataUrlToBase64(dataUrl: string): string {
   return dataUrl.includes(",") ? dataUrl.split(",")[1] : "";
-}
-
-function getTimeFromDateTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaAttachment> {
@@ -121,6 +109,13 @@ export function MercadoLivreScheduleModal({
   const { allSessions } = useSessoes();
   const { createPost, updatePost } = useAgendamentos();
   const isEditing = Boolean(editingPost);
+  const onlineSessions = useMemo(
+    () => allSessions.filter((session) => session.status === "online"),
+    [allSessions],
+  );
+  const availableSessions = onlineSessions.length > 0 ? onlineSessions : allSessions;
+  const hasSingleAvailableSession = availableSessions.length <= 1;
+  const defaultSessionId = availableSessions[0]?.id || "";
 
   const [scheduleName, setScheduleName] = useState("");
   const [messageContent, setMessageContent] = useState("");
@@ -130,16 +125,13 @@ export function MercadoLivreScheduleModal({
   const [selectedMasterGroups, setSelectedMasterGroups] = useState<string[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
-  const [isRecurring, setIsRecurring] = useState(false);
-  const [weekDays, setWeekDays] = useState<WeekDay[]>([]);
-  const [recurrenceTimes, setRecurrenceTimes] = useState<string[]>([]);
-  const [recurrenceTimeInput, setRecurrenceTimeInput] = useState("");
   const [imageAttachment, setImageAttachment] = useState<ScheduledMediaAttachment | null>(null);
   const [preparingImageAttachment, setPreparingImageAttachment] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const effectiveSessionId = selectedSessionId || defaultSessionId;
 
   const { filteredGroups, filteredMasterGroups } = useSessionScopedGroups({
-    sessionId: selectedSessionId,
+    sessionId: effectiveSessionId,
     groups: syncedGroups,
     masterGroups,
   });
@@ -217,24 +209,22 @@ export function MercadoLivreScheduleModal({
     if (!open) return;
     if (!editingPost) return;
 
-    const recurring = editingPost.recurrence !== "none";
     setScheduleName(editingPost.name || "");
     setMessageContent(editingPost.content || "");
     setSelectedTemplateId(editingPost.templateId || "");
     setSelectedGroups([...editingPost.destinationGroupIds]);
     setSelectedMasterGroups([...editingPost.masterGroupIds]);
-    setSelectedSessionId(editingPost.sessionId || "");
+    setSelectedSessionId(editingPost.sessionId || defaultSessionId);
     setScheduledAt(editingPost.scheduledAt ? formatBRT(editingPost.scheduledAt, "yyyy-MM-dd'T'HH:mm") : "");
-    setIsRecurring(recurring);
-    setWeekDays([...editingPost.weekDays]);
-    setRecurrenceTimes(
-      editingPost.recurrenceTimes.length > 0
-        ? [...editingPost.recurrenceTimes]
-        : (recurring ? [getTimeFromDateTime(editingPost.scheduledAt)].filter(Boolean) : []),
-    );
-    setRecurrenceTimeInput("");
     setImageAttachment(editingPost.media || null);
-  }, [editingPost, open]);
+  }, [defaultSessionId, editingPost, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (selectedSessionId) return;
+    if (!defaultSessionId) return;
+    setSelectedSessionId(defaultSessionId);
+  }, [defaultSessionId, open, selectedSessionId]);
 
   useEffect(() => {
     if (!open || editingPost || !product) return;
@@ -282,34 +272,6 @@ export function MercadoLivreScheduleModal({
     setMessageContent(nextContent || fallbackContent);
   };
 
-  const toggleWeekDay = (day: WeekDay) =>
-    setWeekDays((prev) => (prev.includes(day) ? prev.filter((item) => item !== day) : [...prev, day]));
-
-  const addRecurrenceTime = () => {
-    const normalized = normalizeScheduleTime(recurrenceTimeInput);
-    if (!normalized) {
-      toast.error("Horario invalido - use o formato HH:mm");
-      return;
-    }
-    setRecurrenceTimes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized].sort()));
-    setRecurrenceTimeInput("");
-  };
-
-  const removeRecurrenceTime = (time: string) => {
-    setRecurrenceTimes((prev) => prev.filter((item) => item !== time));
-  };
-
-  const toggleRecurrence = () => {
-    setIsRecurring((prev) => {
-      const next = !prev;
-      if (next && recurrenceTimes.length === 0) {
-        const base = normalizeScheduleTime(scheduledAt.slice(11, 16));
-        if (base) setRecurrenceTimes([base]);
-      }
-      return next;
-    });
-  };
-
   const handleSchedule = async () => {
     if (!scheduleName.trim()) {
       toast.error("Defina um nome para o agendamento");
@@ -319,16 +281,8 @@ export function MercadoLivreScheduleModal({
       toast.error("Escreva o conteudo da mensagem");
       return;
     }
-    if (!isRecurring && !scheduledAt) {
+    if (!scheduledAt) {
       toast.error("Escolha a data e o horario");
-      return;
-    }
-    if (isRecurring && weekDays.length === 0) {
-      toast.error("Escolha pelo menos um dia da semana");
-      return;
-    }
-    if (isRecurring && recurrenceTimes.length === 0) {
-      toast.error("Adicione pelo menos um horario");
       return;
     }
     if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
@@ -344,11 +298,6 @@ export function MercadoLivreScheduleModal({
       return;
     }
 
-    const recurrence: RecurrenceType = isRecurring ? "weekly" : "none";
-    const effectiveScheduledAt = recurrence === "weekly"
-      ? mergeDateWithScheduleTime(scheduledAt || new Date().toISOString(), recurrenceTimes[0] || "")
-      : scheduledAt;
-
     setSubmitting(true);
     try {
       const content = messageContent.trim();
@@ -362,14 +311,14 @@ export function MercadoLivreScheduleModal({
         name: scheduleName.trim(),
         content,
         finalContent: content,
-        scheduledAt: effectiveScheduledAt,
-        recurrence,
+        scheduledAt,
+        recurrence: "none" as const,
         destinationGroupIds: selectedGroups,
         masterGroupIds: selectedMasterGroups,
         templateId: resolvedTemplateId || undefined,
-        sessionId: selectedSessionId || undefined,
-        weekDays: recurrence === "weekly" ? weekDays : [],
-        recurrenceTimes: recurrence === "weekly" ? recurrenceTimes : [],
+        sessionId: effectiveSessionId || undefined,
+        weekDays: [],
+        recurrenceTimes: [],
         messageType: detectedLinks.length > 0 || requiresImageAttachment ? "offer" : "text",
         detectedLinks,
         templateData: scheduleTemplateData,
@@ -401,10 +350,6 @@ export function MercadoLivreScheduleModal({
     setSelectedTemplateId("");
     setSelectedSessionId("");
     setScheduledAt("");
-    setIsRecurring(false);
-    setWeekDays([]);
-    setRecurrenceTimes([]);
-    setRecurrenceTimeInput("");
     setImageAttachment(null);
     setPreparingImageAttachment(false);
   };
@@ -481,119 +426,66 @@ export function MercadoLivreScheduleModal({
             </p>
           </div>
 
-          <div className="space-y-2">
-            <Label>Repetir envio</Label>
-            <div className="flex items-center gap-2">
-              <Switch id="is-recurring-meli" checked={isRecurring} onCheckedChange={toggleRecurrence} />
-              <Label htmlFor="is-recurring-meli">Repetir nos dias escolhidos</Label>
-            </div>
-          </div>
-
-          {!isRecurring && (
-            <DateTimeField
-              value={scheduledAt}
-              onChange={setScheduledAt}
-              label="Data e hora"
-              required
-            />
-          )}
-
-          {isRecurring && (
-            <div className="space-y-2">
-              <Label>Dias da semana *</Label>
-              <div className="flex flex-wrap gap-2">
-                {WEEK_DAYS.map((day) => (
-                  <label key={day.value} className="flex cursor-pointer items-center gap-1.5">
-                    <Checkbox checked={weekDays.includes(day.value)} onCheckedChange={() => toggleWeekDay(day.value)} />
-                    <span className="text-sm">{day.label}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {isRecurring && (
-            <Card>
-              <CardContent className="space-y-2 p-4">
-                <Label>Horarios *</Label>
-                <div className="flex items-center gap-2">
-                  <TimePickerField
-                    value={recurrenceTimeInput}
-                    onChange={setRecurrenceTimeInput}
-                    className="flex-1"
-                    placeholder="Selecionar horario"
-                  />
-                  <Button type="button" variant="outline" onClick={addRecurrenceTime} disabled={!recurrenceTimeInput}>
-                    Adicionar
-                  </Button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {recurrenceTimes.map((time) => (
-                    <Badge key={time} variant="secondary" className="cursor-pointer" onClick={() => removeRecurrenceTime(time)}>
-                      <span className="tabular-nums">{time}</span> x
-                    </Badge>
-                  ))}
-                  {recurrenceTimes.length === 0 && (
-                    <span className="text-xs text-muted-foreground">Escolha um horario e adicione outros se necessario</span>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {isRecurring && (
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">
-                Com recorrencia ativa, o envio segue os dias e horarios escolhidos.
-              </Label>
-            </div>
-          )}
+          <DateTimeField
+            value={scheduledAt}
+            onChange={setScheduledAt}
+            label="Data e hora"
+            required
+          />
 
           <div className="space-y-2">
             <Label>Sessao *</Label>
-            <SessionSelect
-              value={selectedSessionId}
-              onValueChange={handleSessionChange}
-              sessions={allSessions}
-              placeholder="Escolha uma sessao..."
-              emptyLabel="Nenhuma sessao conectada"
-            />
+            {hasSingleAvailableSession ? (
+              <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                {availableSessions[0]?.label || "Nenhuma sessao conectada"}
+              </div>
+            ) : (
+              <SessionSelect
+                value={selectedSessionId}
+                onValueChange={handleSessionChange}
+                sessions={availableSessions}
+                placeholder="Escolha uma sessao..."
+                emptyLabel="Nenhuma sessao conectada"
+              />
+            )}
           </div>
 
           <div className="space-y-2">
             <Label className="text-xs">Grupos</Label>
-            {!selectedSessionId ? (
+            {!effectiveSessionId ? (
               <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
                 Selecione uma sessao para listar os grupos disponiveis.
               </div>
             ) : (
               <>
                 <MultiOptionDropdown
-                  label="Grupos diretos"
-                  selectedLabel="grupos"
-                  options={filteredGroups.map((group) => ({
+                  value={selectedGroups}
+                  onChange={setSelectedGroups}
+                  items={filteredGroups.map((group) => ({
                     id: group.id,
                     label: group.name,
-                    description: group.platform,
+                    meta: group.platform,
                   }))}
-                  selectedValues={selectedGroups}
-                  onChange={setSelectedGroups}
+                  placeholder="Escolher grupos"
+                  selectedLabel={(count) => `${count} grupo(s)`}
+                  emptyMessage="Nenhum grupo nessa sessao"
+                  title="Grupos diretos"
                   maxHeightClassName="max-h-56"
-                  searchPlaceholder="Buscar grupo..."
                 />
 
                 <MultiOptionDropdown
-                  label="Grupos mestre"
-                  selectedLabel="grupos mestre"
-                  options={filteredMasterGroups.map((master) => ({
+                  value={selectedMasterGroups}
+                  onChange={setSelectedMasterGroups}
+                  items={filteredMasterGroups.map((master) => ({
                     id: master.id,
                     label: master.name,
-                    description: `${master.groupIds.length} grupo(s)`,
+                    meta: `${master.groupIds.length} grupo(s)`,
                   }))}
-                  selectedValues={selectedMasterGroups}
-                  onChange={setSelectedMasterGroups}
+                  placeholder="Escolher grupos mestre"
+                  selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                  emptyMessage="Nenhum grupo mestre nessa sessao"
+                  title="Grupos mestre"
                   maxHeightClassName="max-h-56"
-                  searchPlaceholder="Buscar grupo mestre..."
                 />
               </>
             )}

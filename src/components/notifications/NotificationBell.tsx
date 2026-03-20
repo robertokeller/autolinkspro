@@ -199,7 +199,7 @@ export function NotificationBell() {
             variant="outline"
             size="icon"
             className={cn(
-              "relative h-10 w-10 transition-all sm:h-9 sm:w-9",
+              "touch-target relative h-10 w-10 rounded-lg transition-all sm:h-9 sm:w-9",
               unreadCount > 0 && "border-primary/50 shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]",
             )}
             aria-label={unreadCount > 0 ? `${unreadCount} notificações não lidas` : "Notificações"}
@@ -281,8 +281,8 @@ export function NotificationBell() {
 
       {/* ── Central de Notificações (dialog) ──────────────────── */}
       <Dialog open={openCenter} onOpenChange={setOpenCenter}>
-        <DialogContent className="flex h-[85dvh] max-w-[min(42rem,calc(100vw-1rem))] flex-col gap-0 overflow-hidden p-0">
-          <DialogHeader className="shrink-0 border-b px-6 py-4">
+        <DialogContent className="flex h-[88dvh] w-[min(calc(100vw-1rem),42rem)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:h-[85dvh]">
+          <DialogHeader className="shrink-0 border-b px-4 py-3 sm:px-6 sm:py-4">
             <div className="flex items-center justify-between">
               <div>
                 <DialogTitle className="flex items-center gap-2">
@@ -307,7 +307,7 @@ export function NotificationBell() {
             </div>
           </DialogHeader>
 
-          <ScrollArea className="flex-1 px-6 py-4">
+          <ScrollArea className="flex-1 px-4 py-3 sm:px-6 sm:py-4">
             {items.filter((i) => i.status !== "dismissed").length === 0 && (
               <div className="flex flex-col items-center gap-3 py-16 text-center">
                 <Bell className="h-12 w-12 text-muted-foreground/20" />
@@ -370,7 +370,7 @@ export function NotificationBell() {
 
       {/* ── Login popup (critical alert) ──────────────────────── */}
       <Dialog open={popupOpen} onOpenChange={setPopupOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="w-[min(calc(100vw-1rem),32rem)] max-w-none">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2.5">
               {popupItem?.announcement?.severity === "critical" && (

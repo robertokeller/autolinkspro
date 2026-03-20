@@ -5,6 +5,7 @@ import type { AnyNode } from "domhandler";
 import { execute, query, queryOne, transaction } from "./db.js";
 
 export type MeliVitrineTabKey =
+  | "destaques"
   | "top_performance"
   | "mais_vendidos"
   | "ofertas_quentes"
@@ -26,7 +27,7 @@ const MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS = Math.max(
 );
 const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 const MELI_BASE_URL = "https://www.mercadolivre.com.br";
-const DEFAULT_TAB_KEY: MeliVitrineTabKey = "top_performance";
+const DEFAULT_TAB_KEY: MeliVitrineTabKey = "destaques";
 const PAUSED_AD_MARKERS = ["anuncio pausado", "publicacao pausada"];
 const BLOCKED_HTML_MARKERS = [
   "captcha",
@@ -39,24 +40,33 @@ const BLOCKED_HTML_MARKERS = [
 ];
 
 const MELI_VITRINE_TAB_ALIAS_MAP: Record<string, MeliVitrineTabKey> = {
-  all: "top_performance",
+  all: "destaques",
+  destaques: "destaques",
   top_performance: "top_performance",
   mais_vendidos: "mais_vendidos",
   ofertas_quentes: "ofertas_quentes",
   melhor_avaliados: "melhor_avaliados",
-  beleza_cuidados: "top_performance",
-  calcados_roupas_bolsas: "top_performance",
-  casa_moveis_decoracao: "top_performance",
-  celulares_telefones: "top_performance",
-  construcao: "top_performance",
-  eletrodomesticos: "top_performance",
-  esportes_fitness: "top_performance",
-  ferramentas: "top_performance",
-  informatica: "top_performance",
-  saude: "top_performance",
+  beleza_cuidados: "destaques",
+  calcados_roupas_bolsas: "destaques",
+  casa_moveis_decoracao: "destaques",
+  celulares_telefones: "destaques",
+  construcao: "destaques",
+  eletrodomesticos: "destaques",
+  esportes_fitness: "destaques",
+  ferramentas: "destaques",
+  informatica: "destaques",
+  saude: "destaques",
 };
 
 export const MELI_VITRINE_TABS: MeliVitrineTabConfig[] = [
+  {
+    key: "destaques",
+    label: "Destaques",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/promotom/lists/8f90988a-1c69-4f23-8b26-76286c3cdc87",
+      "https://www.mercadolivre.com.br/social/techdealsbr/lists/50eac525-4695-49f7-812c-5522ad1d667a",
+    ],
+  },
   {
     key: "top_performance",
     label: "Top Performance",
@@ -188,6 +198,18 @@ export type MeliVitrineListResult = {
   stale: boolean;
 };
 
+export type MeliProductSnapshot = {
+  productUrl: string;
+  title: string;
+  imageUrl: string;
+  price: number | null;
+  oldPrice: number | null;
+  installmentsText: string;
+  seller: string;
+  rating: number | null;
+  reviewsCount: number | null;
+};
+
 let syncInFlight: Promise<MeliVitrineSyncResult> | null = null;
 let lastEmptyAutoSyncAtMs = 0;
 
@@ -247,6 +269,23 @@ function parseReviewsCount(value: string): number | null {
   return parsed > 0 ? parsed : null;
 }
 
+function parseDecimalNumber(value: unknown): number | null {
+  const normalized = normalizeText(String(value || "")).replace(",", ".");
+  if (!normalized) return null;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function parseStringifiedNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function priceFromCents(value: number | null | undefined): number | null {
+  if (!Number.isFinite(Number(value)) || Number(value) <= 0) return null;
+  return Number((Number(value) / 100).toFixed(2));
+}
+
 function normalizeSeller(value: string): string {
   const normalized = normalizeText(value);
   return normalized.replace(/^por\s+/i, "").trim();
@@ -294,6 +333,27 @@ function sanitizeBadgeText(value: string): string {
   return normalized;
 }
 
+function readJsonStringCapture(value: string): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  try {
+    return JSON.parse(`"${normalized.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+  } catch {
+    return normalized;
+  }
+}
+
+function extractRegexString(input: string, pattern: RegExp): string {
+  const match = input.match(pattern);
+  return match?.[1] ? readJsonStringCapture(String(match[1])) : "";
+}
+
+function extractRegexNumber(input: string, pattern: RegExp): number | null {
+  const match = input.match(pattern);
+  if (!match?.[1]) return null;
+  return parseStringifiedNumber(match[1]);
+}
+
 function extractFirstSrcsetUrl(value: string): string {
   const normalized = normalizeText(value);
   if (!normalized) return "";
@@ -336,6 +396,211 @@ function canonicalizeProductUrl(raw: string): string {
   }
 }
 
+function parseJsonLdBlocks(html: string): unknown[] {
+  const $ = load(html);
+  const out: unknown[] = [];
+
+  $("script[type='application/ld+json']").each((_, element) => {
+    const raw = String($(element).contents().text() || "").trim();
+    if (!raw) return;
+    try {
+      out.push(JSON.parse(raw));
+    } catch {
+      // Ignore malformed JSON-LD blocks and continue with the next one.
+    }
+  });
+
+  return out;
+}
+
+function flattenJsonLdNodes(input: unknown): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const queue: unknown[] = [input];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) continue;
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    if (typeof current !== "object") continue;
+
+    const record = current as Record<string, unknown>;
+    out.push(record);
+    if (Array.isArray(record["@graph"])) queue.push(...record["@graph"]);
+  }
+
+  return out;
+}
+
+function findJsonLdProductRecord(html: string): Record<string, unknown> | null {
+  const blocks = parseJsonLdBlocks(html);
+  for (const block of blocks) {
+    for (const node of flattenJsonLdNodes(block)) {
+      const typeRaw = node["@type"];
+      const types = Array.isArray(typeRaw) ? typeRaw : [typeRaw];
+      const hasProductType = types.some((entry) => normalizeText(String(entry || "")).toLowerCase() === "product");
+      if (hasProductType) return node;
+    }
+  }
+  return null;
+}
+
+function pickFirstNonEmptyString(...values: unknown[]): string {
+  for (const value of values) {
+    const normalized = normalizeText(String(value || ""));
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function pickFirstPositiveNumber(...values: Array<number | null | undefined>): number | null {
+  for (const value of values) {
+    if (Number.isFinite(Number(value)) && Number(value) > 0) {
+      return Number(Number(value).toFixed(2));
+    }
+  }
+  return null;
+}
+
+function extractPriceFromMoneyNode($: ReturnType<typeof load>, selector: string): number | null {
+  const node = $(selector).first();
+  if (node.length === 0) return null;
+
+  const fraction = normalizeText(node.find(".andes-money-amount__fraction").first().text());
+  const cents = normalizeText(node.find(".andes-money-amount__cents").first().text());
+  const fromNodes = parseAmountCentsFromNode(fraction, cents);
+  if (fromNodes > 0) return priceFromCents(fromNodes);
+
+  const fromText = parseAmountCentsFromCurrencyText(node.text());
+  return fromText > 0 ? priceFromCents(fromText) : null;
+}
+
+function extractInstallmentsFromProductPage($: ReturnType<typeof load>): string {
+  return normalizeInstallmentsText(pickFirstNonEmptyString(
+    $("#pricing_price_subtitle").first().text(),
+    $(".ui-pdp-price__subtitles").first().text(),
+  ));
+}
+
+function extractSellerFromProductPage($: ReturnType<typeof load>, html: string): string {
+  const sellerFromDom = pickFirstNonEmptyString(
+    $(".ui-pdp-seller__link span").first().text(),
+    $(".ui-pdp-seller__link-trigger-button a span").first().text(),
+    $(".ui-pdp-seller__header a span").first().text(),
+  );
+  if (sellerFromDom) return normalizeSeller(sellerFromDom);
+
+  return normalizeSeller(extractRegexString(
+    html,
+    /"seller_name":"([^"]+)"/i,
+  ));
+}
+
+async function findSnapshotInVitrine(productUrl: string): Promise<MeliProductSnapshot | null> {
+  const row = await queryOne<{
+    product_url: string;
+    title: string;
+    image_url: string;
+    price_cents: number;
+    old_price_cents: number | null;
+    installments_text: string;
+    seller: string;
+    rating: number | null;
+    reviews_count: number | null;
+  }>(
+    `SELECT product_url, title, image_url, price_cents, old_price_cents, installments_text, seller, rating, reviews_count
+       FROM meli_vitrine_products
+      WHERE product_url = $1
+      ORDER BY is_active DESC, updated_at DESC
+      LIMIT 1`,
+    [productUrl],
+  );
+
+  if (!row) return null;
+
+  return {
+    productUrl: String(row.product_url || productUrl),
+    title: String(row.title || ""),
+    imageUrl: String(row.image_url || ""),
+    price: priceFromCents(row.price_cents),
+    oldPrice: priceFromCents(row.old_price_cents),
+    installmentsText: normalizeInstallmentsText(String(row.installments_text || "")),
+    seller: normalizeSeller(String(row.seller || "")),
+    rating: row.rating === null || row.rating === undefined ? null : Number(row.rating),
+    reviewsCount: row.reviews_count === null || row.reviews_count === undefined ? null : Number(row.reviews_count),
+  };
+}
+
+export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProductSnapshot> {
+  const canonicalUrl = canonicalizeProductUrl(rawUrl);
+  if (!canonicalUrl) {
+    throw new Error("URL do produto invalida para extracao.");
+  }
+
+  const fromVitrine = await findSnapshotInVitrine(canonicalUrl).catch(() => null);
+  if (fromVitrine) {
+    return fromVitrine;
+  }
+
+  const html = await fetchHtml(canonicalUrl, { expectCards: false });
+  const $ = load(html);
+  const jsonLdProduct = findJsonLdProductRecord(html);
+  const offers = (jsonLdProduct?.offers && typeof jsonLdProduct.offers === "object")
+    ? jsonLdProduct.offers as Record<string, unknown>
+    : null;
+  const aggregateRating = (jsonLdProduct?.aggregateRating && typeof jsonLdProduct.aggregateRating === "object")
+    ? jsonLdProduct.aggregateRating as Record<string, unknown>
+    : null;
+
+  const snapshot: MeliProductSnapshot = {
+    productUrl: canonicalizeProductUrl(
+      pickFirstNonEmptyString(
+        $("link[rel='canonical']").attr("href"),
+        offers?.url,
+        canonicalUrl,
+      ),
+    ) || canonicalUrl,
+    title: pickFirstNonEmptyString(
+      jsonLdProduct?.name,
+      $("meta[property='og:title']").attr("content"),
+      $(".ui-pdp-title").first().text(),
+    ),
+    imageUrl: toAbsoluteUrl(pickFirstNonEmptyString(
+      Array.isArray(jsonLdProduct?.image) ? jsonLdProduct?.image[0] : jsonLdProduct?.image,
+      $("meta[property='og:image']").attr("content"),
+      $("img.ui-pdp-image").first().attr("src"),
+    )),
+    price: pickFirstPositiveNumber(
+      extractPriceFromMoneyNode($, ".ui-pdp-price__second-line .andes-money-amount"),
+      parseStringifiedNumber(offers?.price),
+      extractRegexNumber(html, /"price":([0-9]+(?:\.[0-9]+)?)/i),
+    ),
+    oldPrice: pickFirstPositiveNumber(
+      extractPriceFromMoneyNode($, ".ui-pdp-price__original-value"),
+      extractRegexNumber(html, /"original_price":([0-9]+(?:\.[0-9]+)?)/i),
+      extractRegexNumber(html, /"originalPrice":([0-9]+(?:\.[0-9]+)?)/i),
+    ),
+    installmentsText: extractInstallmentsFromProductPage($),
+    seller: extractSellerFromProductPage($, html),
+    rating: pickFirstPositiveNumber(
+      parseDecimalNumber(aggregateRating?.ratingValue),
+      parseDecimalNumber($(".ui-pdp-review__rating").first().text()),
+      extractRegexNumber(html, /"rating_average_formatted":"([0-9]+(?:\.[0-9]+)?)"/i),
+      extractRegexNumber(html, /"rate":([0-9]+(?:\.[0-9]+)?)/i),
+    ),
+    reviewsCount: pickFirstPositiveNumber(
+      parseStringifiedNumber(aggregateRating?.ratingCount),
+      parseStringifiedNumber(aggregateRating?.reviewCount),
+      parseStringifiedNumber(parseReviewsCount($(".ui-pdp-review__amount").first().text())),
+      extractRegexNumber(html, /"count":([0-9]+)/i),
+    ),
+  };
+
+  return snapshot;
+}
+
 function shuffleArray<T>(input: T[]): T[] {
   const out = [...input];
   for (let index = out.length - 1; index > 0; index -= 1) {
@@ -372,7 +637,8 @@ function isBlockedHtml(value: string): boolean {
   return BLOCKED_HTML_MARKERS.some((marker) => head.includes(marker));
 }
 
-async function fetchHtml(url: string): Promise<string> {
+async function fetchHtml(url: string, options: { expectCards?: boolean } = {}): Promise<string> {
+  const expectCards = options.expectCards !== false;
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= MELI_VITRINE_FETCH_MAX_ATTEMPTS; attempt += 1) {
@@ -397,7 +663,7 @@ async function fetchHtml(url: string): Promise<string> {
       }
 
       const hasCards = html.includes("poly-card");
-      if (!hasCards && isBlockedHtml(html)) {
+      if (expectCards && !hasCards && isBlockedHtml(html)) {
         throw new Error("pagina bloqueada por anti-bot/captcha");
       }
 

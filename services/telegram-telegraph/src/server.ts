@@ -125,23 +125,42 @@ app.use((_req, res, next) => {
 // --- Rate limiting (in-memory, per IP) -----------------------------------
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_REQUESTS = 300;
+const RATE_LIMIT_TRUSTED_REQUESTS = 1200;
 const RATE_LIMIT_WINDOW_MS = 60_000;
+
+function isTrustedInternalRequest(req: Request): boolean {
+  if (!WEBHOOK_SECRET) return insecureSecretBypass;
+  const received = req.header("x-webhook-secret") || "";
+  return received.length > 0 && safeCompare(received, WEBHOOK_SECRET);
+}
+
+function getRateLimitKey(req: Request): { key: string; trusted: boolean } {
+  const trusted = isTrustedInternalRequest(req);
+  const scopedUserId = trusted ? String(req.header("x-autolinks-user-id") || "").trim() : "";
+  if (scopedUserId) {
+    return { key: `user:${scopedUserId}`, trusted: true };
+  }
+
+  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  return { key: `ip:${ip}`, trusted };
+}
 
 function rateLimit(req: Request, res: Response, next: NextFunction) {
   if (req.path === "/health") {
     next();
     return;
   }
-  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  const { key, trusted } = getRateLimitKey(req);
+  const limit = trusted ? RATE_LIMIT_TRUSTED_REQUESTS : RATE_LIMIT_REQUESTS;
   const now = Date.now();
-  const entry = rateLimitStore.get(ip);
+  const entry = rateLimitStore.get(key);
   if (!entry || now > entry.resetAt) {
-    rateLimitStore.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    rateLimitStore.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     next();
     return;
   }
   entry.count += 1;
-  if (entry.count > RATE_LIMIT_REQUESTS) {
+  if (entry.count > limit) {
     res.status(429).json({ error: "Too Many Requests" });
     return;
   }

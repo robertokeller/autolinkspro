@@ -24,6 +24,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAccessControl } from "@/hooks/useAccessControl";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
@@ -36,6 +37,7 @@ import { useSessoes } from "@/hooks/useSessoes";
 import { useShopeeAutomacoes } from "@/hooks/useShopeeAutomacoes";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { useServiceHealth } from "@/hooks/useServiceHealth";
+import { useViewportProfile } from "@/hooks/useViewportProfile";
 import { useAuth } from "@/contexts/AuthContext";
 import { getAllChannelHealth } from "@/lib/channel-central";
 import { ROUTES } from "@/lib/routes";
@@ -59,6 +61,8 @@ interface MetricCard {
 type HealthBadgeTone = "success" | "warning" | "destructive" | "muted";
 
 export default function Dashboard() {
+  const viewport = useViewportProfile();
+  const compactDashboard = viewport.isMobile || (viewport.isTablet && viewport.orientation === "portrait");
   const { user } = useAuth();
   const { canAccess, getFeaturePolicy, isCheckingAccess } = useAccessControl();
   const { entries, isLoading: histLoading } = useHistorico();
@@ -490,8 +494,12 @@ export default function Dashboard() {
   });
 
   return (
-    <div className="ds-page">
-      <PageHeader title="Painel geral" description={`Resumo do dia • ${nowBRT("EEEE, d 'de' MMMM")}`} />
+    <div className="ds-page pb-[calc(var(--safe-area-bottom)+0.25rem)]">
+      <PageHeader title="Painel geral" description={`Resumo do dia • ${nowBRT("EEEE, d 'de' MMMM")}`}>
+        <Button asChild size={compactDashboard ? "default" : "sm"} className="w-full sm:w-auto">
+          <Link to={ROUTES.app.shopeeConversor}>Converter link</Link>
+        </Button>
+      </PageHeader>
 
       {!isLoading && (
         <OnboardingChecklist
@@ -502,50 +510,88 @@ export default function Dashboard() {
         />
       )}
 
-      <div className="ds-card-grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-6">
-        {isLoading
-          ? Array.from({ length: 6 }).map((_, idx) => (
-              <Card key={idx} className="glass">
-                <CardContent className="p-4">
-                  <Skeleton className="h-16 w-full" />
-                </CardContent>
-              </Card>
-            ))
-          : metricCards.map((item) => (
-              <Card key={item.label} className="glass group hover:ring-1 hover:ring-primary/20 transition-all">
-                <CardContent className="p-4 space-y-2 text-center">
-                  <div className="flex items-center justify-center">
-                    <div className={cn("h-9 w-9 rounded-xl flex items-center justify-center", accentBg[item.accent])}>
-                      <item.icon className="h-4 w-4" />
+      {compactDashboard ? (
+        <ScrollArea className="w-full whitespace-nowrap">
+          <div className="flex gap-3 pb-2">
+            {isLoading
+              ? Array.from({ length: 4 }).map((_, idx) => (
+                  <Card key={idx} className="glass min-w-[220px] max-w-[260px]">
+                    <CardContent className="p-4">
+                      <Skeleton className="h-16 w-full" />
+                    </CardContent>
+                  </Card>
+                ))
+              : metricCards.map((item) => (
+                  <Card key={item.label} className="glass min-w-[220px] max-w-[260px] border-border/60">
+                    <CardContent className="space-y-2.5 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs text-muted-foreground">{item.label}</p>
+                          <p className="mt-1 text-2xl font-bold leading-none">{item.value}</p>
+                        </div>
+                        <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl", accentBg[item.accent])}>
+                          <item.icon className="h-4 w-4" />
+                        </div>
+                      </div>
+                      <p className="line-clamp-2 text-xs text-muted-foreground/90">{item.help}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+          </div>
+          <ScrollBar orientation="horizontal" />
+        </ScrollArea>
+      ) : (
+        <div className="ds-card-grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-6">
+          {isLoading
+            ? Array.from({ length: 6 }).map((_, idx) => (
+                <Card key={idx} className="glass">
+                  <CardContent className="p-3.5 sm:p-4">
+                    <Skeleton className="h-16 w-full" />
+                  </CardContent>
+                </Card>
+              ))
+            : metricCards.map((item) => (
+                <Card key={item.label} className="glass group hover:ring-1 hover:ring-primary/20 transition-all">
+                  <CardContent className="space-y-2 p-3.5 text-center sm:p-4">
+                    <div className="flex items-center justify-center">
+                      <div className={cn("h-9 w-9 rounded-xl flex items-center justify-center", accentBg[item.accent])}>
+                        <item.icon className="h-4 w-4" />
+                      </div>
                     </div>
-                  </div>
-                  <p className="text-xl font-bold">{item.value}</p>
-                  <p className="text-xs text-muted-foreground">{item.label}</p>
-                  <p className="text-xs text-muted-foreground/80">{item.help}</p>
-                </CardContent>
-              </Card>
-            ))}
-      </div>
+                    <p className="text-xl font-bold">{item.value}</p>
+                    <p className="text-xs text-muted-foreground">{item.label}</p>
+                    <p className="text-xs text-muted-foreground/80">{item.help}</p>
+                  </CardContent>
+                </Card>
+              ))}
+        </div>
+      )}
 
-      <div className="ds-card-grid lg:grid-cols-5">
-        <Card className="glass order-2 lg:order-1 lg:col-span-3">
-          <CardHeader className="pb-2">
+      <div className="flex flex-col gap-4 sm:gap-5">
+        <div className="ds-card-grid order-2 lg:order-1 lg:grid-cols-5">
+          <Card className="glass order-2 lg:order-1 lg:col-span-3">
+            <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
               Uso do sistema (7 dias)
             </CardTitle>
-            {!isLoading && (
+            {!isLoading && !compactDashboard && (
               <p className="text-xs text-muted-foreground">
                 {usage7d.totalEnvios} envio(s) no período • {usage7d.automacoes} automação(ões) • {usage7d.rotas} rota(s) • {usage7d.agendamentos} agendamento(s)
               </p>
             )}
-          </CardHeader>
-          <CardContent>
+            {!isLoading && compactDashboard && (
+              <p className="text-xs text-muted-foreground">
+                {usage7d.totalEnvios} envio(s) no periodo
+              </p>
+            )}
+            </CardHeader>
+            <CardContent>
             {isLoading ? (
-              <Skeleton className="h-[220px] w-full" />
+              <Skeleton className="h-[190px] w-full sm:h-[220px]" />
             ) : (
               <>
-                <ResponsiveContainer width="100%" height={220}>
+                <ResponsiveContainer width="100%" height={compactDashboard ? 190 : 220}>
                   <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
                     <XAxis dataKey="day" tick={{ fontSize: 11 }} className="fill-muted-foreground" />
@@ -568,24 +614,34 @@ export default function Dashboard() {
                       }}
                     />
                     <Line type="linear" dataKey="totalEnvios" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
-                    <Line type="linear" dataKey="automacoes" stroke="hsl(var(--success))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
-                    <Line type="linear" dataKey="rotas" stroke="hsl(var(--info))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
-                    <Line type="linear" dataKey="agendamentos" stroke="hsl(var(--warning))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                    {!compactDashboard && (
+                      <>
+                        <Line type="linear" dataKey="automacoes" stroke="hsl(var(--success))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                        <Line type="linear" dataKey="rotas" stroke="hsl(var(--info))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                        <Line type="linear" dataKey="agendamentos" stroke="hsl(var(--warning))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                      </>
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
-                <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs">
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />Envios totais</span>
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Automações</span>
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-info" />Rotas</span>
-                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-warning" />Agendamentos</span>
-                </div>
+                {compactDashboard ? (
+                  <div className="mt-3 text-center text-xs text-muted-foreground">
+                    Foco em envios totais no mobile.
+                  </div>
+                ) : (
+                  <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs">
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />Envios totais</span>
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Automacoes</span>
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-info" />Rotas</span>
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-warning" />Agendamentos</span>
+                  </div>
+                )}
               </>
             )}
-          </CardContent>
+            </CardContent>
         </Card>
 
         <Card className="glass order-1 lg:order-2 lg:col-span-2 lg:self-start">
-          <CardHeader className="pb-2">
+            <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <Wifi className="h-4 w-4 text-muted-foreground" />
@@ -598,13 +654,13 @@ export default function Dashboard() {
               <Skeleton className="h-40 w-full" />
             ) : (
               visibleHealthCards.map((card) => (
-                <div key={card.id} className="flex items-center gap-3 p-3 rounded-xl bg-secondary/50">
+                <div key={card.id} className="flex items-center gap-2.5 rounded-xl bg-secondary/50 p-2.5 sm:gap-3 sm:p-3">
                   <div className={cn("h-9 w-9 rounded-lg flex items-center justify-center", card.iconBgClass)}>
                     <card.icon className={cn("h-4 w-4", card.iconColorClass)} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-semibold">{card.title}</p>
-                    <p className="text-xs text-muted-foreground">{card.details}</p>
+                    <p className="line-clamp-2 text-xs text-muted-foreground">{card.details}</p>
                   </div>
                   <Badge variant="outline" className={cn("text-xs", statusByTone[card.statusTone])}>
                     {card.statusText}
@@ -614,29 +670,29 @@ export default function Dashboard() {
             )}
           </CardContent>
         </Card>
-      </div>
+        </div>
 
-      <div className="ds-card-grid lg:grid-cols-5">
-        <Card className="glass lg:col-span-2 h-full flex flex-col">
+        <div className="ds-card-grid order-1 lg:order-2 lg:grid-cols-5">
+          <Card className="glass lg:col-span-2 h-full flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <LinkIcon className="h-4 w-4 text-muted-foreground" />
               Ações rápidas
             </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-2 flex-1">
+            </CardHeader>
+            <CardContent className="pt-2 flex-1">
             {isLoading ? (
               <Skeleton className="h-28 w-full" />
             ) : (
-              <div className="grid h-full grid-cols-1 gap-2.5 sm:grid-cols-2 sm:auto-rows-fr">
+              <div className={cn("grid h-full grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-2.5 sm:auto-rows-fr", compactDashboard && "sm:grid-cols-1")}>
                 {quickActions.map((action) => (
                   <Link key={action.label} to={action.href} className="group h-full">
-                    <div className="flex h-full min-h-[86px] items-center gap-3 rounded-xl bg-secondary/50 p-3 transition-all hover:bg-secondary hover:ring-1 hover:ring-border">
-                      <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg", accentBg[action.accent])}>
-                        <action.icon className="h-3.5 w-3.5" />
+                    <div className="flex h-full min-h-[92px] items-center gap-3 rounded-xl bg-secondary/50 p-3 transition-all hover:bg-secondary hover:ring-1 hover:ring-border sm:min-h-[86px]">
+                      <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", accentBg[action.accent])}>
+                        <action.icon className="h-4 w-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs font-semibold leading-tight">{action.label}</p>
+                        <p className="text-sm font-semibold leading-tight">{action.label}</p>
                         <p className="mt-0.5 line-clamp-2 text-xs leading-snug text-muted-foreground">{action.desc}</p>
                       </div>
                       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" />
@@ -645,16 +701,16 @@ export default function Dashboard() {
                 ))}
               </div>
             )}
-          </CardContent>
+            </CardContent>
         </Card>
 
         <Card className="glass lg:col-span-3 h-full flex flex-col">
-          <CardHeader className="pb-2 flex-row items-center justify-between">
+          <CardHeader className="pb-2 gap-2 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Clock className="h-4 w-4 text-muted-foreground" />
               Atividade recente
             </CardTitle>
-            <Button variant="ghost" size="sm" className="text-xs h-8 px-2" asChild>
+            <Button variant="ghost" size="sm" className="h-9 justify-start px-2 text-xs sm:h-8 sm:justify-center" asChild>
               <Link to={ROUTES.app.history}>Ver tudo <ChevronRight className="h-3 w-3 ml-0.5" /></Link>
             </Button>
           </CardHeader>
@@ -670,12 +726,12 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-1.5">
                 {recentActivity.map((item, idx) => (
-                  <div key={`${item.text}-${idx}`} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-secondary/50 transition-colors">
+                  <div key={`${item.text}-${idx}`} className="flex items-center gap-2.5 rounded-xl p-2.5 transition-colors hover:bg-secondary/50 sm:gap-3">
                     <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0 bg-secondary", item.color)}>
                       <item.Icon className="h-3.5 w-3.5" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs truncate">{item.text}</p>
+                      <p className="line-clamp-2 text-xs sm:line-clamp-1">{item.text}</p>
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <span className="text-xs text-muted-foreground">{item.time} atrás</span>
                         {item.status === "success" && <Badge variant="outline" className="text-xs h-4 px-1.5 text-success border-success/20">ok</Badge>}
@@ -695,6 +751,7 @@ export default function Dashboard() {
             </div>
           </CardContent>
         </Card>
+      </div>
       </div>
     </div>
   );

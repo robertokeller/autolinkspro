@@ -73,7 +73,7 @@ const EMPTY_FORM: FormState = {
   intervalMinutes: "30",
   minPrice: "",
   maxPrice: "",
-  vitrineTabs: ["top_performance"],
+  vitrineTabs: ["destaques"],
   sessionId: "",
   destinationGroupIds: [],
   masterGroupIds: [],
@@ -174,7 +174,7 @@ export default function MercadoLivreAutomacoes() {
     queryKey: ["meli-vitrine-tab-catalog"],
     queryFn: async () => await invokeBackendRpc<MeliVitrineCatalog>("meli-vitrine-list", {
       body: {
-        tab: "top_performance",
+        tab: "destaques",
         page: 1,
         limit: 1,
       },
@@ -185,7 +185,7 @@ export default function MercadoLivreAutomacoes() {
   const vitrineTabOptions = useMemo(() => {
     const remoteTabs = flattenVitrineTabTree(vitrineCatalog?.tabs || []);
     if (remoteTabs.length > 0) return remoteTabs;
-    return [{ key: "top_performance", label: "Top Performance", activeCount: 0 }];
+    return [{ key: "destaques", label: "Destaques", activeCount: 0 }];
   }, [vitrineCatalog?.tabs]);
 
   const tabLabelByKey = useMemo(() => {
@@ -193,6 +193,8 @@ export default function MercadoLivreAutomacoes() {
   }, [vitrineTabOptions]);
 
   const connectedSessions = allSessions.filter((session) => session.status === "online");
+  const defaultConnectedSessionId = connectedSessions[0]?.id || "";
+  const hasSingleConnectedSession = connectedSessions.length <= 1;
   const shouldPauseAll = automations.some((item) => item.is_active);
   const isBulkTogglePending = isPausingAll || isResumingAll;
   const isHeaderActionPending = isBulkTogglePending || isRefreshingAll || isSyncingRoutes;
@@ -227,19 +229,24 @@ export default function MercadoLivreAutomacoes() {
   });
 
   const openCreate = () => {
-    const defaultTabKey = vitrineTabOptions[0]?.key || "top_performance";
+    const defaultTabKey = vitrineTabOptions[0]?.key || "destaques";
     setEditingId(null);
     setForm({
       ...EMPTY_FORM,
       templateId: defaultTemplate?.id || "",
       vitrineTabs: [defaultTabKey],
+      sessionId: defaultConnectedSessionId,
     });
     setShowModal(true);
   };
 
   const openEdit = (automation: MeliAutomationRow) => {
     setEditingId(automation.id);
-    setForm(automationToForm(automation));
+    const mapped = automationToForm(automation);
+    setForm({
+      ...mapped,
+      sessionId: mapped.sessionId || defaultConnectedSessionId,
+    });
     setShowModal(true);
   };
 
@@ -248,8 +255,9 @@ export default function MercadoLivreAutomacoes() {
   };
 
   const handleSubmit = async () => {
+    const effectiveSessionId = form.sessionId || defaultConnectedSessionId;
     if (!form.name.trim()) { toast.error("De um nome para a automacao"); return; }
-    if (!form.sessionId) { toast.error("Escolha a sessao de envio"); return; }
+    if (!effectiveSessionId) { toast.error("Conecte uma sessao de envio"); return; }
     if (!form.templateId) { toast.error("Escolha um template de mensagem"); return; }
     if (form.destinationGroupIds.length === 0 && form.masterGroupIds.length === 0) {
       toast.error("Escolha pelo menos um grupo de destino");
@@ -278,7 +286,7 @@ export default function MercadoLivreAutomacoes() {
         destinationGroupIds: form.destinationGroupIds,
         masterGroupIds: form.masterGroupIds,
         templateId: form.templateId,
-        sessionId: form.sessionId,
+        sessionId: effectiveSessionId,
         activeHoursStart: normalizedStart,
         activeHoursEnd: normalizedEnd,
         positiveKeywords: splitKeywordCsv(form.positiveKeywords),
@@ -297,6 +305,13 @@ export default function MercadoLivreAutomacoes() {
       setSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    if (!showModal) return;
+    if (form.sessionId) return;
+    if (!defaultConnectedSessionId) return;
+    setForm((prev) => ({ ...prev, sessionId: defaultConnectedSessionId }));
+  }, [defaultConnectedSessionId, form.sessionId, showModal]);
 
   const getSessionLabel = (sessionId: string | null) => {
     if (!sessionId) return null;
@@ -404,22 +419,22 @@ export default function MercadoLivreAutomacoes() {
                       <Badge variant="secondary" className={`text-xs ${automation.is_active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
                         {automation.is_active ? "Ativa" : "Pausada"}
                       </Badge>
-                      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(automation)}>
+                      <Button size="icon" variant="ghost" className="h-9 w-9 sm:h-8 sm:w-8" onClick={() => openEdit(automation)}>
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => duplicateAutomation(automation)} title="Duplicar">
+                      <Button size="icon" variant="ghost" className="h-9 w-9 sm:h-8 sm:w-8" onClick={() => duplicateAutomation(automation)} title="Duplicar">
                         <Copy className="h-3.5 w-3.5" />
                       </Button>
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8"
+                        className="h-9 w-9 sm:h-8 sm:w-8"
                         disabled={isSingleActionPending}
                         onClick={() => { void handleSingleToggleAndRefreshRoutes(automation.id, automation.is_active); }}
                       >
                         {automation.is_active ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                       </Button>
-                      <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => setDeleteId(automation.id)}>
+                      <Button size="icon" variant="ghost" className="h-9 w-9 text-destructive sm:h-8 sm:w-8" onClick={() => setDeleteId(automation.id)}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
@@ -637,13 +652,19 @@ export default function MercadoLivreAutomacoes() {
 
             <div className="space-y-2">
               <Label>Sessao de envio *</Label>
-              <SessionSelect
-                value={form.sessionId}
-                onValueChange={handleSessionChange}
-                sessions={connectedSessions}
-                placeholder="Escolha uma sessao..."
-                emptyLabel="Nenhuma sessao conectada"
-              />
+              {hasSingleConnectedSession ? (
+                <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                  {connectedSessions[0]?.label || "Nenhuma sessao conectada"}
+                </div>
+              ) : (
+                <SessionSelect
+                  value={form.sessionId}
+                  onValueChange={handleSessionChange}
+                  sessions={connectedSessions}
+                  placeholder="Escolha uma sessao..."
+                  emptyLabel="Nenhuma sessao conectada"
+                />
+              )}
             </div>
 
             {form.sessionId && (

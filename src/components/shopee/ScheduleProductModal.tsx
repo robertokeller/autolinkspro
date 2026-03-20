@@ -6,9 +6,6 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Card, CardContent } from "@/components/ui/card";
 import { CalendarDays, Clock, Send } from "lucide-react";
 import { useTemplateModule } from "@/contexts/TemplateModuleContext";
 import { useGrupos } from "@/hooks/useGrupos";
@@ -16,11 +13,9 @@ import { useSessoes } from "@/hooks/useSessoes";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
-import type { RecurrenceType, ScheduledMediaAttachment, ScheduledPost, WeekDay } from "@/lib/types";
+import type { ScheduledMediaAttachment, ScheduledPost } from "@/lib/types";
 import { toast } from "sonner";
-import { WEEK_DAYS, mergeDateWithScheduleTime, normalizeScheduleTime } from "@/lib/scheduling";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
-import { TimePickerField } from "@/components/scheduling/TimePickerField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
 import { formatBRT } from "@/lib/timezone";
@@ -48,12 +43,6 @@ const MAX_SCHEDULE_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function dataUrlToBase64(dataUrl: string): string {
   return dataUrl.includes(",") ? dataUrl.split(",")[1] : "";
-}
-
-function getTimeFromDateTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaAttachment> {
@@ -110,10 +99,6 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
   const [selectedMasterGroups, setSelectedMasterGroups] = useState<string[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
-  const [isRecurring, setIsRecurring] = useState(false);
-  const [weekDays, setWeekDays] = useState<WeekDay[]>([]);
-  const [recurrenceTimes, setRecurrenceTimes] = useState<string[]>([]);
-  const [recurrenceTimeInput, setRecurrenceTimeInput] = useState("");
   const [imageAttachment, setImageAttachment] = useState<ScheduledMediaAttachment | null>(null);
   const [preparingImageAttachment, setPreparingImageAttachment] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -194,7 +179,6 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     if (!open) return;
     if (!editingPost) return;
 
-    const recurring = editingPost.recurrence !== "none";
     setScheduleName(editingPost.name || "");
     setMessageContent(editingPost.content || "");
     setSelectedTemplateId(editingPost.templateId || "");
@@ -202,14 +186,6 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     setSelectedMasterGroups([...editingPost.masterGroupIds]);
     setSelectedSessionId(editingPost.sessionId || "");
     setScheduledAt(editingPost.scheduledAt ? formatBRT(editingPost.scheduledAt, "yyyy-MM-dd'T'HH:mm") : "");
-    setIsRecurring(recurring);
-    setWeekDays([...editingPost.weekDays]);
-    setRecurrenceTimes(
-      editingPost.recurrenceTimes.length > 0
-        ? [...editingPost.recurrenceTimes]
-        : (recurring ? [getTimeFromDateTime(editingPost.scheduledAt)].filter(Boolean) : []),
-    );
-    setRecurrenceTimeInput("");
     setImageAttachment(editingPost.media || null);
   }, [editingPost, open]);
 
@@ -260,34 +236,6 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     setMessageContent(nextContent || fallbackContent);
   };
 
-  const toggleWeekDay = (day: WeekDay) =>
-    setWeekDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
-
-  const addRecurrenceTime = () => {
-    const normalized = normalizeScheduleTime(recurrenceTimeInput);
-    if (!normalized) {
-      toast.error("Horário inválido — use o formato HH:mm");
-      return;
-    }
-    setRecurrenceTimes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized].sort()));
-    setRecurrenceTimeInput("");
-  };
-
-  const removeRecurrenceTime = (time: string) => {
-    setRecurrenceTimes((prev) => prev.filter((item) => item !== time));
-  };
-
-  const toggleRecurrence = () => {
-    setIsRecurring((prev) => {
-      const next = !prev;
-      if (next && recurrenceTimes.length === 0) {
-        const base = normalizeScheduleTime(scheduledAt.slice(11, 16));
-        if (base) setRecurrenceTimes([base]);
-      }
-      return next;
-    });
-  };
-
   const handleSchedule = async () => {
     if (!scheduleName.trim()) {
       toast.error("Dê um nome pro agendamento");
@@ -297,16 +245,8 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       toast.error("Escreva o conteúdo da mensagem");
       return;
     }
-    if (!isRecurring && !scheduledAt) {
+    if (!scheduledAt) {
       toast.error("Escolha a data e o horário");
-      return;
-    }
-    if (isRecurring && weekDays.length === 0) {
-      toast.error("Escolha pelo menos um dia da semana");
-      return;
-    }
-    if (isRecurring && recurrenceTimes.length === 0) {
-      toast.error("Adicione pelo menos um horário");
       return;
     }
     if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
@@ -322,11 +262,6 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       return;
     }
 
-    const recurrence: RecurrenceType = isRecurring ? "weekly" : "none";
-    const effectiveScheduledAt = recurrence === "weekly"
-      ? mergeDateWithScheduleTime(scheduledAt || new Date().toISOString(), recurrenceTimes[0] || "")
-      : scheduledAt;
-
     setSubmitting(true);
     try {
       const content = messageContent.trim();
@@ -340,14 +275,14 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
         name: scheduleName.trim(),
         content,
         finalContent: content,
-        scheduledAt: effectiveScheduledAt,
-        recurrence,
+        scheduledAt,
+        recurrence: "none" as const,
         destinationGroupIds: selectedGroups,
         masterGroupIds: selectedMasterGroups,
         templateId: resolvedTemplateId || undefined,
         sessionId: selectedSessionId || undefined,
-        weekDays: recurrence === "weekly" ? weekDays : [],
-        recurrenceTimes: recurrence === "weekly" ? recurrenceTimes : [],
+        weekDays: [],
+        recurrenceTimes: [],
         messageType: detectedLinks.length > 0 || requiresImageAttachment ? "offer" : "text",
         detectedLinks,
         templateData: scheduleTemplateData,
@@ -379,10 +314,6 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     setSelectedTemplateId("");
     setSelectedSessionId("");
     setScheduledAt("");
-    setIsRecurring(false);
-    setWeekDays([]);
-    setRecurrenceTimes([]);
-    setRecurrenceTimeInput("");
     setImageAttachment(null);
     setPreparingImageAttachment(false);
   };
@@ -458,71 +389,12 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
             </p>
           </div>
 
-          <div className="space-y-2">
-            <Label>Repetir envio</Label>
-            <div className="flex items-center gap-2">
-              <Switch id="is-recurring-offer" checked={isRecurring} onCheckedChange={toggleRecurrence} />
-              <Label htmlFor="is-recurring-offer">Repetir nos dias escolhidos</Label>
-            </div>
-          </div>
-
-          {!isRecurring && (
-            <DateTimeField
-              value={scheduledAt}
-              onChange={setScheduledAt}
-              label="Data e hora"
-              required
-            />
-          )}
-
-          {isRecurring && (
-            <div className="space-y-2">
-              <Label>Dias da semana *</Label>
-              <div className="flex flex-wrap gap-2">
-                {WEEK_DAYS.map((d) => (
-                  <label key={d.value} className="flex items-center gap-1.5 cursor-pointer">
-                    <Checkbox checked={weekDays.includes(d.value)} onCheckedChange={() => toggleWeekDay(d.value)} />
-                    <span className="text-sm">{d.label}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {isRecurring && (
-            <Card>
-              <CardContent className="space-y-2 p-4">
-                <Label>Horários *</Label>
-                <div className="flex items-center gap-2">
-                  <TimePickerField
-                    value={recurrenceTimeInput}
-                    onChange={setRecurrenceTimeInput}
-                    className="flex-1"
-                    placeholder="Selecionar horário"
-                  />
-                  <Button type="button" variant="outline" onClick={addRecurrenceTime} disabled={!recurrenceTimeInput}>
-                    Adicionar
-                  </Button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {recurrenceTimes.map((time) => (
-                    <Badge key={time} variant="secondary" className="cursor-pointer" onClick={() => removeRecurrenceTime(time)}>
-                      <span className="tabular-nums">{time}</span> x
-                    </Badge>
-                  ))}
-                  {recurrenceTimes.length === 0 && (
-                    <span className="text-xs text-muted-foreground">Escolha um horário e adicione outros se necessário</span>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {isRecurring && (
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Se ligar a repetição, o envio segue os dias e horários que você escolher (ignora a data fixa).</Label>
-            </div>
-          )}
+          <DateTimeField
+            value={scheduledAt}
+            onChange={setScheduledAt}
+            label="Data e hora"
+            required
+          />
 
           <div className="space-y-2">
             <Label>Sessão *</Label>

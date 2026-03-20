@@ -51,6 +51,7 @@ type TableMap = {
     user_id: string;
     name: string;
     platform: string;
+    invite_link: string;
     session_id: string | null;
     member_count: number;
     external_id: string | null;

@@ -7,7 +7,7 @@ import { getPasswordPolicyError } from "./password-policy.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { listMeliVitrine, syncMeliVitrine } from "./meli-vitrine.js";
+import { getMeliProductSnapshot, listMeliVitrine, syncMeliVitrine } from "./meli-vitrine.js";
 
 export const rpcRouter = Router();
 
@@ -69,6 +69,124 @@ rpcRouter.post("/rpc", async (req, res, next) => {
     const seen = new Set();
     const groups = [...directGroups, ...linkedGroups].filter((g: Record<string, unknown>) => { if (seen.has(g.id)) return false; seen.add(g.id); return true; });
     res.json({ data: { page: publicPage, groups, groupLabels }, error: null });
+  } catch {
+    res.status(500).json({ data: null, error: { message: "Erro interno" } });
+  }
+});
+
+// Public: resolve and redirect master group invite (no authentication required)
+rpcRouter.post("/rpc", async (req, res, next) => {
+  if (String(req.body?.name ?? "") !== "master-group-invite") { next(); return; }
+
+  const params = req.body ?? {};
+  const masterGroupId = String(params.masterGroupId ?? "").trim();
+  if (!masterGroupId) {
+    res.json({ data: null, error: { message: "ID do grupo mestre é obrigatório" } });
+    return;
+  }
+
+  const resolvePublicInviteUrl = (row: { invite_link?: unknown; external_id?: unknown; platform?: unknown }) => {
+    const explicit = String(row.invite_link ?? "").trim();
+    if (/^https?:\/\//i.test(explicit)) return explicit;
+
+    const external = String(row.external_id ?? "").trim();
+    const platform = String(row.platform ?? "").trim();
+    if (!external) return "";
+    if (/^https?:\/\//i.test(external)) return external;
+
+    if (platform === "telegram") {
+      if (/^@[A-Za-z0-9_]{3,}$/i.test(external)) {
+        return `https://t.me/${external.slice(1)}`;
+      }
+      if (/^[A-Za-z0-9_]{3,}$/i.test(external)) {
+        return `https://t.me/${external}`;
+      }
+      return "";
+    }
+
+    if (platform === "whatsapp") {
+      if (/^chat\.whatsapp\.com\/[A-Za-z0-9]+$/i.test(external)) return `https://${external}`;
+      if (/^[A-Za-z0-9]{20,32}$/.test(external)) return `https://chat.whatsapp.com/${external}`;
+      return "";
+    }
+
+    return "";
+  };
+
+  try {
+    const masterGroup = await queryOne<{
+      id: string;
+      user_id: string;
+      name: string;
+      distribution: string;
+    }>(
+      "SELECT id, user_id, name, distribution FROM master_groups WHERE id = $1",
+      [masterGroupId],
+    );
+
+    if (!masterGroup) {
+      res.json({ data: null, error: { message: "Grupo mestre não encontrado" } });
+      return;
+    }
+
+    const linkedGroups = await query<{
+      id: string;
+      name: string;
+      platform: string;
+      member_count: number;
+      invite_link: string;
+      external_id: string;
+    }>(
+      `SELECT g.id, g.name, g.platform, g.member_count, g.invite_link, g.external_id
+         FROM master_group_links l
+         JOIN groups g
+           ON g.id = l.group_id
+        WHERE l.master_group_id = $1
+          AND l.is_active <> FALSE
+          AND g.user_id = $2
+          AND g.deleted_at IS NULL`,
+      [masterGroupId, masterGroup.user_id],
+    );
+
+    const candidates = linkedGroups
+      .map((group) => ({ ...group, redirect_url: resolvePublicInviteUrl(group) }))
+      .filter((group) => !!group.redirect_url);
+
+    if (candidates.length === 0) {
+      res.json({ data: null, error: { message: "Nenhum grupo filho com link de convite válido" } });
+      return;
+    }
+
+    const mode = String(masterGroup.distribution || "").trim().toLowerCase() === "random"
+      ? "random"
+      : "balanced";
+
+    let selected = candidates[0];
+    if (mode === "random") {
+      selected = candidates[Math.floor(Math.random() * candidates.length)];
+    } else {
+      const minMembers = Math.min(...candidates.map((group) => Number(group.member_count || 0)));
+      const balanced = candidates.filter((group) => Number(group.member_count || 0) === minMembers);
+      selected = balanced[Math.floor(Math.random() * balanced.length)];
+    }
+
+    res.json({
+      data: {
+        redirectUrl: selected.redirect_url,
+        mode,
+        group: {
+          id: selected.id,
+          name: selected.name,
+          platform: selected.platform,
+          memberCount: Number(selected.member_count || 0),
+        },
+        masterGroup: {
+          id: masterGroup.id,
+          name: masterGroup.name,
+        },
+      },
+      error: null,
+    });
   } catch {
     res.status(500).json({ data: null, error: { message: "Erro interno" } });
   }
@@ -354,6 +472,7 @@ function normalizeAutomationVitrineTabs(value: unknown): string[] {
 }
 
 const MELI_AUTOMATION_ALLOWED_TABS = new Set([
+  "destaques",
   "top_performance",
   "mais_vendidos",
   "ofertas_quentes",
@@ -361,21 +480,22 @@ const MELI_AUTOMATION_ALLOWED_TABS = new Set([
 ]);
 
 const MELI_AUTOMATION_TAB_ALIASES: Record<string, string> = {
-  all: "top_performance",
+  all: "destaques",
+  destaques: "destaques",
   top_performance: "top_performance",
   mais_vendidos: "mais_vendidos",
   ofertas_quentes: "ofertas_quentes",
   melhor_avaliados: "melhor_avaliados",
-  beleza_cuidados: "top_performance",
-  calcados_roupas_bolsas: "top_performance",
-  casa_moveis_decoracao: "top_performance",
-  celulares_telefones: "top_performance",
-  construcao: "top_performance",
-  eletrodomesticos: "top_performance",
-  esportes_fitness: "top_performance",
-  ferramentas: "top_performance",
-  informatica: "top_performance",
-  saude: "top_performance",
+  beleza_cuidados: "destaques",
+  calcados_roupas_bolsas: "destaques",
+  casa_moveis_decoracao: "destaques",
+  celulares_telefones: "destaques",
+  construcao: "destaques",
+  eletrodomesticos: "destaques",
+  esportes_fitness: "destaques",
+  ferramentas: "destaques",
+  informatica: "destaques",
+  saude: "destaques",
 };
 
 function normalizeMeliAutomationVitrineTabs(value: unknown): string[] {
@@ -1625,7 +1745,13 @@ async function upsertGroupRow(input: {
 async function refreshTelegramHealthState(userId: string): Promise<number> {
   if (!TELEGRAM_URL) return 0;
 
-  const health = await proxyMicroservice(TELEGRAM_URL, "/health", "GET", null);
+  const health = await proxyMicroservice(
+    TELEGRAM_URL,
+    "/health",
+    "GET",
+    null,
+    buildUserScopedHeaders(userId),
+  );
   if (health.error) return 0;
 
   const payload = (health.data && typeof health.data === "object")
@@ -1699,7 +1825,14 @@ function normalizeGroupNameKey(name: unknown): string {
 async function reconcileWhatsAppSessionsFromHealth(userId: string) {
   if (!WHATSAPP_URL) return { reconciled: 0, online: false };
 
-  const health = await proxyMicroservice(WHATSAPP_URL, "/health", "GET", null, {}, 6000);
+  const health = await proxyMicroservice(
+    WHATSAPP_URL,
+    "/health",
+    "GET",
+    null,
+    buildUserScopedHeaders(userId),
+    6000,
+  );
   if (health.error) {
     return { reconciled: 0, online: false };
   }
@@ -2063,6 +2196,19 @@ async function resolveRouteLinkWithRedirect(url: string): Promise<string> {
 
 async function resolveRouteMeliSessionId(userId: string, configuredSessionId: unknown): Promise<string> {
   const configured = String(configuredSessionId || "").trim();
+  const preferredReady = await queryOne<{ id: string }>(
+    `SELECT id
+       FROM meli_sessions
+      WHERE user_id = $1
+        AND status IN ('active', 'untested')
+      ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+               updated_at DESC NULLS LAST,
+               created_at DESC
+      LIMIT 1`,
+    [userId],
+  );
+  if (preferredReady?.id) return String(preferredReady.id);
+
   if (configured) {
     const ownedConfigured = await queryOne<{ id: string }>(
       "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
@@ -2070,12 +2216,6 @@ async function resolveRouteMeliSessionId(userId: string, configuredSessionId: un
     );
     if (ownedConfigured?.id) return String(ownedConfigured.id);
   }
-
-  const active = await queryOne<{ id: string }>(
-    "SELECT id FROM meli_sessions WHERE user_id = $1 AND status = 'active' ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 1",
-    [userId],
-  );
-  if (active?.id) return String(active.id);
 
   const latest = await queryOne<{ id: string }>(
     "SELECT id FROM meli_sessions WHERE user_id = $1 ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 1",
@@ -2167,8 +2307,14 @@ async function processRouteMessageForUser(input: {
 
   const masterLinks = allMasterGroupIds.size > 0
     ? await query<{ master_group_id: string; group_id: string }>(
-      "SELECT master_group_id, group_id FROM master_group_links WHERE master_group_id = ANY($1)",
-      [[...allMasterGroupIds]],
+      `SELECT l.master_group_id, l.group_id
+         FROM master_group_links l
+         JOIN master_groups mg
+           ON mg.id = l.master_group_id
+        WHERE l.master_group_id = ANY($1)
+          AND l.is_active <> FALSE
+          AND mg.user_id = $2`,
+      [[...allMasterGroupIds], userId],
     )
     : [];
   const linkedByMaster = new Map<string, string[]>();
@@ -3138,7 +3284,13 @@ rpcRouter.post("/rpc", async (req, res) => {
         fail(res, "WHATSAPP_MICROSERVICE_URL nÃ£o definido"); return;
       }
       if (action === "health") {
-        const r = await proxyMicroservice(WHATSAPP_URL, "/health", "GET", null);
+        const r = await proxyMicroservice(
+          WHATSAPP_URL,
+          "/health",
+          "GET",
+          null,
+          buildUserScopedHeaders(userId),
+        );
         if (r.error) { ok(res, { online: false, url: WHATSAPP_URL, uptimeSec: null, sessions: [], error: r.error.message }); return; }
         const payload: Record<string, unknown> = (r.data && typeof r.data === "object") ? (r.data as Record<string, unknown>) : {};
         ok(res, {
@@ -3176,13 +3328,12 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (action === "connect") {
         const sess = await queryOne("SELECT auth_method, phone, name FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
         if (!sess) { fail(res, "SessÃ£o nÃ£o encontrada"); return; }
-        const authMethod = String(sess.auth_method ?? "qr").trim().toLowerCase() === "pairing" ? "pairing" : "qr";
+        const authMethod = "qr";
         const phone = String(sess.phone ?? "").trim();
-        if (authMethod === "pairing" && !phone) {
-          fail(res, "SessÃ£o em modo pairing exige telefone. Atualize o nÃºmero da sessÃ£o e tente novamente.");
-          return;
-        }
-        await execute("UPDATE whatsapp_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        await execute(
+          "UPDATE whatsapp_sessions SET auth_method='qr', status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2",
+          [sessionId, userId],
+        );
         const waHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(WHATSAPP_URL, `/api/sessions/${encodeURIComponent(sessionId)}/connect`, "POST", {
           userId,
@@ -3258,7 +3409,13 @@ rpcRouter.post("/rpc", async (req, res) => {
         fail(res, "TELEGRAM_MICROSERVICE_URL nÃ£o definido"); return;
       }
       if (action === "health") {
-        const r = await proxyMicroservice(TELEGRAM_URL, "/health", "GET", null);
+        const r = await proxyMicroservice(
+          TELEGRAM_URL,
+          "/health",
+          "GET",
+          null,
+          buildUserScopedHeaders(userId),
+        );
         if (r.error) { ok(res, { online: false, url: TELEGRAM_URL, uptimeSec: null, sessions: [], error: r.error.message }); return; }
         const payload: Record<string, unknown> = (r.data && typeof r.data === "object") ? (r.data as Record<string, unknown>) : {};
         ok(res, {
@@ -3515,7 +3672,16 @@ rpcRouter.post("/rpc", async (req, res) => {
         const directIds = Array.isArray(post.dest_ids) ? post.dest_ids : [];
         let linkedIds = [];
         if (mgids.length > 0) {
-          const links = await query("SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1)", [mgids]);
+          const links = await query<{ group_id: string }>(
+            `SELECT l.group_id
+               FROM master_group_links l
+               JOIN master_groups mg
+                 ON mg.id = l.master_group_id
+              WHERE l.master_group_id = ANY($1)
+                AND l.is_active <> FALSE
+                AND mg.user_id = $2`,
+            [mgids, post.user_id],
+          );
           linkedIds = links.map((l) => l.group_id);
         }
         const destIds = [...new Set([...directIds, ...linkedIds])];
@@ -4236,8 +4402,14 @@ rpcRouter.post("/rpc", async (req, res) => {
         const masterGroupIds = toStringArray(claimed.master_group_ids);
         const linkedGroupIds = masterGroupIds.length > 0
           ? (await query<{ group_id: string }>(
-              "SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1) AND is_active <> FALSE",
-              [masterGroupIds],
+              `SELECT l.group_id
+                 FROM master_group_links l
+                 JOIN master_groups mg
+                   ON mg.id = l.master_group_id
+                WHERE l.master_group_id = ANY($1)
+                  AND l.is_active <> FALSE
+                  AND mg.user_id = $2`,
+              [masterGroupIds, ownerUserId],
             )).map((row) => String(row.group_id || "").trim()).filter(Boolean)
           : [];
 
@@ -4669,7 +4841,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         const fallbackTabs = configTabs.length > 0
           ? configTabs
           : normalizeMeliAutomationVitrineTabs(claimed.categories);
-        const vitrineTabs = fallbackTabs.length > 0 ? fallbackTabs : ["top_performance"];
+        const vitrineTabs = fallbackTabs.length > 0 ? fallbackTabs : ["destaques"];
 
         const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
         const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
@@ -4890,8 +5062,14 @@ rpcRouter.post("/rpc", async (req, res) => {
         const masterGroupIds = toStringArray(claimed.master_group_ids);
         const linkedGroupIds = masterGroupIds.length > 0
           ? (await query<{ group_id: string }>(
-              "SELECT group_id FROM master_group_links WHERE master_group_id = ANY($1) AND is_active <> FALSE",
-              [masterGroupIds],
+              `SELECT l.group_id
+                 FROM master_group_links l
+                 JOIN master_groups mg
+                   ON mg.id = l.master_group_id
+                WHERE l.master_group_id = ANY($1)
+                  AND l.is_active <> FALSE
+                  AND mg.user_id = $2`,
+              [masterGroupIds, ownerUserId],
             )).map((row) => String(row.group_id || "").trim()).filter(Boolean)
           : [];
 
@@ -5282,7 +5460,17 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
 
-      const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+      const userSessions = await query<{ id: string; name: string }>(
+        "SELECT id, name FROM meli_sessions WHERE user_id = $1 ORDER BY updated_at DESC NULLS LAST, created_at DESC",
+        [userId],
+      );
+      const canonicalSessionId = String(userSessions[0]?.id || sessionId).trim();
+      const canonicalSessionName = userSessions.find((row) => String(row.id) === canonicalSessionId)?.name || "";
+      const staleSessionIds = userSessions
+        .map((row) => String(row.id || "").trim())
+        .filter((id) => id && id !== canonicalSessionId);
+
+      const scopedSessionId = buildScopedMeliSessionId(userId, canonicalSessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
       const upstream = await proxyMicroservice(
         MELI_URL,
@@ -5304,8 +5492,8 @@ rpcRouter.post("/rpc", async (req, res) => {
       const mlUserId = String(upstreamData.mlUserId || "");
       const logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
       const inputName = String(params.name ?? "").trim();
-      const fallbackName = `Conta ${sessionId.slice(0, 8)}`;
-      const finalName = inputName || String(existingSession?.name || "").trim() || fallbackName;
+      const fallbackName = `Conta ${canonicalSessionId.slice(0, 8)}`;
+      const finalName = inputName || String(canonicalSessionName || existingSession?.name || "").trim() || fallbackName;
       const unknownStatusMessage = rawStatus && !allowedStatuses.has(rawStatus)
         ? `Status invalido retornado pelo servico Mercado Livre (${rawStatus})`
         : "";
@@ -5325,12 +5513,27 @@ rpcRouter.post("/rpc", async (req, res) => {
              last_checked_at = EXCLUDED.last_checked_at,
              error_message = EXCLUDED.error_message,
              updated_at = NOW()`,
-        [sessionId, userId, finalName, accountName, mlUserId, status, errorMessage],
+        [canonicalSessionId, userId, finalName, accountName, mlUserId, status, errorMessage],
       );
+
+      if (staleSessionIds.length > 0) {
+        await execute("DELETE FROM meli_sessions WHERE user_id = $1 AND id = ANY($2)", [userId, staleSessionIds]);
+        for (const staleSessionId of staleSessionIds) {
+          const staleScopedId = buildScopedMeliSessionId(userId, staleSessionId);
+          await proxyMicroservice(
+            MELI_URL,
+            `/api/meli/sessions/${encodeURIComponent(staleScopedId)}`,
+            "DELETE",
+            null,
+            meliHeaders,
+            20_000,
+          );
+        }
+      }
 
       ok(res, {
         success: true,
-        sessionId,
+        sessionId: canonicalSessionId,
         status,
         accountName,
         mlUserId,
@@ -5430,11 +5633,30 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
     if (funcName === "meli-list-sessions") {
-      const data = await query(
-        "SELECT id, name, account_name, ml_user_id, status, last_checked_at, error_message, created_at FROM meli_sessions WHERE user_id=$1 ORDER BY created_at",
+      const data = await query<{ id: string; name: string; account_name: string; ml_user_id: string; status: string; last_checked_at: string | null; error_message: string; created_at: string }>(
+        "SELECT id, name, account_name, ml_user_id, status, last_checked_at, error_message, created_at FROM meli_sessions WHERE user_id=$1 ORDER BY updated_at DESC NULLS LAST, created_at DESC",
         [userId],
       );
-      ok(res, { sessions: data });
+      const canonical = data[0] || null;
+      const staleSessionIds = data.slice(1).map((row) => String(row.id || "").trim()).filter(Boolean);
+      if (staleSessionIds.length > 0) {
+        await execute("DELETE FROM meli_sessions WHERE user_id = $1 AND id = ANY($2)", [userId, staleSessionIds]);
+        if (MELI_URL) {
+          const meliHeaders = { "x-autolinks-user-id": userId };
+          for (const staleSessionId of staleSessionIds) {
+            const staleScopedId = buildScopedMeliSessionId(userId, staleSessionId);
+            await proxyMicroservice(
+              MELI_URL,
+              `/api/meli/sessions/${encodeURIComponent(staleScopedId)}`,
+              "DELETE",
+              null,
+              meliHeaders,
+              20_000,
+            );
+          }
+        }
+      }
+      ok(res, { sessions: canonical ? [canonical] : [] });
       return;
     }
     if (funcName === "meli-delete-session") {
@@ -5471,18 +5693,12 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
 
       const productUrl = String(params.productUrl ?? params.url ?? "").trim();
-      const sessionId = String(params.sessionId ?? "").trim();
+      const requestedSessionId = String(params.sessionId ?? "").trim();
       if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
       if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
       if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada nao parece ser do Mercado Livre"); return; }
-      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
-      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
-
-      const owned = await queryOne<{ id: string }>(
-        "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
-        [sessionId, userId],
-      );
-      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+      const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
+      if (!sessionId) { fail(res, "Nenhuma sessao Mercado Livre disponivel para conversao."); return; }
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
@@ -5515,26 +5731,37 @@ rpcRouter.post("/rpc", async (req, res) => {
       });
       return;
     }
+    if (funcName === "meli-product-snapshot") {
+      const productUrl = String(params.productUrl ?? params.url ?? "").trim();
+      if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
+      if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
+      if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada nao parece ser do Mercado Livre"); return; }
+
+      try {
+        const snapshot = await getMeliProductSnapshot(productUrl);
+        ok(res, {
+          success: true,
+          ...snapshot,
+        });
+      } catch (error) {
+        fail(res, error instanceof Error ? error.message : "Falha ao extrair dados do produto Mercado Livre");
+      }
+      return;
+    }
     if (funcName === "meli-convert-links") {
       if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
 
       const urls = Array.isArray(params.urls)
         ? params.urls.map((item) => String(item || "").trim()).filter(Boolean)
         : [];
-      const sessionId = String(params.sessionId ?? "").trim();
+      const requestedSessionId = String(params.sessionId ?? "").trim();
       const dedupedUrls: string[] = [...new Set<string>(urls)];
       if (dedupedUrls.length === 0) { fail(res, "urls deve ser um array nao vazio"); return; }
       if (dedupedUrls.length > MAX_MELI_CONVERT_BATCH) { fail(res, `Limite de ${MAX_MELI_CONVERT_BATCH} URLs por lote Mercado Livre`); return; }
       if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
       if (dedupedUrls.some((item) => !isMercadoLivreProductUrlLike(item))) { fail(res, "Uma ou mais URLs nao parecem ser do Mercado Livre"); return; }
-      if (!sessionId) { fail(res, "sessionId e obrigatorio"); return; }
-      if (!isUuid(sessionId)) { fail(res, "sessionId invalido"); return; }
-
-      const owned = await queryOne<{ id: string }>(
-        "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
-        [sessionId, userId],
-      );
-      if (!owned) { fail(res, "Sessao nao encontrada"); return; }
+      const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
+      if (!sessionId) { fail(res, "Nenhuma sessao Mercado Livre disponivel para conversao."); return; }
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };

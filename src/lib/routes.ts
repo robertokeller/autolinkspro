@@ -1,7 +1,8 @@
-﻿export const ROUTES = {
+export const ROUTES = {
   root: "/",
   home: "/home",
   hubPublic: "/hub/:slug",
+  masterGroupPublic: "/mg/:id",
   maintenance: "/maintenance",
   termos: "/termos-de-uso",
   privacidade: "/privacidade",
@@ -17,6 +18,7 @@
     connectionsRoot: "/connections",
     connectionsWhatsApp: "/connections/whatsapp",
     connectionsTelegram: "/connections/telegram",
+    connectionsMasterGroups: "/connections/master-groups",
     routes: "/routes",
     shopeeRoot: "/shopee",
     shopeeVitrine: "/shopee/vitrine",
@@ -49,6 +51,7 @@ export const APP_ROUTE_TITLES: Record<string, string> = {
   [ROUTES.app.dashboard]: "Dashboard",
   [ROUTES.app.connectionsWhatsApp]: "WhatsApp",
   [ROUTES.app.connectionsTelegram]: "Telegram",
+  [ROUTES.app.connectionsMasterGroups]: "Grupos Mestres",
   [ROUTES.app.routes]: "Rotas Automaticas",
   [ROUTES.app.shopeeVitrine]: "Vitrine de ofertas",
   [ROUTES.app.shopeePesquisa]: "Pesquisa de ofertas",

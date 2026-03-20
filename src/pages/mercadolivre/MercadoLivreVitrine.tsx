@@ -13,7 +13,21 @@ import { useMercadoLivreSessions } from "@/hooks/useMercadoLivreSessions";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { CalendarDays, Copy, ExternalLink, Loader2, RefreshCw, ShoppingCart, Star, Store } from "lucide-react";
+import {
+  Award,
+  BadgePercent,
+  CalendarDays,
+  Copy,
+  ExternalLink,
+  Flame,
+  Loader2,
+  RefreshCw,
+  ShoppingCart,
+  Star,
+  Store,
+  TrendingUp,
+  type LucideIcon,
+} from "lucide-react";
 
 type MeliVitrineItem = {
   id: string;
@@ -61,7 +75,7 @@ type MeliConvertedPreview = {
 };
 
 const PAGE_LIMIT = 24;
-const DEFAULT_TAB = "top_performance";
+const DEFAULT_TAB = "destaques";
 
 const brlFormatter = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -96,11 +110,33 @@ function normalizeInstallmentsText(value: string): string {
   return `${match[1]}x de R$${match[2]}${suffix}`;
 }
 
+const TAB_ICON_BY_KEY: Record<string, LucideIcon> = {
+  destaques: Award,
+  top_performance: Award,
+  mais_vendidos: TrendingUp,
+  ofertas_quentes: Flame,
+  melhor_avaliados: Star,
+};
+
+function resolveTabIcon(tab: { key: string; label: string }): LucideIcon {
+  const byKey = TAB_ICON_BY_KEY[String(tab.key || "").trim()];
+  if (byKey) return byKey;
+
+  const normalizedLabel = String(tab.label || "").toLowerCase();
+  if (normalizedLabel.includes("vend")) return TrendingUp;
+  if (normalizedLabel.includes("quente") || normalizedLabel.includes("oferta")) return BadgePercent;
+  if (normalizedLabel.includes("avali")) return Star;
+  if (normalizedLabel.includes("top") || normalizedLabel.includes("destaque")) return Award;
+  return Award;
+}
+
 export default function MercadoLivreVitrine() {
   const [activeTab, setActiveTab] = useState(DEFAULT_TAB);
+  const [knownTabs, setKnownTabs] = useState<Array<{ key: string; label: string; activeCount?: number }>>([
+    { key: DEFAULT_TAB, label: "Destaques" },
+  ]);
   const [page, setPage] = useState(1);
   const [isSyncingVitrine, setIsSyncingVitrine] = useState(false);
-  const [selectedSessionId, setSelectedSessionId] = useState("");
   const [convertingProductId, setConvertingProductId] = useState("");
   const [schedulingProductId, setSchedulingProductId] = useState("");
   const [scheduleProduct, setScheduleProduct] = useState<MeliScheduleProduct | null>(null);
@@ -111,17 +147,7 @@ export default function MercadoLivreVitrine() {
     () => sessions.filter((session) => session.status === "active"),
     [sessions],
   );
-
-  useEffect(() => {
-    if (activeSessions.length === 0) {
-      if (selectedSessionId) setSelectedSessionId("");
-      return;
-    }
-
-    const stillSelected = activeSessions.some((session) => session.id === selectedSessionId);
-    if (stillSelected) return;
-    setSelectedSessionId(activeSessions[0].id);
-  }, [activeSessions, selectedSessionId]);
+  const hasActiveMeliSession = activeSessions.length > 0;
 
   const { data, isLoading, isFetching, refetch, error } = useQuery({
     queryKey: ["meli-vitrine", activeTab, page],
@@ -145,10 +171,12 @@ export default function MercadoLivreVitrine() {
     tabs: [],
   };
 
-  const tabs = useMemo(() => {
-    if (payload.tabs.length > 0) return payload.tabs;
-    return [{ key: DEFAULT_TAB, label: "Top Performance" }];
+  useEffect(() => {
+    if (payload.tabs.length === 0) return;
+    setKnownTabs(payload.tabs);
   }, [payload.tabs]);
+
+  const tabs = useMemo(() => knownTabs, [knownTabs]);
 
   useEffect(() => {
     if (!tabs.some((tab) => tab.key === activeTab)) {
@@ -156,17 +184,6 @@ export default function MercadoLivreVitrine() {
       setPage(1);
     }
   }, [activeTab, tabs]);
-
-  useEffect(() => {
-    if (payload.total > 0) return;
-    if (payload.tabs.length === 0) return;
-    const current = payload.tabs.find((tab) => tab.key === activeTab);
-    if ((current?.activeCount || 0) > 0) return;
-    const fallback = payload.tabs.find((tab) => Number(tab.activeCount || 0) > 0);
-    if (!fallback || fallback.key === activeTab) return;
-    setActiveTab(fallback.key);
-    setPage(1);
-  }, [activeTab, payload.tabs, payload.total]);
 
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil(payload.total / Math.max(1, payload.limit))),
@@ -196,7 +213,7 @@ export default function MercadoLivreVitrine() {
     productUrl: string;
     source: string;
   }) => {
-    if (!selectedSessionId) {
+    if (!hasActiveMeliSession) {
       throw new Error("Nenhuma sessao Mercado Livre ativa para conversao.");
     }
 
@@ -205,7 +222,6 @@ export default function MercadoLivreVitrine() {
       conversionTimeMs?: number;
     }>("meli-convert-link", {
       body: {
-        sessionId: selectedSessionId,
         url: input.productUrl,
         source: input.source,
       },
@@ -223,7 +239,7 @@ export default function MercadoLivreVitrine() {
   };
 
   const handleConvertClick = async (item: MeliVitrineItem) => {
-    if (!selectedSessionId) {
+    if (!hasActiveMeliSession) {
       toast.error("Nenhuma sessao Mercado Livre ativa para conversao.");
       return;
     }
@@ -250,7 +266,7 @@ export default function MercadoLivreVitrine() {
   };
 
   const handleScheduleClick = async (item: MeliVitrineItem) => {
-    if (!selectedSessionId) {
+    if (!hasActiveMeliSession) {
       toast.error("Conecte uma sessao Mercado Livre ativa para agendar com link afiliado.");
       return;
     }
@@ -335,19 +351,22 @@ export default function MercadoLivreVitrine() {
 
       <div className="space-y-5">
         <ScrollArea className="w-full whitespace-nowrap">
-          <div className="flex min-w-full justify-start gap-2.5 pb-2 sm:justify-center">
-            {tabs.map((tab) => (
-              <Button
-                key={tab.key}
-                size="sm"
-                variant={activeTab === tab.key ? "default" : "outline"}
-                className="h-9 shrink-0 rounded-full px-4 text-sm"
-                onClick={() => handleTabChange(tab.key)}
-                disabled={isFetching}
-              >
-                {tab.label}
-              </Button>
-            ))}
+          <div className="mx-auto flex w-max min-w-full justify-center gap-2.5 pb-2">
+            {tabs.map((tab) => {
+              const Icon = resolveTabIcon(tab);
+              return (
+                <Button
+                  key={tab.key}
+                  size="sm"
+                  variant={activeTab === tab.key ? "default" : "outline"}
+                  className="h-9 shrink-0 gap-2 rounded-full px-4 text-sm sm:h-10"
+                  onClick={() => handleTabChange(tab.key)}
+                >
+                  <Icon className="h-4 w-4" />
+                  {tab.label}
+                </Button>
+              );
+            })}
           </div>
           <ScrollBar orientation="horizontal" />
         </ScrollArea>
@@ -404,8 +423,8 @@ export default function MercadoLivreVitrine() {
                     )}
                   </div>
 
-                  <CardContent className="flex flex-1 flex-col gap-2.5 p-3.5 sm:p-4">
-                    <p className="line-clamp-2 min-h-[2.75rem] text-sm font-semibold leading-5">
+                  <CardContent className="flex flex-1 flex-col gap-2.5 p-3 sm:p-4">
+                    <p className="line-clamp-2 min-h-[2.65rem] text-sm font-semibold leading-5">
                       {item.title}
                     </p>
 
@@ -434,7 +453,7 @@ export default function MercadoLivreVitrine() {
                           {formatPrice(item.oldPrice)}
                         </p>
                       )}
-                      <p className="text-xl font-bold tracking-tight text-primary">{formatPrice(item.price)}</p>
+                      <p className="text-lg font-bold tracking-tight text-primary sm:text-xl">{formatPrice(item.price)}</p>
                       {installmentsText && (
                         <p className="line-clamp-1 text-xs text-muted-foreground">{installmentsText}</p>
                       )}
@@ -444,7 +463,7 @@ export default function MercadoLivreVitrine() {
                       <Button
                         size="sm"
                         className="h-10 w-full text-xs sm:h-9 sm:flex-1"
-                        disabled={converting || !selectedSessionId}
+                        disabled={converting || !hasActiveMeliSession}
                         onClick={() => { void handleConvertClick(item); }}
                       >
                         {converting ? (
@@ -470,7 +489,7 @@ export default function MercadoLivreVitrine() {
                           variant="outline"
                           className="h-10 w-10 shrink-0 sm:h-9 sm:w-9"
                           title="Agendar envio"
-                          disabled={scheduling || !selectedSessionId}
+                          disabled={scheduling || !hasActiveMeliSession}
                           onClick={() => { void handleScheduleClick(item); }}
                         >
                           {scheduling ? (
@@ -491,7 +510,7 @@ export default function MercadoLivreVitrine() {
         {!error && payload.total > 0 && (
           <div className="flex flex-col gap-2 rounded-lg border bg-card px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
             <span className="text-muted-foreground">Pagina {page} de {totalPages}</span>
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
               <Button
                 size="sm"
                 variant="outline"
@@ -514,7 +533,7 @@ export default function MercadoLivreVitrine() {
       </div>
 
       <Dialog open={!!convertedPreview} onOpenChange={(open) => { if (!open) setConvertedPreview(null); }}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="w-[min(calc(100vw-1rem),40rem)] max-w-none">
           <DialogHeader>
             <DialogTitle>Link convertido com sucesso</DialogTitle>
             <DialogDescription>

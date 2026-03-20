@@ -8,7 +8,6 @@ export interface NewRouteForm {
   masterGroupIds: string[];
   autoConvertShopee: boolean;
   autoConvertMercadoLivre: boolean;
-  meliSessionId: string;
   templateId: string;
   positiveKeywords: string;
   negativeKeywords: string;
@@ -24,7 +23,6 @@ export const emptyNewRoute: NewRouteForm = {
   masterGroupIds: [],
   autoConvertShopee: true,
   autoConvertMercadoLivre: false,
-  meliSessionId: "",
   templateId: "",
   positiveKeywords: "",
   negativeKeywords: "",
@@ -52,7 +50,6 @@ export function buildRoutePayload(form: NewRouteForm) {
     rules: {
       autoConvertShopee: form.autoConvertShopee,
       autoConvertMercadoLivre: form.autoConvertMercadoLivre,
-      meliSessionId: form.autoConvertMercadoLivre ? form.meliSessionId || null : null,
       // Keep compatibility with the existing route pipeline while partner selectors are hidden in the UI.
       resolvePartnerLinks: true,
       requirePartnerLink: true,

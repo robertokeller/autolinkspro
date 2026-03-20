@@ -29,6 +29,7 @@ const SERVICE_RPC_NAMES: Record<string, RuntimeService> = {
   "meli-delete-session": "meli",
   "meli-convert-link": "meli",
   "meli-convert-links": "meli",
+  "meli-product-snapshot": "meli",
   "meli-automation-run": "meli",
   "poll-channel-events": "whatsapp",
   "ops-service-health": "ops",

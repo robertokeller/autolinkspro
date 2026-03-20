@@ -1,7 +1,9 @@
 import * as React from "react";
-
-type ScreenProfile = "tiny" | "mobile" | "tablet" | "desktop";
-type Orientation = "portrait" | "landscape";
+import {
+  computeResponsiveViewportState,
+  type Orientation,
+  type ScreenProfile,
+} from "@/lib/viewport";
 
 type ViewportProfile = {
   width: number;
@@ -19,69 +21,6 @@ type ViewportProfile = {
   physicalWidth: number;
   physicalHeight: number;
 };
-
-const MOBILE_BREAKPOINT = 768;
-const TABLET_BREAKPOINT = 1180;
-const TINY_BREAKPOINT = 420;
-
-function getViewportSize() {
-  const visualViewport = window.visualViewport;
-  const width = Math.max(1, Math.round(visualViewport?.width || window.innerWidth || 1));
-  const height = Math.max(1, Math.round(visualViewport?.height || window.innerHeight || 1));
-  return { width, height };
-}
-
-function detectTouchDevice() {
-  return Boolean(
-    (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
-    || navigator.maxTouchPoints > 0
-    || "ontouchstart" in window,
-  );
-}
-
-function detectPlatform() {
-  const ua = String(navigator.userAgent || "").toLowerCase();
-  const platform = String(navigator.platform || "").toLowerCase();
-  const maxTouchPoints = navigator.maxTouchPoints || 0;
-  const isAndroid = /android/.test(ua);
-  const isIOS = /iphone|ipad|ipod/.test(ua) || (platform.includes("mac") && maxTouchPoints > 1);
-  return { isAndroid, isIOS };
-}
-
-function computeProfile(): ViewportProfile {
-  const { width, height } = getViewportSize();
-  const dpr = window.devicePixelRatio || 1;
-  const { isAndroid, isIOS } = detectPlatform();
-  const isTouch = detectTouchDevice();
-
-  const isTiny = width < TINY_BREAKPOINT;
-  const narrowMobile = width < MOBILE_BREAKPOINT;
-  const touchTablet = isTouch && width >= MOBILE_BREAKPOINT && width < TABLET_BREAKPOINT;
-  const nonTouchTablet = !isTouch && width >= MOBILE_BREAKPOINT && width < 1024;
-
-  const isMobile = narrowMobile;
-  const isTablet = !isMobile && (touchTablet || nonTouchTablet);
-  const isDesktop = !isMobile && !isTablet;
-  const profile: ScreenProfile = isTiny ? "tiny" : isMobile ? "mobile" : isTablet ? "tablet" : "desktop";
-  const orientation: Orientation = width >= height ? "landscape" : "portrait";
-
-  return {
-    width,
-    height,
-    dpr,
-    profile,
-    orientation,
-    isTouch,
-    isTiny,
-    isMobile,
-    isTablet,
-    isDesktop,
-    isAndroid,
-    isIOS,
-    physicalWidth: Math.round(width * dpr),
-    physicalHeight: Math.round(height * dpr),
-  };
-}
 
 export function useViewportProfile() {
   const [state, setState] = React.useState<ViewportProfile>(() => {
@@ -103,7 +42,7 @@ export function useViewportProfile() {
         physicalHeight: 900,
       };
     }
-    return computeProfile();
+    return computeResponsiveViewportState();
   });
 
   React.useEffect(() => {
@@ -111,7 +50,7 @@ export function useViewportProfile() {
 
     const update = () => {
       if (frameId) cancelAnimationFrame(frameId);
-      frameId = requestAnimationFrame(() => setState(computeProfile()));
+      frameId = requestAnimationFrame(() => setState(computeResponsiveViewportState()));
     };
 
     update();

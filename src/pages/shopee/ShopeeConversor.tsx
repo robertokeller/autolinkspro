@@ -174,10 +174,10 @@ export default function ShopeeConversor() {
         </CardHeader>
         <CardContent className="space-y-5">
           <div className="space-y-2">
-            <Label className="text-sm text-muted-foreground">Link do produto</Label>
+            <Label className="text-sm text-muted-foreground">Cole o link para converter</Label>
             <div className="flex flex-col gap-2.5 sm:flex-row">
               <Input
-                placeholder="https://... (Shopee ou Mercado Livre)"
+                placeholder="Cole aqui o link da Shopee ou Mercado Livre"
                 value={converterInput}
                 onChange={(e) => setConverterInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleConvert()}
@@ -191,15 +191,6 @@ export default function ShopeeConversor() {
             <p className="text-xs text-muted-foreground">
               Dica: aperte Enter pra converter sem clicar no botão.
             </p>
-          </div>
-
-          <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-            <div className="rounded-md border border-border/70 bg-background/40 p-3">
-              Shopee: usa suas credenciais de afiliado pra gerar o link.
-            </div>
-            <div className="rounded-md border border-border/70 bg-background/40 p-3">
-              Mercado Livre: usa a primeira conta ativa conectada nas configurações.
-            </div>
           </div>
 
           {!hasMeliSession && (

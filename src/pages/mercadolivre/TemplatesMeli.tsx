@@ -68,13 +68,13 @@ const DEFAULT_TEMPLATE_CONTENT = "**{titulo}**\nDe R$ {preco_original} por R$ {p
 const PLACEHOLDER_LEGEND: Array<{ key: string; description: string }> = [
   { key: "{titulo}", description: "Titulo do produto" },
   { key: "{preco}", description: "Preco atual do produto" },
-  { key: "{preco_original}", description: "Preco anterior do produto" },
+  { key: "{preco_original}", description: "Preco anterior do produto (quando houver)" },
   { key: "{link}", description: "Link de afiliado convertido" },
   { key: "{imagem}", description: "Imagem do produto (envio como anexo)" },
   { key: "{avaliacao}", description: "Nota media (quando disponivel)" },
   { key: "{avaliacoes}", description: "Quantidade de avaliacoes (quando disponivel)" },
-  { key: "{parcelamento}", description: "Condicoes de parcelamento" },
-  { key: "{vendedor}", description: "Nome da loja/vendedor" },
+  { key: "{parcelamento}", description: "Condicoes de parcelamento (quando disponivel)" },
+  { key: "{vendedor}", description: "Nome da loja/vendedor (quando disponivel)" },
 ];
 
 const PREVIEW_SAMPLE = buildMeliTemplatePlaceholderData(
@@ -114,6 +114,18 @@ type GeneratedOffer = {
   conversionTimeMs: number | null;
   requestsImageAttachment: boolean;
   product: MeliScheduleProductInput;
+};
+
+type MeliProductSnapshotResponse = {
+  productUrl?: string;
+  title?: string;
+  imageUrl?: string;
+  price?: number | null;
+  oldPrice?: number | null;
+  installmentsText?: string;
+  seller?: string;
+  rating?: number | null;
+  reviewsCount?: number | null;
 };
 
 function firstNonEmptyString(...values: unknown[]) {
@@ -190,8 +202,7 @@ export default function TemplatesMeli() {
     () => sessions.filter((session) => session.status === "active"),
     [sessions],
   );
-
-  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const hasActiveMeliSession = activeSessions.length > 0;
 
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Template | null>(null);
@@ -210,16 +221,6 @@ export default function TemplatesMeli() {
 
   const [scheduleProduct, setScheduleProduct] = useState<MeliScheduleProductInput | null>(null);
   const [scheduleTemplateId, setScheduleTemplateId] = useState("");
-
-  useEffect(() => {
-    if (activeSessions.length === 0) {
-      if (selectedSessionId) setSelectedSessionId("");
-      return;
-    }
-    const stillSelected = activeSessions.some((session) => session.id === selectedSessionId);
-    if (stillSelected) return;
-    setSelectedSessionId(activeSessions[0].id);
-  }, [activeSessions, selectedSessionId]);
 
   const generatedOfferPreviewHtml = useMemo(
     () => (generatedOffer ? renderRichTextPreviewHtml(generatedOffer.message) : ""),
@@ -317,8 +318,8 @@ export default function TemplatesMeli() {
       toast.error("Use um link valido do Mercado Livre.");
       return;
     }
-    if (!selectedSessionId) {
-      toast.error("Selecione uma sessao Mercado Livre ativa para converter.");
+    if (!hasActiveMeliSession) {
+      toast.error("Conecte uma sessao Mercado Livre ativa para converter.");
       return;
     }
 
@@ -344,7 +345,6 @@ export default function TemplatesMeli() {
         conversionTimeMs?: number;
       }>("meli-convert-link", {
         body: {
-          sessionId: selectedSessionId,
           url: link,
           source: "templatesmeli-converter",
         },
@@ -352,18 +352,34 @@ export default function TemplatesMeli() {
 
       const originalLink = normalizeMeliProductUrl(String(conversion.originalLink || link));
       const affiliateLink = firstNonEmptyString(conversion.affiliateLink, originalLink);
-      const productTitle = deriveTitleFromMeliUrl(originalLink) || "Oferta Mercado Livre";
+      let productSnapshot: MeliProductSnapshotResponse | null = null;
+
+      try {
+        productSnapshot = await invokeBackendRpc<MeliProductSnapshotResponse>("meli-product-snapshot", {
+          body: {
+            productUrl: originalLink,
+          },
+        });
+      } catch {
+        toast.warning("Link convertido, mas alguns dados do produto nao puderam ser carregados.");
+      }
+
+      const productTitle = firstNonEmptyString(
+        productSnapshot?.title,
+        deriveTitleFromMeliUrl(originalLink),
+        "Oferta Mercado Livre",
+      );
 
       const productInput: MeliTemplateProductInput = {
         title: productTitle,
-        productUrl: originalLink,
-        imageUrl: "",
-        price: null,
-        oldPrice: null,
-        installmentsText: "",
-        seller: "",
-        rating: null,
-        reviewsCount: null,
+        productUrl: firstNonEmptyString(productSnapshot?.productUrl, originalLink),
+        imageUrl: firstNonEmptyString(productSnapshot?.imageUrl),
+        price: Number.isFinite(Number(productSnapshot?.price)) ? Number(productSnapshot?.price) : null,
+        oldPrice: Number.isFinite(Number(productSnapshot?.oldPrice)) ? Number(productSnapshot?.oldPrice) : null,
+        installmentsText: firstNonEmptyString(productSnapshot?.installmentsText),
+        seller: firstNonEmptyString(productSnapshot?.seller),
+        rating: Number.isFinite(Number(productSnapshot?.rating)) ? Number(productSnapshot?.rating) : null,
+        reviewsCount: Number.isFinite(Number(productSnapshot?.reviewsCount)) ? Number(productSnapshot?.reviewsCount) : null,
       };
 
       const placeholderData = buildMeliTemplatePlaceholderData(productInput, affiliateLink);
@@ -383,14 +399,14 @@ export default function TemplatesMeli() {
         product: {
           title: productTitle,
           affiliateLink,
-          productUrl: originalLink,
-          imageUrl: "",
-          price: null,
-          oldPrice: null,
-          installmentsText: "",
-          seller: "",
-          rating: null,
-          reviewsCount: null,
+          productUrl: productInput.productUrl,
+          imageUrl: productInput.imageUrl,
+          price: productInput.price,
+          oldPrice: productInput.oldPrice,
+          installmentsText: productInput.installmentsText,
+          seller: productInput.seller,
+          rating: productInput.rating,
+          reviewsCount: productInput.reviewsCount,
         },
       });
     } catch (error) {
@@ -416,7 +432,7 @@ export default function TemplatesMeli() {
   };
 
   return (
-    <div className="ds-page">
+    <div className="ds-page pb-[calc(var(--safe-area-bottom)+0.25rem)]">
       <PageHeader
         title="Templates Meli"
         description="Monte templates e gere mensagens com conversao de link Mercado Livre"
@@ -466,22 +482,6 @@ export default function TemplatesMeli() {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Sessao para conversao</Label>
-                <Select value={selectedSessionId} onValueChange={setSelectedSessionId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={sessionsLoading ? "Carregando sessoes..." : "Selecione uma sessao ativa"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {activeSessions.map((session) => (
-                      <SelectItem key={session.id} value={session.id}>
-                        {session.name || `Conta ${session.id.slice(0, 8)}`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Template</Label>
@@ -507,8 +507,8 @@ export default function TemplatesMeli() {
 
                 <Button
                   onClick={() => { void handleConvert(); }}
-                  disabled={converting || !converterLink.trim() || !selectedSessionId || templates.length === 0}
-                  className="h-10 sm:min-w-28"
+                  disabled={converting || !converterLink.trim() || !hasActiveMeliSession || templates.length === 0}
+                  className="h-10 w-full sm:min-w-28 sm:w-auto"
                 >
                   {converting ? (
                     <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
@@ -613,7 +613,7 @@ export default function TemplatesMeli() {
                           <Button
                             size="icon"
                             variant="ghost"
-                            className={`h-8 w-8 ${template.isDefault ? "text-primary" : "text-muted-foreground"}`}
+                            className={`h-9 w-9 sm:h-8 sm:w-8 ${template.isDefault ? "text-primary" : "text-muted-foreground"}`}
                             onClick={() => { void setDefaultTemplate(template.id); }}
                             title={template.isDefault ? "Remover padrao" : "Definir como padrao"}
                           >
@@ -622,7 +622,7 @@ export default function TemplatesMeli() {
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="h-8 w-8"
+                            className="h-9 w-9 sm:h-8 sm:w-8"
                             onClick={() => { void duplicateTemplate(template.id); }}
                             title="Duplicar"
                           >
@@ -631,7 +631,7 @@ export default function TemplatesMeli() {
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="h-8 w-8"
+                            className="h-9 w-9 sm:h-8 sm:w-8"
                             onClick={() => openEdit(template)}
                             title="Editar"
                           >
@@ -640,7 +640,7 @@ export default function TemplatesMeli() {
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="h-8 w-8 text-destructive"
+                            className="h-9 w-9 text-destructive sm:h-8 sm:w-8"
                             onClick={() => setDeleteId(template.id)}
                             title="Excluir"
                           >
@@ -666,7 +666,7 @@ export default function TemplatesMeli() {
       </div>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="max-h-[92dvh] max-w-4xl overflow-hidden p-0">
+        <DialogContent className="max-h-[92dvh] w-[min(calc(100vw-1rem),72rem)] max-w-none overflow-hidden p-0">
           <DialogHeader className="border-b px-6 py-4">
             <DialogTitle>{editing ? "Editar template Meli" : "Novo template Meli"}</DialogTitle>
           </DialogHeader>

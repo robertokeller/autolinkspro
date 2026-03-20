@@ -67,13 +67,13 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
   };
 
   return (
-    <Card className="glass overflow-hidden group hover:shadow-lg transition-all duration-200 flex flex-col animate-card-in">
+    <Card className="glass animate-card-in flex flex-col overflow-hidden transition-all duration-200 group hover:shadow-lg">
       {/* Image */}
-      <div className="aspect-square bg-muted relative overflow-hidden">
+      <div className="relative aspect-square overflow-hidden bg-muted/50">
         <img
           src={product.imageUrl || "/placeholder.svg"}
           alt={product.title}
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          className="h-full w-full object-contain p-2 transition-transform duration-300 group-hover:scale-105"
           onError={(e) => { e.currentTarget.src = "/placeholder.svg"; }}
           loading={priorityImage ? "eager" : "lazy"}
           decoding="async"
@@ -91,9 +91,9 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
         )}
       </div>
 
-      <CardContent className="p-3 space-y-2.5 flex-1 flex flex-col">
+      <CardContent className="flex flex-1 flex-col space-y-2.5 p-3 sm:p-3.5">
         {/* Title */}
-        <p className="text-sm font-medium line-clamp-2 leading-snug min-h-[2.5rem]">
+        <p className="min-h-[2.5rem] text-sm font-medium leading-snug line-clamp-2">
           {product.title}
         </p>
 
@@ -142,10 +142,10 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
         </div>
 
         {/* Actions */}
-        <div className="flex gap-1.5 pt-1 mt-auto">
+        <div className="mt-auto flex gap-1.5 pt-1">
           <Button
             size="sm"
-            className="flex-1 text-xs h-8"
+            className="h-9 flex-1 text-xs sm:h-8"
             onClick={copyLink}
           >
             <Copy className="h-3 w-3 mr-1" />
@@ -155,7 +155,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
             <Button
               size="icon"
               variant="outline"
-              className="h-8 w-8 shrink-0"
+              className="h-9 w-9 shrink-0 sm:h-8 sm:w-8"
               onClick={() => onSchedule(product)}
               title="Agendar envio"
             >
@@ -165,7 +165,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
           <Button
             size="icon"
             variant="outline"
-            className="h-8 w-8 shrink-0"
+            className="h-9 w-9 shrink-0 sm:h-8 sm:w-8"
             onClick={openAffiliateLink}
             title="Abrir no site"
           >

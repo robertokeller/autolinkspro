@@ -1,5 +1,12 @@
 import { applyTemplatePlaceholders } from "@/lib/template-placeholders";
 
+const EMPTY_LINE_REGEX = /^[ \t]+$/gm;
+const BLANK_PRICE_LINE_REGEX = /^[ \t]*De R\$\s*por R\$\s*$/gim;
+const CURRENT_ONLY_PRICE_LINE_REGEX = /^[ \t]*De R\$\s*por R\$\s*([0-9]+(?:[.,][0-9]{2})?)\s*$/gim;
+const EMPTY_STORE_LINE_REGEX = /^[ \t]*Loja:\s*$/gim;
+const EMPTY_RATING_LINE_REGEX = /^[ \t]*Nota:\s*(?:\(\s*\))?\s*$/gim;
+const PARTIAL_RATING_LINE_REGEX = /^[ \t]*Nota:\s*([0-9]+(?:[.,][0-9])?)\s*\(\s*\)\s*$/gim;
+
 export interface MeliTemplateProductInput {
   title?: string;
   productUrl?: string;
@@ -66,5 +73,14 @@ export function applyMeliTemplatePlaceholders(
   templateContent: string,
   placeholderData: Record<string, string>,
 ): string {
-  return applyTemplatePlaceholders(templateContent, placeholderData);
+  const replaced = applyTemplatePlaceholders(templateContent, placeholderData);
+  return replaced
+    .replace(CURRENT_ONLY_PRICE_LINE_REGEX, "R$ $1")
+    .replace(BLANK_PRICE_LINE_REGEX, "")
+    .replace(EMPTY_STORE_LINE_REGEX, "")
+    .replace(EMPTY_RATING_LINE_REGEX, "")
+    .replace(PARTIAL_RATING_LINE_REGEX, "Nota: $1")
+    .replace(EMPTY_LINE_REGEX, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }

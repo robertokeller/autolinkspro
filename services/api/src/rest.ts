@@ -96,6 +96,49 @@ function toPositiveInt(value: unknown, min: number, max: number): number | null 
   return Math.min(parsed, max);
 }
 
+async function ensureOwnedActiveGroup(client: import("pg").PoolClient, userId: string, groupIdRaw: unknown) {
+  const groupId = String(groupIdRaw ?? "").trim();
+  if (!groupId) throw new Error("group_id obrigatÃ³rio");
+  const ownedGroup = await client.query<{ id: string; platform: string }>(
+    `SELECT id, platform
+       FROM "groups"
+      WHERE id = $1
+        AND user_id = $2
+        AND deleted_at IS NULL`,
+    [groupId, userId],
+  );
+  if ((ownedGroup.rowCount ?? 0) === 0) throw new Error("Grupo nÃ£o pertence ao usuÃ¡rio");
+  return {
+    groupId,
+    platform: String(ownedGroup.rows[0]?.platform || "").trim(),
+  };
+}
+
+async function ensureMasterGroupPlatformConsistency(
+  client: import("pg").PoolClient,
+  masterGroupIdRaw: unknown,
+  nextPlatform: string,
+) {
+  const masterGroupId = String(masterGroupIdRaw ?? "").trim();
+  if (!masterGroupId) throw new Error("master_group_id obrigatÃ³rio");
+  const existingPlatform = await client.query<{ platform: string }>(
+    `SELECT g.platform
+       FROM "master_group_links" l
+       JOIN "groups" g
+         ON g.id = l.group_id
+      WHERE l.master_group_id = $1
+        AND l.is_active <> FALSE
+        AND g.deleted_at IS NULL
+      LIMIT 1`,
+    [masterGroupId],
+  );
+  if ((existingPlatform.rowCount ?? 0) === 0) return;
+  const currentPlatform = String(existingPlatform.rows[0]?.platform || "").trim();
+  if (currentPlatform && nextPlatform && currentPlatform !== nextPlatform) {
+    throw new Error("Grupo mestre sÃ³ pode conter grupos da mesma rede");
+  }
+}
+
 // ─── Filter building ──────────────────────────────────────────────────────────
 type Filter = { type: string; col: string; val: unknown };
 
@@ -250,6 +293,12 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
           const owned = await client.query(`SELECT id FROM "${parentTbl}" WHERE id = $1 AND user_id = $2`, [parentId, userId]);
           if ((owned.rowCount ?? 0) === 0) throw new Error("Acesso negado");
         }
+        if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
+          const owned = await ensureOwnedActiveGroup(client, userId, row.group_id);
+          if (table === "master_group_links") {
+            await ensureMasterGroupPlatformConsistency(client, row.master_group_id, owned.platform);
+          }
+        }
 
         const keys = Object.keys(row);
         const cols = keys.map(safeIdent).join(", ");
@@ -271,6 +320,22 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       // Strip admin-only columns to prevent privilege escalation via self-service
       if (!effectiveAdmin && NON_ADMIN_WRITE_DENIED_COLUMNS[table]) {
         for (const col of NON_ADMIN_WRITE_DENIED_COLUMNS[table]) delete updateData[col];
+      }
+      if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
+        if (Object.prototype.hasOwnProperty.call(updateData, "group_id")) {
+          try {
+            const owned = await ensureOwnedActiveGroup(client, userId, updateData.group_id);
+            if (table === "master_group_links") {
+              const masterGroupId = Object.prototype.hasOwnProperty.call(updateData, "master_group_id")
+                ? updateData.master_group_id
+                : normalizedFilters.find((filter) => filter.col === "master_group_id" && filter.type === "eq")?.val;
+              await ensureMasterGroupPlatformConsistency(client, masterGroupId, owned.platform);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Grupo invÃ¡lido";
+            res.status(403).json({ data: null, count: null, error: { message } }); return;
+          }
+        }
       }
       const setKeys = Object.keys(updateData);
       if (setKeys.length === 0) { res.json({ data: [], count: 0, error: null }); return; }
@@ -349,6 +414,12 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
           const owned = await client.query(`SELECT id FROM "${parentTbl}" WHERE id = $1 AND user_id = $2`, [parentId, userId]);
           if ((owned.rowCount ?? 0) === 0) throw new Error("Acesso negado");
         }
+        if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
+          const owned = await ensureOwnedActiveGroup(client, userId, row.group_id);
+          if (table === "master_group_links") {
+            await ensureMasterGroupPlatformConsistency(client, row.master_group_id, owned.platform);
+          }
+        }
 
         const keys = Object.keys(row);
         const cols = keys.map(safeIdent).join(", ");
@@ -384,3 +455,4 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     client.release();
   }
 });
+

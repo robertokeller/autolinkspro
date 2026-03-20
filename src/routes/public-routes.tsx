@@ -1,5 +1,4 @@
 import { AuthPageGuard } from "@/components/AuthPageGuard";
-import { RouteGuard } from "@/components/RouteGuard";
 import { ROUTES } from "@/lib/routes";
 import { Pages } from "@/routes/lazy-pages";
 import { Navigate, Route } from "react-router-dom";
@@ -22,9 +21,8 @@ export function PublicRoutes() {
       <Route path={ROUTES.termos} element={<Pages.TermosDeUso />} />
       <Route path={ROUTES.privacidade} element={<Pages.PoliticaPrivacidade />} />
 
-      <Route element={<RouteGuard />}>
-        <Route path={ROUTES.hubPublic} element={<Pages.LinkHubPublicPage />} />
-      </Route>
+      <Route path={ROUTES.hubPublic} element={<Pages.LinkHubPublicPage />} />
+      <Route path={ROUTES.masterGroupPublic} element={<Pages.MasterGroupPublicPage />} />
     </>
   );
 }

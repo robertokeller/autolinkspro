@@ -14,7 +14,7 @@ export interface MultiOptionDropdownItem {
 interface MultiOptionDropdownProps {
   value: string[];
   onChange: (ids: string[]) => void;
-  items: MultiOptionDropdownItem[];
+  items?: MultiOptionDropdownItem[];
   placeholder: string;
   selectedLabel: (count: number) => string;
   emptyMessage: string;
@@ -25,7 +25,7 @@ interface MultiOptionDropdownProps {
 export function MultiOptionDropdown({
   value,
   onChange,
-  items,
+  items = [],
   placeholder,
   selectedLabel,
   emptyMessage,

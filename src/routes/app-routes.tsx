@@ -23,6 +23,7 @@ export function ProtectedAppRoutes() {
             </FeatureRouteGuard>
           )}
         />
+        <Route path={ROUTES.app.connectionsMasterGroups} element={<Pages.ConexoesMasterGroups />} />
         <Route
           path={ROUTES.app.routes}
           element={(

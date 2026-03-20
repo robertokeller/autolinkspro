@@ -4,7 +4,6 @@ import { backend } from "@/integrations/backend/client";
 import type { Tables } from "@/integrations/backend/types";
 import { invokeWhatsAppAction } from "@/lib/channel-central";
 import type { AuthMethod, SessionStatus, WhatsAppSession } from "@/lib/types";
-import { validatePhone } from "@/lib/phone-utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { normalizeSessionStatus } from "@/lib/session-status";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
@@ -25,6 +24,7 @@ interface RenameSessionInput {
 function mapRowToSession(row: WhatsAppSessionRow): WhatsAppSession {
   const status = normalizeSessionStatus(row.status);
   const qrOrPairing = row.qr_code?.trim() ? row.qr_code : null;
+  const qrCode = status === "qr_code" && qrOrPairing ? qrOrPairing : null;
 
   return {
     id: row.id,
@@ -32,9 +32,9 @@ function mapRowToSession(row: WhatsAppSessionRow): WhatsAppSession {
     phoneNumber: row.phone || "",
     status,
     isDefault: row.is_default,
-    authMethod: row.auth_method === "pairing" ? "pairing" : "qr",
-    qrCode: status === "qr_code" ? qrOrPairing : null,
-    pairingCode: status === "pairing_code" ? qrOrPairing : null,
+    authMethod: "qr",
+    qrCode,
+    pairingCode: null,
     errorMessage: row.error_message?.trim() ? row.error_message : null,
     connectedAt: row.connected_at,
   };
@@ -108,18 +108,8 @@ export function useWhatsAppSessions() {
       const name = input.name.trim();
       if (!name) throw new Error("Informe o nome da sessão");
 
-      const authMethod: AuthMethod = input.authMethod === "pairing" ? "pairing" : "qr";
-      const rawPhone = String(input.phone || "").trim();
-      if (authMethod === "pairing" && !rawPhone) {
-        throw new Error("Informe o telefone para usar Pairing Code.");
-      }
-
-      const phoneValidation = rawPhone
-        ? validatePhone(rawPhone)
-        : { valid: true as const, normalized: "" };
-      if (!phoneValidation.valid) {
-        throw new Error((phoneValidation as { error?: string }).error || "Telefone inválido");
-      }
+      const authMethod: AuthMethod = "qr";
+      const phoneValidation = { valid: true as const, normalized: "" };
 
       const shouldBeDefault = sessions.length === 0;
 

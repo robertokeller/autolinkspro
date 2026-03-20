@@ -15,6 +15,8 @@
     --app-page-x: 16px;
     --app-page-y: 20px;
     --app-header-height: 56px;
+    --mobile-bottom-nav-height: 0px;
+    --mobile-bottom-nav-offset: 0px;
     --touch-target-size: 40px;
     --safe-area-top: env(safe-area-inset-top, 0px);
     --safe-area-right: env(safe-area-inset-right, 0px);
@@ -154,6 +156,7 @@
   body,
   #root {
     min-height: 100%;
+    width: 100%;
   }
 
   body {
@@ -161,8 +164,25 @@
     font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
     font-size: calc(16px * var(--app-font-scale));
     min-height: max(100dvh, calc(var(--vh-unit) * 100));
+    overflow-x: hidden;
     overscroll-behavior-y: none;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  body.app-shell-active {
+    overflow: hidden;
+  }
+
+  body.app-shell-active #root {
+    height: max(100dvh, calc(var(--vh-unit) * 100));
+    overflow: hidden;
+  }
+
+  img,
+  video,
+  canvas,
+  svg {
+    max-width: 100%;
   }
 
   /* Custom scrollbar */
@@ -282,4 +302,19 @@
 :root[data-screen-profile="tiny"] .ds-card-grid,
 :root[data-screen-profile="mobile"] .ds-card-grid {
   gap: 0.75rem;
+}
+
+@media (max-width: 767px) {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .glass {
+    border-radius: calc(var(--radius) + 0.125rem);
+  }
+
+  .ds-page {
+    padding-bottom: max(var(--safe-area-bottom), 0px);
+  }
 }

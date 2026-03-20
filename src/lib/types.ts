@@ -46,7 +46,7 @@ export interface MasterGroup {
   id: string;
   name: string;
   slug: string;
-  platform: string;
+  platform: "whatsapp" | "telegram" | "mixed" | "unknown";
   groupIds: string[];
   distribution: DistributionMode;
   memberLimit: number;
@@ -74,7 +74,6 @@ export interface AppRoute {
   rules: {
     autoConvertShopee: boolean;
     autoConvertMercadoLivre?: boolean;
-    meliSessionId?: string | null;
     resolvePartnerLinks: boolean;
     requirePartnerLink: boolean;
     partnerMarketplaces: string[];

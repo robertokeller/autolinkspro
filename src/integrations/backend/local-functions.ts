@@ -1189,9 +1189,13 @@ function resolveRouteMeliSessionId(snapshot: ReturnType<typeof loadDb>, userId: 
     ? snapshot.tables.meli_sessions.filter((row) => row.user_id === userId)
     : [];
 
+  const readySession = userSessions.find((row) => row.status === "active")
+    || userSessions.find((row) => row.status === "untested");
+  if (readySession?.id) return String(readySession.id);
+
   if (normalizedPreferred) {
-    const found = userSessions.some((row) => String(row.id) === normalizedPreferred);
-    if (found) return normalizedPreferred;
+    const found = userSessions.find((row) => String(row.id) === normalizedPreferred);
+    if (found?.id) return String(found.id);
   }
 
   return resolveDefaultMeliSessionId(snapshot, userId);
@@ -3818,13 +3822,14 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     if (!currentUser || !userId) return fail("Usuário não autenticado");
 
     const tabs = [
+      { key: "destaques", label: "Destaques", activeCount: 0 },
       { key: "top_performance", label: "Top Performance", activeCount: 0 },
       { key: "mais_vendidos", label: "Mais vendidos", activeCount: 0 },
       { key: "ofertas_quentes", label: "Ofertas quentes", activeCount: 0 },
       { key: "melhor_avaliados", label: "Melhor Avaliados", activeCount: 0 },
     ];
 
-    const requestedTab = String(body.tab || "top_performance").trim() || "top_performance";
+    const requestedTab = String(body.tab || "destaques").trim() || "destaques";
     const page = Math.max(1, Number.parseInt(String(body.page || "1"), 10) || 1);
     const limit = Math.max(1, Math.min(60, Number.parseInt(String(body.limit || "24"), 10) || 24));
 
@@ -4011,23 +4016,13 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     if (!sessionRow) return fail("Sessão WhatsApp não encontrada");
 
     if (action === "connect") {
-      const authMethod = String(sessionRow.auth_method || "qr").trim().toLowerCase() === "pairing" ? "pairing" : "qr";
+      const authMethod = "qr";
       const phone = String(sessionRow.phone || "").trim();
-      if (authMethod === "pairing" && !phone) {
-        const message = "Sessão em modo pairing exige telefone. Atualize o número da sessão e tente novamente.";
-        withDb((db) => {
-          const row = db.tables.whatsapp_sessions.find((item) => item.id === sessionId && item.user_id === userId);
-          if (!row) return;
-          row.status = "warning";
-          row.error_message = message;
-          row.updated_at = nowIso();
-        });
-        return fail(message);
-      }
 
       withDb((db) => {
         const row = db.tables.whatsapp_sessions.find((item) => item.id === sessionId && item.user_id === userId);
         if (!row) return;
+        row.auth_method = "qr";
         row.status = "connecting";
         row.error_message = "";
         row.updated_at = nowIso();
@@ -6162,21 +6157,30 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     const userId = currentUser?.id || null;
     if (!currentUser || !userId) return fail("Usuário não autenticado");
 
-    const sessionId = String(body.sessionId || "").trim();
+    const requestedSessionId = String(body.sessionId || "").trim();
     const sessionName = String(body.name || "").trim();
     const cookiesRaw = body.cookies;
-    const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
 
-    if (!sessionId) return fail("sessionId é obrigatório");
+    if (!requestedSessionId) return fail("sessionId é obrigatório");
     if (!cookiesRaw) return fail("cookies é obrigatório");
 
     const existingUserSessions = Array.isArray(snapshot.tables.meli_sessions)
-      ? snapshot.tables.meli_sessions.filter((row) => row.user_id === userId)
+      ? snapshot.tables.meli_sessions
+        .filter((row) => row.user_id === userId)
+        .sort((a, b) => {
+          const aTime = Date.parse(String(a.updated_at || a.created_at || ""));
+          const bTime = Date.parse(String(b.updated_at || b.created_at || ""));
+          const safeA = Number.isFinite(aTime) ? aTime : 0;
+          const safeB = Number.isFinite(bTime) ? bTime : 0;
+          return safeB - safeA;
+        })
       : [];
-    const hasAnotherSession = existingUserSessions.some((row) => String(row.id) !== sessionId);
-    if (hasAnotherSession) {
-      return fail("Apenas 1 sessão Mercado Livre é permitida. Remova a sessão atual antes de adicionar outra.");
-    }
+    const canonicalSessionId = String(existingUserSessions[0]?.id || requestedSessionId).trim();
+    const canonicalSession = existingUserSessions.find((row) => String(row.id) === canonicalSessionId) || null;
+    const staleSessionIds = existingUserSessions
+      .map((row) => String(row.id || "").trim())
+      .filter((id) => id && id !== canonicalSessionId);
+    const scopedSessionId = buildScopedMeliSessionId(userId, canonicalSessionId);
 
     // -- Validate cookies locally (no service required) ----------------------
     let cookieArr: Array<{ name: string; value: string }>;
@@ -6218,7 +6222,12 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     // -- Save session to local DB immediately (offline-safe) -----------------
     withDb((db) => {
       if (!Array.isArray(db.tables.meli_sessions)) db.tables.meli_sessions = [];
-      const existing = db.tables.meli_sessions.find((row) => row.user_id === userId && row.id === sessionId);
+      db.tables.meli_sessions = db.tables.meli_sessions.filter((row) => {
+        if (row.user_id !== userId) return true;
+        return !staleSessionIds.includes(String(row.id || "").trim());
+      });
+
+      const existing = db.tables.meli_sessions.find((row) => row.user_id === userId && row.id === canonicalSessionId);
       if (existing) {
         if (localAccountName) existing.account_name = localAccountName;
         if (localMlUserId) existing.ml_user_id = localMlUserId;
@@ -6229,9 +6238,9 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         if (sessionName) existing.name = sessionName;
       } else {
         db.tables.meli_sessions.push({
-          id: sessionId,
+          id: canonicalSessionId,
           user_id: userId,
-          name: sessionName || localAccountName || sessionId,
+          name: sessionName || localAccountName || String(canonicalSession?.name || "").trim() || canonicalSessionId,
           account_name: localAccountName || "",
           ml_user_id: localMlUserId || "",
           status: "untested",
@@ -6256,9 +6265,22 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
         userId,
         body: { sessionId: scopedSessionId, cookies: cookiesRaw },
       });
+
+      for (const staleSessionId of staleSessionIds) {
+        const staleScopedSessionId = buildScopedMeliSessionId(userId, staleSessionId);
+        try {
+          await callService(MELI_RPA_URL, `/api/meli/sessions/${encodeURIComponent(staleScopedSessionId)}`, {
+            method: "DELETE",
+            userId,
+          });
+        } catch {
+          // Ignore cleanup failures for stale sessions.
+        }
+      }
+
       // Service responded - update with real metadata and clear pending
       withDb((db) => {
-        const row = db.tables.meli_sessions?.find((r) => r.user_id === userId && r.id === sessionId);
+        const row = db.tables.meli_sessions?.find((r) => r.user_id === userId && r.id === canonicalSessionId);
         if (row) {
           if (response.accountName) row.account_name = String(response.accountName);
           if (response.mlUserId) row.ml_user_id = String(response.mlUserId);
@@ -6579,9 +6601,33 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     if (!currentUser || !userId) return fail("Usuário não autenticado");
 
     const sessions = Array.isArray(snapshot.tables.meli_sessions)
-      ? snapshot.tables.meli_sessions.filter((row) => row.user_id === userId)
+      ? snapshot.tables.meli_sessions
+        .filter((row) => row.user_id === userId)
+        .sort((a, b) => {
+          const aTime = Date.parse(String(a.updated_at || a.created_at || ""));
+          const bTime = Date.parse(String(b.updated_at || b.created_at || ""));
+          const safeA = Number.isFinite(aTime) ? aTime : 0;
+          const safeB = Number.isFinite(bTime) ? bTime : 0;
+          return safeB - safeA;
+        })
       : [];
-    return { data: { sessions }, error: null };
+    const canonical = sessions[0] || null;
+    const staleSessionIds = sessions
+      .slice(1)
+      .map((row) => String(row.id || "").trim())
+      .filter(Boolean);
+
+    if (staleSessionIds.length > 0) {
+      withDb((db) => {
+        if (!Array.isArray(db.tables.meli_sessions)) return;
+        db.tables.meli_sessions = db.tables.meli_sessions.filter((row) => {
+          if (row.user_id !== userId) return true;
+          return !staleSessionIds.includes(String(row.id || "").trim());
+        });
+      });
+    }
+
+    return { data: { sessions: canonical ? [canonical] : [] }, error: null };
   }
 
   if (name === "meli-delete-session") {
@@ -6612,6 +6658,71 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     return { data: { success: true }, error: null };
   }
 
+  const normalizeMeliTemplateTextLocal = (value: unknown) =>
+    String(value || "").replace(/\s+/g, " ").trim();
+
+  const canonicalizeMeliProductUrlLocal = (rawUrl: string) => {
+    try {
+      const parsed = new URL(String(rawUrl || "").trim());
+      parsed.hash = "";
+      parsed.search = "";
+      parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+      return parsed.toString();
+    } catch {
+      return String(rawUrl || "").trim();
+    }
+  };
+
+  const deriveMeliProductTitleLocal = (rawUrl: string) => {
+    try {
+      const parsed = new URL(String(rawUrl || "").trim());
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      const slug = parts.find((part) => part.toLowerCase() !== "p" && !/^mlb/i.test(part)) || "";
+      const decoded = decodeURIComponent(slug).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+      if (!decoded) return "";
+      return decoded
+        .split(" ")
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+    } catch {
+      return "";
+    }
+  };
+
+  const getLocalMeliProductSnapshot = (rawUrl: string, snapshotInput: ReturnType<typeof loadDb>) => {
+    const productUrl = canonicalizeMeliProductUrlLocal(rawUrl);
+    const rows = Array.isArray(snapshotInput.tables.meli_vitrine_products)
+      ? snapshotInput.tables.meli_vitrine_products
+      : [];
+    const matched = rows.find((row) => canonicalizeMeliProductUrlLocal(String(row.product_url || "")) === productUrl);
+    if (matched) {
+      return {
+        productUrl,
+        title: String(matched.title || ""),
+        imageUrl: String(matched.image_url || ""),
+        price: Number.isFinite(Number(matched.price_cents)) ? Number((Number(matched.price_cents) / 100).toFixed(2)) : null,
+        oldPrice: Number.isFinite(Number(matched.old_price_cents)) ? Number((Number(matched.old_price_cents) / 100).toFixed(2)) : null,
+        installmentsText: normalizeMeliTemplateTextLocal(matched.installments_text),
+        seller: normalizeMeliTemplateTextLocal(matched.seller),
+        rating: Number.isFinite(Number(matched.rating)) ? Number(matched.rating) : null,
+        reviewsCount: Number.isFinite(Number(matched.reviews_count)) ? Number(matched.reviews_count) : null,
+      };
+    }
+
+    return {
+      productUrl,
+      title: deriveMeliProductTitleLocal(productUrl) || "Oferta Mercado Livre",
+      imageUrl: "",
+      price: null,
+      oldPrice: null,
+      installmentsText: "",
+      seller: "",
+      rating: null,
+      reviewsCount: null,
+    };
+  };
+
   if (name === "meli-convert-link") {
     const snapshot = loadDb();
     const currentUser = snapshot.auth.session?.user || null;
@@ -6619,9 +6730,9 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     if (!currentUser || !userId) return fail("Usuário não autenticado");
 
     const url = String(body.url || "").trim();
-    const sessionId = String(body.sessionId || "").trim();
     if (!url) return fail("url é obrigatório");
-    if (!sessionId) return fail("sessionId é obrigatório");
+    const sessionId = resolveRouteMeliSessionId(snapshot, userId, String(body.sessionId || ""));
+    if (!sessionId) return fail("Nenhuma sessão Mercado Livre disponível para conversão.");
 
     const slot = await acquireProcessSlot("convert");
     await applyProcessQueueDelay(slot);
@@ -6646,6 +6757,23 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     }
   }
 
+  if (name === "meli-product-snapshot") {
+    const snapshot = loadDb();
+    const currentUser = snapshot.auth.session?.user || null;
+    if (!currentUser) return fail("Usuário não autenticado");
+
+    const url = String(body.url || body.productUrl || "").trim();
+    if (!url) return fail("url é obrigatório");
+
+    return {
+      data: {
+        success: true,
+        ...getLocalMeliProductSnapshot(url, snapshot),
+      },
+      error: null,
+    };
+  }
+
   if (name === "meli-convert-links") {
     const snapshot = loadDb();
     const currentUser = snapshot.auth.session?.user || null;
@@ -6653,8 +6781,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     if (!currentUser || !userId) return fail("Usuário não autenticado");
 
     const urlsRaw = Array.isArray(body.urls) ? body.urls : [];
-    const sessionId = String(body.sessionId || "").trim();
-    if (!sessionId) return fail("sessionId é obrigatório");
+    const sessionId = resolveRouteMeliSessionId(snapshot, userId, String(body.sessionId || ""));
+    if (!sessionId) return fail("Nenhuma sessão Mercado Livre disponível para conversão.");
 
     const urls = urlsRaw.filter((item): item is string => typeof item === "string").map((s) => s.trim()).filter(Boolean);
     if (urls.length === 0) return fail("Lista de URLs obrigatória");
