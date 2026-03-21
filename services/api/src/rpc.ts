@@ -2152,6 +2152,53 @@ async function syncMasterGroupWhatsAppInviteLinks(userId: string, sessionId: str
   return { checked, updated, failed };
 }
 
+async function logRouteProcessingFailure(input: {
+  userId: string;
+  sourceName: string;
+  sourceExternalId: string;
+  sessionId: string;
+  message: string;
+  media: RouteForwardMedia | null;
+  platform: "whatsapp" | "telegram";
+  error: unknown;
+}): Promise<void> {
+  const {
+    userId,
+    sourceName,
+    sourceExternalId,
+    sessionId,
+    message,
+    media,
+    platform,
+    error,
+  } = input;
+  const errorMessage = error instanceof Error ? error.message : String(error);
+
+  try {
+    await execute(
+      "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','error',$4,'inbound',$5,'failed','route_processing_error','route_engine')",
+      [
+        uuid(),
+        userId,
+        sourceName,
+        JSON.stringify({
+          message,
+          sourceExternalId,
+          sessionId,
+          platform,
+          hasMedia: !!media,
+          error: errorMessage,
+        }),
+        media ? "image" : "text",
+      ],
+    );
+  } catch {
+    // Best-effort history log; do not interrupt event polling.
+  }
+
+  console.error(`[rpc] route processing ${platform} failed: ${errorMessage}`);
+}
+
 async function applyWhatsAppEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
   let groupsSynced = 0;
   for (const raw of events) {
@@ -2217,14 +2264,27 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
       const media = parseRouteForwardMedia(data.media);
       if (!sourceExternalId || (!message && !media)) continue;
 
-      await processRouteMessageForUser({
-        userId,
-        sessionId,
-        sourceExternalId,
-        sourceName,
-        message,
-        media,
-      });
+      try {
+        await processRouteMessageForUser({
+          userId,
+          sessionId,
+          sourceExternalId,
+          sourceName,
+          message,
+          media,
+        });
+      } catch (error) {
+        await logRouteProcessingFailure({
+          userId,
+          sourceName,
+          sourceExternalId,
+          sessionId,
+          message,
+          media,
+          platform: "whatsapp",
+          error,
+        });
+      }
     }
   }
   return { groupsSynced };
@@ -2299,14 +2359,27 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
       const media = parseRouteForwardMedia(data.media);
       if (!sourceExternalId || (!message && !media)) continue;
 
-      await processRouteMessageForUser({
-        userId,
-        sessionId,
-        sourceExternalId,
-        sourceName,
-        message,
-        media,
-      });
+      try {
+        await processRouteMessageForUser({
+          userId,
+          sessionId,
+          sourceExternalId,
+          sourceName,
+          message,
+          media,
+        });
+      } catch (error) {
+        await logRouteProcessingFailure({
+          userId,
+          sourceName,
+          sourceExternalId,
+          sessionId,
+          message,
+          media,
+          platform: "telegram",
+          error,
+        });
+      }
     }
   }
   return { groupsSynced };
