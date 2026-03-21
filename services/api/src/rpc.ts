@@ -250,8 +250,8 @@ const MELI_URL      = process.env.MELI_RPA_URL
 const OPS_URL       = process.env.OPS_CONTROL_URL
   ?? process.env.VITE_OPS_CONTROL_URL
   ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3115" : "");
-const OPS_TOKEN     = process.env.OPS_CONTROL_TOKEN ?? "";
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
+const OPS_TOKEN     = String(process.env.OPS_CONTROL_TOKEN ?? "").trim();
+const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET ?? "").trim();
 const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance"]);
 const MAX_URL_LENGTH = 2048;
 const MAX_SHOPEE_CONVERT_BATCH = 30;

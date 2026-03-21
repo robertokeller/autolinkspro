@@ -8,7 +8,7 @@ import { converter } from "./converter.js";
 const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 const app = express();
 const PORT = Number(process.env.MELI_RPA_PORT ?? 3114);
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
+const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET || "").trim();
 const NODE_ENV = process.env.NODE_ENV || "development";
 const ALLOW_INSECURE_NO_SECRET = process.env.ALLOW_INSECURE_NO_SECRET === "true";
 

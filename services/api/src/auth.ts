@@ -9,7 +9,8 @@ import { isEmailDeliveryConfigured, sendEmail } from "./mailer.js";
 
 const SECRET = process.env.JWT_SECRET ?? "changeme-jwt-secret-32chars-minimum";
 const EXPIRES_IN = "7d";
-const SERVICE_TOKEN = process.env.SERVICE_TOKEN ?? "";
+const SERVICE_TOKEN_RAW = String(process.env.SERVICE_TOKEN ?? "");
+const SERVICE_TOKEN = SERVICE_TOKEN_RAW.trim();
 const IS_PRODUCTION = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 const AUTH_COOKIE_NAME = String(process.env.AUTH_COOKIE_NAME || "autolinks_at").trim() || "autolinks_at";
 const AUTH_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
@@ -334,6 +335,10 @@ function setAuthCookie(res: Response, token: string) {
 
 function clearAuthCookie(res: Response) {
   res.setHeader("Set-Cookie", serializeAuthCookie("", true));
+}
+
+if (SERVICE_TOKEN_RAW && SERVICE_TOKEN_RAW !== SERVICE_TOKEN) {
+  console.warn("[auth] SERVICE_TOKEN had leading/trailing whitespace and was normalized.");
 }
 
 if (!SERVICE_TOKEN) {

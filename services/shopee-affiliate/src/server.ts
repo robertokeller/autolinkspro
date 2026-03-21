@@ -7,7 +7,7 @@ import pino from "pino";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || "3113");
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
+const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET || "").trim();
 const NODE_ENV = process.env.NODE_ENV || "development";
 const ALLOW_INSECURE_NO_SECRET = process.env.ALLOW_INSECURE_NO_SECRET === "true";
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
