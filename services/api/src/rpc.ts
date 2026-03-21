@@ -2500,9 +2500,9 @@ async function processRouteMessageForUser(input: {
        r.rules,
        COALESCE(json_agg(rd.group_id) FILTER (WHERE rd.group_id IS NOT NULL),'[]') AS dest_ids
      FROM routes r
-     LEFT JOIN groups sg ON sg.id = r.source_group_id AND sg.user_id = r.user_id
+     LEFT JOIN groups sg ON sg.id = r.source_group_id AND sg.user_id::text = r.user_id::text
      LEFT JOIN route_destinations rd ON rd.route_id = r.id
-     WHERE r.user_id = $1 AND r.status = 'active'
+     WHERE r.user_id::text = $1 AND r.status = 'active'
      GROUP BY r.id, sg.external_id`,
     [userId],
   );
