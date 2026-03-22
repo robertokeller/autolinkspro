@@ -2299,98 +2299,110 @@ async function logRouteProcessingFailure(input: {
 async function applyWhatsAppEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
   let groupsSynced = 0;
   for (const raw of events) {
-    const event = raw.event;
-    const data = raw.data;
+    const event = String(raw?.event ?? "").trim();
+    const data = raw?.data && typeof raw.data === "object" && !Array.isArray(raw.data)
+      ? raw.data
+      : {};
 
-    if (event === "connection_update") {
-      const status = normalizeWhatsAppStatus(data.status);
-      const connectedAt = status === "online" ? nowIso() : null;
-      const errorMessage = String(data.errorMessage ?? data.error_message ?? "");
-      let qrCode = "";
-      if (status === "qr_code") qrCode = String(data.qrCode ?? "");
-      if (status === "pairing_code") qrCode = String(data.pairingCode ?? "");
-      const phone = String(data.phone ?? "").trim();
+    if (!event) continue;
 
-      await execute(
-        `UPDATE whatsapp_sessions
-         SET status = $1,
-             connected_at = $2,
-             error_message = $3,
-             qr_code = $4,
-             phone = CASE WHEN $5 <> '' THEN $5 ELSE phone END,
-             updated_at = NOW()
-         WHERE id = $6 AND user_id = $7`,
-        [status, connectedAt, errorMessage, qrCode, phone, sessionId, userId],
-      );
-      continue;
-    }
+    try {
+      if (event === "connection_update") {
+        const status = normalizeWhatsAppStatus(data.status);
+        const connectedAt = status === "online" ? nowIso() : null;
+        const errorMessage = String(data.errorMessage ?? data.error_message ?? "");
+        let qrCode = "";
+        if (status === "qr_code") qrCode = String(data.qrCode ?? "");
+        if (status === "pairing_code") qrCode = String(data.pairingCode ?? "");
+        const phone = String(data.phone ?? "").trim();
 
-    if (event === "groups_sync") {
-      const groups = Array.isArray(data.groups) ? data.groups : [];
-      for (const row of groups) {
-        if (!row || typeof row !== "object") continue;
-        const group = row as Record<string, unknown>;
-        await upsertGroupRow({
-          userId,
-          sessionId,
-          platform: "whatsapp",
-          externalId: String(group.id ?? ""),
-          name: String(group.name ?? group.id ?? "Grupo"),
-          memberCount: Number(group.memberCount ?? group.member_count ?? group.participantsCount ?? 0),
-        });
-        groupsSynced += 1;
+        await execute(
+          `UPDATE whatsapp_sessions
+           SET status = $1,
+               connected_at = $2,
+               error_message = $3,
+               qr_code = $4,
+               phone = CASE WHEN $5 <> '' THEN $5 ELSE phone END,
+               updated_at = NOW()
+           WHERE id = $6 AND user_id = $7`,
+          [status, connectedAt, errorMessage, qrCode, phone, sessionId, userId],
+        );
+        continue;
       }
-      continue;
-    }
 
-    if (event === "group_name_update") {
-      const externalId = String(data.id ?? "").trim();
-      const name = String(data.name ?? "").trim();
-      if (!externalId || !name) continue;
-      await execute(
-        "UPDATE groups SET name = $1, updated_at = NOW() WHERE user_id = $2 AND platform = 'whatsapp' AND external_id = $3 AND deleted_at IS NULL",
-        [name, userId, externalId],
-      );
-      continue;
-    }
+      if (event === "groups_sync") {
+        const groups = Array.isArray(data.groups) ? data.groups : [];
+        for (const row of groups) {
+          if (!row || typeof row !== "object") continue;
+          const group = row as Record<string, unknown>;
+          await upsertGroupRow({
+            userId,
+            sessionId,
+            platform: "whatsapp",
+            externalId: String(group.id ?? ""),
+            name: String(group.name ?? group.id ?? "Grupo"),
+            memberCount: Number(group.memberCount ?? group.member_count ?? group.participantsCount ?? 0),
+          });
+          groupsSynced += 1;
+        }
+        continue;
+      }
 
-    if (event === "message_received") {
-      const sourceExternalId = String(data.groupId ?? "").trim();
-      const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
-      const message = String(data.message ?? "").trim();
-      const media = parseRouteForwardMedia(data.media);
-      logRouteMediaDebug("incoming.whatsapp.message_received", {
-        userId,
-        sessionId,
-        sourceExternalId,
-        sourceName,
-        hasText: Boolean(message),
-        textLength: message.length,
-        media: summarizeRouteForwardMedia(media),
-      });
-      if (!sourceExternalId || (!message && !media)) continue;
+      if (event === "group_name_update") {
+        const externalId = String(data.id ?? "").trim();
+        const name = String(data.name ?? "").trim();
+        if (!externalId || !name) continue;
+        await execute(
+          "UPDATE groups SET name = $1, updated_at = NOW() WHERE user_id = $2 AND platform = 'whatsapp' AND external_id = $3 AND deleted_at IS NULL",
+          [name, userId, externalId],
+        );
+        continue;
+      }
 
-      try {
-        await processRouteMessageForUser({
+      if (event === "message_received") {
+        const sourceExternalId = String(data.groupId ?? "").trim();
+        const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
+        const message = String(data.message ?? "").trim();
+        const media = parseRouteForwardMedia(data.media);
+        logRouteMediaDebug("incoming.whatsapp.message_received", {
           userId,
           sessionId,
           sourceExternalId,
           sourceName,
-          message,
-          media,
+          hasText: Boolean(message),
+          textLength: message.length,
+          media: summarizeRouteForwardMedia(media),
         });
-      } catch (error) {
-        await logRouteProcessingFailure({
-          userId,
-          sourceName,
-          sourceExternalId,
-          sessionId,
-          message,
-          media,
-          platform: "whatsapp",
-          error,
-        });
+        if (!sourceExternalId || (!message && !media)) continue;
+
+        try {
+          await processRouteMessageForUser({
+            userId,
+            sessionId,
+            sourceExternalId,
+            sourceName,
+            message,
+            media,
+          });
+        } catch (error) {
+          await logRouteProcessingFailure({
+            userId,
+            sourceName,
+            sourceExternalId,
+            sessionId,
+            message,
+            media,
+            platform: "whatsapp",
+            error,
+          });
+        }
       }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const sourceExternalId = String(data.groupId ?? data.id ?? "").trim();
+      console.error(
+        `[poll-channel-events] failed to apply whatsapp event=${event} userId=${userId} sessionId=${sessionId} sourceExternalId=${sourceExternalId || "-"} error=${errorMessage}`,
+      );
     }
   }
   return { groupsSynced };
@@ -2399,102 +2411,114 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
 async function applyTelegramEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
   let groupsSynced = 0;
   for (const raw of events) {
-    const event = raw.event;
-    const data = raw.data;
+    const event = String(raw?.event ?? "").trim();
+    const data = raw?.data && typeof raw.data === "object" && !Array.isArray(raw.data)
+      ? raw.data
+      : {};
 
-    if (event === "connection_update") {
-      const status = normalizeTelegramStatus(data.status);
-      const connectedAt = status === "online" ? nowIso() : null;
-      const errorMessage = String(data.errorMessage ?? data.error_message ?? "");
-      const sessionString = String(data.session_string ?? "");
-      const phone = String(data.phone ?? "").trim();
-      const clearSession = data.clear_session === true;
+    if (!event) continue;
 
-      await execute(
-        `UPDATE telegram_sessions
-         SET status = $1,
-             connected_at = $2,
-             error_message = $3,
-             session_string = CASE
-               WHEN $8 THEN ''
-               WHEN $4 <> '' THEN $4
-               ELSE session_string
-             END,
-             phone = CASE WHEN $5 <> '' THEN $5 ELSE phone END,
-             phone_code_hash = CASE WHEN $8 THEN '' ELSE phone_code_hash END,
-             updated_at = NOW()
-         WHERE id = $6 AND user_id = $7`,
-        [status, connectedAt, errorMessage, sessionString, phone, sessionId, userId, clearSession],
-      );
-      continue;
-    }
+    try {
+      if (event === "connection_update") {
+        const status = normalizeTelegramStatus(data.status);
+        const connectedAt = status === "online" ? nowIso() : null;
+        const errorMessage = String(data.errorMessage ?? data.error_message ?? "");
+        const sessionString = String(data.session_string ?? "");
+        const phone = String(data.phone ?? "").trim();
+        const clearSession = data.clear_session === true;
 
-    if (event === "groups_sync") {
-      const groups = Array.isArray(data.groups) ? data.groups : [];
-      for (const row of groups) {
-        if (!row || typeof row !== "object") continue;
-        const group = row as Record<string, unknown>;
-        await upsertGroupRow({
-          userId,
-          sessionId,
-          platform: "telegram",
-          externalId: String(group.id ?? ""),
-          name: String(group.name ?? group.id ?? "Grupo"),
-          memberCount: Number(group.memberCount ?? group.member_count ?? 0),
-        });
-        groupsSynced += 1;
+        await execute(
+          `UPDATE telegram_sessions
+           SET status = $1,
+               connected_at = $2,
+               error_message = $3,
+               session_string = CASE
+                 WHEN $8 THEN ''
+                 WHEN $4 <> '' THEN $4
+                 ELSE session_string
+               END,
+               phone = CASE WHEN $5 <> '' THEN $5 ELSE phone END,
+               phone_code_hash = CASE WHEN $8 THEN '' ELSE phone_code_hash END,
+               updated_at = NOW()
+           WHERE id = $6 AND user_id = $7`,
+          [status, connectedAt, errorMessage, sessionString, phone, sessionId, userId, clearSession],
+        );
+        continue;
       }
-      continue;
-    }
 
-    if (event === "group_name_update") {
-      const externalId = String(data.id ?? "").trim();
-      const name = String(data.name ?? "").trim();
-      if (!externalId || !name) continue;
-      await execute(
-        "UPDATE groups SET name = $1, updated_at = NOW() WHERE user_id = $2 AND platform = 'telegram' AND external_id = $3 AND deleted_at IS NULL",
-        [name, userId, externalId],
-      );
-      continue;
-    }
+      if (event === "groups_sync") {
+        const groups = Array.isArray(data.groups) ? data.groups : [];
+        for (const row of groups) {
+          if (!row || typeof row !== "object") continue;
+          const group = row as Record<string, unknown>;
+          await upsertGroupRow({
+            userId,
+            sessionId,
+            platform: "telegram",
+            externalId: String(group.id ?? ""),
+            name: String(group.name ?? group.id ?? "Grupo"),
+            memberCount: Number(group.memberCount ?? group.member_count ?? 0),
+          });
+          groupsSynced += 1;
+        }
+        continue;
+      }
 
-    if (event === "message_received") {
-      const sourceExternalId = String(data.groupId ?? "").trim();
-      const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
-      const message = String(data.message ?? "").trim();
-      const media = parseRouteForwardMedia(data.media);
-      logRouteMediaDebug("incoming.telegram.message_received", {
-        userId,
-        sessionId,
-        sourceExternalId,
-        sourceName,
-        hasText: Boolean(message),
-        textLength: message.length,
-        media: summarizeRouteForwardMedia(media),
-      });
-      if (!sourceExternalId || (!message && !media)) continue;
+      if (event === "group_name_update") {
+        const externalId = String(data.id ?? "").trim();
+        const name = String(data.name ?? "").trim();
+        if (!externalId || !name) continue;
+        await execute(
+          "UPDATE groups SET name = $1, updated_at = NOW() WHERE user_id = $2 AND platform = 'telegram' AND external_id = $3 AND deleted_at IS NULL",
+          [name, userId, externalId],
+        );
+        continue;
+      }
 
-      try {
-        await processRouteMessageForUser({
+      if (event === "message_received") {
+        const sourceExternalId = String(data.groupId ?? "").trim();
+        const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
+        const message = String(data.message ?? "").trim();
+        const media = parseRouteForwardMedia(data.media);
+        logRouteMediaDebug("incoming.telegram.message_received", {
           userId,
           sessionId,
           sourceExternalId,
           sourceName,
-          message,
-          media,
+          hasText: Boolean(message),
+          textLength: message.length,
+          media: summarizeRouteForwardMedia(media),
         });
-      } catch (error) {
-        await logRouteProcessingFailure({
-          userId,
-          sourceName,
-          sourceExternalId,
-          sessionId,
-          message,
-          media,
-          platform: "telegram",
-          error,
-        });
+        if (!sourceExternalId || (!message && !media)) continue;
+
+        try {
+          await processRouteMessageForUser({
+            userId,
+            sessionId,
+            sourceExternalId,
+            sourceName,
+            message,
+            media,
+          });
+        } catch (error) {
+          await logRouteProcessingFailure({
+            userId,
+            sourceName,
+            sourceExternalId,
+            sessionId,
+            message,
+            media,
+            platform: "telegram",
+            error,
+          });
+        }
       }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const sourceExternalId = String(data.groupId ?? data.id ?? "").trim();
+      console.error(
+        `[poll-channel-events] failed to apply telegram event=${event} userId=${userId} sessionId=${sessionId} sourceExternalId=${sourceExternalId || "-"} error=${errorMessage}`,
+      );
     }
   }
   return { groupsSynced };
@@ -3349,6 +3373,14 @@ async function pollWhatsAppEventsForSession(userId: string, sessionId: string): 
     headers,
   );
   if (upstream.error) {
+    pushChannelPollError({
+      platform: "whatsapp",
+      userId,
+      sessionId,
+      stage: "fetch_events",
+      message: upstream.error.message,
+      status: Number((upstream.error as { status?: number }).status) || null,
+    });
     if (isNotFoundSessionError(upstream.error.message)) {
       await execute(
         "UPDATE whatsapp_sessions SET status='offline', connected_at=NULL, qr_code='', error_message='Sessão não encontrada no serviço WhatsApp. Conecte novamente para recriar.', updated_at=NOW() WHERE id=$1 AND user_id=$2",
@@ -3364,7 +3396,19 @@ async function pollWhatsAppEventsForSession(userId: string, sessionId: string): 
   }
   const events = toIntegrationEvents(upstream.data);
   if (events.length === 0) return 0;
-  await applyWhatsAppEvents(userId, sessionId, events);
+  try {
+    await applyWhatsAppEvents(userId, sessionId, events);
+  } catch (error) {
+    pushChannelPollError({
+      platform: "whatsapp",
+      userId,
+      sessionId,
+      stage: "apply_events",
+      message: error instanceof Error ? error.message : String(error),
+      status: null,
+    });
+    throw error;
+  }
   return events.length;
 }
 
@@ -3378,6 +3422,14 @@ async function pollTelegramEventsForSession(userId: string, sessionId: string): 
     headers,
   );
   if (upstream.error) {
+    pushChannelPollError({
+      platform: "telegram",
+      userId,
+      sessionId,
+      stage: "fetch_events",
+      message: upstream.error.message,
+      status: Number((upstream.error as { status?: number }).status) || null,
+    });
     if (isNotFoundSessionError(upstream.error.message)) {
       await execute(
         "UPDATE telegram_sessions SET status='offline', connected_at=NULL, phone_code_hash='', error_message='Sessão não encontrada no serviço Telegram. Inicie uma nova conexão.', updated_at=NOW() WHERE id=$1 AND user_id=$2",
@@ -3393,7 +3445,19 @@ async function pollTelegramEventsForSession(userId: string, sessionId: string): 
   }
   const events = toIntegrationEvents(upstream.data);
   if (events.length === 0) return 0;
-  await applyTelegramEvents(userId, sessionId, events);
+  try {
+    await applyTelegramEvents(userId, sessionId, events);
+  } catch (error) {
+    pushChannelPollError({
+      platform: "telegram",
+      userId,
+      sessionId,
+      stage: "apply_events",
+      message: error instanceof Error ? error.message : String(error),
+      status: null,
+    });
+    throw error;
+  }
   return events.length;
 }
 
@@ -3456,6 +3520,58 @@ async function loadOnlineSessionsFromConnectorHealth(input: {
   return dedupeChannelPollSessions(onlineRows);
 }
 
+type ChannelPollRuntimeResult = {
+  source: string;
+  scope: "user" | "global";
+  whatsappSessions: number;
+  whatsappEvents: number;
+  whatsappHealthFallbackAdded: number;
+  telegramSessions: number;
+  telegramEvents: number;
+  telegramHealthFallbackAdded: number;
+  failed: number;
+};
+
+type ChannelPollErrorEntry = {
+  at: string;
+  platform: "whatsapp" | "telegram";
+  userId: string;
+  sessionId: string;
+  stage: "fetch_events" | "apply_events" | "session_loop";
+  message: string;
+  status: number | null;
+};
+
+const CHANNEL_POLL_ERROR_BUFFER_LIMIT = 80;
+const channelPollErrors: ChannelPollErrorEntry[] = [];
+
+function pushChannelPollError(input: Omit<ChannelPollErrorEntry, "at">): void {
+  const message = String(input.message || "").trim();
+  if (!message) return;
+  channelPollErrors.push({
+    at: nowIso(),
+    platform: input.platform,
+    userId: String(input.userId || "").trim(),
+    sessionId: String(input.sessionId || "").trim(),
+    stage: input.stage,
+    message,
+    status: Number.isFinite(input.status) ? Number(input.status) : null,
+  });
+  if (channelPollErrors.length > CHANNEL_POLL_ERROR_BUFFER_LIMIT) {
+    channelPollErrors.splice(0, channelPollErrors.length - CHANNEL_POLL_ERROR_BUFFER_LIMIT);
+  }
+}
+
+const channelPollRuntime = {
+  lastStartedAt: null as string | null,
+  lastFinishedAt: null as string | null,
+  lastDurationMs: null as number | null,
+  successCount: 0,
+  failureCount: 0,
+  lastError: "",
+  lastResult: null as ChannelPollRuntimeResult | null,
+};
+
 async function pollChannelEventsInScope(input: {
   requesterUserId: string;
   canRunGlobal: boolean;
@@ -3508,7 +3624,15 @@ async function pollChannelEventsInScope(input: {
     for (const session of sessions) {
       try {
         whatsappEvents += await pollWhatsAppEventsForSession(String(session.user_id), String(session.id));
-      } catch {
+      } catch (error) {
+        pushChannelPollError({
+          platform: "whatsapp",
+          userId: String(session.user_id),
+          sessionId: String(session.id),
+          stage: "session_loop",
+          message: error instanceof Error ? error.message : String(error),
+          status: null,
+        });
         failed += 1;
       }
     }
@@ -3541,7 +3665,15 @@ async function pollChannelEventsInScope(input: {
     for (const session of sessions) {
       try {
         telegramEvents += await pollTelegramEventsForSession(String(session.user_id), String(session.id));
-      } catch {
+      } catch (error) {
+        pushChannelPollError({
+          platform: "telegram",
+          userId: String(session.user_id),
+          sessionId: String(session.id),
+          stage: "session_loop",
+          message: error instanceof Error ? error.message : String(error),
+          status: null,
+        });
         failed += 1;
       }
     }
@@ -3883,12 +4015,38 @@ rpcRouter.post("/rpc", async (req, res) => {
   try {
     // â”€â”€ poll-channel-events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (funcName === "poll-channel-events") {
+      const source = String(params.source ?? "frontend");
       const canRunGlobalChannelPolling = isService || (effectiveAdmin && !userIsAdmin);
-      const polled = await pollChannelEventsInScope({
-        requesterUserId: userId,
-        canRunGlobal: canRunGlobalChannelPolling,
-      });
-      ok(res, { ok: true, source: String(params.source ?? "frontend"), ...polled }); return;
+      const startedAtMs = Date.now();
+      channelPollRuntime.lastStartedAt = new Date(startedAtMs).toISOString();
+      try {
+        const polled = await pollChannelEventsInScope({
+          requesterUserId: userId,
+          canRunGlobal: canRunGlobalChannelPolling,
+        });
+        channelPollRuntime.lastFinishedAt = nowIso();
+        channelPollRuntime.lastDurationMs = Math.max(0, Date.now() - startedAtMs);
+        channelPollRuntime.successCount += 1;
+        channelPollRuntime.lastError = "";
+        channelPollRuntime.lastResult = {
+          source,
+          scope: polled.scope,
+          whatsappSessions: polled.whatsappSessions,
+          whatsappEvents: polled.whatsappEvents,
+          whatsappHealthFallbackAdded: polled.whatsappHealthFallbackAdded,
+          telegramSessions: polled.telegramSessions,
+          telegramEvents: polled.telegramEvents,
+          telegramHealthFallbackAdded: polled.telegramHealthFallbackAdded,
+          failed: polled.failed,
+        };
+        ok(res, { ok: true, source, ...polled }); return;
+      } catch (error) {
+        channelPollRuntime.lastFinishedAt = nowIso();
+        channelPollRuntime.lastDurationMs = Math.max(0, Date.now() - startedAtMs);
+        channelPollRuntime.failureCount += 1;
+        channelPollRuntime.lastError = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
     }
 
     // â”€â”€ whatsapp-connect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -7441,6 +7599,18 @@ rpcRouter.post("/rpc", async (req, res) => {
             routeMediaDebug: ROUTE_MEDIA_DEBUG_ENABLED,
             envRouteMediaDebugRaw: String(process.env.ROUTE_MEDIA_DEBUG || ""),
             envMediaCaptureDebugRaw: String(process.env.MEDIA_CAPTURE_DEBUG || ""),
+          },
+          runtime: {
+            channelPolling: {
+              lastStartedAt: channelPollRuntime.lastStartedAt,
+              lastFinishedAt: channelPollRuntime.lastFinishedAt,
+              lastDurationMs: channelPollRuntime.lastDurationMs,
+              successCount: channelPollRuntime.successCount,
+              failureCount: channelPollRuntime.failureCount,
+              lastError: channelPollRuntime.lastError,
+              lastResult: channelPollRuntime.lastResult ? { ...channelPollRuntime.lastResult } : null,
+              errorsRecent: channelPollErrors.slice(-50).map((item) => ({ ...item })),
+            },
           },
         },
         serviceConfig: {

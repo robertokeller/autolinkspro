@@ -333,6 +333,19 @@ function buildSendDedupKey(body: {
   return [body.sessionId, body.jid, content.trim(), mediaDescriptor].join("::");
 }
 
+type ExtendedBaileysMessage = proto.IMessage & {
+  documentWithCaptionMessage?: { message?: proto.IMessage | null } | null;
+  viewOnceMessageV2Extension?: { message?: proto.IMessage | null } | null;
+};
+
+function getExtendedNestedMessage(message: proto.IMessage | null | undefined): proto.IMessage | null {
+  if (!message) return null;
+  const extended = message as ExtendedBaileysMessage;
+  if (extended.documentWithCaptionMessage?.message) return extended.documentWithCaptionMessage.message;
+  if (extended.viewOnceMessageV2Extension?.message) return extended.viewOnceMessageV2Extension.message;
+  return null;
+}
+
 function extractMessageText(message: proto.IMessage | null | undefined): string {
   if (!message) return "";
   if (message.conversation) return message.conversation;
@@ -346,6 +359,8 @@ function extractMessageText(message: proto.IMessage | null | undefined): string 
   if (message.ephemeralMessage?.message) return extractMessageText(message.ephemeralMessage.message);
   if (message.viewOnceMessage?.message) return extractMessageText(message.viewOnceMessage.message);
   if (message.viewOnceMessageV2?.message) return extractMessageText(message.viewOnceMessageV2.message);
+  const nested = getExtendedNestedMessage(message);
+  if (nested) return extractMessageText(nested);
 
   const contentType = getContentType(message);
   if (contentType && (message as Record<string, unknown>)[contentType]) {
@@ -365,6 +380,8 @@ function extractImagePayload(
   if (message.ephemeralMessage?.message) return extractImagePayload(message.ephemeralMessage.message);
   if (message.viewOnceMessage?.message) return extractImagePayload(message.viewOnceMessage.message);
   if (message.viewOnceMessageV2?.message) return extractImagePayload(message.viewOnceMessageV2.message);
+  const nested = getExtendedNestedMessage(message);
+  if (nested) return extractImagePayload(nested);
   return null;
 }
 
