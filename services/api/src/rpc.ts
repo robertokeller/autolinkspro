@@ -257,6 +257,10 @@ const MAX_URL_LENGTH = 2048;
 const MAX_SHOPEE_CONVERT_BATCH = 30;
 const MAX_MELI_CONVERT_BATCH = 50;
 const MAX_SHOPEE_BATCH_QUERIES = 20;
+const MELI_HEALTH_SESSION_RECHECK_MS = Math.max(
+  60_000,
+  Number(process.env.MELI_HEALTH_SESSION_RECHECK_MS || "300000"),
+);
 const ROUTE_MEDIA_DEBUG_ENABLED = new Set(["1", "true", "yes", "on"]).has(
   String(process.env.ROUTE_MEDIA_DEBUG || "").trim().toLowerCase(),
 );
@@ -1122,6 +1126,22 @@ function isTransientMeliSessionValidationResult(input: {
     || haystack.includes("http 503")
     || haystack.includes("http 502")
   );
+}
+
+function normalizeMeliSessionHealthStatus(rawStatus: unknown): string {
+  const value = String(rawStatus || "").trim().toLowerCase();
+  const allowed = new Set(["active", "expired", "error", "untested", "not_found", "no_affiliate"]);
+  return allowed.has(value) ? value : "error";
+}
+
+function meliSessionHealthStatusMessage(status: string): string {
+  const normalized = normalizeMeliSessionHealthStatus(status);
+  if (normalized === "expired") return "Sessao Mercado Livre expirada. Atualize os cookies.";
+  if (normalized === "error") return "Falha ao validar sessao Mercado Livre.";
+  if (normalized === "not_found") return "Sessao Mercado Livre nao encontrada.";
+  if (normalized === "no_affiliate") return "Sessao valida, mas sem acesso ao programa de afiliados.";
+  if (normalized === "untested") return "Sessao Mercado Livre ainda nao testada.";
+  return "";
 }
 
 function buildUserScopedHeaders(userId: string) {
@@ -3377,6 +3397,65 @@ async function pollTelegramEventsForSession(userId: string, sessionId: string): 
   return events.length;
 }
 
+type ChannelPollSessionRow = {
+  id: string;
+  user_id: string;
+};
+
+function dedupeChannelPollSessions(rows: ChannelPollSessionRow[]): ChannelPollSessionRow[] {
+  const seen = new Set<string>();
+  const deduped: ChannelPollSessionRow[] = [];
+
+  for (const row of rows) {
+    const sessionId = String(row.id || "").trim();
+    const userId = String(row.user_id || "").trim();
+    if (!sessionId || !userId) continue;
+    const key = `${userId}::${sessionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({ id: sessionId, user_id: userId });
+  }
+
+  return deduped;
+}
+
+async function loadOnlineSessionsFromConnectorHealth(input: {
+  platform: "whatsapp" | "telegram";
+  requesterUserId: string;
+  canRunGlobal: boolean;
+}): Promise<ChannelPollSessionRow[]> {
+  const baseUrl = input.platform === "whatsapp" ? WHATSAPP_URL : TELEGRAM_URL;
+  if (!baseUrl) return [];
+
+  const headers = input.canRunGlobal ? {} : buildUserScopedHeaders(input.requesterUserId);
+  const upstream = await proxyMicroservice(baseUrl, "/health", "GET", null, headers, 6_000);
+  if (upstream.error) return [];
+
+  const payload = (upstream.data && typeof upstream.data === "object")
+    ? upstream.data as Record<string, unknown>
+    : {};
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const onlineRows: ChannelPollSessionRow[] = [];
+
+  for (const raw of sessions) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+
+    const sessionId = String(row.sessionId ?? row.id ?? "").trim();
+    const userId = String(row.userId ?? row.user_id ?? "").trim();
+    if (!sessionId || !userId) continue;
+    if (!input.canRunGlobal && userId !== input.requesterUserId) continue;
+
+    const status = String(row.status ?? "").trim().toLowerCase();
+    const online = status === "online" || row.online === true;
+    if (!online) continue;
+
+    onlineRows.push({ id: sessionId, user_id: userId });
+  }
+
+  return dedupeChannelPollSessions(onlineRows);
+}
+
 async function pollChannelEventsInScope(input: {
   requesterUserId: string;
   canRunGlobal: boolean;
@@ -3384,8 +3463,10 @@ async function pollChannelEventsInScope(input: {
   scope: "user" | "global";
   whatsappSessions: number;
   whatsappEvents: number;
+  whatsappHealthFallbackAdded: number;
   telegramSessions: number;
   telegramEvents: number;
+  telegramHealthFallbackAdded: number;
   failed: number;
 }> {
   const scope: "user" | "global" = input.canRunGlobal ? "global" : "user";
@@ -3395,19 +3476,34 @@ async function pollChannelEventsInScope(input: {
 
   let whatsappSessions = 0;
   let whatsappEvents = 0;
+  let whatsappHealthFallbackAdded = 0;
   let telegramSessions = 0;
   let telegramEvents = 0;
+  let telegramHealthFallbackAdded = 0;
   let failed = 0;
 
   if (WHATSAPP_URL) {
-    const sessions = await query<{ id: string; user_id: string }>(
+    const dbSessions = await query<ChannelPollSessionRow>(
       `SELECT id, user_id
        FROM whatsapp_sessions
        WHERE COALESCE(status, '') <> 'offline'
        ${scopeFilter}`,
       scopeParams,
     );
+    const healthSessions = await loadOnlineSessionsFromConnectorHealth({
+      platform: "whatsapp",
+      requesterUserId: input.requesterUserId,
+      canRunGlobal: input.canRunGlobal,
+    });
+    const sessions = dedupeChannelPollSessions([...dbSessions, ...healthSessions]);
+    whatsappHealthFallbackAdded = Math.max(0, sessions.length - dbSessions.length);
     whatsappSessions = sessions.length;
+
+    if (whatsappHealthFallbackAdded > 0) {
+      console.info(
+        `[poll-channel-events] whatsapp health fallback added ${whatsappHealthFallbackAdded} session(s) (scope=${scope}, db=${dbSessions.length}, merged=${sessions.length})`,
+      );
+    }
 
     for (const session of sessions) {
       try {
@@ -3419,15 +3515,28 @@ async function pollChannelEventsInScope(input: {
   }
 
   if (TELEGRAM_URL) {
-    const sessions = await query<{ id: string; user_id: string }>(
+    const dbSessions = await query<ChannelPollSessionRow>(
       `SELECT id, user_id
        FROM telegram_sessions
        WHERE COALESCE(status, '') <> 'offline'
-          OR COALESCE(session_string, '') <> ''
+           OR COALESCE(session_string, '') <> ''
        ${scopeFilter}`,
       scopeParams,
     );
+    const healthSessions = await loadOnlineSessionsFromConnectorHealth({
+      platform: "telegram",
+      requesterUserId: input.requesterUserId,
+      canRunGlobal: input.canRunGlobal,
+    });
+    const sessions = dedupeChannelPollSessions([...dbSessions, ...healthSessions]);
+    telegramHealthFallbackAdded = Math.max(0, sessions.length - dbSessions.length);
     telegramSessions = sessions.length;
+
+    if (telegramHealthFallbackAdded > 0) {
+      console.info(
+        `[poll-channel-events] telegram health fallback added ${telegramHealthFallbackAdded} session(s) (scope=${scope}, db=${dbSessions.length}, merged=${sessions.length})`,
+      );
+    }
 
     for (const session of sessions) {
       try {
@@ -3442,8 +3551,10 @@ async function pollChannelEventsInScope(input: {
     scope,
     whatsappSessions,
     whatsappEvents,
+    whatsappHealthFallbackAdded,
     telegramSessions,
     telegramEvents,
+    telegramHealthFallbackAdded,
     failed,
   };
 }
@@ -5936,11 +6047,16 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!MELI_URL) {
         ok(res, {
           online: false,
+          serviceOnline: false,
           url: "",
           uptimeSec: null,
           error: "MeLi RPA não configurado.",
           service: "mercadolivre-rpa",
           stats: null,
+          sessionStatus: "not_found",
+          sessionId: "",
+          sessionName: "",
+          sessionLastCheckedAt: null as string | null,
         });
         return;
       }
@@ -5949,24 +6065,130 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (r.error) {
         ok(res, {
           online: false,
+          serviceOnline: false,
           url: MELI_URL,
           uptimeSec: null,
           error: r.error.message,
           service: "mercadolivre-rpa",
           stats: null,
+          sessionStatus: "error",
+          sessionId: "",
+          sessionName: "",
+          sessionLastCheckedAt: null as string | null,
         });
         return;
       }
       const payload: Record<string, unknown> = (r.data && typeof r.data === "object")
         ? (r.data as Record<string, unknown>)
         : {};
+
+      const latestSession = await queryOne<{
+        id: string;
+        name: string;
+        status: string;
+        last_checked_at: string | null;
+        error_message: string | null;
+      }>(
+        `SELECT id, name, status, last_checked_at, error_message
+           FROM meli_sessions
+          WHERE user_id = $1
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC
+          LIMIT 1`,
+        [userId],
+      );
+
+      let sessionId = latestSession?.id ? String(latestSession.id) : "";
+      let sessionName = latestSession?.name ? String(latestSession.name) : "";
+      let sessionStatus = normalizeMeliSessionHealthStatus(latestSession?.status || "not_found");
+      let sessionLastCheckedAt = latestSession?.last_checked_at ? String(latestSession.last_checked_at) : null;
+      let sessionError = latestSession?.error_message ? String(latestSession.error_message) : "";
+      let sessionCheckedByHealth = false;
+
+      if (sessionId && (sessionStatus === "active" || sessionStatus === "untested")) {
+        const lastCheckedMs = sessionLastCheckedAt ? Date.parse(sessionLastCheckedAt) : NaN;
+        const shouldRecheck = !Number.isFinite(lastCheckedMs) || (Date.now() - lastCheckedMs) >= MELI_HEALTH_SESSION_RECHECK_MS;
+        if (shouldRecheck) {
+          const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+          const sessionCheck = await proxyMicroservice(
+            MELI_URL,
+            `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test`,
+            "POST",
+            {},
+            meliHeaders,
+            25_000,
+          );
+
+          if (!sessionCheck.error) {
+            const sessionPayload = (sessionCheck.data && typeof sessionCheck.data === "object")
+              ? sessionCheck.data as Record<string, unknown>
+              : {};
+            const checkStatus = normalizeMeliSessionHealthStatus(sessionPayload.status);
+            const checkLogs = Array.isArray(sessionPayload.logs) ? sessionPayload.logs : [];
+            const firstErrorLog = checkLogs.find((item) => {
+              if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+              const lvl = String((item as { level?: unknown }).level || "").toLowerCase();
+              return lvl === "error";
+            });
+            const checkError = checkStatus === "active"
+              ? ""
+              : String(
+                sessionPayload.error
+                || ((firstErrorLog && typeof firstErrorLog === "object")
+                  ? (firstErrorLog as { message?: unknown }).message
+                  : "")
+                || meliSessionHealthStatusMessage(checkStatus),
+              );
+            const transientValidationFailure = isTransientMeliSessionValidationResult({
+              status: checkStatus,
+              errorMessage: checkError,
+              logs: checkLogs,
+            });
+
+            if (!transientValidationFailure) {
+              await execute(
+                "UPDATE meli_sessions SET status=$1, last_checked_at=NOW(), error_message=$2, updated_at=NOW() WHERE id=$3 AND user_id=$4",
+                [checkStatus, checkError, sessionId, userId],
+              );
+              sessionStatus = checkStatus;
+              sessionLastCheckedAt = nowIso();
+              sessionError = checkError;
+              sessionCheckedByHealth = true;
+            }
+          } else if (!isTransientMicroserviceError(sessionCheck.error)) {
+            const hardError = String(sessionCheck.error.message || "Falha ao validar sessao Mercado Livre");
+            await execute(
+              "UPDATE meli_sessions SET status='error', last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+              [hardError, sessionId, userId],
+            );
+            sessionStatus = "error";
+            sessionLastCheckedAt = nowIso();
+            sessionError = hardError;
+            sessionCheckedByHealth = true;
+          }
+        }
+      }
+
+      const unhealthySessionStatuses = new Set(["expired", "error", "not_found", "no_affiliate"]);
+      const hasSession = !!sessionId;
+      const sessionHealthy = !hasSession || !unhealthySessionStatuses.has(sessionStatus);
+      const serviceOnline = payload.ok === true || payload.online === true;
+      const healthError = !serviceOnline
+        ? (payload.error ? String(payload.error) : "Servico Mercado Livre indisponivel")
+        : (sessionHealthy ? null : (sessionError || meliSessionHealthStatusMessage(sessionStatus)));
+
       ok(res, {
-        online: payload.ok === true || payload.online === true,
+        online: serviceOnline && sessionHealthy,
+        serviceOnline,
         url: MELI_URL,
         uptimeSec: null,
-        error: null,
+        error: healthError,
         service: String(payload.service || "mercadolivre-rpa"),
         stats: (payload.stats && typeof payload.stats === "object") ? payload.stats : null,
+        sessionStatus,
+        sessionId,
+        sessionName,
+        sessionLastCheckedAt,
+        sessionCheckedByHealth,
       });
       return;
     }

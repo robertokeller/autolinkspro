@@ -197,11 +197,15 @@ async function runChannelEventsCycle() {
     const scope = String(payload?.scope || "unknown");
     const waSessions = Number(payload?.whatsappSessions || 0);
     const waEvents = Number(payload?.whatsappEvents || 0);
+    const waFallbackAdded = Number(payload?.whatsappHealthFallbackAdded || 0);
     const tgSessions = Number(payload?.telegramSessions || 0);
     const tgEvents = Number(payload?.telegramEvents || 0);
+    const tgFallbackAdded = Number(payload?.telegramHealthFallbackAdded || 0);
     const failed = Number(payload?.failed || 0);
 
-    log(`channel events cycle ok: scope=${scope} wa_sessions=${waSessions} wa_events=${waEvents} tg_sessions=${tgSessions} tg_events=${tgEvents} failed=${failed} pressure=${pressure.level}`);
+    log(
+      `channel events cycle ok: scope=${scope} wa_sessions=${waSessions} wa_events=${waEvents} wa_fallback=${waFallbackAdded} tg_sessions=${tgSessions} tg_events=${tgEvents} tg_fallback=${tgFallbackAdded} failed=${failed} pressure=${pressure.level}`,
+    );
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     log(`channel events cycle error: ${reason}`);
