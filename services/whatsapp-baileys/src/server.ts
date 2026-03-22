@@ -83,6 +83,9 @@ const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET || "").trim();
 const NODE_ENV = process.env.NODE_ENV || "development";
 const ALLOW_INSECURE_NO_SECRET = process.env.ALLOW_INSECURE_NO_SECRET === "true";
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
+const MEDIA_CAPTURE_DEBUG = new Set(["1", "true", "yes", "on"]).has(
+  String(process.env.MEDIA_CAPTURE_DEBUG || process.env.ROUTE_MEDIA_DEBUG || "").trim().toLowerCase(),
+);
 const SESSIONS_ROOT = path.resolve(process.env.BAILEYS_SESSIONS_DIR || path.join(process.cwd(), ".sessions"));
 const SESSION_DIR_PREFIX = "wa_";
 
@@ -171,6 +174,11 @@ setInterval(() => {
 function sanitizeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+function logMediaCaptureDebug(event: string, payload: Record<string, unknown>): void {
+  if (!MEDIA_CAPTURE_DEBUG) return;
+  logger.info({ event, ...payload }, "media capture debug");
 }
 
 function parseSessionIdFromDirName(dirName: string): string {
@@ -791,6 +799,14 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
 
         const text = extractMessageText(message.message).trim();
         const imagePayload = extractImagePayload(message.message);
+        logMediaCaptureDebug("incoming_summary", {
+          sessionId,
+          groupId: remoteJid,
+          hasText: Boolean(text),
+          textLength: text.length,
+          hasImagePayload: Boolean(imagePayload),
+          mimeTypeHint: imagePayload?.mimetype || "",
+        });
         if (!text && !imagePayload) continue;
 
         const groupName = await resolveGroupName(state, remoteJid);
@@ -810,6 +826,13 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
               state.config.userId,
               imagePayload.mimetype || "image/jpeg",
             );
+            logMediaCaptureDebug("incoming_image_stored", {
+              sessionId,
+              groupId: remoteJid,
+              bytes: downloaded.length,
+              mimeType: imagePayload.mimetype || "image/jpeg",
+              tokenPrefix: stored.token.slice(0, 8),
+            });
             mediaData = {
               kind: "image",
               token: stored.token,
@@ -818,10 +841,25 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
               sourcePlatform: "whatsapp",
             };
           } else {
+            logMediaCaptureDebug("incoming_image_download_failed", {
+              sessionId,
+              groupId: remoteJid,
+              hasText: Boolean(text),
+              textLength: text.length,
+              mimeTypeHint: imagePayload.mimetype || "",
+            });
             logger.warn({ sessionId, groupId: remoteJid }, "incoming image detected but media payload could not be downloaded");
           }
         }
 
+        logMediaCaptureDebug("webhook_emit_message_received", {
+          sessionId,
+          groupId: remoteJid,
+          hasText: Boolean(text),
+          textLength: text.length,
+          hasMedia: Boolean(mediaData),
+          mediaTokenPrefix: typeof mediaData?.token === "string" ? mediaData.token.slice(0, 8) : "",
+        });
         await emitWebhook(state, "message_received", {
           from: message.pushName || message.key?.participant || remoteJid,
           message: text,

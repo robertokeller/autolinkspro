@@ -11,7 +11,7 @@ import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import type { Tables } from "@/integrations/backend/types";
 import { formatBRT } from "@/lib/timezone";
-import { Filter, RefreshCw, ScrollText, Shield, User, X } from "lucide-react";
+import { Download, Filter, Loader2, RefreshCw, ScrollText, Shield, User, X } from "lucide-react";
 import { toast } from "sonner";
 
 type ActorRole = "admin" | "user";
@@ -140,6 +140,7 @@ async function loadAdminUsers() {
 export default function AdminLogs() {
   const [allLogs, setAllLogs] = useState<UnifiedLogRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [search, setSearch] = useState("");
   const [actorFilter, setActorFilter] = useState<"all" | ActorRole>("all");
   const [categoryFilter, setCategoryFilter] = useState<"all" | LogCategory>("all");
@@ -286,6 +287,46 @@ export default function AdminLogs() {
     });
   }, [actorFilter, allLogs, categoryFilter, periodFilter, search, statusFilter, userFilter]);
 
+  const exportDiagnostics = async () => {
+    setExporting(true);
+    try {
+      const windowHours = periodFilter === "24h"
+        ? 24
+        : periodFilter === "7d"
+          ? 7 * 24
+          : periodFilter === "30d"
+            ? 30 * 24
+            : 14 * 24;
+
+      const response = await invokeBackendRpc<{
+        ok?: boolean;
+        fileName?: string;
+        export?: unknown;
+      }>("admin-export-diagnostics", {
+        body: { windowHours },
+      });
+
+      const payload = response?.export ?? response;
+      const fileName = String(response?.fileName || `autolinks-diagnostico-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+      const serialized = JSON.stringify(payload, null, 2);
+      const blob = new Blob([serialized], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+
+      toast.success(`Diagnóstico exportado (${fileName})`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Nao foi possivel exportar o diagnostico");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="admin-page">
       <PageHeader
@@ -369,6 +410,10 @@ export default function AdminLogs() {
           <Button variant="outline" onClick={() => void reload()} className="gap-2 xl:col-span-1">
             <RefreshCw className="h-3.5 w-3.5" />
             Atualizar
+          </Button>
+          <Button onClick={() => void exportDiagnostics()} className="gap-2 xl:col-span-1" disabled={exporting}>
+            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            Baixar Diagnóstico
           </Button>
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" onClick={clearFilters} className="gap-2 text-muted-foreground xl:col-span-1">

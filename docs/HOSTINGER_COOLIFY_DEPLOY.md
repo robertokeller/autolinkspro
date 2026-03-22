@@ -95,6 +95,12 @@ Sem backend remoto de RPC, o scheduler nao executa 24/7 real.
 - Use restart policy `unless-stopped` (ja configurado).
 - Monitore logs de cada servico no Coolify.
 - Sempre redeploy apos mudar variaveis de build do frontend (`VITE_*`).
+- Para diagnosticar captura de mensagens com `texto + imagem`, habilite temporariamente:
+  - `ROUTE_MEDIA_DEBUG=true` (API + conectores)
+  - `MEDIA_CAPTURE_DEBUG=true` (opcional, override explicito nos conectores)
+- Com debug ativo, procure nos logs:
+  - API: prefixo `[route-media-debug]`
+  - WhatsApp/Telegram: mensagem `media capture debug`
 - Antes de atualizar, valide build local com:
 
 ```bash

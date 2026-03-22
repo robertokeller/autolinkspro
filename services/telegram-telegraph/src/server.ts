@@ -80,6 +80,9 @@ const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET || "").trim();
 const NODE_ENV = process.env.NODE_ENV || "development";
 const ALLOW_INSECURE_NO_SECRET = process.env.ALLOW_INSECURE_NO_SECRET === "true";
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
+const MEDIA_CAPTURE_DEBUG = new Set(["1", "true", "yes", "on"]).has(
+  String(process.env.MEDIA_CAPTURE_DEBUG || process.env.ROUTE_MEDIA_DEBUG || "").trim().toLowerCase(),
+);
 const SESSIONS_ROOT = path.resolve(process.env.TELEGRAM_SESSIONS_DIR || path.join(process.cwd(), ".sessions"));
 const SESSION_DIR_PREFIX = "tg_";
 const URL_REGEX = /https?:\/\/[^\s<>"']+/gi;
@@ -194,6 +197,11 @@ setInterval(() => {
 function sanitizeError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function logMediaCaptureDebug(event: string, payload: Record<string, unknown>): void {
+  if (!MEDIA_CAPTURE_DEBUG) return;
+  logger.info({ event, ...payload }, "media capture debug");
 }
 
 function isFatalAuthError(error: unknown): boolean {
@@ -845,6 +853,13 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       // Detect photo/image media attached to the message.
       const messageMedia = message.media;
       const hasImageMedia = isTelegramImageMedia(messageMedia);
+      logMediaCaptureDebug("incoming_summary", {
+        sessionId: state.config.sessionId,
+        hasText: Boolean(content),
+        textLength: content.length,
+        hasImageMedia,
+        mediaMimeTypeHint: readTelegramMediaMimeType(messageMedia),
+      });
 
       if (!content && !hasImageMedia) return;
 
@@ -880,6 +895,13 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
           const mimeTypeHint = readTelegramMediaMimeType(messageMedia);
           const mimeType = detectImageMimeTypeFromBuffer(buffer) || (mimeTypeHint.startsWith("image/") ? mimeTypeHint : "image/jpeg");
           const stored = storeTemporaryImage(buffer, state.config.userId, mimeType);
+          logMediaCaptureDebug("incoming_image_stored", {
+            sessionId: state.config.sessionId,
+            groupId,
+            bytes: buffer.length,
+            mimeType,
+            tokenPrefix: stored.token.slice(0, 8),
+          });
           mediaData = {
             kind: "image",
             token: stored.token,
@@ -888,10 +910,26 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
             sourcePlatform: "telegram",
           };
         } else {
+          logMediaCaptureDebug("incoming_image_download_failed", {
+            sessionId: state.config.sessionId,
+            groupId,
+            hasText: Boolean(content),
+            textLength: content.length,
+            mediaMimeTypeHint: readTelegramMediaMimeType(messageMedia),
+          });
           logger.warn({ sessionId: state.config.sessionId, groupId }, "incoming telegram image detected but payload could not be downloaded");
         }
       }
 
+      logMediaCaptureDebug("webhook_emit_message_received", {
+        sessionId: state.config.sessionId,
+        groupId,
+        hasText: Boolean(content),
+        textLength: content.length,
+        hasMedia: Boolean(mediaData),
+        mediaTokenPrefix: typeof mediaData?.token === "string" ? mediaData.token.slice(0, 8) : "",
+        fromMe: isOutgoing,
+      });
       await emitWebhook(state, "message_received", {
         from: from || groupName,
         fromMe: isOutgoing,

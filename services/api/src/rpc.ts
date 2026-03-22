@@ -257,6 +257,9 @@ const MAX_URL_LENGTH = 2048;
 const MAX_SHOPEE_CONVERT_BATCH = 30;
 const MAX_MELI_CONVERT_BATCH = 50;
 const MAX_SHOPEE_BATCH_QUERIES = 20;
+const ROUTE_MEDIA_DEBUG_ENABLED = new Set(["1", "true", "yes", "on"]).has(
+  String(process.env.ROUTE_MEDIA_DEBUG || "").trim().toLowerCase(),
+);
 
 type RpcRatePolicy = {
   max: number;
@@ -1134,6 +1137,28 @@ type RouteForwardMedia = {
   fileName?: string;
 };
 
+function summarizeRouteForwardMedia(media: RouteForwardMedia | null | undefined): Record<string, unknown> {
+  if (!media || media.kind !== "image") return { kind: "none" };
+  return {
+    kind: "image",
+    sourcePlatform: media.sourcePlatform || "unknown",
+    hasToken: Boolean(media.token),
+    hasBase64: Boolean(media.base64),
+    mimeType: media.mimeType || "",
+    fileName: media.fileName || "",
+    base64Length: media.base64 ? media.base64.length : 0,
+  };
+}
+
+function logRouteMediaDebug(event: string, payload: Record<string, unknown>): void {
+  if (!ROUTE_MEDIA_DEBUG_ENABLED) return;
+  try {
+    console.info(`[route-media-debug] ${event} ${JSON.stringify(payload)}`);
+  } catch {
+    console.info(`[route-media-debug] ${event}`);
+  }
+}
+
 function parseRouteForwardMedia(raw: unknown): RouteForwardMedia | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Record<string, unknown>;
@@ -1445,6 +1470,11 @@ async function resolveRouteForwardMediaForPlatform(input: {
   media: RouteForwardMedia | null;
 }): Promise<RouteForwardMedia | null> {
   const { userId, platform, media } = input;
+  logRouteMediaDebug("resolve.start", {
+    userId,
+    platform,
+    media: summarizeRouteForwardMedia(media),
+  });
   if (!media || media.kind !== "image") return null;
   if (platform !== "whatsapp" && platform !== "telegram") return null;
 
@@ -1462,7 +1492,15 @@ async function resolveRouteForwardMediaForPlatform(input: {
     token: string,
   ): Promise<RouteForwardMedia | null> => {
     const baseUrl = service === "whatsapp" ? WHATSAPP_URL : TELEGRAM_URL;
-    if (!baseUrl) return null;
+    if (!baseUrl) {
+      logRouteMediaDebug("resolve.fetch_token.no_base_url", {
+        userId,
+        platform,
+        service,
+        tokenPrefix: token.slice(0, 8),
+      });
+      return null;
+    }
     const path = service === "whatsapp"
       ? `/api/media/${encodeURIComponent(token)}`
       : `/api/telegram/media/${encodeURIComponent(token)}`;
@@ -1474,13 +1512,40 @@ async function resolveRouteForwardMediaForPlatform(input: {
       buildUserScopedHeaders(userId),
       8000,
     );
-    if (mediaResponse.error) return null;
+    if (mediaResponse.error) {
+      logRouteMediaDebug("resolve.fetch_token.error", {
+        userId,
+        platform,
+        service,
+        tokenPrefix: token.slice(0, 8),
+        error: mediaResponse.error.message,
+        status: Number((mediaResponse.error as { status?: number }).status) || null,
+      });
+      return null;
+    }
 
     const payload = (mediaResponse.data && typeof mediaResponse.data === "object")
       ? mediaResponse.data as Record<string, unknown>
       : {};
     const base64 = typeof payload.base64 === "string" ? payload.base64.trim() : "";
-    if (!base64) return null;
+    if (!base64) {
+      logRouteMediaDebug("resolve.fetch_token.empty_base64", {
+        userId,
+        platform,
+        service,
+        tokenPrefix: token.slice(0, 8),
+        payloadKeys: Object.keys(payload),
+      });
+      return null;
+    }
+
+    logRouteMediaDebug("resolve.fetch_token.success", {
+      userId,
+      platform,
+      service,
+      tokenPrefix: token.slice(0, 8),
+      base64Length: base64.length,
+    });
 
     return withDefaults({
       kind: "image",
@@ -1507,6 +1572,12 @@ async function resolveRouteForwardMediaForPlatform(input: {
 
   // Fast paths preserving provider-native token when destination is the same provider.
   if (platform === "whatsapp" && media.sourcePlatform === "whatsapp") {
+    logRouteMediaDebug("resolve.fast_path_token", {
+      userId,
+      platform,
+      sourcePlatform: media.sourcePlatform,
+      tokenPrefix: String(media.token || "").slice(0, 8),
+    });
     return withDefaults({
       kind: "image",
       sourcePlatform: "whatsapp",
@@ -1514,6 +1585,12 @@ async function resolveRouteForwardMediaForPlatform(input: {
     });
   }
   if (platform === "telegram" && media.sourcePlatform === "telegram") {
+    logRouteMediaDebug("resolve.fast_path_token", {
+      userId,
+      platform,
+      sourcePlatform: media.sourcePlatform,
+      tokenPrefix: String(media.token || "").slice(0, 8),
+    });
     return withDefaults({
       kind: "image",
       sourcePlatform: "telegram",
@@ -2262,6 +2339,15 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
       const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
       const message = String(data.message ?? "").trim();
       const media = parseRouteForwardMedia(data.media);
+      logRouteMediaDebug("incoming.whatsapp.message_received", {
+        userId,
+        sessionId,
+        sourceExternalId,
+        sourceName,
+        hasText: Boolean(message),
+        textLength: message.length,
+        media: summarizeRouteForwardMedia(media),
+      });
       if (!sourceExternalId || (!message && !media)) continue;
 
       try {
@@ -2357,6 +2443,15 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
       const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
       const message = String(data.message ?? "").trim();
       const media = parseRouteForwardMedia(data.media);
+      logRouteMediaDebug("incoming.telegram.message_received", {
+        userId,
+        sessionId,
+        sourceExternalId,
+        sourceName,
+        hasText: Boolean(message),
+        textLength: message.length,
+        media: summarizeRouteForwardMedia(media),
+      });
       if (!sourceExternalId || (!message && !media)) continue;
 
       try {
@@ -2509,6 +2604,15 @@ async function processRouteMessageForUser(input: {
 }) {
   const { userId, sessionId, sourceExternalId, sourceName, message, media = null } = input;
   const messageType = media ? "image" : "text";
+  logRouteMediaDebug("route.process.start", {
+    userId,
+    sessionId,
+    sourceExternalId,
+    sourceName,
+    hasText: Boolean(message),
+    textLength: message.length,
+    media: summarizeRouteForwardMedia(media),
+  });
 
   const shopeeCredentials = await queryOne<{ app_id: string; secret_key: string; region: string }>(
     "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id = $1 AND provider = 'shopee'",
@@ -2591,6 +2695,15 @@ async function processRouteMessageForUser(input: {
     return routeSourceExternalCandidates.some((candidate) => sourceExternalCandidateSet.has(candidate));
   });
   if (matching.length === 0) {
+    logRouteMediaDebug("route.process.blocked.no_active_routes", {
+      userId,
+      sessionId,
+      sourceExternalId,
+      sourceName,
+      hasText: Boolean(message),
+      textLength: message.length,
+      media: summarizeRouteForwardMedia(media),
+    });
     await execute(
       "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','warning',$4,'inbound',$5,'blocked','no_active_routes','route_match')",
       [uuid(), userId, sourceName, JSON.stringify({ message, sourceExternalId, sessionId, reason: "no_active_routes", hasMedia: !!media }), media ? "image" : "text"],
@@ -2978,6 +3091,17 @@ async function processRouteMessageForUser(input: {
     }
     const routeMessageType = routeMedia ? "image" : "text";
     if (!routeMedia) {
+      logRouteMediaDebug("route.process.blocked.missing_image_required.inbound", {
+        userId,
+        sessionId,
+        routeId: route.id,
+        routeName: route.name,
+        sourceExternalId,
+        sourceName,
+        hasText: Boolean(outboundText),
+        textLength: String(outboundText || "").trim().length,
+        originalMedia: summarizeRouteForwardMedia(media),
+      });
       await execute(
         "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','missing_image_required','media_requirements')",
         [uuid(), userId, sourceName, route.name, JSON.stringify({
@@ -2991,6 +3115,15 @@ async function processRouteMessageForUser(input: {
       continue;
     }
     if (!String(outboundText || "").trim()) {
+      logRouteMediaDebug("route.process.blocked.missing_text_required.inbound", {
+        userId,
+        sessionId,
+        routeId: route.id,
+        routeName: route.name,
+        sourceExternalId,
+        sourceName,
+        media: summarizeRouteForwardMedia(routeMedia),
+      });
       await execute(
         "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound','text','blocked','missing_text_required','message_validation')",
         [uuid(), userId, sourceName, route.name, JSON.stringify({
@@ -3053,6 +3186,16 @@ async function processRouteMessageForUser(input: {
         ? await resolveRouteForwardMediaForPlatform({ userId, platform, media: routeMedia })
         : null;
       if (!mediaForDestination) {
+        logRouteMediaDebug("route.process.blocked.missing_image_required.outbound", {
+          userId,
+          sessionId,
+          routeId: route.id,
+          routeName: route.name,
+          destinationPlatform: platform,
+          destinationGroupId: group.id,
+          destinationGroupName: group.name,
+          sourceMedia: summarizeRouteForwardMedia(routeMedia),
+        });
         await execute(
           "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'outbound','text','blocked','missing_image_required','media_requirements')",
           [uuid(), userId, sourceName, group.name, JSON.stringify({
@@ -3069,6 +3212,16 @@ async function processRouteMessageForUser(input: {
       const formattedOutboundText = formatMessageForDestinationPlatform(outboundText, platform);
       const outboundTextSafe = formattedOutboundText.trim();
       if (!outboundTextSafe) {
+        logRouteMediaDebug("route.process.blocked.missing_text_required.outbound", {
+          userId,
+          sessionId,
+          routeId: route.id,
+          routeName: route.name,
+          destinationPlatform: platform,
+          destinationGroupId: group.id,
+          destinationGroupName: group.name,
+          media: summarizeRouteForwardMedia(mediaForDestination),
+        });
         await execute(
           "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'outbound','text','blocked','missing_text_required','message_validation')",
           [uuid(), userId, sourceName, group.name, JSON.stringify({
@@ -3100,6 +3253,19 @@ async function processRouteMessageForUser(input: {
       }
 
       if (result.error) {
+        logRouteMediaDebug("route.process.failed.destination_send_failed", {
+          userId,
+          sessionId,
+          routeId: route.id,
+          routeName: route.name,
+          destinationPlatform: platform,
+          destinationGroupId: group.id,
+          destinationGroupName: group.name,
+          hasText: Boolean(outboundTextSafe),
+          textLength: outboundTextSafe.length,
+          media: summarizeRouteForwardMedia(mediaForDestination),
+          error: result.error.message,
+        });
         await execute(
           "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound',$6,'failed','destination_send_failed','send_message')",
           [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform, hasMedia: !!mediaForDestination }), mediaForDestination ? "image" : "text"],
@@ -6744,6 +6910,355 @@ rpcRouter.post("/rpc", async (req, res) => {
           queueTelemetry: queueSnapshot.telemetry,
         },
       }); return;
+    }
+
+    if (funcName === "admin-export-diagnostics") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+
+      const requestedWindowHours = toInt(params.windowHours ?? params.hours, 24);
+      const windowHours = Math.max(1, Math.min(24 * 14, requestedWindowHours));
+      const requestedLimit = toInt(params.limit, 1500);
+      const logsLimit = Math.max(200, Math.min(10_000, requestedLimit));
+      const auditLimit = Math.max(100, Math.min(2_000, Math.floor(logsLimit / 2)));
+
+      const serviceHeaders = buildUserScopedHeaders(userId);
+      const opsHeaders = OPS_TOKEN ? { "x-ops-token": OPS_TOKEN } : {};
+
+      const probeServiceHealth = async (
+        service: "whatsapp" | "telegram" | "shopee" | "meli",
+        baseUrl: string,
+        path: string,
+      ) => {
+        if (!baseUrl) {
+          return {
+            service,
+            configured: false,
+            online: false,
+            error: `${service.toUpperCase()}_MICROSERVICE_URL não configurado`,
+            url: "",
+            uptimeSec: null as number | null,
+            checkedAt: nowIso(),
+          };
+        }
+
+        const upstream = await proxyMicroservice(baseUrl, path, "GET", null, serviceHeaders, 10_000);
+        if (upstream.error) {
+          return {
+            service,
+            configured: true,
+            online: false,
+            error: upstream.error.message,
+            url: baseUrl,
+            uptimeSec: null as number | null,
+            checkedAt: nowIso(),
+          };
+        }
+
+        const payload = (upstream.data && typeof upstream.data === "object")
+          ? upstream.data as Record<string, unknown>
+          : {};
+        const uptimeRaw = Number(payload.uptimeSec);
+        return {
+          service,
+          configured: true,
+          online: payload.ok === true || payload.online === true || payload.success === true,
+          error: null as string | null,
+          url: baseUrl,
+          uptimeSec: Number.isFinite(uptimeRaw) ? uptimeRaw : null,
+          checkedAt: nowIso(),
+          raw: payload,
+        };
+      };
+
+      const [
+        queueSnapshot,
+        opsHealthResult,
+        waHealth,
+        tgHealth,
+        shopeeHealth,
+        meliHealth,
+        recentHistoryRows,
+        recentRouteRows,
+        historySummaryRows,
+        recentAuditRows,
+        recentFailuresByUser,
+        waSessionsRows,
+        tgSessionsRows,
+        groupsByPlatformRows,
+        routesByStatusRows,
+      ] = await Promise.all([
+        collectProcessQueueSnapshot(),
+        OPS_URL
+          ? proxyMicroservice(OPS_URL, `/api/services?_ts=${Date.now()}`, "GET", null, opsHeaders, 20_000)
+          : Promise.resolve({ data: null, error: { message: "OPS_CONTROL_URL não configurado" } }),
+        probeServiceHealth("whatsapp", WHATSAPP_URL, "/health"),
+        probeServiceHealth("telegram", TELEGRAM_URL, "/health"),
+        probeServiceHealth("shopee", SHOPEE_URL, "/health"),
+        probeServiceHealth("meli", MELI_URL, "/api/meli/health"),
+        query<{
+          id: string;
+          created_at: string;
+          user_id: string;
+          type: string;
+          source: string;
+          destination: string;
+          status: string;
+          direction: string;
+          message_type: string;
+          processing_status: string;
+          block_reason: string;
+          error_step: string;
+          details: unknown;
+        }>(
+          `SELECT id, created_at, user_id, type, source, destination, status, direction, message_type, processing_status, block_reason, error_step, details
+             FROM history_entries
+            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 hour')
+            ORDER BY created_at DESC
+            LIMIT $2`,
+          [windowHours, logsLimit],
+        ),
+        query<{
+          id: string;
+          created_at: string;
+          user_id: string;
+          source: string;
+          destination: string;
+          status: string;
+          processing_status: string;
+          block_reason: string;
+          error_step: string;
+          message_type: string;
+          details: unknown;
+        }>(
+          `SELECT id, created_at, user_id, source, destination, status, processing_status, block_reason, error_step, message_type, details
+             FROM history_entries
+            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 hour')
+              AND type IN ('route_forward', 'schedule_sent', 'automation_run')
+            ORDER BY created_at DESC
+            LIMIT $2`,
+          [windowHours, Math.min(3000, logsLimit)],
+        ),
+        query<{
+          type: string;
+          status: string;
+          processing_status: string;
+          block_reason: string;
+          error_step: string;
+          message_type: string;
+          total: string | number;
+        }>(
+          `SELECT COALESCE(type, '') AS type,
+                  COALESCE(status, '') AS status,
+                  COALESCE(processing_status, '') AS processing_status,
+                  COALESCE(block_reason, '') AS block_reason,
+                  COALESCE(error_step, '') AS error_step,
+                  COALESCE(message_type, '') AS message_type,
+                  COUNT(*) AS total
+             FROM history_entries
+            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 hour')
+            GROUP BY type, status, processing_status, block_reason, error_step, message_type
+            ORDER BY COUNT(*) DESC
+            LIMIT 200`,
+          [windowHours],
+        ),
+        query<{
+          id: string;
+          created_at: string;
+          user_id: string;
+          target_user_id: string | null;
+          action: string;
+          details: unknown;
+        }>(
+          `SELECT id, created_at, user_id, target_user_id, action, details
+             FROM admin_audit_logs
+            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 hour')
+            ORDER BY created_at DESC
+            LIMIT $2`,
+          [windowHours, auditLimit],
+        ),
+        query<{
+          user_id: string;
+          total: string | number;
+        }>(
+          `SELECT user_id, COUNT(*) AS total
+             FROM history_entries
+            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 hour')
+              AND (status = 'error' OR processing_status IN ('error', 'blocked'))
+            GROUP BY user_id
+            ORDER BY COUNT(*) DESC
+            LIMIT 30`,
+          [windowHours],
+        ),
+        query<{
+          id: string;
+          user_id: string;
+          name: string;
+          status: string;
+          connected_at: string | null;
+          error_message: string;
+          updated_at: string;
+          phone: string;
+        }>(
+          `SELECT id, user_id, name, status, connected_at, error_message, updated_at, phone
+             FROM whatsapp_sessions
+            ORDER BY updated_at DESC
+            LIMIT 500`,
+        ),
+        query<{
+          id: string;
+          user_id: string;
+          name: string;
+          status: string;
+          connected_at: string | null;
+          error_message: string;
+          updated_at: string;
+          phone: string;
+        }>(
+          `SELECT id, user_id, name, status, connected_at, error_message, updated_at, phone
+             FROM telegram_sessions
+            ORDER BY updated_at DESC
+            LIMIT 500`,
+        ),
+        query<{
+          platform: string;
+          total: string | number;
+        }>(
+          `SELECT platform, COUNT(*) AS total
+             FROM groups
+            WHERE deleted_at IS NULL
+            GROUP BY platform
+            ORDER BY platform`,
+        ),
+        query<{
+          status: string;
+          total: string | number;
+        }>(
+          `SELECT COALESCE(status, '') AS status, COUNT(*) AS total
+             FROM routes
+            GROUP BY status
+            ORDER BY COUNT(*) DESC`,
+        ),
+      ]);
+
+      const opsSnapshot = (() => {
+        if (opsHealthResult.error) {
+          return {
+            configured: Boolean(OPS_URL),
+            online: false,
+            url: OPS_URL,
+            error: opsHealthResult.error.message,
+            checkedAt: nowIso(),
+            services: [] as unknown[],
+            system: null as unknown,
+          };
+        }
+        const payload = (opsHealthResult.data && typeof opsHealthResult.data === "object")
+          ? opsHealthResult.data as Record<string, unknown>
+          : {};
+        return {
+          configured: Boolean(OPS_URL),
+          online: payload.online === true || payload.ok === true,
+          url: OPS_URL,
+          error: payload.error ? String(payload.error) : null,
+          checkedAt: nowIso(),
+          services: Array.isArray(payload.services) ? payload.services : [],
+          system: payload.system ?? null,
+        };
+      })();
+
+      const usersForMap = await listUsersWithMeta();
+      const userMap = new Map(usersForMap.map((row) => [String(row.user_id), {
+        name: String(row.name || "Usuario"),
+        email: String(row.email || ""),
+        role: String(row.role || "user"),
+      }]));
+
+      const addUserMeta = <T extends { user_id?: unknown }>(rows: T[]) =>
+        rows.map((row) => {
+          const uid = String(row.user_id || "");
+          const meta = uid ? userMap.get(uid) : null;
+          return {
+            ...row,
+            user_name: meta?.name || "",
+            user_email: meta?.email || "",
+            user_role: meta?.role || "",
+          };
+        });
+
+      const exportPayload = {
+        meta: {
+          generatedAt: nowIso(),
+          windowHours,
+          requestedBy: {
+            userId,
+            role: userIsAdmin ? "admin" : (isService ? "service" : "user"),
+          },
+          limits: {
+            history: logsLimit,
+            adminAudit: auditLimit,
+          },
+          debugFlags: {
+            routeMediaDebug: ROUTE_MEDIA_DEBUG_ENABLED,
+            envRouteMediaDebugRaw: String(process.env.ROUTE_MEDIA_DEBUG || ""),
+            envMediaCaptureDebugRaw: String(process.env.MEDIA_CAPTURE_DEBUG || ""),
+          },
+        },
+        serviceConfig: {
+          apiUrl: process.env.API_PUBLIC_URL || "",
+          opsUrl: OPS_URL || "",
+          whatsappUrl: WHATSAPP_URL || "",
+          telegramUrl: TELEGRAM_URL || "",
+          shopeeUrl: SHOPEE_URL || "",
+          meliUrl: MELI_URL || "",
+        },
+        health: {
+          services: [waHealth, tgHealth, shopeeHealth, meliHealth],
+          ops: opsSnapshot,
+        },
+        queues: queueSnapshot,
+        summary: {
+          historyRows: recentHistoryRows.length,
+          routeRows: recentRouteRows.length,
+          auditRows: recentAuditRows.length,
+          whatsappSessions: waSessionsRows.length,
+          telegramSessions: tgSessionsRows.length,
+        },
+        aggregations: {
+          historyByOutcome: historySummaryRows.map((row) => ({
+            ...row,
+            total: toInt(row.total, 0),
+          })),
+          failuresByUser: addUserMeta(recentFailuresByUser).map((row) => ({
+            ...row,
+            total: toInt((row as { total: unknown }).total, 0),
+          })),
+          groupsByPlatform: groupsByPlatformRows.map((row) => ({
+            ...row,
+            total: toInt(row.total, 0),
+          })),
+          routesByStatus: routesByStatusRows.map((row) => ({
+            ...row,
+            total: toInt(row.total, 0),
+          })),
+        },
+        state: {
+          whatsappSessions: addUserMeta(waSessionsRows),
+          telegramSessions: addUserMeta(tgSessionsRows),
+        },
+        logs: {
+          historyEntries: addUserMeta(recentHistoryRows),
+          routeRelatedEntries: addUserMeta(recentRouteRows),
+          adminAuditLogs: addUserMeta(recentAuditRows),
+        },
+      };
+
+      const fileTimestamp = nowIso().replace(/[:.]/g, "-");
+      ok(res, {
+        ok: true,
+        fileName: `autolinks-diagnostico-${fileTimestamp}.json`,
+        export: exportPayload,
+      });
+      return;
     }
 
     // â”€â”€ admin-maintenance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
