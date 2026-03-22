@@ -68,6 +68,13 @@ async function ensureDatabaseReady() {
     }
 
     console.warn(`[dev] Docker/bootstrap skipped: ${message}`);
+    if (message.includes("500 Internal Server Error") || message.includes("cannot find the file specified")) {
+      console.warn("[dev] ⚠ Docker Desktop engine (WSL2) não está respondendo.");
+      console.warn("[dev]   1. Feche o Docker Desktop (Quit)");
+      console.warn("[dev]   2. Rode: wsl --shutdown && wsl --update");
+      console.warn("[dev]   3. Reabra o Docker Desktop e espere ficar verde");
+      console.warn("[dev]   4. Rode: npm run dev");
+    }
     console.warn("[dev] API is not healthy on port 3116. Starting degraded mode (OPS + WEB only).");
     return false;
   }

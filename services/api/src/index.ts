@@ -146,6 +146,12 @@ app.use(cors({
       callback(null, corsOriginSet.has(normalizeCorsOriginEntry(origin)));
       return;
     }
+    // CORS_ORIGIN='*' in development should not block Vite network URLs
+    // (e.g. 192.168.x.x / 172.x.x.x) shown by `vite` startup output.
+    if (!IS_PRODUCTION) {
+      callback(null, true);
+      return;
+    }
     callback(null, isLocal);
   },
   credentials: true,

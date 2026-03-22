@@ -19,6 +19,27 @@ function isLoopbackHost(host: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
 }
 
+function isPrivateIpv4Host(host: string): boolean {
+  const parts = String(host || "")
+    .trim()
+    .split(".")
+    .map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+function isDevReachableHost(host: string): boolean {
+  return isLoopbackHost(host) || isPrivateIpv4Host(host);
+}
+
+const SESSION_COOKIE_HELP = "Login nao persistiu sessao (cookie bloqueado). Em local, abra o app no mesmo host da API (localhost/127.0.0.1/IP). Em producao, verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL.";
+
 function resolveApiUrl(rawUrl: string): string {
   const trimmed = String(rawUrl || "").trim().replace(/\/+$/, "");
   if (!trimmed) return "";
@@ -28,9 +49,9 @@ function resolveApiUrl(rawUrl: string): string {
     const parsed = new URL(trimmed, window.location.origin);
     const pageHost = window.location.hostname;
 
-    // Keep loopback host aligned with the current page host to avoid
-    // SameSite cookie drops caused by localhost <-> 127.0.0.1 mismatch.
-    if (isLoopbackHost(parsed.hostname) && isLoopbackHost(pageHost) && parsed.hostname !== pageHost) {
+    // Keep API host aligned with the current page host in local/LAN dev to
+    // avoid SameSite cookie drops caused by mixed hosts (localhost/127/LAN IP).
+    if (isLoopbackHost(parsed.hostname) && isDevReachableHost(pageHost) && parsed.hostname !== pageHost) {
       parsed.hostname = pageHost;
     }
 
@@ -244,7 +265,7 @@ const auth = {
             return {
               data: { user: null, session: null },
               error: {
-                message: "Login nao persistiu sessao (cookie bloqueado). Verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL no Coolify.",
+                message: SESSION_COOKIE_HELP,
               },
             };
           }
@@ -253,7 +274,7 @@ const auth = {
           return {
             data: { user: null, session: null },
             error: {
-              message: "Login nao persistiu sessao (cookie bloqueado). Verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL no Coolify.",
+              message: SESSION_COOKIE_HELP,
             },
           };
         }
@@ -444,11 +465,13 @@ const functions = {
       ? 120_000
       : name === "ops-bootstrap"
         ? 45_000
-      : name === "admin-system-observability"
-        ? 45_000
-        : name === "admin-maintenance"
-          ? 20_000
-          : 15_000;
+        : name === "admin-system-observability"
+          ? 45_000
+          : name === "admin-export-diagnostics"
+            ? 60_000
+          : name === "admin-maintenance"
+            ? 20_000
+            : 15_000;
     try {
       const res = await apiFetch("/functions/v1/rpc", { method: "POST", body }, timeoutMs);
       return { data: res.data ?? null, error: res.error ?? null };
