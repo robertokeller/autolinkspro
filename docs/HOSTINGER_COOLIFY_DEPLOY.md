@@ -13,7 +13,7 @@ Guia oficial para subir o Auto Links em producao com dominio, SSL e execucao con
 
 Crie os registros `A` apontando para o IP da VPS:
 
-- `app.seudominio.com` -> frontend
+- `seudominio.com` -> frontend
 - `api.seudominio.com` -> API backend (Node.js + PostgreSQL)
 - `wa-api.seudominio.com` -> WhatsApp
 - `tg-api.seudominio.com` -> Telegram
@@ -46,7 +46,7 @@ O compose de producao usa `expose` para `web` e `api` (sem bind fixo em porta do
 
 Apos o deploy, associe os dominios:
 
-- `web` -> `app.seudominio.com`
+- `web` -> `seudominio.com`
 - `api` -> `api.seudominio.com`
 - `whatsapp` -> `wa-api.seudominio.com`
 - `telegram` -> `tg-api.seudominio.com`
@@ -78,7 +78,7 @@ Sem backend remoto de RPC, o scheduler nao executa 24/7 real.
 
 ## 8) Checklist de validacao pos-deploy
 
-- Frontend abre em `https://app.seudominio.com`.
+- Frontend abre em `https://seudominio.com`.
 - `https://wa-api.seudominio.com/health` responde 200.
 - `https://tg-api.seudominio.com/health` responde 200.
 - `https://shopee-api.seudominio.com/health` responde 200.
@@ -118,8 +118,8 @@ Configure as variáveis abaixo **antes** de clicar em Deploy. Variáveis marcada
 | `POSTGRES_PASSWORD` | Senha forte (≥ 16 chars) | `*` |
 | `JWT_SECRET` | String aleatória ≥ 32 chars | `*` |
 | `SERVICE_TOKEN` | Token opaco, único por ambiente | `*` |
-| `CORS_ORIGIN` | `https://app.seudominio.com` — **nunca `*`** | `*` |
-| `APP_PUBLIC_URL` | `https://app.seudominio.com` | `*` |
+| `CORS_ORIGIN` | `https://seudominio.com` — **nunca `*`** | `*` |
+| `APP_PUBLIC_URL` | `https://seudominio.com` | `*` |
 | `API_PUBLIC_URL` | `https://api.seudominio.com` | `*` |
 | `RESEND_API_KEY` | Chave `re_...` do Resend | `*` |
 | `RESEND_FROM` | Ex.: `Auto Links <suporte@seudominio.com>` | `*` |
@@ -142,7 +142,7 @@ Configure as variáveis abaixo **antes** de clicar em Deploy. Variáveis marcada
 
 > **Nota:** `SERVICE_TOKEN` e `SCHEDULER_RPC_TOKEN` devem ter o mesmo valor — o compose já faz isso via `${SERVICE_TOKEN:?...}` para os dois.  
 > **Nota:** `CORS_ORIGIN=*` é bloqueado em produção pela API (`ensureRequiredEnvVars`).  
-> **Nota:** `AUTH_COOKIE_DOMAIN` é necessário para cookies cross-subdomain (app.X ↔ api.X). Use o formato `.seudominio.com` com ponto inicial.  
+> **Nota:** `AUTH_COOKIE_DOMAIN` é necessário para cookies entre `seudominio.com` e `api.seudominio.com`. Use o formato `.seudominio.com` com ponto inicial.  
 > **Nota:** `VITE_OPS_CONTROL_TOKEN` foi removido — chamadas ops passam pelo API backend com token server-side.
 
 ## 11) Smoke test automatizado
@@ -157,7 +157,7 @@ SMOKE_TG_URL=https://tg-api.seudominio.com \
 SMOKE_SHOPEE_URL=https://shopee-api.seudominio.com \
 SMOKE_MELI_URL=https://meli-api.seudominio.com \
 SMOKE_OPS_URL=https://ops-api.seudominio.com \
-SMOKE_WEB_URL=https://app.seudominio.com \
+SMOKE_WEB_URL=https://seudominio.com \
 npm run smoke:coolify
 ```
 
@@ -172,7 +172,7 @@ Saída esperada (8 linhas `[smoke] OK ...`):
 [smoke] OK shopee    /health → 200 https://shopee-api.seudominio.com/health
 [smoke] OK meli      /health → 200 https://meli-api.seudominio.com/api/meli/health
 [smoke] OK ops       /health → 200 https://ops-api.seudominio.com/health
-[smoke] OK web                → 200 https://app.seudominio.com/
+[smoke] OK web                → 200 https://seudominio.com/
 [smoke] OK api       /rpc    → 400 https://api.seudominio.com/functions/v1/rpc
 
 [smoke] All checks passed ✓
