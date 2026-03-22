@@ -105,6 +105,7 @@ const mediaStore = new Map<string, {
 }>();
 let httpServer: ReturnType<typeof app.listen> | null = null;
 let shuttingDown = false;
+const MAX_SESSION_EVENTS = Math.max(200, Number(process.env.MAX_SESSION_EVENTS || "2000"));
 
 const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
@@ -506,8 +507,8 @@ async function emitWebhook(state: SessionState, event: string, data: Record<stri
     data,
   });
 
-  if (state.events.length > 500) {
-    state.events.splice(0, state.events.length - 500);
+  if (state.events.length > MAX_SESSION_EVENTS) {
+    state.events.splice(0, state.events.length - MAX_SESSION_EVENTS);
   }
 
   if (!state.config.webhookUrl) return;
@@ -1089,8 +1090,16 @@ app.get("/api/sessions/:sessionId/events", async (req: Request<{ sessionId: stri
     }
 
     const events = [...state.events];
-    if (clear) {
-      state.events.length = 0;
+    if (clear && events.length > 0) {
+      const eventIds = new Set(
+        events
+          .map((item) => String(item?.id || "").trim())
+          .filter(Boolean),
+      );
+      res.on("finish", () => {
+        if (eventIds.size === 0) return;
+        state.events = state.events.filter((item) => !eventIds.has(String(item?.id || "").trim()));
+      });
     }
 
     res.json({ ok: true, events });

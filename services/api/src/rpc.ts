@@ -3195,7 +3195,7 @@ async function processRouteMessageForUser(input: {
       const destinationExternalId = String(group.external_id ?? "");
       if (!destinationSessionId || !destinationExternalId) {
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_session_offline','destination_válidation')",
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_session_offline','destination_validation')",
           [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, reason: "destination_session_offline" })],
         );
         continue;
@@ -4066,6 +4066,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
       if (action === "poll_events_all") {
+        const touched = await refreshTelegramHealthState(userId).catch(() => 0);
         const sessions = await query<{ id: string }>("SELECT id FROM telegram_sessions WHERE user_id = $1", [userId]);
         let totalEvents = 0;
         for (const row of sessions) {
@@ -4076,7 +4077,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             // best effort polling
           }
         }
-        ok(res, { success: true, sessions: sessions.length, events: totalEvents }); return;
+        ok(res, { success: true, sessions: sessions.length, events: totalEvents, touched }); return;
       }
       if (action === "refresh_status") {
         const touched = await refreshTelegramHealthState(userId).catch(() => 0);
@@ -4148,9 +4149,26 @@ rpcRouter.post("/rpc", async (req, res) => {
         const tgHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/sync_groups", "POST", { sessionId }, tgHeaders);
         if (r.error) { fail(res, r.error.message); return; }
-        const events = await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
         const payload = (r.data && typeof r.data === "object") ? r.data as Record<string, unknown> : {};
-        ok(res, { ...payload, events }); return;
+        const remoteGroups = Array.isArray(payload.groupsData)
+          ? payload.groupsData as Array<Record<string, unknown>>
+          : [];
+        let groupsSyncedDirect = 0;
+        for (const row of remoteGroups) {
+          if (!row || typeof row !== "object") continue;
+          const group = row as Record<string, unknown>;
+          await upsertGroupRow({
+            userId,
+            sessionId,
+            platform: "telegram",
+            externalId: String(group.id ?? ""),
+            name: String(group.name ?? group.id ?? "Grupo"),
+            memberCount: Number(group.memberCount ?? group.member_count ?? 0),
+          });
+          groupsSyncedDirect += 1;
+        }
+        const events = await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
+        ok(res, { ...payload, groupsSyncedDirect, events }); return;
       }
       if (action === "send_message") {
         const chatId = String(params.groupId ?? params.chatId ?? "").trim();
@@ -4441,7 +4459,7 @@ rpcRouter.post("/rpc", async (req, res) => {
               message,
               platform,
               reason: "destination_session_offline",
-              errorStep: "destination_válidation",
+              errorStep: "destination_validation",
               error: "Sessão do destino offline ou grupo sem identificador externo.",
               messageType: scheduleMedia ? "image" : "text",
             });
@@ -5025,7 +5043,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             message: "Encontramos uma oferta, mas ela veio sem link de afiliado válido.",
             details: { automationId, source, reason: "missing_affiliate_link" },
             blockReason: "missing_affiliate_link",
-            errorStep: "offer_válidate",
+            errorStep: "offer_validate",
           });
           continue;
         }
@@ -5196,7 +5214,7 @@ rpcRouter.post("/rpc", async (req, res) => {
                 reason: "invalid_destination",
               },
               blockReason: "invalid_destination",
-              errorStep: "destination_válidate",
+              errorStep: "destination_validate",
             });
             continue;
           }
@@ -5856,7 +5874,7 @@ rpcRouter.post("/rpc", async (req, res) => {
                 reason: "invalid_destination",
               },
               blockReason: "invalid_destination",
-              errorStep: "destination_válidate",
+              errorStep: "destination_validate",
             });
             continue;
           }

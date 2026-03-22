@@ -109,6 +109,7 @@ const mediaStore = new Map<string, {
 const recentOutboundEchoes = new Map<string, number>();
 let httpServer: ReturnType<typeof app.listen> | null = null;
 let shuttingDown = false;
+const MAX_SESSION_EVENTS = Math.max(200, Number(process.env.MAX_SESSION_EVENTS || "2000"));
 
 const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
@@ -315,8 +316,8 @@ async function emitWebhook(state: SessionState, event: string, data: Record<stri
     data,
   });
 
-  if (state.events.length > 500) {
-    state.events.splice(0, state.events.length - 500);
+  if (state.events.length > MAX_SESSION_EVENTS) {
+    state.events.splice(0, state.events.length - MAX_SESSION_EVENTS);
   }
 
   if (!state.config.webhookUrl) return;
@@ -983,7 +984,10 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
   state.messageHandlerBound = true;
 }
 
-async function syncGroups(state: SessionState): Promise<number> {
+async function syncGroups(state: SessionState): Promise<{
+  count: number;
+  groups: Array<{ id: string; name: string; memberCount: number }>;
+}> {
   if (!state.client || state.status !== "online") {
     throw new Error("Sessão Telegram não está online");
   }
@@ -1007,7 +1011,7 @@ async function syncGroups(state: SessionState): Promise<number> {
 
   const groups = Array.from(groupsMap.values());
   await emitWebhook(state, "groups_sync", { groups });
-  return groups.length;
+  return { count: groups.length, groups };
 }
 
 async function finalizeConnected(state: SessionState): Promise<void> {
@@ -1359,8 +1363,16 @@ app.get("/api/telegram/events/:sessionId", async (req: Request<{ sessionId: stri
   }
 
   const events = [...state.events];
-  if (clear) {
-    state.events.length = 0;
+  if (clear && events.length > 0) {
+    const eventIds = new Set(
+      events
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean),
+    );
+    res.on("finish", () => {
+      if (eventIds.size === 0) return;
+      state.events = state.events.filter((item) => !eventIds.has(String(item?.id || "").trim()));
+    });
   }
 
   res.json({ ok: true, events });
@@ -1619,11 +1631,9 @@ app.post("/api/telegram/sync_groups", async (req: Request<unknown, unknown, Acti
     return;
   }
 
-  const client = state.client;
-
   try {
-    const count = await syncGroups(state);
-    res.json({ ok: true, status: state.status, groups: count });
+    const synced = await syncGroups(state);
+    res.json({ ok: true, status: state.status, groups: synced.count, groupsData: synced.groups });
   } catch (error) {
     res.status(500).json({ error: sanitizeError(error) });
   }
