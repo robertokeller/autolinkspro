@@ -77,6 +77,8 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
       BAILEYS_SESSIONS_DIR: /data/wa-sessions
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
+      MEDIA_CAPTURE_DEBUG: ${MEDIA_CAPTURE_DEBUG:-false}
     volumes:
       - wa_sessions:/data/wa-sessions
     expose:
@@ -112,6 +114,8 @@ services:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
+      MEDIA_CAPTURE_DEBUG: ${MEDIA_CAPTURE_DEBUG:-false}
     volumes:
       - tg_sessions:/data/tg-sessions
     expose:
@@ -329,6 +333,7 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
       AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
       DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
+      ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
     expose:
       - "3116"
     depends_on:
