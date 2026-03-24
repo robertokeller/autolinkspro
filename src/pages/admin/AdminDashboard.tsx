@@ -1,8 +1,9 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BarChart3, Flame, Route, Users, AlertTriangle, Play, RotateCcw,
+  BarChart3, ShoppingBag, ShoppingCart, Route, Users, AlertTriangle, Play, RotateCcw,
   RefreshCw, Loader2, Copy, Power, Server, Activity, Cpu,
   HardDrive, Clock, Circle, ShieldCheck, Eye, Edit2,
+  TrendingUp, Wifi, WifiOff, DollarSign,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
@@ -20,6 +21,7 @@ import { toast } from "sonner";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
 import { loadAdminSystemObservability, type ObservabilityAnomaly, type UserObservabilityRow } from "@/lib/system-observability";
+import { useAdminControlPlane } from "@/hooks/useAdminControlPlane";
 
 const SERVICE_KEYS = ["whatsapp", "telegram", "shopee", "meli"] as const;
 const AUTO_HEALTH_INTERVAL_MS = 30 * 1000;
@@ -33,9 +35,9 @@ const SERVICE_META: Record<string, { label: string; port: number; color: string 
 
 function ServiceIcon({ id, className }: { id: string; className?: string }) {
   if (id === "whatsapp") return <WhatsAppIcon className={className} />;
-  if (id === "telegram") return <TelegramIcon className={className} />;
-  if (id === "shopee") return <Flame className={className} />;
-  return <BarChart3 className={className} />;
+  if (id === "telegram")  return <TelegramIcon className={className} />;
+  if (id === "shopee")    return <ShoppingBag className={className} />;
+  return <ShoppingCart className={className} />; // meli
 }
 
 interface RuntimeServiceView {
@@ -195,7 +197,9 @@ export default function AdminDashboard() {
   });
   const [processQueues, setProcessQueues] = useState<ProcessQueueSnapshot | null>(null);
   const [topUserUsage, setTopUserUsage] = useState<UserObservabilityRow[]>([]);
+  const [allObsUsers, setAllObsUsers] = useState<UserObservabilityRow[]>([]);
   const [anomalies, setAnomalies] = useState<ObservabilityAnomaly[]>([]);
+  const { state: controlPlane } = useAdminControlPlane();
   const [nextRefreshIn, setNextRefreshIn] = useState(AUTO_HEALTH_INTERVAL_MS / 1000);
   const lastRefreshTsRef = useRef(Date.now());
   
@@ -334,6 +338,7 @@ export default function AdminDashboard() {
       ? snapshot.anomalies
       : [];
     setAnomalies(anomalyRows.slice(0, 12));
+    setAllObsUsers(users);
   }, []);
 
   const refreshAllHealth = useCallback(async () => {
@@ -757,6 +762,64 @@ export default function AdminDashboard() {
     return () => window.clearInterval(fastSync);
   }, [commandStatus.phase, refreshAllHealth]);
 
+  // ── Business metrics derived from observability snapshot ──────────────────
+  const revenueMetrics = useMemo(() => {
+    const planMap = new Map(controlPlane.plans.map((p) => [p.id, p]));
+    const activeRegular = allObsUsers.filter((u) => u.account_status === "active" && u.role !== "admin");
+
+    let mrr = 0;
+    let paidCount = 0;
+    let freeTierCount = 0;
+    const byPlan: Record<string, { name: string; count: number; revenue: number }> = {};
+
+    for (const user of activeRegular) {
+      const plan = planMap.get(user.plan_id);
+      if (!plan) continue;
+      const monthlyPrice =
+        plan.billingPeriod === "annual"
+          ? (plan.monthlyEquivalentPrice || plan.price / 12)
+          : plan.price;
+      if (!byPlan[plan.id]) byPlan[plan.id] = { name: plan.name, count: 0, revenue: 0 };
+      byPlan[plan.id].count++;
+      byPlan[plan.id].revenue += monthlyPrice;
+      if (plan.price > 0) { mrr += monthlyPrice; paidCount++; }
+      else freeTierCount++;
+    }
+
+    return {
+      mrr,
+      arr: mrr * 12,
+      paidCount,
+      freeTierCount,
+      totalActive: activeRegular.length,
+      byPlan: Object.values(byPlan).sort((a, b) => b.revenue - a.revenue),
+    };
+  }, [allObsUsers, controlPlane.plans]);
+
+  // ── Session health derived from observability ──────────────────────────────
+  const sessionHealth = useMemo(() => {
+    const rows = allObsUsers
+      .filter((u) => u.account_status === "active" && (u.usage.waSessionsTotal > 0 || u.usage.tgSessionsTotal > 0))
+      .map((u) => ({
+        user_id: u.user_id,
+        name: u.name,
+        email: u.email,
+        waTotal: u.usage.waSessionsTotal,
+        waOnline: u.usage.waSessionsOnline,
+        tgTotal: u.usage.tgSessionsTotal,
+        tgOnline: u.usage.tgSessionsOnline,
+        hasIssue:
+          (u.usage.waSessionsTotal > 0 && u.usage.waSessionsOnline === 0) ||
+          (u.usage.tgSessionsTotal > 0 && u.usage.tgSessionsOnline === 0),
+      }))
+      .sort((a, b) => Number(b.hasIssue) - Number(a.hasIssue));
+    const totalWa = rows.reduce((s, r) => s + r.waTotal, 0);
+    const onlineWa = rows.reduce((s, r) => s + r.waOnline, 0);
+    const totalTg = rows.reduce((s, r) => s + r.tgTotal, 0);
+    const onlineTg = rows.reduce((s, r) => s + r.tgOnline, 0);
+    return { rows, totalWa, onlineWa, totalTg, onlineTg };
+  }, [allObsUsers]);
+
   const services = useMemo<RuntimeServiceView[]>(() => {
     const fallbackProcessStatus = opsHealth.online ? "desconhecido" : "ops-indisponivel";
     const serviceLabels: Record<RuntimeServiceView["key"], string> = {
@@ -1107,6 +1170,19 @@ export default function AdminDashboard() {
               <Badge variant="destructive" className="ml-1 px-1.5 py-0 text-[10px]">{anomalies.length}</Badge>
             )}
           </TabsTrigger>
+          <TabsTrigger value="business" className="gap-1.5">
+            <TrendingUp className="h-3.5 w-3.5" />
+            Negócio
+          </TabsTrigger>
+          <TabsTrigger value="sessions" className="gap-1.5">
+            <Wifi className="h-3.5 w-3.5" />
+            Sessões
+            {sessionHealth.rows.filter((r) => r.hasIssue).length > 0 && (
+              <Badge variant="destructive" className="ml-1 px-1.5 py-0 text-[10px]">
+                {sessionHealth.rows.filter((r) => r.hasIssue).length}
+              </Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="services">
@@ -1124,11 +1200,11 @@ export default function AdminDashboard() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <CardTitle className="text-sm font-semibold truncate">{service.label}</CardTitle>
-                      <p className="text-2xs text-muted-foreground">:{meta?.port ?? "?"}</p>
+                      <code className="text-[10px] font-mono text-muted-foreground/70 bg-muted/50 rounded-sm px-1 py-px leading-relaxed">:{meta?.port ?? "?"}</code>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <Circle className={`h-2 w-2 fill-current flex-shrink-0 ${service.online ? "text-green-500" : "text-red-400"}`} />
+                    <Circle className={`h-2 w-2 fill-current flex-shrink-0 ${service.online ? "text-green-500 animate-pulse" : "text-red-400"}`} />
                     <span className={`text-2xs font-semibold whitespace-nowrap ${service.online ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
                       {service.online ? "Online" : "Offline"}
                     </span>
@@ -1155,14 +1231,14 @@ export default function AdminDashboard() {
                     {service.componentOnline ? "OK" : "Falha"}
                   </Badge>
                 </div>
-                {service.error && <p className="line-clamp-2 text-destructive text-2xs bg-destructive/5 rounded px-2 py-1.5 border border-destructive/20">{service.error}</p>}
-                <div className="mt-auto flex flex-wrap items-center justify-center gap-1.5 pt-1.5">
+                {service.error && <p className="line-clamp-2 text-destructive text-2xs bg-destructive/5 rounded-lg px-2 py-1.5 border border-destructive/20">{service.error}</p>}
+                <div className="mt-auto grid grid-cols-4 gap-1 pt-1.5">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-xs gap-1"
+                        className="h-8 w-full px-0 text-xs gap-1 justify-center"
                         disabled={serviceActionBusy[`${service.key}:start`] === true || !opsHealth.online || service.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "start")}
                       >
@@ -1177,7 +1253,7 @@ export default function AdminDashboard() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-xs gap-1"
+                        className="h-8 w-full px-0 text-xs gap-1 justify-center"
                         disabled={serviceActionBusy[`${service.key}:restart`] === true || !opsHealth.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "restart")}
                       >
@@ -1192,7 +1268,7 @@ export default function AdminDashboard() {
                       <Button
                         variant="destructive"
                         size="sm"
-                        className="h-8 px-2 text-xs gap-1"
+                        className="h-8 w-full px-0 text-xs gap-1 justify-center"
                         disabled={serviceActionBusy[`${service.key}:stop`] === true || !opsHealth.online || !service.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "stop")}
                       >
@@ -1207,7 +1283,7 @@ export default function AdminDashboard() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-xs gap-1"
+                        className="h-8 w-full px-0 text-xs gap-1 justify-center"
                         disabled={editPortBusy || !opsHealth.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => {
                           setEditPortService(service.key);
@@ -1221,9 +1297,7 @@ export default function AdminDashboard() {
                     {!opsHealth.online && <TooltipContent>Ops fora do ar</TooltipContent>}
                   </Tooltip>
                 </div>
-                <p className="text-2xs text-muted-foreground py-1.5 border-t border-border/30">
-                  {formatComponentStatusLabel(service.componentOnline, service.error)}
-                </p>
+
               </CardContent>
             </Card>
           );
@@ -1239,7 +1313,7 @@ export default function AdminDashboard() {
         <StatCard title="Sessões Telegram" value={String(counts.tgSessions)} icon={TelegramIcon} />
         <StatCard title="Grupos" value={String(counts.groups)} icon={Users} />
         <StatCard title="Rotas Ativas" value={String(counts.routes)} icon={Route} />
-        <StatCard title="Automações Shopee" value={String(counts.automations)} icon={Flame} />
+        <StatCard title="Automações Shopee" value={String(counts.automations)} icon={ShoppingBag} />
         <StatCard title="Registros 24h" value={String(counts.history)} icon={BarChart3} />
         <StatCard title="Erros 24h" value={String(counts.errors24h)} icon={AlertTriangle} />
       </div>
@@ -1319,6 +1393,178 @@ export default function AdminDashboard() {
           ))}
         </CardContent>
       </Card>
+        </TabsContent>
+
+        {/* ── Negócio tab ─────────────────────────────────────────── */}
+        <TabsContent value="business" className="space-y-4">
+          <div className="ds-card-grid grid-cols-2 sm:grid-cols-4">
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <DollarSign className="h-3.5 w-3.5" />
+                <span className="text-2xs uppercase tracking-wider">MRR Estimado</span>
+              </div>
+              <p className="text-xl font-bold">
+                {revenueMetrics.mrr.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+              </p>
+              <p className="text-2xs text-muted-foreground">receita mensal recorrente</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <TrendingUp className="h-3.5 w-3.5" />
+                <span className="text-2xs uppercase tracking-wider">ARR Estimado</span>
+              </div>
+              <p className="text-xl font-bold">
+                {revenueMetrics.arr.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+              </p>
+              <p className="text-2xs text-muted-foreground">receita anual projetada (×12)</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Users className="h-3.5 w-3.5" />
+                <span className="text-2xs uppercase tracking-wider">Pagantes</span>
+              </div>
+              <p className="text-xl font-bold">{revenueMetrics.paidCount}</p>
+              <p className="text-2xs text-muted-foreground">de {revenueMetrics.totalActive} ativos</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Users className="h-3.5 w-3.5" />
+                <span className="text-2xs uppercase tracking-wider">Trial / Free</span>
+              </div>
+              <p className="text-xl font-bold">{revenueMetrics.freeTierCount}</p>
+              <p className="text-2xs text-muted-foreground">usuários sem plano pago ativo</p>
+            </div>
+          </div>
+
+          <Card className="admin-card overflow-hidden">
+            <CardHeader className="pb-2 border-b border-border/30">
+              <CardTitle className="admin-card-title">Distribuição por Plano</CardTitle>
+            </CardHeader>
+            <CardContent className="divide-y pt-0">
+              {revenueMetrics.byPlan.length === 0 && (
+                <p className="py-6 text-center text-sm text-muted-foreground">Sem dados de usuários ativos</p>
+              )}
+              {revenueMetrics.byPlan.map((row) => {
+                const pct = revenueMetrics.mrr > 0 ? (row.revenue / revenueMetrics.mrr) * 100 : 0;
+                return (
+                  <div key={row.name} className="flex items-center gap-4 py-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium">{row.name}</span>
+                        <span className="text-xs text-muted-foreground">{row.count} usuário{row.count !== 1 ? "s" : ""}</span>
+                      </div>
+                      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all"
+                          style={{ width: `${Math.max(pct, row.revenue > 0 ? 2 : 0)}%` }}
+                        />
+                      </div>
+                    </div>
+                    <span className="text-sm font-semibold tabular-nums w-28 text-right">
+                      {row.revenue.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}/mês
+                    </span>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+
+          <p className="text-2xs text-muted-foreground px-1">
+            Valores estimados com base nos planos ativos. Planos anuais são divididos em equivalente mensal.
+          </p>
+        </TabsContent>
+
+        {/* ── Sessões tab ─────────────────────────────────────────── */}
+        <TabsContent value="sessions" className="space-y-4">
+          <div className="ds-card-grid grid-cols-2 sm:grid-cols-4">
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Wifi className="h-3.5 w-3.5 text-green-500" />
+                <span className="text-2xs uppercase tracking-wider">WA Online</span>
+              </div>
+              <p className="text-xl font-bold text-green-600 dark:text-green-400">{sessionHealth.onlineWa}</p>
+              <p className="text-2xs text-muted-foreground">de {sessionHealth.totalWa} sessões WA</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <WifiOff className="h-3.5 w-3.5 text-red-400" />
+                <span className="text-2xs uppercase tracking-wider">WA Offline</span>
+              </div>
+              <p className="text-xl font-bold text-destructive">{sessionHealth.totalWa - sessionHealth.onlineWa}</p>
+              <p className="text-2xs text-muted-foreground">sessões desconectadas</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Wifi className="h-3.5 w-3.5 text-blue-500" />
+                <span className="text-2xs uppercase tracking-wider">TG Online</span>
+              </div>
+              <p className="text-xl font-bold text-blue-600 dark:text-blue-400">{sessionHealth.onlineTg}</p>
+              <p className="text-2xs text-muted-foreground">de {sessionHealth.totalTg} sessões TG</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                <span className="text-2xs uppercase tracking-wider">Com Problema</span>
+              </div>
+              <p className="text-xl font-bold text-amber-600 dark:text-amber-400">
+                {sessionHealth.rows.filter((r) => r.hasIssue).length}
+              </p>
+              <p className="text-2xs text-muted-foreground">usuários com sessão offline</p>
+            </div>
+          </div>
+
+          <Card className="admin-card overflow-hidden">
+            <CardHeader className="pb-2 border-b border-border/30">
+              <div className="flex items-center justify-between">
+                <CardTitle className="admin-card-title">Saúde das Sessões por Usuário</CardTitle>
+                <Badge variant="outline" className="text-[10px]">{sessionHealth.rows.length} usuários</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="divide-y pt-0">
+              {sessionHealth.rows.length === 0 && (
+                <div className="flex flex-col items-center gap-2 py-8 text-center">
+                  <Wifi className="h-8 w-8 text-muted-foreground/40" />
+                  <p className="text-sm text-muted-foreground">Nenhum usuário com sessões cadastradas</p>
+                </div>
+              )}
+              {sessionHealth.rows.map((row) => (
+                <div key={row.user_id} className={`flex items-center gap-3 py-2.5 px-1 ${row.hasIssue ? "bg-destructive/5" : ""}`}>
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                    {String(row.name || "?").charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium truncate">{row.name}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">{row.email}</p>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0 text-[11px]">
+                    {row.waTotal > 0 && (
+                      <div className="flex items-center gap-1">
+                        {row.waOnline > 0
+                          ? <Wifi className="h-3 w-3 text-green-500" />
+                          : <WifiOff className="h-3 w-3 text-red-400" />}
+                        <span className={row.waOnline === 0 ? "text-destructive font-medium" : "text-muted-foreground"}>
+                          WA {row.waOnline}/{row.waTotal}
+                        </span>
+                      </div>
+                    )}
+                    {row.tgTotal > 0 && (
+                      <div className="flex items-center gap-1">
+                        {row.tgOnline > 0
+                          ? <Wifi className="h-3 w-3 text-blue-500" />
+                          : <WifiOff className="h-3 w-3 text-red-400" />}
+                        <span className={row.tgOnline === 0 ? "text-destructive font-medium" : "text-muted-foreground"}>
+                          TG {row.tgOnline}/{row.tgTotal}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {row.hasIssue && (
+                    <Badge variant="destructive" className="text-[10px] px-1.5 py-0 shrink-0">Offline</Badge>
+                  )}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         </TabsContent>
 
       </Tabs>

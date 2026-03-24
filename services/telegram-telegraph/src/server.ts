@@ -512,6 +512,7 @@ type TelegramInboundMediaKind = "image" | "video" | "audio" | "voice" | "sticker
 type TelegramInboundMediaInfo = {
   kind: TelegramInboundMediaKind;
   mimeType: string;
+  fileName: string;
 };
 
 function classifyTelegramDocumentMimeType(mimeTypeRaw: string): TelegramInboundMediaKind {
@@ -525,19 +526,74 @@ function classifyTelegramDocumentMimeType(mimeTypeRaw: string): TelegramInboundM
   return "document";
 }
 
+function readTelegramMediaFileName(media: unknown): string {
+  if (!media || typeof media !== "object") return "";
+  const row = media as Record<string, unknown>;
+
+  const pickString = (value: unknown): string => {
+    if (typeof value !== "string") return "";
+    const normalized = value.trim();
+    return normalized;
+  };
+
+  const direct = pickString(row.fileName) || pickString(row.filename) || pickString(row.file_name);
+  if (direct) return direct;
+
+  const readFromAttributes = (attributes: unknown): string => {
+    if (!Array.isArray(attributes)) return "";
+    for (const attribute of attributes) {
+      if (!attribute || typeof attribute !== "object") continue;
+      const attr = attribute as Record<string, unknown>;
+      const fromAttr = pickString(attr.fileName) || pickString(attr.filename) || pickString(attr.file_name);
+      if (fromAttr) return fromAttr;
+    }
+    return "";
+  };
+
+  const fromTopAttributes = readFromAttributes(row.attributes);
+  if (fromTopAttributes) return fromTopAttributes;
+
+  const document = row.document;
+  if (document && typeof document === "object") {
+    const doc = document as Record<string, unknown>;
+    const fromDoc = pickString(doc.fileName) || pickString(doc.filename) || pickString(doc.file_name);
+    if (fromDoc) return fromDoc;
+    const fromDocAttributes = readFromAttributes(doc.attributes);
+    if (fromDocAttributes) return fromDocAttributes;
+  }
+
+  return "";
+}
+
+function inferImageMimeTypeFromFileName(fileName: string | null | undefined): string | null {
+  const normalized = String(fileName || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg") || normalized.endsWith(".jfif")) return "image/jpeg";
+  if (normalized.endsWith(".png")) return "image/png";
+  if (normalized.endsWith(".gif")) return "image/gif";
+  if (normalized.endsWith(".webp")) return "image/webp";
+  if (normalized.endsWith(".bmp")) return "image/bmp";
+  if (normalized.endsWith(".tif") || normalized.endsWith(".tiff")) return "image/tiff";
+  if (normalized.endsWith(".heic")) return "image/heic";
+  if (normalized.endsWith(".heif")) return "image/heif";
+  if (normalized.endsWith(".avif")) return "image/avif";
+  return null;
+}
+
 function extractTelegramMediaInfo(media: unknown): TelegramInboundMediaInfo | null {
   if (!media || typeof media !== "object") return null;
   const row = media as Record<string, unknown>;
   const className = String(row.className || "").trim();
+  const fileName = readTelegramMediaFileName(media);
   if (className === "MessageMediaPhoto") {
-    return { kind: "image", mimeType: readTelegramMediaMimeType(media) || "image/jpeg" };
+    return { kind: "image", mimeType: readTelegramMediaMimeType(media) || "image/jpeg", fileName };
   }
   if (className === "MessageMediaDocument") {
     const mimeType = readTelegramMediaMimeType(media);
-    return { kind: classifyTelegramDocumentMimeType(mimeType), mimeType };
+    return { kind: classifyTelegramDocumentMimeType(mimeType), mimeType, fileName };
   }
   if (className.startsWith("MessageMedia")) {
-    return { kind: "other", mimeType: readTelegramMediaMimeType(media) };
+    return { kind: "other", mimeType: readTelegramMediaMimeType(media), fileName };
   }
   return null;
 }
@@ -620,8 +676,10 @@ function extractTelegramThumbnailBuffer(media: unknown): Buffer | null {
 
 function shouldAttemptTelegramMediaDownloadForImage(info: TelegramInboundMediaInfo | null): boolean {
   if (!info) return false;
+  if (info.kind === "document") return true;
   if (info.kind === "image" || info.kind === "sticker") return true;
-  return info.mimeType.startsWith("image/");
+  if (info.mimeType.startsWith("image/")) return true;
+  return Boolean(inferImageMimeTypeFromFileName(info.fileName));
 }
 
 async function downloadIncomingTelegramImageBuffer(args: {
@@ -680,7 +738,10 @@ async function resolveTelegramInboundImage(args: {
 
   const detectedMime = detectImageMimeTypeFromBuffer(downloaded);
   const hintMime = String(mediaInfo?.mimeType || "").trim().toLowerCase();
-  const mimeType = detectedMime || (hintMime.startsWith("image/") ? hintMime : "image/jpeg");
+  const mimeFromHint = hintMime.startsWith("image/") ? hintMime : "";
+  const mimeFromFileName = inferImageMimeTypeFromFileName(mediaInfo?.fileName);
+  const mimeType = detectedMime || mimeFromHint || mimeFromFileName;
+  if (!mimeType) return null;
   return {
     buffer: downloaded,
     mimeType,
@@ -754,6 +815,9 @@ function mimeTypeToFileExtension(mimeType: string): string {
   if (normalized === "image/gif") return "gif";
   if (normalized === "image/bmp") return "bmp";
   if (normalized === "image/tiff") return "tiff";
+  if (normalized === "image/avif") return "avif";
+  if (normalized === "image/heic") return "heic";
+  if (normalized === "image/heif") return "heif";
   return "jpg";
 }
 
@@ -801,6 +865,35 @@ function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
     buffer[11] === 0x50
   ) {
     return "image/webp";
+  }
+
+  // BMP: BM
+  if (buffer[0] === 0x42 && buffer[1] === 0x4d) {
+    return "image/bmp";
+  }
+
+  // TIFF: II*\0 or MM\0*
+  if (
+    (buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2a && buffer[3] === 0x00)
+    || (buffer[0] === 0x4d && buffer[1] === 0x4d && buffer[2] === 0x00 && buffer[3] === 0x2a)
+  ) {
+    return "image/tiff";
+  }
+
+  // ISO BMFF family (HEIC/HEIF/AVIF)
+  if (
+    buffer.length >= 12
+    && buffer[4] === 0x66
+    && buffer[5] === 0x74
+    && buffer[6] === 0x79
+    && buffer[7] === 0x70
+  ) {
+    const brand = buffer.subarray(8, 12).toString("ascii").toLowerCase();
+    if (brand === "avif" || brand === "avis") return "image/avif";
+    if (brand === "heic" || brand === "heix" || brand === "hevc" || brand === "hevx" || brand === "mif1" || brand === "msf1") {
+      if (brand === "mif1" || brand === "msf1") return "image/heif";
+      return "image/heic";
+    }
   }
 
   return null;

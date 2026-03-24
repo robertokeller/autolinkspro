@@ -8,8 +8,10 @@ import {
   Clock,
   Eye,
   Filter,
+  Image,
   Loader2,
   MessageSquare,
+  Paperclip,
   Phone,
   QrCode,
   RefreshCw,
@@ -19,6 +21,7 @@ import {
   Users,
   Wifi,
   WifiOff,
+  X,
   XCircle,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,7 +51,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAdminWhatsAppSession } from "@/hooks/useAdminWhatsAppSession";
-import { useAdminBroadcast, type BroadcastRecord, type BroadcastRecipient } from "@/hooks/useAdminBroadcast";
+import { useAdminBroadcast, type BroadcastMediaAttachment, type BroadcastRecord, type BroadcastRecipient } from "@/hooks/useAdminBroadcast";
 import { formatPhoneDisplay } from "@/lib/phone-utils";
 import { formatBRT } from "@/lib/timezone";
 import { InlineLoadingState } from "@/components/InlineLoadingState";
@@ -109,6 +112,8 @@ export default function AdminWhatsApp() {
 
   // Broadcast form state
   const [message, setMessage] = useState("");
+  const [broadcastMedia, setBroadcastMedia] = useState<BroadcastMediaAttachment | null>(null);
+  const broadcastFileInputRef = useRef<HTMLInputElement>(null);
   const [filterPlan, setFilterPlan] = useState<string[]>([]);
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterUserIds, setFilterUserIds] = useState<string[]>([]);
@@ -190,10 +195,11 @@ export default function AdminWhatsApp() {
   };
 
   const handleSend = async () => {
-    if (!message.trim()) return;
+    if (!message.trim() && !broadcastMedia) return;
     if (sendMode === "now") {
-      await sendBroadcast({ message, ...getFilters() });
+      await sendBroadcast({ message, ...(broadcastMedia ? { media: broadcastMedia } : {}), ...getFilters() });
       setMessage("");
+      setBroadcastMedia(null);
     } else {
       if (!scheduledAt) return;
       await scheduleBroadcast({ message, scheduledAt, ...getFilters() });
@@ -271,28 +277,40 @@ export default function AdminWhatsApp() {
 
   const isOnline = session?.status === "online";
   const isBusy = session ? ["connecting", "qr_code"].includes(session.status) : false;
-  const canSend = isOnline && message.trim().length > 0 && (sendMode === "now" || scheduledAt !== "");
+  const hasNowContent = message.trim().length > 0 || !!broadcastMedia;
+  const hasScheduleContent = message.trim().length > 0;
+  const canSend = isOnline && (sendMode === "now" ? hasNowContent : hasScheduleContent) && (sendMode === "now" || scheduledAt !== "");
   const recipientCount = previewData?.count ?? null;
 
+  const handleBroadcastFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      const { toast: toastFn } = await import("sonner");
+      toastFn.error("Arquivo muito grande. Máximo 10 MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const idx = result.indexOf(",");
+      const base64 = idx >= 0 ? result.slice(idx + 1) : result;
+      setBroadcastMedia({ base64, mimeType: file.type || "image/jpeg", fileName: file.name });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6">
       {/* Page header */}
-      <div className="flex items-start justify-between">
-        <div>
+      <div className="flex items-start gap-3">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold tracking-tight">WhatsApp do Sistema</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-0.5 text-sm text-muted-foreground">
             Conexão oficial do administrador para comunicação em massa com clientes.
           </p>
         </div>
-        {session && (
-          <Badge
-            variant={isOnline ? "success" : session.status === "warning" ? "warning" : "secondary"}
-            className="mt-1 gap-1.5 text-sm"
-          >
-            {isOnline ? <Wifi className="h-3.5 w-3.5" /> : isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <WifiOff className="h-3.5 w-3.5" />}
-            {isOnline ? "Online" : isBusy ? "Conectando" : session.status === "warning" ? "Alerta" : "Offline"}
-          </Badge>
-        )}
       </div>
 
       {/* Initial loading */}
@@ -301,18 +319,19 @@ export default function AdminWhatsApp() {
       {/* No session – full-width CTA, no tabs needed yet */}
       {!isLoading && !session && (
         <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center gap-4 py-14">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-              <QrCode className="h-8 w-8 text-muted-foreground" />
+          <CardContent className="flex flex-col items-center gap-5 py-16">
+            <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-muted">
+              <QrCode className="h-10 w-10 text-muted-foreground" />
             </div>
             <div className="text-center">
               <p className="text-lg font-semibold">Nenhum WhatsApp conectado</p>
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
                 Conecte o WhatsApp do sistema para começar a enviar mensagens aos clientes.
               </p>
             </div>
             <Button
-              className="mt-2 gap-2"
+              size="lg"
+              className="gap-2 px-8"
               onClick={() => void handleCreateAndConnect()}
               disabled={isCreating || isConnecting}
             >
@@ -326,42 +345,50 @@ export default function AdminWhatsApp() {
       {/* Session exists – show tabs */}
       {!isLoading && session && (
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="w-full">
-            <TabsTrigger value="connection" className="flex-1 gap-1.5">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="connection" className="gap-1.5">
               <Phone className="h-4 w-4" />
               Conexão
             </TabsTrigger>
-            <TabsTrigger value="broadcast" className="flex-1 gap-1.5" disabled={!isOnline}>
+            <TabsTrigger value="broadcast" className="gap-1.5" disabled={!isOnline}>
               <Send className="h-4 w-4" />
-              Envio em Massa
+              <span className="hidden sm:inline">Envio em Massa</span>
+              <span className="sm:hidden">Envio</span>
             </TabsTrigger>
-            <TabsTrigger value="history" className="flex-1 gap-1.5">
+            <TabsTrigger value="history" className="gap-1.5">
               <Clock className="h-4 w-4" />
               Histórico
-              {broadcasts.length > 0 && (
+              {broadcasts.filter((b) => b.status === "scheduled" || b.status === "processing").length > 0 && (
                 <span className="ml-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/15 px-1 text-xs font-medium text-primary">
-                  {broadcasts.length}
+                  {broadcasts.filter((b) => b.status === "scheduled" || b.status === "processing").length}
                 </span>
               )}
             </TabsTrigger>
           </TabsList>
 
           {/* ── Tab: Conexão ────────────────────────────────────────────── */}
-          <TabsContent value="connection" className="mt-4 space-y-4">
+          <TabsContent value="connection" className="mt-5 space-y-4">
             {/* Status card */}
             <Card className={isOnline ? "ring-1 ring-success/30" : undefined}>
-              <div className={`h-1 w-full rounded-t-lg ${isOnline ? "bg-success" : isBusy ? "bg-blue-500" : session.status === "warning" ? "bg-warning" : "bg-muted-foreground/20"}`} />
+              <div className={`h-1.5 w-full rounded-t-lg ${isOnline ? "bg-success" : isBusy ? "bg-blue-500" : session.status === "warning" ? "bg-warning" : "bg-muted-foreground/20"}`} />
               <CardHeader className="pb-3">
-                <div className="flex items-start justify-between">
-                  <div className="space-y-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
                     <CardTitle className="flex items-center gap-2 text-lg">
-                      <Phone className="h-5 w-5" />
-                      {session.name}
+                      <Phone className="h-5 w-5 shrink-0" />
+                      <span className="truncate">{session.name}</span>
                     </CardTitle>
-                    <CardDescription>
+                    <CardDescription className="mt-0.5 font-medium tabular-nums">
                       {session.phoneNumber ? formatPhoneDisplay(session.phoneNumber) : "Número detectado após conexão"}
                     </CardDescription>
                   </div>
+                  <Badge
+                    variant={isOnline ? "success" : session.status === "warning" ? "warning" : "secondary"}
+                    className="shrink-0 gap-1"
+                  >
+                    {isOnline ? <Wifi className="h-3 w-3" /> : isBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <WifiOff className="h-3 w-3" />}
+                    {isOnline ? "Online" : isBusy ? "Conectando" : session.status === "warning" ? "Alerta" : "Offline"}
+                  </Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -408,26 +435,26 @@ export default function AdminWhatsApp() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-sm font-medium">
-                  <MessageSquare className="h-4 w-4" />
+            <Card className="border-dashed bg-muted/20">
+              <CardHeader className="pb-2 pt-4">
+                <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <MessageSquare className="h-3.5 w-3.5" />
                   Como funciona
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm text-muted-foreground">
-                <ul className="list-inside list-disc space-y-1.5">
-                  <li>Conecte via QR Code — o número fica como linha oficial do sistema.</li>
-                  <li>Use <strong>Envio em Massa</strong> para notificar clientes por plano ou status.</li>
-                  <li>Agende mensagens para datas futuras na mesma aba.</li>
-                  <li>A conexão é monitorada automaticamente. Se cair, basta ler o QR Code novamente.</li>
+              <CardContent className="pb-4">
+                <ul className="space-y-1 text-sm text-muted-foreground">
+                  <li className="flex items-start gap-2"><span className="mt-0.5 text-muted-foreground/50">•</span>Conecte via QR Code — o número fica como linha oficial do sistema.</li>
+                  <li className="flex items-start gap-2"><span className="mt-0.5 text-muted-foreground/50">•</span>Use <strong className="text-foreground">Envio em Massa</strong> para notificar clientes por plano ou status.</li>
+                  <li className="flex items-start gap-2"><span className="mt-0.5 text-muted-foreground/50">•</span>Agende mensagens para datas futuras na mesma aba.</li>
+                  <li className="flex items-start gap-2"><span className="mt-0.5 text-muted-foreground/50">•</span>A conexão é monitorada automaticamente. Se cair, basta ler o QR Code novamente.</li>
                 </ul>
               </CardContent>
             </Card>
           </TabsContent>
 
           {/* ── Tab: Envio em Massa ─────────────────────────────────────── */}
-          <TabsContent value="broadcast" className="mt-4 space-y-4">
+          <TabsContent value="broadcast" className="mt-5 space-y-4">
             {/* Recipient filters */}
             <Card>
               <CardHeader className="pb-3">
@@ -545,6 +572,31 @@ export default function AdminWhatsApp() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
+                {/* Media preview */}
+                {broadcastMedia && (
+                  <div className="relative overflow-hidden rounded-lg border bg-muted/30">
+                    {broadcastMedia.mimeType.startsWith("image/") ? (
+                      <img
+                        src={`data:${broadcastMedia.mimeType};base64,${broadcastMedia.base64}`}
+                        alt={broadcastMedia.fileName}
+                        className="max-h-48 w-full object-contain"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-2 px-3 py-2.5">
+                        <Paperclip className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm truncate">{broadcastMedia.fileName}</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setBroadcastMedia(null)}
+                      className="absolute right-2 top-2 rounded-full bg-background/80 p-1 hover:bg-background transition-colors"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   <Textarea
                     placeholder="Digite aqui a mensagem que será enviada para os clientes selecionados..."
@@ -552,12 +604,35 @@ export default function AdminWhatsApp() {
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
                   />
-                  <p className="text-right text-xs text-muted-foreground">{message.length} caracteres</p>
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => broadcastFileInputRef.current?.click()}
+                      disabled={sendMode === "schedule"}
+                      className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:pointer-events-none disabled:opacity-40"
+                    >
+                      <Image className="h-4 w-4" />
+                      {broadcastMedia ? "Trocar imagem" : "Anexar imagem"}
+                    </button>
+                    <p className="text-right text-xs text-muted-foreground">{message.length} caracteres</p>
+                  </div>
+                  <input
+                    ref={broadcastFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => void handleBroadcastFileSelect(e)}
+                  />
                 </div>
 
                 {/* Send mode */}
                 <div className="space-y-3">
                   <Label className="text-sm font-medium">Quando enviar</Label>
+                  {sendMode === "schedule" && broadcastMedia && (
+                    <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                      Imagens não são suportadas em envios agendados — apenas mensagens de texto.
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <label className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-muted/50 ${sendMode === "now" ? "border-primary/50 bg-primary/5" : ""}`}>
                       <input type="radio" className="sr-only" checked={sendMode === "now"} onChange={() => setSendMode("now")} />
@@ -567,8 +642,8 @@ export default function AdminWhatsApp() {
                       <Send className="h-3.5 w-3.5" />
                       Enviar agora
                     </label>
-                    <label className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-muted/50 ${sendMode === "schedule" ? "border-primary/50 bg-primary/5" : ""}`}>
-                      <input type="radio" className="sr-only" checked={sendMode === "schedule"} onChange={() => setSendMode("schedule")} />
+    <label className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-muted/50 ${sendMode === "schedule" ? "border-primary/50 bg-primary/5" : ""}`}>
+                      <input type="radio" className="sr-only" checked={sendMode === "schedule"} onChange={() => { setSendMode("schedule"); setBroadcastMedia(null); }} />
                       <div className={`h-4 w-4 rounded-full border-2 flex items-center justify-center ${sendMode === "schedule" ? "border-primary" : "border-muted-foreground/40"}`}>
                         {sendMode === "schedule" && <div className="h-2 w-2 rounded-full bg-primary" />}
                       </div>
@@ -618,7 +693,7 @@ export default function AdminWhatsApp() {
           </TabsContent>
 
           {/* ── Tab: Histórico ───────────────────────────────────────────── */}
-          <TabsContent value="history" className="mt-4">
+          <TabsContent value="history" className="mt-5">
             <Card>
               <CardHeader className="flex-row items-center justify-between pb-3">
                 <div>
@@ -646,18 +721,22 @@ export default function AdminWhatsApp() {
                 {!isLoadingHistory && broadcasts.length > 0 && (
                   <div className="divide-y">
                     {broadcasts.map((b) => (
-                      <div key={b.id} className="py-3 first:pt-0 last:pb-0">
+                      <div key={b.id} className="py-3.5 first:pt-0 last:pb-0">
                         <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1 space-y-1">
-                            <p className="line-clamp-2 text-sm">{b.message}</p>
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            {b.message ? (
+                              <p className="line-clamp-2 text-sm leading-snug">{b.message}</p>
+                            ) : (
+                              <p className="text-sm italic text-muted-foreground">Somente mídia</p>
+                            )}
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                               <span className="flex items-center gap-1">
                                 <Users className="h-3 w-3" />
-                                {b.sent_count ?? 0}/{b.total_recipients ?? 0} enviadas
+                                <strong className="text-foreground">{b.sent_count ?? 0}</strong>/{b.total_recipients ?? 0}
+                                {b.failed_count > 0 && (
+                                  <span className="text-destructive">({b.failed_count} falhas)</span>
+                                )}
                               </span>
-                              {b.failed_count > 0 && (
-                                <span className="text-destructive">{b.failed_count} falhas</span>
-                              )}
                               <span>
                                 {b.status === "scheduled" && b.scheduled_at
                                   ? `Agendado: ${new Date(b.scheduled_at).toLocaleString("pt-BR")}`

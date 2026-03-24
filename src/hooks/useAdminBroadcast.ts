@@ -37,6 +37,12 @@ export interface BroadcastFilters {
   filterUserIds: string[];
 }
 
+export interface BroadcastMediaAttachment {
+  base64: string;
+  mimeType: string;
+  fileName: string;
+}
+
 /* ── hook ──────────────────────────────────────────────────────────────────── */
 
 export function useAdminBroadcast() {
@@ -66,7 +72,7 @@ export function useAdminBroadcast() {
 
   // Send broadcast now
   const sendMutation = useMutation({
-    mutationFn: async (params: BroadcastFilters & { message: string }) => {
+    mutationFn: async (params: BroadcastFilters & { message: string; media?: BroadcastMediaAttachment }) => {
       return invokeBackendRpc<{
         broadcast_id: string;
         total: number;

@@ -45,6 +45,7 @@ export const ROUTES = {
     logs: "/admin/logs",
     notifications: "/admin/notifications",
     whatsapp: "/admin/whatsapp",
+    mensagens: "/admin/mensagens",
   },
 } as const;
 

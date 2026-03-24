@@ -253,7 +253,7 @@ const OPS_URL       = process.env.OPS_CONTROL_URL
   ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3115" : "");
 const OPS_TOKEN     = String(process.env.OPS_CONTROL_TOKEN ?? "").trim();
 const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET ?? "").trim();
-const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance","admin-wa-broadcast"]);
+const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance","admin-wa-broadcast","admin-message-automations"]);
 const MAX_URL_LENGTH = 2048;
 const MAX_SHOPEE_CONVERT_BATCH = 30;
 const MAX_MELI_CONVERT_BATCH = 50;
@@ -8648,7 +8648,9 @@ rpcRouter.post("/rpc", async (req, res) => {
       // ACTION: send — send broadcast immediately
       if (action === "send") {
         const message = String(params.message ?? "").trim();
-        if (!message) { fail(res, "Mensagem é obrigatória"); return; }
+        const mediaParam = params.media as { base64?: string; mimeType?: string; fileName?: string } | null | undefined;
+        const hasMedia = mediaParam && typeof mediaParam.base64 === "string" && mediaParam.base64.length > 0;
+        if (!message && !hasMedia) { fail(res, "Mensagem ou mídia é obrigatória"); return; }
 
         const filterPlan: string[] = Array.isArray(params.filterPlan) ? params.filterPlan.filter((p: unknown) => typeof p === "string") : [];
         const filterStatus = String(params.filterStatus ?? "all");
@@ -8689,7 +8691,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         );
 
         // Send messages with delay between each to avoid WhatsApp rate limits
-        const outbound = formatMessageForPlatform(message, "whatsapp");
+        const outbound = message ? formatMessageForPlatform(message, "whatsapp") : "";
         const waHeaders = buildUserScopedHeaders(userId);
         let sentCount = 0;
         let failedCount = 0;
@@ -8701,12 +8703,21 @@ rpcRouter.post("/rpc", async (req, res) => {
           if (!phone) { failedCount++; errors.push({ phone: recipient.phone, error: "Telefone inválido" }); continue; }
 
           const jid = `${phone}@s.whatsapp.net`;
+          const waBody: Record<string, unknown> = {
+            sessionId: adminSession.id,
+            jid,
+            content: outbound,
+          };
+          if (hasMedia) {
+            waBody.media = {
+              kind: "image",
+              base64: mediaParam!.base64,
+              mimeType: String(mediaParam!.mimeType || "image/jpeg"),
+              fileName: String(mediaParam!.fileName || "imagem.jpg"),
+            };
+          }
           try {
-            const r = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-              sessionId: adminSession.id,
-              jid,
-              content: outbound,
-            }, waHeaders, 15_000);
+            const r = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", waBody, waHeaders, 15_000);
 
             if (r.error) {
               failedCount++;
@@ -8897,7 +8908,309 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
 
     // â”€â”€ admin-users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (funcName === "admin-users") {
+    
+    // ── admin-message-automations ────────────────────────────────────────────
+    if (funcName === "admin-message-automations") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
+      const action = String(params.action ?? "");
+
+      if (action === "list") {
+        const rows = await query(
+          "SELECT * FROM admin_message_automations WHERE admin_user_id=$1 ORDER BY created_at DESC",
+          [userId],
+        );
+        ok(res, { automations: rows });
+        return;
+      }
+
+      if (action === "create") {
+        const name = String(params.name ?? "").trim();
+        const description = String(params.description ?? "").trim();
+        const triggerType = String(params.trigger_type ?? "").trim();
+        const validTriggers = ["plan_expiring","plan_expired","signup_welcome","remarketing"];
+        if (!name) { fail(res, "Nome é obrigatório"); return; }
+        if (triggerType === "cron") { fail(res, "Gatilho cron ainda não está disponível"); return; }
+        if (!validTriggers.includes(triggerType)) { fail(res, "Tipo de gatilho inválido"); return; }
+        const messageTemplate = String(params.message_template ?? "").trim();
+        if (!messageTemplate) { fail(res, "Mensagem é obrigatória"); return; }
+        const triggerConfig = (params.trigger_config && typeof params.trigger_config === "object" && !Array.isArray(params.trigger_config))
+          ? params.trigger_config as Record<string, unknown> : {};
+        const filterPlan: string[] = Array.isArray(params.filter_plan) ? params.filter_plan.filter((p: unknown) => typeof p === "string") : [];
+        const autoId = uuid();
+        await execute(
+          `INSERT INTO admin_message_automations (id, admin_user_id, name, description, trigger_type, trigger_config, message_template, filter_plan)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
+          [autoId, userId, name, description, triggerType, JSON.stringify(triggerConfig), messageTemplate, filterPlan],
+        );
+        await appendAudit("create_message_automation", userId, null, { automation_id: autoId, trigger_type: triggerType });
+        ok(res, { automation_id: autoId });
+        return;
+      }
+
+      if (action === "update") {
+        const autoId = String(params.automation_id ?? "").trim();
+        if (!autoId) { fail(res, "ID da automação é obrigatório"); return; }
+        const existing = await queryOne("SELECT id FROM admin_message_automations WHERE id=$1 AND admin_user_id=$2", [autoId, userId]);
+        if (!existing) { fail(res, "Automação não encontrada"); return; }
+        const name = String(params.name ?? "").trim();
+        const description = String(params.description ?? "").trim();
+        const triggerType = String(params.trigger_type ?? "").trim();
+        const validTriggers2 = ["plan_expiring","plan_expired","signup_welcome","remarketing"];
+        if (!name) { fail(res, "Nome é obrigatório"); return; }
+        if (triggerType === "cron") { fail(res, "Gatilho cron ainda não está disponível"); return; }
+        if (!validTriggers2.includes(triggerType)) { fail(res, "Tipo de gatilho inválido"); return; }
+        const messageTemplate = String(params.message_template ?? "").trim();
+        if (!messageTemplate) { fail(res, "Mensagem é obrigatória"); return; }
+        const triggerConfig = (params.trigger_config && typeof params.trigger_config === "object" && !Array.isArray(params.trigger_config))
+          ? params.trigger_config as Record<string, unknown> : {};
+        const filterPlan: string[] = Array.isArray(params.filter_plan) ? params.filter_plan.filter((p: unknown) => typeof p === "string") : [];
+        await execute(
+          `UPDATE admin_message_automations SET name=$1, description=$2, trigger_type=$3, trigger_config=$4::jsonb, message_template=$5, filter_plan=$6, updated_at=NOW() WHERE id=$7`,
+          [name, description, triggerType, JSON.stringify(triggerConfig), messageTemplate, filterPlan, autoId],
+        );
+        await appendAudit("update_message_automation", userId, null, { automation_id: autoId });
+        ok(res, { success: true });
+        return;
+      }
+
+      if (action === "toggle") {
+        const autoId = String(params.automation_id ?? "").trim();
+        if (!autoId) { fail(res, "ID da automação é obrigatório"); return; }
+        const row = await queryOne<{ is_active: boolean }>("SELECT is_active FROM admin_message_automations WHERE id=$1 AND admin_user_id=$2", [autoId, userId]);
+        if (!row) { fail(res, "Automação não encontrada"); return; }
+        const newActive = !row.is_active;
+        await execute("UPDATE admin_message_automations SET is_active=$1, updated_at=NOW() WHERE id=$2", [newActive, autoId]);
+        ok(res, { is_active: newActive });
+        return;
+      }
+
+      if (action === "delete") {
+        const autoId = String(params.automation_id ?? "").trim();
+        if (!autoId) { fail(res, "ID da automação é obrigatório"); return; }
+        const rowDel = await queryOne("SELECT id FROM admin_message_automations WHERE id=$1 AND admin_user_id=$2", [autoId, userId]);
+        if (!rowDel) { fail(res, "Automação não encontrada"); return; }
+        await execute("DELETE FROM admin_message_automations WHERE id=$1", [autoId]);
+        await appendAudit("delete_message_automation", userId, null, { automation_id: autoId });
+        ok(res, { success: true });
+        return;
+      }
+
+      if (action === "preview") {
+        const triggerType = String(params.trigger_type ?? "").trim();
+        if (triggerType === "cron") { fail(res, "Gatilho cron ainda não está disponível"); return; }
+        const triggerConfig = (params.trigger_config && typeof params.trigger_config === "object" && !Array.isArray(params.trigger_config))
+          ? params.trigger_config as Record<string, unknown> : {};
+        const filterPlan: string[] = Array.isArray(params.filter_plan) ? params.filter_plan.filter((p: unknown) => typeof p === "string") : [];
+        const allUsers = await listUsersWithMeta();
+        const nowMs = Date.now();
+        const matched = allUsers.filter((u) => {
+          if (["inactive","blocked","archived"].includes(u.account_status)) return false;
+          if (u.role === "admin") return false;
+          if (!u.phone) return false;
+          if (filterPlan.length > 0 && !filterPlan.includes(u.plan_id)) return false;
+          if (triggerType === "plan_expiring") {
+            const daysBefore = Number(triggerConfig.days_before ?? 3);
+            if (!u.plan_expires_at) return false;
+            const expiresMs = Date.parse(u.plan_expires_at);
+            const daysLeft = (expiresMs - nowMs) / (1000 * 60 * 60 * 24);
+            return daysLeft >= 0 && daysLeft <= daysBefore;
+          }
+          if (triggerType === "plan_expired") {
+            const daysAfter = Number(triggerConfig.days_after ?? 1);
+            if (!u.plan_expires_at) return false;
+            const expiresMs = Date.parse(u.plan_expires_at);
+            if (expiresMs > nowMs) return false;
+            const daysSince = (nowMs - expiresMs) / (1000 * 60 * 60 * 24);
+            return daysSince <= daysAfter;
+          }
+          if (triggerType === "signup_welcome") {
+            const daysAfter = Number(triggerConfig.days_after ?? 0);
+            const signupMs = Date.parse(u.created_at);
+            const daysSince = (nowMs - signupMs) / (1000 * 60 * 60 * 24);
+            return daysSince >= daysAfter && daysSince < daysAfter + 1;
+          }
+          if (triggerType === "remarketing") {
+            const daysSinceSignup = Number(triggerConfig.days_since_signup ?? 30);
+            const signupMs = Date.parse(u.created_at);
+            const daysSince = (nowMs - signupMs) / (1000 * 60 * 60 * 24);
+            return daysSince >= daysSinceSignup && daysSince < daysSinceSignup + 1;
+          }
+          return true;
+        });
+        ok(res, { count: matched.length });
+        return;
+      }
+
+      if (action === "run_now") {
+        const autoId = String(params.automation_id ?? "").trim();
+        if (!autoId) { fail(res, "ID da automação é obrigatório"); return; }
+        const auto = await queryOne<{
+          id: string; name: string; trigger_type: string; trigger_config: Record<string, unknown>;
+          message_template: string; filter_plan: string[]; admin_user_id: string;
+        }>("SELECT * FROM admin_message_automations WHERE id=$1 AND admin_user_id=$2", [autoId, userId]);
+        if (!auto) { fail(res, "Automação não encontrada"); return; }
+        if (auto.trigger_type === "cron") { fail(res, "Gatilho cron ainda não está disponível"); return; }
+
+        const adminSession2 = await queryOne<{ id: string; status: string }>(
+          "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 ORDER BY created_at LIMIT 1",
+          [userId],
+        );
+        if (!adminSession2) { fail(res, "Nenhuma sessão WhatsApp do admin encontrada"); return; }
+        if (adminSession2.status !== "online") { fail(res, "WhatsApp do admin não está online"); return; }
+
+        const allUsersRun = await listUsersWithMeta();
+        const runFilterPlan: string[] = Array.isArray(auto.filter_plan) ? auto.filter_plan : [];
+        const runTriggerConfig = typeof auto.trigger_config === "object" && auto.trigger_config ? auto.trigger_config as Record<string, unknown> : {};
+        const runNowMs = Date.now();
+
+        const recipientsRun = allUsersRun.filter((u) => {
+          if (["inactive","blocked","archived"].includes(u.account_status)) return false;
+          if (u.role === "admin") return false;
+          if (!u.phone) return false;
+          if (runFilterPlan.length > 0 && !runFilterPlan.includes(u.plan_id)) return false;
+          if (auto.trigger_type === "plan_expiring") {
+            const daysBefore = Number(runTriggerConfig.days_before ?? 3);
+            if (!u.plan_expires_at) return false;
+            const expiresMs = Date.parse(u.plan_expires_at);
+            const daysLeft = (expiresMs - runNowMs) / (1000 * 60 * 60 * 24);
+            return daysLeft >= 0 && daysLeft <= daysBefore;
+          }
+          if (auto.trigger_type === "plan_expired") {
+            const daysAfter = Number(runTriggerConfig.days_after ?? 1);
+            if (!u.plan_expires_at) return false;
+            const expiresMs = Date.parse(u.plan_expires_at);
+            if (expiresMs > runNowMs) return false;
+            const daysSince = (runNowMs - expiresMs) / (1000 * 60 * 60 * 24);
+            return daysSince <= daysAfter;
+          }
+          if (auto.trigger_type === "signup_welcome") {
+            const daysAfter = Number(runTriggerConfig.days_after ?? 0);
+            const signupMs = Date.parse(u.created_at);
+            const daysSince = (runNowMs - signupMs) / (1000 * 60 * 60 * 24);
+            return daysSince >= daysAfter && daysSince < daysAfter + 1;
+          }
+          if (auto.trigger_type === "remarketing") {
+            const daysSinceSignup = Number(runTriggerConfig.days_since_signup ?? 30);
+            const signupMs = Date.parse(u.created_at);
+            const daysSince = (runNowMs - signupMs) / (1000 * 60 * 60 * 24);
+            return daysSince >= daysSinceSignup && daysSince < daysSinceSignup + 1;
+          }
+          return true;
+        });
+
+        if (recipientsRun.length === 0) { ok(res, { sent: 0, failed: 0, total: 0 }); return; }
+
+        const outbound2 = formatMessageForPlatform(auto.message_template, "whatsapp");
+        const waHeaders2 = buildUserScopedHeaders(userId);
+        let sentCount2 = 0; let failedCount2 = 0;
+
+        for (let i = 0; i < recipientsRun.length; i++) {
+          const r = recipientsRun[i];
+          const phone = String(r.phone).replace(/\D/g, "");
+          if (!phone) { failedCount2++; continue; }
+          try {
+            const result2 = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+              sessionId: adminSession2.id, jid: `${phone}@s.whatsapp.net`, content: outbound2,
+            }, waHeaders2, 15_000);
+            if (result2.error) failedCount2++; else sentCount2++;
+          } catch { failedCount2++; }
+          if (i < recipientsRun.length - 1) await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+
+        await execute(
+          `UPDATE admin_message_automations SET last_run_at=NOW(), run_count=run_count+1, last_run_sent=$1, last_run_failed=$2, updated_at=NOW() WHERE id=$3`,
+          [sentCount2, failedCount2, autoId],
+        );
+        await appendAudit("run_message_automation", userId, null, { automation_id: autoId, sent: sentCount2, failed: failedCount2 });
+        ok(res, { sent: sentCount2, failed: failedCount2, total: recipientsRun.length });
+        return;
+      }
+
+      if (action === "dispatch_automations") {
+        if (!isService) { fail(res, "Ação reservada ao agendador", 403); return; }
+        const allAutos = await query("SELECT * FROM admin_message_automations WHERE is_active=TRUE");
+        let totalDispatched = 0;
+        for (const autoItem of allAutos) {
+          if (String(autoItem.trigger_type) === "cron") continue;
+          const aSession = await queryOne<{ id: string; status: string }>(
+            "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 ORDER BY created_at LIMIT 1",
+            [String(autoItem.admin_user_id)],
+          );
+          if (!aSession || aSession.status !== "online") continue;
+
+          const aAllUsers = await listUsersWithMeta();
+          const aFilterPlan: string[] = Array.isArray(autoItem.filter_plan) ? autoItem.filter_plan : [];
+          const aTriggerConfig = typeof autoItem.trigger_config === "object" && autoItem.trigger_config ? autoItem.trigger_config as Record<string, unknown> : {};
+          const dispNowMs = Date.now();
+
+          const aRecipients = aAllUsers.filter((u) => {
+            if (["inactive","blocked","archived"].includes(u.account_status)) return false;
+            if (u.role === "admin") return false;
+            if (!u.phone) return false;
+            if (aFilterPlan.length > 0 && !aFilterPlan.includes(u.plan_id)) return false;
+            if (autoItem.trigger_type === "plan_expiring") {
+              const daysBefore = Number(aTriggerConfig.days_before ?? 3);
+              if (!u.plan_expires_at) return false;
+              const expiresMs = Date.parse(u.plan_expires_at);
+              const daysLeft = (expiresMs - dispNowMs) / (1000 * 60 * 60 * 24);
+              return daysLeft >= 0 && daysLeft <= daysBefore;
+            }
+            if (autoItem.trigger_type === "plan_expired") {
+              const daysAfter = Number(aTriggerConfig.days_after ?? 1);
+              if (!u.plan_expires_at) return false;
+              const expiresMs = Date.parse(u.plan_expires_at);
+              if (expiresMs > dispNowMs) return false;
+              const daysSince = (dispNowMs - expiresMs) / (1000 * 60 * 60 * 24);
+              return daysSince <= daysAfter;
+            }
+            if (autoItem.trigger_type === "signup_welcome") {
+              const daysAfter = Number(aTriggerConfig.days_after ?? 0);
+              const signupMs = Date.parse(u.created_at);
+              const daysSince = (dispNowMs - signupMs) / (1000 * 60 * 60 * 24);
+              return daysSince >= daysAfter && daysSince < daysAfter + 1;
+            }
+            if (autoItem.trigger_type === "remarketing") {
+              const daysSinceSignup = Number(aTriggerConfig.days_since_signup ?? 30);
+              const signupMs = Date.parse(u.created_at);
+              const daysSince = (dispNowMs - signupMs) / (1000 * 60 * 60 * 24);
+              return daysSince >= daysSinceSignup && daysSince < daysSinceSignup + 1;
+            }
+            return false;
+          });
+
+          if (aRecipients.length === 0) continue;
+
+          const aOutbound = formatMessageForPlatform(String(autoItem.message_template), "whatsapp");
+          const aHeaders = buildUserScopedHeaders(String(autoItem.admin_user_id));
+          let aSent = 0; let aFailed = 0;
+
+          for (let i = 0; i < aRecipients.length; i++) {
+            const ar = aRecipients[i];
+            const phone = String(ar.phone).replace(/\D/g, "");
+            if (!phone) { aFailed++; continue; }
+            try {
+              const r2 = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+                sessionId: aSession.id, jid: `${phone}@s.whatsapp.net`, content: aOutbound,
+              }, aHeaders, 15_000);
+              if (r2.error) aFailed++; else aSent++;
+            } catch { aFailed++; }
+            if (i < aRecipients.length - 1) await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+
+          await execute(
+            `UPDATE admin_message_automations SET last_run_at=NOW(), run_count=run_count+1, last_run_sent=$1, last_run_failed=$2, updated_at=NOW() WHERE id=$3`,
+            [aSent, aFailed, String(autoItem.id)],
+          );
+          totalDispatched++;
+        }
+        ok(res, { dispatched: totalDispatched });
+        return;
+      }
+
+      fail(res, "Ação de automação inválida");
+      return;
+    }
+if (funcName === "admin-users") {
       if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
       const action = String(params.action ?? "");
       const cp = await loadControlPlane();
@@ -8952,7 +9265,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
           // Inválidate all active tokens for the target user â€” JWT embeds role, so old tokens
           // would otherwise remain valid with the previous role until natural expiry.
-          await client.query("UPDATE users SET token_inválidated_before = NOW() WHERE id = $1", [tid]);
+          await client.query("UPDATE users SET token_invalidated_before = NOW() WHERE id = $1", [tid]);
         });
         await appendAudit("set_role", userId, tid, {
           role,
@@ -8972,14 +9285,14 @@ rpcRouter.post("/rpc", async (req, res) => {
         const tid = String(params.user_id ?? ""); const status = String(params.account_status ?? "active");
         if (!["active","inactive","blocked","archived"].includes(status)) { fail(res, "Status inválido"); return; }
         if (tid === userId && status !== "active") { fail(res, "Não é permitido alterar o próprio status"); return; }
-        const setInv = status !== "active" ? ", token_inválidated_before = NOW()" : "";
+        const setInv = status !== "active" ? ", token_invalidated_before = NOW()" : "";
         await execute(`UPDATE users SET metadata = metadata || $1::jsonb${setInv}, updated_at=NOW() WHERE id=$2`, [JSON.stringify({ account_status: status, status_updated_at: nowIso() }), tid]);
         await appendAudit("set_status", userId, tid, { account_status: status });
         ok(res, { success: true }); return;
       }
       if (action === "archive_user") {
         const tid = String(params.user_id ?? ""); if (tid === userId) { fail(res, "Não é permitido arquivar o próprio usuário"); return; }
-        await execute("UPDATE users SET metadata = metadata || $1::jsonb, token_inválidated_before = NOW(), updated_at=NOW() WHERE id=$2", [JSON.stringify({ account_status: "archived", archived_at: nowIso(), status_updated_at: nowIso() }), tid]);
+        await execute("UPDATE users SET metadata = metadata || $1::jsonb, token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$2", [JSON.stringify({ account_status: "archived", archived_at: nowIso(), status_updated_at: nowIso() }), tid]);
         await appendAudit("archive_user", userId, tid, {});
         ok(res, { success: true }); return;
       }
@@ -9104,7 +9417,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
           // Always inválidate tokens: role is re-set above (JWT embeds role), so existing tokens must be rotated
-          await client.query("UPDATE users SET token_inválidated_before = NOW(), updated_at=NOW() WHERE id=$1", [tid]);
+          await client.query("UPDATE users SET token_invalidated_before = NOW(), updated_at=NOW() WHERE id=$1", [tid]);
         });
         await appendAudit("update_user", userId, tid, {
           name: name || undefined,
@@ -9151,7 +9464,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (resetPasswordError) { fail(res, resetPasswordError); return; }
         const hash = await bcrypt.hash(pwd, 10);
         // Inválidate all existing tokens immediately â€” the account must be secured after password reset
-        await execute("UPDATE users SET password_hash=$1, token_inválidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
+        await execute("UPDATE users SET password_hash=$1, token_invalidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
         await appendAudit("reset_password", userId, tid, {});
         ok(res, { success: true }); return;
       }
@@ -9166,9 +9479,11 @@ rpcRouter.post("/rpc", async (req, res) => {
         const tid = String(params.user_id ?? "");
         const phone = String(params.phone ?? "").trim();
         const message = String(params.message ?? "").trim();
+        const mediaParam = params.media as { base64?: string; mimeType?: string; fileName?: string } | null | undefined;
+        const hasMedia = mediaParam && typeof mediaParam.base64 === "string" && mediaParam.base64.length > 0;
         if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
         if (!phone) { fail(res, "Telefone do usuário obrigatório"); return; }
-        if (!message) { fail(res, "Mensagem obrigatória"); return; }
+        if (!message && !hasMedia) { fail(res, "Mensagem ou mídia é obrigatória"); return; }
 
         // Get admin WA session
         const adminWaSession = await queryOne<{ id: string; status: string }>(
@@ -9181,21 +9496,36 @@ rpcRouter.post("/rpc", async (req, res) => {
         const cleanPhone = phone.replace(/\D/g, "");
         if (!cleanPhone) { fail(res, "Número de telefone inválido"); return; }
         const jid = `${cleanPhone}@s.whatsapp.net`;
-        const outbound = formatMessageForPlatform(message, "whatsapp");
+        const outbound = message ? formatMessageForPlatform(message, "whatsapp") : "";
         const waHeaders = buildUserScopedHeaders(userId);
 
-        console.log(`[rpc] admin send_whatsapp_contact to=${cleanPhone} user=${tid} message="${message.substring(0, 80)}..."`);
-        const waResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+        const waBody: Record<string, unknown> = {
           sessionId: adminWaSession.id,
           jid,
           content: outbound,
-        }, waHeaders, 15_000);
+        };
+        if (hasMedia) {
+          waBody.media = {
+            kind: "image",
+            base64: mediaParam!.base64,
+            mimeType: String(mediaParam!.mimeType || "image/jpeg"),
+            fileName: String(mediaParam!.fileName || "imagem.jpg"),
+          };
+        }
+
+        const phoneLast4 = cleanPhone.slice(-4);
+        console.log(`[rpc] admin send_whatsapp_contact user=${tid} phone_last4=${phoneLast4} hasMedia=${hasMedia} messageLength=${message.length}`);
+        const waResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", waBody, waHeaders, 15_000);
 
         if (waResult.error) {
           fail(res, `Falha ao enviar mensagem: ${String(waResult.error.message || waResult.error)}`); return;
         }
 
-        await appendAudit("send_whatsapp_contact", userId, tid, { phone: cleanPhone, message: message.substring(0, 500) });
+        await appendAudit("send_whatsapp_contact", userId, tid, {
+          phone_last4: phoneLast4,
+          message_length: message.length,
+          hasMedia,
+        });
         ok(res, { success: true }); return;
       }
       fail(res, "Ação administrativa inválida"); return;

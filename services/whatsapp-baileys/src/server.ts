@@ -465,6 +465,7 @@ type WhatsAppInboundMediaKind =
 type WhatsAppInboundMediaInfo = {
   kind: WhatsAppInboundMediaKind;
   mimetype?: string | null;
+  fileName?: string | null;
   imagePayload?: { mimetype?: string | null } | null;
 };
 
@@ -472,6 +473,33 @@ function readMessageMimeType(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const row = payload as Record<string, unknown>;
   if (typeof row.mimetype === "string" && row.mimetype.trim()) return row.mimetype.trim();
+  return null;
+}
+
+function readMessageFileName(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const row = payload as Record<string, unknown>;
+  const candidates = [row.fileName, row.filename, row.file_name];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
+function inferImageMimeTypeFromFileName(fileName: string | null | undefined): string | null {
+  const normalized = String(fileName || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg") || normalized.endsWith(".jfif")) return "image/jpeg";
+  if (normalized.endsWith(".png")) return "image/png";
+  if (normalized.endsWith(".gif")) return "image/gif";
+  if (normalized.endsWith(".webp")) return "image/webp";
+  if (normalized.endsWith(".bmp")) return "image/bmp";
+  if (normalized.endsWith(".tif") || normalized.endsWith(".tiff")) return "image/tiff";
+  if (normalized.endsWith(".heic")) return "image/heic";
+  if (normalized.endsWith(".heif")) return "image/heif";
+  if (normalized.endsWith(".avif")) return "image/avif";
   return null;
 }
 
@@ -497,12 +525,19 @@ function extractInboundMediaInfo(
     return {
       kind: "image",
       mimetype: message.imageMessage.mimetype || null,
+      fileName: null,
       imagePayload: message.imageMessage,
     };
   }
   if (message.videoMessage) return { kind: "video", mimetype: message.videoMessage.mimetype || null };
   if (message.audioMessage) return { kind: "audio", mimetype: message.audioMessage.mimetype || null };
-  if (message.documentMessage) return { kind: "document", mimetype: message.documentMessage.mimetype || null };
+  if (message.documentMessage) {
+    return {
+      kind: "document",
+      mimetype: message.documentMessage.mimetype || null,
+      fileName: message.documentMessage.fileName || null,
+    };
+  }
   if (message.stickerMessage) return { kind: "sticker", mimetype: message.stickerMessage.mimetype || "image/webp" };
   if (message.contactMessage || message.contactsArrayMessage) return { kind: "contact", mimetype: null };
   if (message.locationMessage || message.liveLocationMessage) return { kind: "location", mimetype: null };
@@ -522,10 +557,12 @@ function extractInboundMediaInfo(
   if (!payload || typeof payload !== "object") return null;
   const genericKind = detectGenericMessagePayloadKind(contentType);
   const mimeType = readMessageMimeType(payload);
+  const fileName = readMessageFileName(payload);
   if (genericKind === "image") {
     return {
       kind: "image",
       mimetype: mimeType,
+      fileName,
       imagePayload: payload as { mimetype?: string | null },
     };
   }
@@ -533,6 +570,7 @@ function extractInboundMediaInfo(
     return {
       kind: genericKind,
       mimetype: mimeType,
+      fileName,
     };
   }
 
@@ -542,6 +580,7 @@ function extractInboundMediaInfo(
   return {
     kind: "other",
     mimetype: mimeType,
+    fileName,
   };
 }
 
@@ -604,6 +643,30 @@ function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
     return "image/bmp";
   }
 
+  // TIFF: II*\0 or MM\0*
+  if (
+    (buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2a && buffer[3] === 0x00)
+    || (buffer[0] === 0x4d && buffer[1] === 0x4d && buffer[2] === 0x00 && buffer[3] === 0x2a)
+  ) {
+    return "image/tiff";
+  }
+
+  // ISO BMFF family (HEIC/HEIF/AVIF)
+  if (
+    buffer.length >= 12
+    && buffer[4] === 0x66
+    && buffer[5] === 0x74
+    && buffer[6] === 0x79
+    && buffer[7] === 0x70
+  ) {
+    const brand = buffer.subarray(8, 12).toString("ascii").toLowerCase();
+    if (brand === "avif" || brand === "avis") return "image/avif";
+    if (brand === "heic" || brand === "heix" || brand === "hevc" || brand === "hevx" || brand === "mif1" || brand === "msf1") {
+      if (brand === "mif1" || brand === "msf1") return "image/heif";
+      return "image/heic";
+    }
+  }
+
   return null;
 }
 
@@ -613,6 +676,15 @@ function coerceBinaryToBuffer(value: unknown): Buffer | null {
   if (value instanceof Uint8Array) {
     if (value.length === 0) return null;
     return Buffer.from(value);
+  }
+  if (Array.isArray(value)) {
+    try {
+      const asNumbers = value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255);
+      if (!asNumbers || value.length === 0) return null;
+      return Buffer.from(value as number[]);
+    } catch {
+      return null;
+    }
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -669,9 +741,11 @@ function extractInboundThumbnailBuffer(message: proto.IMessage | null | undefine
 
 function shouldAttemptFullMediaDownloadAsImageCandidate(media: WhatsAppInboundMediaInfo | null): boolean {
   if (!media) return false;
+  if (media.kind === "document") return true;
   if (media.kind === "image" || media.kind === "sticker") return true;
   const mime = String(media.mimetype || "").trim().toLowerCase();
-  return mime.startsWith("image/");
+  if (mime.startsWith("image/")) return true;
+  return Boolean(inferImageMimeTypeFromFileName(media.fileName));
 }
 
 async function downloadIncomingMediaBuffer(args: {
@@ -737,10 +811,14 @@ async function resolveInboundMediaAsImage(args: {
     const downloadedAny = await downloadIncomingMediaBuffer({ message, socket, sessionId });
     if (downloadedAny && downloadedAny.length > 0) {
       const detectedMime = detectImageMimeTypeFromBuffer(downloadedAny);
-      if (detectedMime) {
+      const hintMime = String(inboundMedia?.mimetype || "").trim().toLowerCase();
+      const mimeFromHint = hintMime.startsWith("image/") ? hintMime : "";
+      const mimeFromFileName = inferImageMimeTypeFromFileName(inboundMedia?.fileName);
+      const resolvedMime = detectedMime || mimeFromHint || mimeFromFileName;
+      if (resolvedMime) {
         return {
           buffer: downloadedAny,
-          mimeType: detectedMime,
+          mimeType: resolvedMime,
           origin: "media_download",
         };
       }
@@ -800,6 +878,11 @@ function detectImageExtension(mimeType: string): string {
   if (normalized.includes("png")) return "png";
   if (normalized.includes("webp")) return "webp";
   if (normalized.includes("gif")) return "gif";
+  if (normalized.includes("bmp")) return "bmp";
+  if (normalized.includes("tiff")) return "tiff";
+  if (normalized.includes("avif")) return "avif";
+  if (normalized.includes("heic")) return "heic";
+  if (normalized.includes("heif")) return "heif";
   return "jpg";
 }
 

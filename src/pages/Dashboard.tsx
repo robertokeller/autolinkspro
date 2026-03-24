@@ -15,6 +15,7 @@ import {
   ShoppingCart,
   Wifi,
   Bot,
+  Zap,
 } from "lucide-react";
 import { subDays, startOfDay } from "date-fns";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -672,7 +673,7 @@ export default function Dashboard() {
           <Card className="glass lg:col-span-2 h-full flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <LinkIcon className="h-4 w-4 text-muted-foreground" />
+              <Zap className="h-4 w-4 text-muted-foreground" />
               Ações rápidas
             </CardTitle>
             </CardHeader>
@@ -680,18 +681,20 @@ export default function Dashboard() {
             {isLoading ? (
               <Skeleton className="h-28 w-full" />
             ) : (
-              <div className={cn("grid h-full grid-cols-1 gap-2 min-[420px]:grid-cols-2 min-[420px]:gap-2.5 min-[420px]:auto-rows-fr", compactDashboard && "min-[420px]:grid-cols-1")}>
+              <div className="grid grid-cols-2 gap-2.5 h-full auto-rows-fr">
                 {quickActions.map((action) => (
-                  <Link key={action.label} to={action.href} className="group h-full">
-                    <div className="flex h-full min-h-[76px] items-center gap-3 rounded-xl bg-secondary/50 p-2.5 transition-all hover:bg-secondary hover:ring-1 hover:ring-border min-[420px]:min-h-[86px] min-[420px]:p-3 sm:min-h-[86px]">
-                      <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", accentBg[action.accent])}>
-                        <action.icon className="h-4 w-4" />
+                  <Link key={action.label} to={action.href} className="group">
+                    <div className="relative flex flex-col h-full min-h-[104px] rounded-xl border border-border/40 bg-secondary/40 p-3.5 transition-all duration-200 hover:border-border/60 hover:bg-secondary/70 hover:shadow-sm overflow-hidden">
+                      <div className="mb-3 flex items-start justify-between">
+                        <div className={cn("flex h-10 w-10 items-center justify-center rounded-xl transition-transform duration-200 group-hover:scale-105", accentBg[action.accent])}>
+                          <action.icon className="h-5 w-5" />
+                        </div>
+                        <ChevronRight className="mt-0.5 h-3.5 w-3.5 text-muted-foreground/30 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-muted-foreground/60" />
                       </div>
-                      <div className="min-w-0 flex-1">
+                      <div className="mt-auto">
                         <p className="text-sm font-semibold leading-tight">{action.label}</p>
-                        <p className="mt-0.5 line-clamp-2 text-xs leading-snug text-muted-foreground">{action.desc}</p>
+                        <p className="mt-1 line-clamp-1 text-xs leading-snug text-muted-foreground">{action.desc}</p>
                       </div>
-                      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" />
                     </div>
                   </Link>
                 ))}

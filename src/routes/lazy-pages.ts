@@ -39,4 +39,5 @@ export const Pages = {
   AdminLogs: lazy(() => import("@/pages/admin/AdminLogs")),
   AdminNotifications: lazy(() => import("@/pages/admin/AdminNotifications")),
   AdminWhatsApp: lazy(() => import("@/pages/admin/AdminWhatsApp")),
+  AdminMensagens: lazy(() => import("@/pages/admin/AdminMensagens")),
 } as const;
