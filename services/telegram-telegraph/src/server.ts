@@ -40,6 +40,17 @@ interface SessionState {
   heartbeatTimer: NodeJS.Timeout | null;
   messageHandlerBound: boolean;
   manualStop: boolean;
+  recentInboundMessageKeys: Map<string, number>;
+  ingestion: {
+    updatesSeen: number;
+    messagesSeen: number;
+    accepted: number;
+    duplicates: number;
+    dropped: Record<string, number>;
+    lastAcceptedAt: string | null;
+    lastDroppedAt: string | null;
+    lastDropReason: string;
+  };
   events: Array<{
     id: string;
     event: string;
@@ -58,6 +69,7 @@ interface ActionBody {
   sessionString?: string;
   code?: string;
   password?: string;
+  clearSession?: boolean;
 }
 
 interface SendMessageBody {
@@ -110,6 +122,14 @@ const recentOutboundEchoes = new Map<string, number>();
 let httpServer: ReturnType<typeof app.listen> | null = null;
 let shuttingDown = false;
 const MAX_SESSION_EVENTS = Math.max(200, Number(process.env.MAX_SESSION_EVENTS || "2000"));
+const TELEGRAM_INBOUND_DEDUPE_WINDOW_MS = Math.max(
+  60_000,
+  Number(process.env.TELEGRAM_INBOUND_DEDUPE_WINDOW_MS || "900000"),
+);
+const TELEGRAM_INBOUND_DEDUPE_MAX_KEYS = Math.max(
+  500,
+  Number(process.env.TELEGRAM_INBOUND_DEDUPE_MAX_KEYS || "5000"),
+);
 
 const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
@@ -179,6 +199,8 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   }
   entry.count += 1;
   if (entry.count > limit) {
+    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ error: "Too Many Requests" });
     return;
   }
@@ -203,6 +225,46 @@ function sanitizeError(error: unknown): string {
 function logMediaCaptureDebug(event: string, payload: Record<string, unknown>): void {
   if (!MEDIA_CAPTURE_DEBUG) return;
   logger.info({ event, ...payload }, "media capture debug");
+}
+
+function bumpIngestionDrop(state: SessionState, reason: string): void {
+  const key = String(reason || "unknown").trim() || "unknown";
+  state.ingestion.dropped[key] = (state.ingestion.dropped[key] || 0) + 1;
+  state.ingestion.lastDroppedAt = new Date().toISOString();
+  state.ingestion.lastDropReason = key;
+}
+
+function bumpIngestionAccepted(state: SessionState): void {
+  state.ingestion.accepted += 1;
+  state.ingestion.lastAcceptedAt = new Date().toISOString();
+}
+
+function pruneRecentInboundKeys(state: SessionState, nowMs: number): void {
+  for (const [key, seenAt] of state.recentInboundMessageKeys.entries()) {
+    if (nowMs - seenAt > TELEGRAM_INBOUND_DEDUPE_WINDOW_MS) {
+      state.recentInboundMessageKeys.delete(key);
+    }
+  }
+
+  if (state.recentInboundMessageKeys.size <= TELEGRAM_INBOUND_DEDUPE_MAX_KEYS) return;
+  const overflow = state.recentInboundMessageKeys.size - TELEGRAM_INBOUND_DEDUPE_MAX_KEYS;
+  if (overflow <= 0) return;
+  const ordered = [...state.recentInboundMessageKeys.entries()].sort((a, b) => a[1] - b[1]);
+  for (let i = 0; i < overflow && i < ordered.length; i += 1) {
+    state.recentInboundMessageKeys.delete(ordered[i][0]);
+  }
+}
+
+function markInboundMessageSeen(state: SessionState, dedupeKey: string): boolean {
+  const key = String(dedupeKey || "").trim();
+  if (!key) return true;
+  const nowMs = Date.now();
+  pruneRecentInboundKeys(state, nowMs);
+  if (state.recentInboundMessageKeys.has(key)) {
+    return false;
+  }
+  state.recentInboundMessageKeys.set(key, nowMs);
+  return true;
 }
 
 function isFatalAuthError(error: unknown): boolean {
@@ -317,7 +379,20 @@ async function emitWebhook(state: SessionState, event: string, data: Record<stri
   });
 
   if (state.events.length > MAX_SESSION_EVENTS) {
-    state.events.splice(0, state.events.length - MAX_SESSION_EVENTS);
+    const dropped = state.events.length - MAX_SESSION_EVENTS;
+    if (dropped > 0) {
+      logger.warn(
+        {
+          sessionId: state.config.sessionId,
+          event,
+          dropped,
+          queuedBeforeTrim: state.events.length,
+          limit: MAX_SESSION_EVENTS,
+        },
+        "session event buffer overflow; dropping oldest queued events",
+      );
+      state.events.splice(0, dropped);
+    }
   }
 
   if (!state.config.webhookUrl) return;
@@ -405,6 +480,17 @@ function formatEntityId(entity: unknown): string {
   return id;
 }
 
+function formatPeerId(peerId: unknown): string {
+  const maybe = peerId as { className?: string; channelId?: bigint | number | string; chatId?: bigint | number | string };
+  if (maybe.className === "PeerChannel" && maybe.channelId != null) {
+    return `-100${String(maybe.channelId)}`;
+  }
+  if (maybe.className === "PeerChat" && maybe.chatId != null) {
+    return `-${String(maybe.chatId)}`;
+  }
+  return "";
+}
+
 function readTelegramMediaMimeType(media: unknown): string {
   if (!media || typeof media !== "object") return "";
   const row = media as Record<string, unknown>;
@@ -421,16 +507,121 @@ function readTelegramMediaMimeType(media: unknown): string {
   return "";
 }
 
-function isTelegramImageMedia(media: unknown): boolean {
-  if (!media || typeof media !== "object") return false;
+type TelegramInboundMediaKind = "image" | "video" | "audio" | "voice" | "sticker" | "document" | "other";
+
+type TelegramInboundMediaInfo = {
+  kind: TelegramInboundMediaKind;
+  mimeType: string;
+};
+
+function classifyTelegramDocumentMimeType(mimeTypeRaw: string): TelegramInboundMediaKind {
+  const mimeType = String(mimeTypeRaw || "").trim().toLowerCase();
+  if (!mimeType) return "document";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/ogg")) return "voice";
+  if (mimeType.startsWith("audio/")) return "audio";
+  if (mimeType === "application/x-tgsticker" || mimeType === "image/webp") return "sticker";
+  return "document";
+}
+
+function extractTelegramMediaInfo(media: unknown): TelegramInboundMediaInfo | null {
+  if (!media || typeof media !== "object") return null;
   const row = media as Record<string, unknown>;
   const className = String(row.className || "").trim();
-  if (className === "MessageMediaPhoto") return true;
+  if (className === "MessageMediaPhoto") {
+    return { kind: "image", mimeType: readTelegramMediaMimeType(media) || "image/jpeg" };
+  }
   if (className === "MessageMediaDocument") {
     const mimeType = readTelegramMediaMimeType(media);
-    return mimeType.startsWith("image/");
+    return { kind: classifyTelegramDocumentMimeType(mimeType), mimeType };
   }
-  return false;
+  if (className.startsWith("MessageMedia")) {
+    return { kind: "other", mimeType: readTelegramMediaMimeType(media) };
+  }
+  return null;
+}
+
+function isTelegramImageMedia(media: unknown): boolean {
+  const info = extractTelegramMediaInfo(media);
+  return Boolean(info && info.kind === "image");
+}
+
+function hasTelegramMedia(media: unknown): boolean {
+  return Boolean(extractTelegramMediaInfo(media));
+}
+
+function coerceBinaryToBuffer(value: unknown): Buffer | null {
+  if (!value) return null;
+  if (Buffer.isBuffer(value)) return value.length > 0 ? value : null;
+  if (value instanceof Uint8Array) {
+    if (value.length === 0) return null;
+    return Buffer.from(value);
+  }
+  if (Array.isArray(value)) {
+    try {
+      const asNumbers = value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255);
+      if (!asNumbers || value.length === 0) return null;
+      return Buffer.from(value as number[]);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const dataUri = trimmed.match(/^data:[^;]+;base64,(.+)$/i);
+    const base64Payload = (dataUri ? dataUri[1] : trimmed).replace(/\s+/g, "");
+    if (!base64Payload || base64Payload.length < 16) return null;
+    if (!/^[a-z0-9+/=]+$/i.test(base64Payload)) return null;
+    try {
+      const decoded = Buffer.from(base64Payload, "base64");
+      return decoded.length > 0 ? decoded : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === "object") {
+    const row = value as Record<string, unknown>;
+    return coerceBinaryToBuffer(row.bytes ?? row.data ?? row.buffer ?? row.thumbnail ?? row.jpegThumbnail);
+  }
+  return null;
+}
+
+function extractTelegramThumbnailBuffer(media: unknown): Buffer | null {
+  if (!media || typeof media !== "object") return null;
+  const stack: unknown[] = [media];
+  const visited = new Set<object>();
+  const thumbnailKeys = new Set(["thumb", "thumbs", "thumbnail", "jpegThumbnail", "strippedThumb", "bytes"]);
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object") continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const row = current as Record<string, unknown>;
+    for (const key of thumbnailKeys) {
+      const candidate = coerceBinaryToBuffer(row[key]);
+      if (!candidate || candidate.length === 0 || candidate.length > AUTO_IMAGE_MAX_BYTES) continue;
+      const detected = detectImageMimeTypeFromBuffer(candidate);
+      if (detected) return candidate;
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && typeof value === "object") {
+        stack.push(value);
+      }
+    }
+  }
+
+  return null;
+}
+
+function shouldAttemptTelegramMediaDownloadForImage(info: TelegramInboundMediaInfo | null): boolean {
+  if (!info) return false;
+  if (info.kind === "image" || info.kind === "sticker") return true;
+  return info.mimeType.startsWith("image/");
 }
 
 async function downloadIncomingTelegramImageBuffer(args: {
@@ -457,6 +648,44 @@ async function downloadIncomingTelegramImageBuffer(args: {
   }
 
   return null;
+}
+
+async function resolveTelegramInboundImage(args: {
+  client: TelegramClient;
+  message: Api.Message;
+  media: unknown;
+  mediaInfo: TelegramInboundMediaInfo | null;
+  sessionId: string;
+}): Promise<{ buffer: Buffer; mimeType: string; origin: "full_media" | "thumbnail" } | null> {
+  const { client, message, media, mediaInfo, sessionId } = args;
+
+  const thumb = extractTelegramThumbnailBuffer(media);
+  if (thumb && thumb.length > 0) {
+    const thumbMime = detectImageMimeTypeFromBuffer(thumb) || "image/jpeg";
+    return {
+      buffer: thumb,
+      mimeType: thumbMime,
+      origin: "thumbnail",
+    };
+  }
+
+  if (!shouldAttemptTelegramMediaDownloadForImage(mediaInfo)) return null;
+  const downloaded = await downloadIncomingTelegramImageBuffer({
+    client,
+    message,
+    media,
+    sessionId,
+  });
+  if (!downloaded || downloaded.length === 0) return null;
+
+  const detectedMime = detectImageMimeTypeFromBuffer(downloaded);
+  const hintMime = String(mediaInfo?.mimeType || "").trim().toLowerCase();
+  const mimeType = detectedMime || (hintMime.startsWith("image/") ? hintMime : "image/jpeg");
+  return {
+    buffer: downloaded,
+    mimeType,
+    origin: "full_media",
+  };
 }
 
 function parseChatTarget(chatId: string): string {
@@ -722,6 +951,17 @@ function createOrGetState(config: SessionConfig, sessionString = ""): SessionSta
     heartbeatTimer: null,
     messageHandlerBound: false,
     manualStop: false,
+    recentInboundMessageKeys: new Map<string, number>(),
+    ingestion: {
+      updatesSeen: 0,
+      messagesSeen: 0,
+      accepted: 0,
+      duplicates: 0,
+      dropped: {},
+      lastAcceptedAt: null,
+      lastDroppedAt: null,
+      lastDropReason: "",
+    },
     events: [],
   };
 
@@ -837,7 +1077,11 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
   // ── Regular message handler (NewMessage provides getChat / getSender) ──
   state.client.addEventHandler(async (event: unknown) => {
     try {
-      if (state.status !== "online") return;
+      if (state.status !== "online" && state.status !== "connecting") {
+        bumpIngestionDrop(state, `state_not_ready_${state.status}`);
+        return;
+      }
+      state.ingestion.updatesSeen += 1;
 
       const msgEvent = event as {
         message: Api.Message & { out?: boolean; message?: string; media?: unknown };
@@ -845,32 +1089,59 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
         getSender?: () => Promise<unknown>;
       };
       const message = msgEvent.message;
-      if (!message) return;
+      if (!message) {
+        bumpIngestionDrop(state, "message_missing");
+        return;
+      }
+      state.ingestion.messagesSeen += 1;
 
       const isOutgoing = Boolean(message.out);
 
       const content = typeof message.message === "string" ? message.message.trim() : "";
 
-      // Detect photo/image media attached to the message.
       const messageMedia = message.media;
+      const mediaInfo = extractTelegramMediaInfo(messageMedia);
+      const hasMedia = hasTelegramMedia(messageMedia);
       const hasImageMedia = isTelegramImageMedia(messageMedia);
       logMediaCaptureDebug("incoming_summary", {
         sessionId: state.config.sessionId,
         hasText: Boolean(content),
         textLength: content.length,
+        hasMedia,
+        mediaKind: mediaInfo?.kind || "",
         hasImageMedia,
-        mediaMimeTypeHint: readTelegramMediaMimeType(messageMedia),
+        mediaMimeTypeHint: mediaInfo?.mimeType || readTelegramMediaMimeType(messageMedia),
       });
 
-      if (!content && !hasImageMedia) return;
+      if (!content && !hasMedia) {
+        bumpIngestionDrop(state, "empty_message_payload");
+        return;
+      }
+      if (isOutgoing) {
+        bumpIngestionDrop(state, "from_me");
+        return;
+      }
 
       const chat = msgEvent.getChat ? await msgEvent.getChat() : undefined;
-      if (!chat || !isGroupLike(chat)) return;
+      if (!chat || !isGroupLike(chat)) {
+        bumpIngestionDrop(state, "not_group_chat");
+        return;
+      }
 
       const groupId = formatEntityId(chat);
+      if (!groupId) {
+        bumpIngestionDrop(state, "group_id_missing");
+        return;
+      }
       const groupName = getEntityName(chat, groupId);
 
-      if (isOutgoing && isRecentOutboundEcho(state.config.sessionId, groupId, content, hasImageMedia)) {
+      const rawMessageId = String((message as { id?: unknown }).id ?? "").trim();
+      const dedupeKey = rawMessageId
+        ? `${groupId}|${rawMessageId}`
+        : `${groupId}|${normalizeEchoText(content)}|${hasMedia ? (mediaInfo?.kind || "media") : "text"}`;
+      if (!markInboundMessageSeen(state, dedupeKey)) {
+        state.ingestion.duplicates += 1;
+        bumpIngestionDrop(state, "duplicate_message_id");
         return;
       }
 
@@ -885,41 +1156,45 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       }
 
       let mediaData: Record<string, unknown> | undefined;
-      if (hasImageMedia && state.client) {
-        const buffer = await downloadIncomingTelegramImageBuffer({
-          client: state.client,
-          message: message as Api.Message,
-          media: messageMedia,
+      const resolvedImage = hasMedia && state.client
+        ? await resolveTelegramInboundImage({
+            client: state.client,
+            message: message as Api.Message,
+            media: messageMedia,
+            mediaInfo,
+            sessionId: state.config.sessionId,
+          })
+        : null;
+      if (resolvedImage) {
+        const stored = storeTemporaryImage(resolvedImage.buffer, state.config.userId, resolvedImage.mimeType);
+        logMediaCaptureDebug("incoming_image_stored", {
           sessionId: state.config.sessionId,
+          groupId,
+          bytes: resolvedImage.buffer.length,
+          mimeType: resolvedImage.mimeType,
+          origin: resolvedImage.origin,
+          tokenPrefix: stored.token.slice(0, 8),
         });
-        if (buffer && buffer.length > 0) {
-          const mimeTypeHint = readTelegramMediaMimeType(messageMedia);
-          const mimeType = detectImageMimeTypeFromBuffer(buffer) || (mimeTypeHint.startsWith("image/") ? mimeTypeHint : "image/jpeg");
-          const stored = storeTemporaryImage(buffer, state.config.userId, mimeType);
-          logMediaCaptureDebug("incoming_image_stored", {
-            sessionId: state.config.sessionId,
-            groupId,
-            bytes: buffer.length,
-            mimeType,
-            tokenPrefix: stored.token.slice(0, 8),
-          });
-          mediaData = {
-            kind: "image",
-            token: stored.token,
-            mimeType,
-            fileName: stored.fileName,
-            sourcePlatform: "telegram",
-          };
-        } else {
-          logMediaCaptureDebug("incoming_image_download_failed", {
-            sessionId: state.config.sessionId,
-            groupId,
-            hasText: Boolean(content),
-            textLength: content.length,
-            mediaMimeTypeHint: readTelegramMediaMimeType(messageMedia),
-          });
-          logger.warn({ sessionId: state.config.sessionId, groupId }, "incoming telegram image detected but payload could not be downloaded");
-        }
+        mediaData = {
+          kind: "image",
+          token: stored.token,
+          mimeType: resolvedImage.mimeType,
+          fileName: stored.fileName,
+          sourcePlatform: "telegram",
+        };
+      } else if (hasMedia) {
+        logMediaCaptureDebug("incoming_image_download_failed", {
+          sessionId: state.config.sessionId,
+          groupId,
+          hasText: Boolean(content),
+          textLength: content.length,
+          mediaKind: mediaInfo?.kind || "",
+          mediaMimeTypeHint: readTelegramMediaMimeType(messageMedia),
+        });
+        logger.warn(
+          { sessionId: state.config.sessionId, groupId, mediaKind: mediaInfo?.kind || "unknown" },
+          "incoming telegram media detected but no image payload could be extracted",
+        );
       }
 
       logMediaCaptureDebug("webhook_emit_message_received", {
@@ -927,57 +1202,138 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
         groupId,
         hasText: Boolean(content),
         textLength: content.length,
-        hasMedia: Boolean(mediaData),
+        hasMedia,
         mediaTokenPrefix: typeof mediaData?.token === "string" ? mediaData.token.slice(0, 8) : "",
-        fromMe: isOutgoing,
+        dedupeKey,
       });
       await emitWebhook(state, "message_received", {
         from: from || groupName,
-        fromMe: isOutgoing,
         message: content,
         groupId,
         groupName,
+        hasMedia,
+        mediaKind: mediaInfo?.kind || undefined,
+        mediaMimeType: mediaInfo?.mimeType || undefined,
         ...(mediaData ? { media: mediaData } : {}),
       });
+      bumpIngestionAccepted(state);
     } catch (error) {
       logger.warn({ sessionId: state.config.sessionId, error: sanitizeError(error) }, "failed to process incoming telegram message");
     }
   }, new NewMessage({}));
 
-  // ── Service-message handler (raw) — group title changes ──
+  // Raw update fallback: captures channel/group updates that may bypass NewMessage.
   state.client.addEventHandler(async (event: unknown) => {
     try {
-      if (state.status !== "online") return;
+      if (state.status !== "online" && state.status !== "connecting") {
+        bumpIngestionDrop(state, `state_not_ready_raw_${state.status}`);
+        return;
+      }
 
       const raw = event as {
-        message?: { action?: { className?: string; title?: string }; peerId?: unknown };
         className?: string;
+        message?: Api.Message & {
+          className?: string;
+          out?: boolean;
+          id?: unknown;
+          message?: string;
+          media?: unknown;
+          peerId?: unknown;
+          action?: { className?: string; title?: string };
+        };
       };
 
-      // Only handle UpdateNewMessage / UpdateNewChannelMessage with a service message
       if (raw.className !== "UpdateNewMessage" && raw.className !== "UpdateNewChannelMessage") return;
+      state.ingestion.updatesSeen += 1;
 
-      const svcMsg = raw.message;
-      if (!svcMsg) return;
-
-      const action = svcMsg.action;
-      if (action?.className !== "MessageActionChatEditTitle" || !action.title) return;
-
-      // Build group ID from the service message's peerId
-      const peerId = svcMsg.peerId as { className?: string; chatId?: bigint | number; channelId?: bigint | number } | undefined;
-      if (!peerId) return;
-
-      let groupId = "";
-      if (peerId.className === "PeerChannel" && peerId.channelId != null) {
-        groupId = `-100${String(peerId.channelId)}`;
-      } else if (peerId.className === "PeerChat" && peerId.chatId != null) {
-        groupId = `-${String(peerId.chatId)}`;
+      const rawMessage = raw.message;
+      if (!rawMessage) {
+        bumpIngestionDrop(state, "raw_message_missing");
+        return;
       }
-      if (!groupId) return;
 
-      await emitWebhook(state, "group_name_update", { id: groupId, name: action.title });
-    } catch {
-      // ignore service message processing errors
+      const messageClassName = String(rawMessage.className || "").trim();
+      if (messageClassName === "MessageService") {
+        const action = rawMessage.action;
+        if (action?.className === "MessageActionChatEditTitle" && action.title) {
+          const groupId = formatPeerId(rawMessage.peerId);
+          if (groupId) {
+            await emitWebhook(state, "group_name_update", { id: groupId, name: action.title });
+          }
+        }
+        bumpIngestionDrop(state, "raw_service_message");
+        return;
+      }
+      if (messageClassName && messageClassName !== "Message") {
+        bumpIngestionDrop(state, `raw_class_${messageClassName}`);
+        return;
+      }
+
+      const groupId = formatPeerId(rawMessage.peerId);
+      if (!groupId) {
+        bumpIngestionDrop(state, "raw_group_id_missing");
+        return;
+      }
+
+      const content = typeof rawMessage.message === "string" ? rawMessage.message.trim() : "";
+      const messageMedia = rawMessage.media;
+      const mediaInfo = extractTelegramMediaInfo(messageMedia);
+      const hasMedia = hasTelegramMedia(messageMedia);
+      if (!content && !hasMedia) {
+        bumpIngestionDrop(state, "raw_empty_message_payload");
+        return;
+      }
+      state.ingestion.messagesSeen += 1;
+      const isOutgoing = Boolean(rawMessage.out);
+      if (isOutgoing) {
+        bumpIngestionDrop(state, "from_me");
+        return;
+      }
+
+      const rawMessageId = String(rawMessage.id ?? "").trim();
+      const dedupeKey = rawMessageId
+        ? `${groupId}|${rawMessageId}`
+        : `${groupId}|${normalizeEchoText(content)}|${hasMedia ? (mediaInfo?.kind || "media") : "text"}`;
+      if (!markInboundMessageSeen(state, dedupeKey)) {
+        state.ingestion.duplicates += 1;
+        bumpIngestionDrop(state, "duplicate_message_id");
+        return;
+      }
+
+      let mediaData: Record<string, unknown> | undefined;
+      const resolvedImage = hasMedia && state.client
+        ? await resolveTelegramInboundImage({
+            client: state.client,
+            message: rawMessage as Api.Message,
+            media: messageMedia,
+            mediaInfo,
+            sessionId: state.config.sessionId,
+          })
+        : null;
+      if (resolvedImage) {
+        const stored = storeTemporaryImage(resolvedImage.buffer, state.config.userId, resolvedImage.mimeType);
+        mediaData = {
+          kind: "image",
+          token: stored.token,
+          mimeType: resolvedImage.mimeType,
+          fileName: stored.fileName,
+          sourcePlatform: "telegram",
+        };
+      }
+
+      await emitWebhook(state, "message_received", {
+        from: groupId,
+        message: content,
+        groupId,
+        groupName: groupId,
+        hasMedia,
+        mediaKind: mediaInfo?.kind || undefined,
+        mediaMimeType: mediaInfo?.mimeType || undefined,
+        ...(mediaData ? { media: mediaData } : {}),
+      });
+      bumpIngestionAccepted(state);
+    } catch (error) {
+      logger.warn({ sessionId: state.config.sessionId, error: sanitizeError(error) }, "failed to process raw telegram update");
     }
   });
 
@@ -1046,7 +1402,12 @@ async function finalizeConnected(state: SessionState): Promise<void> {
 
     try {
       const authorized = await state.client.checkAuthorization();
-      if (!authorized) {
+      if (authorized) {
+        // Self-heal: keep message handlers attached if runtime drifts.
+        if (state.status !== "online" || !state.messageHandlerBound) {
+          await finalizeConnected(state);
+        }
+      } else {
         logger.warn({ sessionId: state.config.sessionId }, "telegram session unauthorized on heartbeat");
         await ensureConnected(state);
       }
@@ -1070,7 +1431,7 @@ async function ensureConnected(state: SessionState): Promise<boolean> {
     try {
       const authorized = await state.client.checkAuthorization();
       if (authorized) {
-        if (state.status !== "online") {
+        if (state.status !== "online" || !state.messageHandlerBound) {
           await finalizeConnected(state);
         }
         return true;
@@ -1240,10 +1601,16 @@ async function disconnectSession(state: SessionState, clearSession: boolean): Pr
     await writeMetadata(state).catch(() => undefined);
   }
 
-  await emitConnectionUpdate(state, "offline", {
-    error_message: "",
-    clear_session: clearSession,
-  });
+  try {
+    await emitConnectionUpdate(state, "offline", {
+      error_message: "",
+      clear_session: clearSession,
+    });
+  } finally {
+    if (clearSession) {
+      sessionStates.delete(state.config.sessionId);
+    }
+  }
 }
 
 function safeCompare(a: string, b: string): boolean {
@@ -1326,10 +1693,22 @@ app.get("/health", (req, res) => {
       sessionId: state.config.sessionId,
       userId: state.config.userId,
       status: state.status,
+      hasClient: Boolean(state.client),
+      messageHandlerBound: state.messageHandlerBound,
       hasSessionString: Boolean(state.sessionString),
       waitingCode: Boolean(state.codeResolver),
       waitingPassword: Boolean(state.passwordResolver),
       queuedEvents: state.events.length,
+      ingestion: {
+        updatesSeen: state.ingestion.updatesSeen,
+        messagesSeen: state.ingestion.messagesSeen,
+        accepted: state.ingestion.accepted,
+        duplicates: state.ingestion.duplicates,
+        dropped: { ...state.ingestion.dropped },
+        lastAcceptedAt: state.ingestion.lastAcceptedAt,
+        lastDroppedAt: state.ingestion.lastDroppedAt,
+        lastDropReason: state.ingestion.lastDropReason,
+      },
     }));
     res.json({ ok: true, uptimeSec: Math.floor(process.uptime()), sessions });
   } else {
@@ -1581,6 +1960,8 @@ app.post("/api/telegram/disconnect", async (req: Request<unknown, unknown, Actio
   if (!requestUserId) return;
 
   const sessionId = req.body?.sessionId || "";
+  const clearSession = req.body?.clearSession === true
+    || String(req.body?.clearSession || "").trim().toLowerCase() === "true";
 
   if (!sessionId) {
     res.status(400).json({ error: "sessionId é obrigatório" });
@@ -1589,8 +1970,10 @@ app.post("/api/telegram/disconnect", async (req: Request<unknown, unknown, Actio
 
   const state = await loadStateFromDisk(sessionId);
   if (!state) {
-    await removeMetadata(sessionId);
-    res.json({ ok: true, status: "offline", clear_session: true });
+    if (clearSession) {
+      await removeMetadata(sessionId);
+    }
+    res.json({ ok: true, status: "offline", clear_session: clearSession });
     return;
   }
 
@@ -1599,8 +1982,8 @@ app.post("/api/telegram/disconnect", async (req: Request<unknown, unknown, Actio
     return;
   }
 
-  await disconnectSession(state, false);
-  res.json({ ok: true, status: "offline", clear_session: false });
+  await disconnectSession(state, clearSession);
+  res.json({ ok: true, status: "offline", clear_session: clearSession });
 });
 
 app.post("/api/telegram/sync_groups", async (req: Request<unknown, unknown, ActionBody>, res) => {

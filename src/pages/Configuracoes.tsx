@@ -76,7 +76,7 @@ export default function SettingsPage() {
   const { user } = useAuth();
   const { state: adminControlPlane } = useAdminControlPlane();
   const { theme, setTheme } = useTheme();
-  const [profile, setProfile] = useState({ name: "", email: "" });
+  const [profile, setProfile] = useState({ name: "", email: "", phone: "" });
   const [planId, setPlanId] = useState("plan-starter");
   const [usageCounts, setUsageCounts] = useState({
     wa: 0,
@@ -103,7 +103,7 @@ export default function SettingsPage() {
 
     setLoading(true);
     const [profileRes, wa, tg, waGroups, tgGroups, rt, au, sch, tp] = await Promise.all([
-      backend.from("profiles").select("name, email, plan_id, plan_expires_at").eq("user_id", user.id).maybeSingle(),
+      backend.from("profiles").select("name, email, plan_id, plan_expires_at, phone").eq("user_id", user.id).maybeSingle(),
       backend.from("whatsapp_sessions").select("id", { count: "exact", head: true }).eq("user_id", user.id),
       backend.from("telegram_sessions").select("id", { count: "exact", head: true }).eq("user_id", user.id),
       backend.from("groups").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("platform", "whatsapp").is("deleted_at", null),
@@ -121,6 +121,7 @@ export default function SettingsPage() {
       setProfile({
         name: profileName,
         email: profileEmail || fallbackEmail,
+        phone: String(profileRes.data.phone || ""),
       });
       setPlanId(String(profileRes.data.plan_id || "plan-starter"));
       setPlanExpiresAt(typeof profileRes.data.plan_expires_at === "string" && profileRes.data.plan_expires_at.trim()
@@ -191,12 +192,14 @@ export default function SettingsPage() {
 
     const nextName = parsed.data.name.trim();
     const nextEmail = parsed.data.email.trim().toLowerCase();
+    const nextPhone = parsed.data.phone.trim();
 
     setSavingProfile(true);
     try {
       const authUpdate = await backend.auth.updateUser({
         email: nextEmail,
         data: { name: nextName },
+        phone: nextPhone,
       });
       if (authUpdate.error) {
         toast.error(authUpdate.error.message || "Não deu pra atualizar os dados de autenticação");
@@ -210,6 +213,7 @@ export default function SettingsPage() {
             user_id: user.id,
             name: nextName,
             email: nextEmail,
+            phone: nextPhone,
           },
           { onConflict: "user_id" },
         );
@@ -385,6 +389,16 @@ export default function SettingsPage() {
                       placeholder="seu@email.com"
                       value={profile.email}
                       onChange={(e) => setProfile({ ...profile, email: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <Label htmlFor="phone">Telefone (WhatsApp)</Label>
+                    <Input
+                      id="phone"
+                      type="tel"
+                      placeholder="+55 (11) 91234-5678"
+                      value={profile.phone}
+                      onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
                     />
                   </div>
                 </div>

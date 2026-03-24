@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/sidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { ROUTES } from "@/lib/routes";
-import { Bell, CreditCard, KeyRound, LayoutDashboard, LogOut, ScrollText, Shield, Users } from "lucide-react";
+import { Bell, CreditCard, KeyRound, LayoutDashboard, LogOut, MessageSquare, ScrollText, Shield, Users } from "lucide-react";
 
 const adminNav = [
   { title: "Dashboard", icon: LayoutDashboard, href: ROUTES.admin.root },
@@ -28,6 +28,7 @@ const adminNav = [
   { title: "Notificações", icon: Bell, href: ROUTES.admin.notifications },
   { title: "Logs do Sistema", icon: ScrollText, href: ROUTES.admin.logs },
   { title: "Controle de Acesso", icon: KeyRound, href: ROUTES.admin.access },
+  { title: "WhatsApp", icon: MessageSquare, href: ROUTES.admin.whatsapp },
 ];
 
 function AdminSidebar() {

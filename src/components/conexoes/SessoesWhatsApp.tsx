@@ -54,6 +54,7 @@ interface Props {
   isCreating?: boolean;
   isConnecting?: boolean;
   isDisconnecting?: boolean;
+  isRefreshing?: boolean;
   isUpdatingName?: boolean;
   isDeleting?: boolean;
   onCreateSession: (payload: CreateSessionPayload) => Promise<string>;
@@ -61,7 +62,7 @@ interface Props {
   onDisconnect: (sessionId: string) => Promise<void>;
   onUpdateName: (sessionId: string, name: string) => Promise<void>;
   onDeleteSession: (sessionId: string) => Promise<void>;
-  onRefresh: () => void;
+  onRefresh: (options?: { silent?: boolean }) => void;
 }
 
 type SessionFlowStep = "form" | "auth";
@@ -72,6 +73,7 @@ export function SessoesWhatsApp({
   isCreating,
   isConnecting,
   isDisconnecting,
+  isRefreshing,
   isUpdatingName,
   isDeleting,
   onCreateSession,
@@ -140,7 +142,7 @@ export function SessoesWhatsApp({
 
     if (!shouldPoll) return;
 
-    const interval = window.setInterval(() => onRefresh(), 1500);
+    const interval = window.setInterval(() => onRefresh({ silent: true }), 1500);
     return () => window.clearInterval(interval);
   }, [isSessionFlowOpen, sessionFlowStep, authSession, onRefresh]);
 
@@ -164,7 +166,7 @@ export function SessoesWhatsApp({
       await onConnect(session.id).catch(() => undefined);
     }
 
-    onRefresh();
+    onRefresh({ silent: true });
   };
 
   const handleCreateSession = async () => {
@@ -180,7 +182,7 @@ export function SessoesWhatsApp({
       setSessionFlowStep("auth");
 
       await onConnect(createdId);
-      onRefresh();
+      onRefresh({ silent: true });
     } catch {
       // handled by mutation toast
     }
@@ -190,7 +192,7 @@ export function SessoesWhatsApp({
     if (!authSessionId) return;
     try {
       await onConnect(authSessionId);
-      onRefresh();
+      onRefresh({ silent: true });
     } catch {
       // handled by mutation toast
     }
@@ -337,8 +339,12 @@ export function SessoesWhatsApp({
           Conecte contas WhatsApp por QR Code. A conexão fica sendo monitorada o tempo todo.
         </p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-          <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={onRefresh}>
-            <RefreshCw className="h-3.5 w-3.5" />
+          <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={() => onRefresh()} disabled={isRefreshing}>
+            {isRefreshing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
             Atualizar
           </Button>
           <Button size="sm" className="h-9 gap-1.5" onClick={openCreateFlow}>
@@ -584,7 +590,7 @@ export function SessoesWhatsApp({
                     onClick={() => {
                       setIsSessionFlowOpen(false);
                       resetSessionFlow();
-                      onRefresh();
+                      onRefresh({ silent: true });
                     }}
                   >
                     <CheckCircle2 className="mr-2 h-4 w-4" />

@@ -11,16 +11,16 @@ const app = express();
 app.set("trust proxy", 1); // trust first-hop proxy (Coolify/nginx) so req.ip reflects the real client IP
 const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = Number(process.env.PORT ?? 3116);
-const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
 const IS_PRODUCTION = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+const CORS_ORIGIN = process.env.CORS_ORIGIN ?? (IS_PRODUCTION ? undefined : "*");
 const DEV_LOG_RPC_SUCCESS = String(process.env.DEV_LOG_RPC_SUCCESS || "").trim().toLowerCase() === "true";
 
-// ─── In-memory rate limiters (per IP) ───────────────────────────────────────
-// Auth endpoints: 20 req / 15 min  — brute-force guard
-// RPC endpoint:  200 req / 60 s    — DoS guard for authenticated calls
+// â”€â”€â”€ In-memory rate limiters (per IP) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Auth endpoints: 20 req / 15 min  â€” brute-force guard
+// RPC endpoint:  200 req / 60 s    â€” DoS guard for authenticated calls
 //
 // Both stores are cleaned every 5 min to prevent unbounded memory growth.
-// Note: these are in-process only — reset on restart. Acceptable for a
+// Note: these are in-process only â€” reset on restart. Acceptable for a
 // single-instance deploy. Upgrade to Redis when running multiple API replicas.
 
 const _authRateStore = new Map<string, { count: number; resetAt: number }>();
@@ -28,8 +28,38 @@ const AUTH_RATE_MAX = 20;
 const AUTH_RATE_WINDOW = 15 * 60_000;
 
 const _rpcRateStore = new Map<string, { count: number; resetAt: number }>();
-const RPC_RATE_MAX = 500;    // per IP per window — comfortably above admin dashboard burst patterns
+const RPC_RATE_MAX = 500;    // per IP per window â€” comfortably above admin dashboard burst patterns
 const RPC_RATE_WINDOW = 60_000; // 60 seconds
+
+// â”€â”€â”€ User-level RPC rate limit (per userId) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Independent of IP-based limits. Prevents a single authenticated user from
+// monopolising the API even when requests come from multiple IPs/devices.
+const _userRpcRateStore = new Map<string, { count: number; resetAt: number }>();
+const USER_RPC_RATE_MAX = 300;     // per user per window
+const USER_RPC_RATE_WINDOW = 60_000;
+
+// â”€â”€â”€ Burst/spike detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Tracks global request count in a 10-second sliding bucket. When the rate
+// exceeds the threshold, new requests from non-trusted sources are rejected
+// with 503 to shed load gracefully. Helps identify organic spikes vs attacks.
+const _burstBuckets: number[] = [];     // ring buffer of 10s bucket counts
+const BURST_BUCKET_MS = 10_000;
+const BURST_HISTORY_BUCKETS = 6;        // keep 60s of history (6 Ã— 10s)
+const BURST_THRESHOLD_PER_BUCKET = 200; // 200 req/10s = 1200 req/min â†’ alarm
+let _burstCurrentCount = 0;
+let _burstBucketStart = Date.now();
+
+function recordBurstRequest(): boolean {
+  const now = Date.now();
+  if (now - _burstBucketStart >= BURST_BUCKET_MS) {
+    _burstBuckets.push(_burstCurrentCount);
+    if (_burstBuckets.length > BURST_HISTORY_BUCKETS) _burstBuckets.shift();
+    _burstCurrentCount = 0;
+    _burstBucketStart = now;
+  }
+  _burstCurrentCount++;
+  return _burstCurrentCount > BURST_THRESHOLD_PER_BUCKET;
+}
 
 function authRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
   const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
@@ -43,6 +73,8 @@ function authRateLimiter(req: express.Request, res: express.Response, next: expr
   if (entry.count > AUTH_RATE_MAX) {
     const rid = (req as { rid?: string }).rid ?? "-";
     console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "rate_limited", ip, count: entry.count, rid }));
+    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ data: null, error: { message: "Muitas tentativas. Aguarde 15 minutos." } }); return;
   }
   next();
@@ -53,6 +85,18 @@ function rpcRateLimiter(req: express.Request, res: express.Response, next: expre
   // Keep protection strict in production only.
   if (!IS_PRODUCTION) {
     next(); return;
+  }
+
+  // â”€â”€ Burst/spike detection (global) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Shed load when the API is receiving an abnormal volume of requests.
+  // Logged as "burst_shed" so operators can distinguish organic spikes from attacks.
+  const isBurst = recordBurstRequest();
+  if (isBurst) {
+    const rid = (req as { rid?: string }).rid ?? "-";
+    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "burst_shed", ip, rid, bucket: _burstCurrentCount }));
+    res.setHeader("Retry-After", "10");
+    res.status(503).json({ data: null, error: { message: "Servidor sobrecarregado. Tente novamente em alguns segundos." } }); return;
   }
 
   const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
@@ -66,7 +110,34 @@ function rpcRateLimiter(req: express.Request, res: express.Response, next: expre
   if (entry.count > RPC_RATE_MAX) {
     const rid = (req as { rid?: string }).rid ?? "-";
     console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "rpc_rate_limited", ip, count: entry.count, rid }));
+    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ data: null, error: { message: "Limite de chamadas excedido. Aguarde 1 minuto." } }); return;
+  }
+  next();
+}
+
+// â”€â”€â”€ User-level RPC rate limiter (post-auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Applied after authentication so we have the userId. Prevents a single user
+// from consuming disproportionate resources regardless of how many IPs they use.
+function userRpcRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!IS_PRODUCTION) { next(); return; }
+  const userId = (req as { currentUser?: { sub?: string } }).currentUser?.sub;
+  if (!userId) { next(); return; } // unauthenticated â€” handled by authMiddleware
+
+  const now = Date.now();
+  const entry = _userRpcRateStore.get(userId);
+  if (!entry || now > entry.resetAt) {
+    _userRpcRateStore.set(userId, { count: 1, resetAt: now + USER_RPC_RATE_WINDOW });
+    next(); return;
+  }
+  entry.count += 1;
+  if (entry.count > USER_RPC_RATE_MAX) {
+    const rid = (req as { rid?: string }).rid ?? "-";
+    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "user_rpc_rate_limited", userId, count: entry.count, rid }));
+    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSec));
+    res.status(429).json({ data: null, error: { message: "Limite de chamadas por usuÃ¡rio excedido. Aguarde 1 minuto." } }); return;
   }
   next();
 }
@@ -75,6 +146,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [ip, e] of _authRateStore) { if (now > e.resetAt) _authRateStore.delete(ip); }
   for (const [ip, e] of _rpcRateStore)  { if (now > e.resetAt) _rpcRateStore.delete(ip);  }
+  for (const [uid, e] of _userRpcRateStore) { if (now > e.resetAt) _userRpcRateStore.delete(uid); }
 }, 5 * 60_000).unref();
 
 function ensureRequiredEnvVars() {
@@ -84,6 +156,7 @@ function ensureRequiredEnvVars() {
     "POSTGRES_PASSWORD",
     "JWT_SECRET",
     "SERVICE_TOKEN",
+    "CREDENTIAL_ENCRYPTION_KEY",
     "WEBHOOK_SECRET",
     "OPS_CONTROL_TOKEN",
     "CORS_ORIGIN",
@@ -159,7 +232,7 @@ app.use(cors({
 // 1 MB is more than sufficient for any legitimate RPC payload.
 // 10 MB was excessive and creates a trivial DoS vector for authenticated users.
 app.use(express.json({ limit: "1mb" }));
-// ─── Security headers ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Security headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -172,8 +245,8 @@ app.use((_req, res, next) => {
   next();
 });
 
-// ─── Request ID ── generate per-request UUID, echo back in header ─────────────
-// This ID must be added to every log line so that API ↔ microservice calls can
+// â”€â”€â”€ Request ID â”€â”€ generate per-request UUID, echo back in header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// This ID must be added to every log line so that API â†” microservice calls can
 // be correlated when tracing an incident across multiple service logs.
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
   const rid = (req.headers["x-request-id"] as string | undefined) ?? `api-${uuid()}`;
@@ -182,7 +255,7 @@ app.use((req: express.Request, res: express.Response, next: express.NextFunction
   next();
 });
 
-// ─── HTTP access log ─────────────────────────────────────────────────────────
+// â”€â”€â”€ HTTP access log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Logs every completed request: method, path, status, latency, userId, ip, rid.
 // Skip /health to avoid noise from orchestrator probes.
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -214,7 +287,7 @@ app.use((req: express.Request, res: express.Response, next: express.NextFunction
 
 app.use(authMiddleware);
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.use("/auth/signin", authRateLimiter);
 app.use("/auth/signup", authRateLimiter);
 app.use("/auth/forgot-password", authRateLimiter);
@@ -223,9 +296,10 @@ app.use("/auth/resend-verification", authRateLimiter);
 app.use("/auth", authRouter);
 app.use("/api/rest", restRouter);
 app.use("/functions/v1/rpc", rpcRateLimiter); // per-IP DoS guard before auth is checked
+app.use("/functions/v1/rpc", userRpcRateLimiter); // per-user fair-use guard (post-auth)
 app.use("/functions/v1", rpcRouter);
 
-// Health check — pings DB so container orchestrators get real liveness signal
+// Health check â€” pings DB so container orchestrators get real liveness signal
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -235,7 +309,7 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-// ─── Global error handler (must be last middleware) ──────────────────────────
+// â”€â”€â”€ Global error handler (must be last middleware) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Catches errors thrown synchronously inside route handlers or passed via next(err).
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[api] Unhandled route error:", err?.message ?? err);
@@ -244,12 +318,12 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   }
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function seedAdminIfEmpty() {
   const adminEmail = (process.env.ADMIN_EMAIL ?? "admin@autolinks.local").toLowerCase().trim();
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminPassword) {
-    console.warn("[api] ADMIN_PASSWORD not set — skipping admin seed (set it via env to create the first admin).");
+    console.warn("[api] ADMIN_PASSWORD not set â€” skipping admin seed (set it via env to create the first admin).");
     return;
   }
 
@@ -319,19 +393,80 @@ async function main() {
     }
   }
 
-  const server = app.listen(PORT, HOST, () => {
-    console.log(`[api] Listening on http://${HOST}:${PORT}`);
-  });
+  const DEV_STANDBY_PROBE_MS = 5_000;
+  const DEV_STANDBY_MISS_LIMIT = 2;
+  const STANDBY_RECOVERY_ENABLED = !IS_PRODUCTION;
 
-  server.on("error", (error: NodeJS.ErrnoException) => {
+  let standby: NodeJS.Timeout | null = null;
+  let standbyProbeInFlight = false;
+  let standbyMisses = 0;
+  let shuttingDown = false;
+  let server!: ReturnType<typeof app.listen>;
+
+  function clearStandby() {
+    if (!standby) return;
+    clearInterval(standby);
+    standby = null;
+    standbyMisses = 0;
+  }
+
+  function startServer() {
+    clearStandby();
+    server = app.listen(PORT, HOST, () => {
+      console.log(`[api] Listening on http://${HOST}:${PORT}`);
+    });
+    server.on("error", onServerError);
+  }
+
+  function startStandbyMonitor(owner: ReturnType<typeof app.listen>) {
+    if (!STANDBY_RECOVERY_ENABLED) return;
+    if (standby) return;
+
+    console.warn(`[api] dev standby monitor enabled (probe=${DEV_STANDBY_PROBE_MS}ms miss_limit=${DEV_STANDBY_MISS_LIMIT}).`);
+
+    standby = setInterval(() => {
+      if (shuttingDown || standbyProbeInFlight) return;
+      standbyProbeInFlight = true;
+
+      void detectExistingApi(PORT)
+        .then((probe) => {
+          if (probe.ok) {
+            standbyMisses = 0;
+            return;
+          }
+
+          standbyMisses += 1;
+          console.warn(`[api] standby probe failed (${standbyMisses}/${DEV_STANDBY_MISS_LIMIT}): ${probe.reason ?? "unknown"}`);
+
+          if (standbyMisses < DEV_STANDBY_MISS_LIMIT) return;
+
+          console.warn(`[api] existing autolinks-api is unavailable; attempting to reclaim port ${PORT}...`);
+          clearStandby();
+          try {
+            owner.close();
+          } catch {
+            // ignore: owner may not be in listening state
+          }
+          startServer();
+        })
+        .catch((error) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.warn(`[api] standby monitor probe error: ${reason}`);
+        })
+        .finally(() => {
+          standbyProbeInFlight = false;
+        });
+    }, DEV_STANDBY_PROBE_MS);
+
+    standby.unref();
+  }
+
+  function onServerError(error: NodeJS.ErrnoException) {
     if (error?.code === "EADDRINUSE") {
       void detectExistingApi(PORT).then((detected) => {
         if (detected.ok) {
-          console.warn(`[api] port ${PORT} already in use — existing autolinks-api detected; entering standby mode.`);
-
-          const standby = setInterval(() => undefined, 60_000);
-          process.on("SIGINT", () => { clearInterval(standby); process.exit(0); });
-          process.on("SIGTERM", () => { clearInterval(standby); process.exit(0); });
+          console.warn(`[api] port ${PORT} already in use - existing autolinks-api detected; entering standby mode.`);
+          startStandbyMonitor(server);
           return;
         }
 
@@ -345,18 +480,31 @@ async function main() {
 
     console.error("[api] server error:", error);
     process.exit(1);
-  });
+  }
 
-  // ── Graceful shutdown ────────────────────────────────────────────────────────
+  startServer();
+
   // On SIGTERM/SIGINT: stop accepting new connections, wait for in-flight requests
   // to finish, then drain the DB pool. Force-exit after 15s if not clean.
   function shutdown(signal: string) {
-    console.log(`[api] ${signal} received — shutting down gracefully...`);
-    server.close(() => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    clearStandby();
+
+    console.log(`[api] ${signal} received - shutting down gracefully...`);
+
+    const finish = () => {
       pool.end()
         .then(() => { console.log("[api] Shutdown complete"); process.exit(0); })
         .catch(() => process.exit(1));
-    });
+    };
+
+    if (server && server.listening) {
+      server.close(() => finish());
+    } else {
+      finish();
+    }
+
     setTimeout(() => { console.error("[api] Forced exit after timeout"); process.exit(1); }, 15_000).unref();
   }
   process.on("SIGTERM", () => shutdown("SIGTERM"));

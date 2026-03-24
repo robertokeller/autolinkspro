@@ -867,7 +867,7 @@ describe("local frontend/backend/database sync", () => {
     expect(blockedHistory.data?.block_reason).toBe("partner_link_required");
   });
 
-  it("resolves unknown redirect link before partner validation", async () => {
+  it("resolves unknown redirect link before partner validation even when resolvePartnerLinks is false", async () => {
     __resetLocalDatabase();
 
     await backend.auth.signInWithPassword({
@@ -923,7 +923,7 @@ describe("local frontend/backend/database sync", () => {
         status: "active",
         rules: {
           autoConvertShopee: true,
-          resolvePartnerLinks: true,
+          resolvePartnerLinks: false,
           requirePartnerLink: true,
           partnerMarketplaces: ["shopee"],
           templateId: null,

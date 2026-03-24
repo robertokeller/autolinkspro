@@ -66,6 +66,44 @@ function mapGroupRow(row: GroupRow): Group {
   };
 }
 
+interface ValidSessionIdsByPlatform {
+  whatsapp: Set<string>;
+  telegram: Set<string>;
+}
+
+function mapIdRowsToSet(rows: Array<{ id: string | null }> | null | undefined): Set<string> {
+  return new Set((rows || []).map((row) => String(row.id || "").trim()).filter(Boolean));
+}
+
+async function loadValidSessionIdsByPlatform(userId: string): Promise<ValidSessionIdsByPlatform> {
+  const [waResult, tgResult] = await Promise.all([
+    backend
+      .from("whatsapp_sessions")
+      .select("id")
+      .eq("user_id", userId),
+    backend
+      .from("telegram_sessions")
+      .select("id")
+      .eq("user_id", userId),
+  ]);
+
+  if (waResult.error) throw waResult.error;
+  if (tgResult.error) throw tgResult.error;
+
+  return {
+    whatsapp: mapIdRowsToSet(waResult.data as Array<{ id: string | null }> | null),
+    telegram: mapIdRowsToSet(tgResult.data as Array<{ id: string | null }> | null),
+  };
+}
+
+function hasValidGroupSession(row: GroupRow, validSessionIds: ValidSessionIdsByPlatform): boolean {
+  const sessionId = String(row.session_id || "").trim();
+  if (!sessionId) return false;
+  if (row.platform === "whatsapp") return validSessionIds.whatsapp.has(sessionId);
+  if (row.platform === "telegram") return validSessionIds.telegram.has(sessionId);
+  return false;
+}
+
 function mapMasterGroupRow(
   row: MasterGroupRow,
   links: MasterGroupLinkRow[],
@@ -130,11 +168,16 @@ export function useGrupos() {
   const { data: syncedGroups = [], isLoading: groupsLoading } = useQuery({
     queryKey: ["groups", user?.id],
     queryFn: async () => {
-      const { data, error } = await backend.from("groups").select("*").eq("user_id", user!.id).order("name");
-      if (error) throw error;
+      const [groupsResult, validSessions] = await Promise.all([
+        backend.from("groups").select("*").eq("user_id", user!.id).order("name"),
+        loadValidSessionIdsByPlatform(user!.id),
+      ]);
+      if (groupsResult.error) throw groupsResult.error;
       // Exclude soft-deleted groups (session deleted) — they are invisible in the UI but
       // kept in the DB for 3 days so routes can be restored on session recreation.
-      return (data || []).filter((row) => !row.deleted_at).map(mapGroupRow);
+      return (groupsResult.data || [])
+        .filter((row) => !row.deleted_at && hasValidGroupSession(row, validSessions))
+        .map(mapGroupRow);
     },
     enabled: !!user,
   });
@@ -162,6 +205,7 @@ export function useGrupos() {
 
       const links = linksRes.data || [];
       const linkedGroupIds = [...new Set(links.map((l) => l.group_id))];
+      const validSessions = await loadValidSessionIdsByPlatform(user!.id);
 
       const linkedGroupsMap = new Map<string, GroupRow>();
       if (linkedGroupIds.length > 0) {
@@ -172,7 +216,7 @@ export function useGrupos() {
           .in("id", linkedGroupIds);
         if (groupRes.error) throw groupRes.error;
         for (const groupRow of groupRes.data || []) {
-          if (!groupRow.deleted_at) {
+          if (!groupRow.deleted_at && hasValidGroupSession(groupRow, validSessions)) {
             linkedGroupsMap.set(groupRow.id, groupRow);
           }
         }

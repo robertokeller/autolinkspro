@@ -49,6 +49,17 @@ interface SessionState {
   pairingCooldownUntil: number;
   groupNames: Map<string, string>;
   events: IntegrationEvent[];
+  recentInboundMessageKeys: Map<string, number>;
+  ingestion: {
+    upserts: number;
+    messagesSeen: number;
+    accepted: number;
+    duplicates: number;
+    dropped: Record<string, number>;
+    lastAcceptedAt: string | null;
+    lastDroppedAt: string | null;
+    lastDropReason: string;
+  };
 }
 
 interface ConnectBody {
@@ -106,6 +117,15 @@ const mediaStore = new Map<string, {
 let httpServer: ReturnType<typeof app.listen> | null = null;
 let shuttingDown = false;
 const MAX_SESSION_EVENTS = Math.max(200, Number(process.env.MAX_SESSION_EVENTS || "2000"));
+const INBOUND_MESSAGE_DEDUPE_WINDOW_MS = Math.max(
+  60_000,
+  Number(process.env.WA_INBOUND_DEDUPE_WINDOW_MS || "900000"),
+);
+const INBOUND_MESSAGE_DEDUPE_MAX_KEYS = Math.max(
+  500,
+  Number(process.env.WA_INBOUND_DEDUPE_MAX_KEYS || "5000"),
+);
+const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
 const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
@@ -156,6 +176,8 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   }
   entry.count += 1;
   if (entry.count > RATE_LIMIT_REQUESTS) {
+    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ error: "Too Many Requests" });
     return;
   }
@@ -180,6 +202,63 @@ function sanitizeError(err: unknown): string {
 function logMediaCaptureDebug(event: string, payload: Record<string, unknown>): void {
   if (!MEDIA_CAPTURE_DEBUG) return;
   logger.info({ event, ...payload }, "media capture debug");
+}
+
+function bumpIngestionDrop(state: SessionState, reason: string): void {
+  const key = String(reason || "unknown").trim() || "unknown";
+  state.ingestion.dropped[key] = (state.ingestion.dropped[key] || 0) + 1;
+  state.ingestion.lastDroppedAt = new Date().toISOString();
+  state.ingestion.lastDropReason = key;
+}
+
+function bumpIngestionAccepted(state: SessionState): void {
+  state.ingestion.accepted += 1;
+  state.ingestion.lastAcceptedAt = new Date().toISOString();
+}
+
+function pruneRecentInboundMessageKeys(state: SessionState, nowMs: number): void {
+  for (const [key, seenAt] of state.recentInboundMessageKeys.entries()) {
+    if (nowMs - seenAt > INBOUND_MESSAGE_DEDUPE_WINDOW_MS) {
+      state.recentInboundMessageKeys.delete(key);
+    }
+  }
+
+  if (state.recentInboundMessageKeys.size <= INBOUND_MESSAGE_DEDUPE_MAX_KEYS) return;
+  const overflow = state.recentInboundMessageKeys.size - INBOUND_MESSAGE_DEDUPE_MAX_KEYS;
+  if (overflow <= 0) return;
+  const ordered = [...state.recentInboundMessageKeys.entries()].sort((a, b) => a[1] - b[1]);
+  for (let i = 0; i < overflow && i < ordered.length; i += 1) {
+    state.recentInboundMessageKeys.delete(ordered[i][0]);
+  }
+}
+
+function buildInboundDedupeKey(message: {
+  key?: { id?: string | null; remoteJid?: string | null; participant?: string | null; fromMe?: boolean | null };
+  messageTimestamp?: unknown;
+  pushName?: string | null;
+}): string {
+  const key = message.key || {};
+  const id = String(key.id || "").trim();
+  const remoteJid = String(key.remoteJid || "").trim();
+  const participant = String(key.participant || "").trim();
+  const fromMe = key.fromMe ? "1" : "0";
+  const timestamp = String(message.messageTimestamp ?? "").trim();
+  const pushName = String(message.pushName || "").trim();
+  const primary = `${remoteJid}|${id}|${participant}|${fromMe}`;
+  if (id && remoteJid) return primary;
+  return `${primary}|${timestamp}|${pushName}`;
+}
+
+function markInboundMessageSeen(state: SessionState, dedupeKey: string): boolean {
+  const key = String(dedupeKey || "").trim();
+  if (!key) return true;
+  const nowMs = Date.now();
+  pruneRecentInboundMessageKeys(state, nowMs);
+  if (state.recentInboundMessageKeys.has(key)) {
+    return false;
+  }
+  state.recentInboundMessageKeys.set(key, nowMs);
+  return true;
 }
 
 function parseSessionIdFromDirName(dirName: string): string {
@@ -372,16 +451,302 @@ function extractMessageText(message: proto.IMessage | null | undefined): string 
   return "";
 }
 
+type WhatsAppInboundMediaKind =
+  | "image"
+  | "video"
+  | "audio"
+  | "document"
+  | "sticker"
+  | "contact"
+  | "location"
+  | "poll"
+  | "other";
+
+type WhatsAppInboundMediaInfo = {
+  kind: WhatsAppInboundMediaKind;
+  mimetype?: string | null;
+  imagePayload?: { mimetype?: string | null } | null;
+};
+
+function readMessageMimeType(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const row = payload as Record<string, unknown>;
+  if (typeof row.mimetype === "string" && row.mimetype.trim()) return row.mimetype.trim();
+  return null;
+}
+
+function detectGenericMessagePayloadKind(contentType: string): WhatsAppInboundMediaKind | null {
+  const normalized = String(contentType || "").toLowerCase();
+  if (!normalized) return null;
+  if (normalized.includes("image")) return "image";
+  if (normalized.includes("video")) return "video";
+  if (normalized.includes("audio")) return "audio";
+  if (normalized.includes("document")) return "document";
+  if (normalized.includes("sticker")) return "sticker";
+  if (normalized.includes("contact")) return "contact";
+  if (normalized.includes("location")) return "location";
+  if (normalized.includes("poll")) return "poll";
+  return null;
+}
+
+function extractInboundMediaInfo(
+  message: proto.IMessage | null | undefined,
+): WhatsAppInboundMediaInfo | null {
+  if (!message) return null;
+  if (message.imageMessage) {
+    return {
+      kind: "image",
+      mimetype: message.imageMessage.mimetype || null,
+      imagePayload: message.imageMessage,
+    };
+  }
+  if (message.videoMessage) return { kind: "video", mimetype: message.videoMessage.mimetype || null };
+  if (message.audioMessage) return { kind: "audio", mimetype: message.audioMessage.mimetype || null };
+  if (message.documentMessage) return { kind: "document", mimetype: message.documentMessage.mimetype || null };
+  if (message.stickerMessage) return { kind: "sticker", mimetype: message.stickerMessage.mimetype || "image/webp" };
+  if (message.contactMessage || message.contactsArrayMessage) return { kind: "contact", mimetype: null };
+  if (message.locationMessage || message.liveLocationMessage) return { kind: "location", mimetype: null };
+  if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3 || message.pollUpdateMessage) {
+    return { kind: "poll", mimetype: null };
+  }
+  if (message.ephemeralMessage?.message) return extractInboundMediaInfo(message.ephemeralMessage.message);
+  if (message.viewOnceMessage?.message) return extractInboundMediaInfo(message.viewOnceMessage.message);
+  if (message.viewOnceMessageV2?.message) return extractInboundMediaInfo(message.viewOnceMessageV2.message);
+
+  const nested = getExtendedNestedMessage(message);
+  if (nested) return extractInboundMediaInfo(nested);
+
+  const contentType = getContentType(message);
+  if (!contentType) return null;
+  const payload = (message as Record<string, unknown>)[contentType];
+  if (!payload || typeof payload !== "object") return null;
+  const genericKind = detectGenericMessagePayloadKind(contentType);
+  const mimeType = readMessageMimeType(payload);
+  if (genericKind === "image") {
+    return {
+      kind: "image",
+      mimetype: mimeType,
+      imagePayload: payload as { mimetype?: string | null },
+    };
+  }
+  if (genericKind) {
+    return {
+      kind: genericKind,
+      mimetype: mimeType,
+    };
+  }
+
+  const row = payload as Record<string, unknown>;
+  const hasMediaLikeShape = ("url" in row) || ("mediaKey" in row) || ("fileLength" in row) || ("jpegThumbnail" in row);
+  if (!hasMediaLikeShape) return null;
+  return {
+    kind: "other",
+    mimetype: mimeType,
+  };
+}
+
 function extractImagePayload(
   message: proto.IMessage | null | undefined,
 ): { mimetype?: string | null } | null {
+  const media = extractInboundMediaInfo(message);
+  if (!media || media.kind !== "image") return null;
+  return media.imagePayload || null;
+}
+
+function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  // GIF: GIF87a / GIF89a
+  if (
+    buffer[0] === 0x47 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x38 &&
+    (buffer[4] === 0x37 || buffer[4] === 0x39) &&
+    buffer[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+
+  // WEBP: RIFF....WEBP
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  // BMP: BM
+  if (buffer[0] === 0x42 && buffer[1] === 0x4d) {
+    return "image/bmp";
+  }
+
+  return null;
+}
+
+function coerceBinaryToBuffer(value: unknown): Buffer | null {
+  if (!value) return null;
+  if (Buffer.isBuffer(value)) return value.length > 0 ? value : null;
+  if (value instanceof Uint8Array) {
+    if (value.length === 0) return null;
+    return Buffer.from(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const dataUri = trimmed.match(/^data:[^;]+;base64,(.+)$/i);
+    const base64Payload = (dataUri ? dataUri[1] : trimmed).replace(/\s+/g, "");
+    if (!base64Payload || base64Payload.length < 16) return null;
+    if (!/^[a-z0-9+/=]+$/i.test(base64Payload)) return null;
+    try {
+      const buffer = Buffer.from(base64Payload, "base64");
+      return buffer.length > 0 ? buffer : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === "object" && value !== null) {
+    const row = value as Record<string, unknown>;
+    const nested = coerceBinaryToBuffer(row.bytes ?? row.data ?? row.buffer ?? row.thumbnail ?? row.jpegThumbnail);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function extractInboundThumbnailBuffer(message: proto.IMessage | null | undefined): Buffer | null {
   if (!message) return null;
-  if (message.imageMessage) return message.imageMessage;
-  if (message.ephemeralMessage?.message) return extractImagePayload(message.ephemeralMessage.message);
-  if (message.viewOnceMessage?.message) return extractImagePayload(message.viewOnceMessage.message);
-  if (message.viewOnceMessageV2?.message) return extractImagePayload(message.viewOnceMessageV2.message);
-  const nested = getExtendedNestedMessage(message);
-  if (nested) return extractImagePayload(nested);
+  const stack: unknown[] = [message];
+  const visited = new Set<object>();
+  const thumbnailKeys = new Set(["jpegThumbnail", "thumbnail", "pngThumbnail", "thumbnailBytes"]);
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object") continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const row = current as Record<string, unknown>;
+
+    for (const key of thumbnailKeys) {
+      const candidate = coerceBinaryToBuffer(row[key]);
+      if (!candidate || candidate.length === 0 || candidate.length > AUTO_IMAGE_MAX_BYTES) continue;
+      const detected = detectImageMimeTypeFromBuffer(candidate);
+      if (detected) return candidate;
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && typeof value === "object") {
+        stack.push(value);
+      }
+    }
+  }
+
+  return null;
+}
+
+function shouldAttemptFullMediaDownloadAsImageCandidate(media: WhatsAppInboundMediaInfo | null): boolean {
+  if (!media) return false;
+  if (media.kind === "image" || media.kind === "sticker") return true;
+  const mime = String(media.mimetype || "").trim().toLowerCase();
+  return mime.startsWith("image/");
+}
+
+async function downloadIncomingMediaBuffer(args: {
+  message: { message?: proto.IMessage };
+  socket: WASocket;
+  sessionId: string;
+}): Promise<Buffer | null> {
+  const { message, socket, sessionId } = args;
+  try {
+    const downloaded = await downloadMediaMessage(
+      message as unknown as any,
+      "buffer",
+      {},
+      { logger: baileysLogger, reuploadRequest: socket.updateMediaMessage },
+    );
+    if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= AUTO_IMAGE_MAX_BYTES) {
+      return downloaded;
+    }
+  } catch (error) {
+    logger.warn({ sessionId, error: sanitizeError(error) }, "generic media download failed while resolving inbound image");
+  }
+  return null;
+}
+
+async function resolveInboundMediaAsImage(args: {
+  message: { message?: proto.IMessage };
+  socket: WASocket;
+  sessionId: string;
+  inboundMedia: WhatsAppInboundMediaInfo | null;
+  imagePayload: { mimetype?: string | null } | null;
+}): Promise<{ buffer: Buffer; mimeType: string; origin: "image_payload" | "thumbnail" | "media_download" } | null> {
+  const { message, socket, sessionId, inboundMedia, imagePayload } = args;
+
+  if (imagePayload) {
+    const downloaded = await downloadIncomingImageBuffer({
+      message,
+      socket,
+      sessionId,
+      mimeTypeHint: imagePayload.mimetype,
+    });
+    if (downloaded && downloaded.length > 0) {
+      const detectedMime = detectImageMimeTypeFromBuffer(downloaded);
+      const mimeTypeHint = String(imagePayload.mimetype || inboundMedia?.mimetype || "").trim().toLowerCase();
+      return {
+        buffer: downloaded,
+        mimeType: detectedMime || (mimeTypeHint.startsWith("image/") ? mimeTypeHint : "image/jpeg"),
+        origin: "image_payload",
+      };
+    }
+  }
+
+  const thumbnail = extractInboundThumbnailBuffer(message.message);
+  if (thumbnail && thumbnail.length > 0) {
+    const detectedMime = detectImageMimeTypeFromBuffer(thumbnail) || "image/jpeg";
+    return {
+      buffer: thumbnail,
+      mimeType: detectedMime,
+      origin: "thumbnail",
+    };
+  }
+
+  if (shouldAttemptFullMediaDownloadAsImageCandidate(inboundMedia)) {
+    const downloadedAny = await downloadIncomingMediaBuffer({ message, socket, sessionId });
+    if (downloadedAny && downloadedAny.length > 0) {
+      const detectedMime = detectImageMimeTypeFromBuffer(downloadedAny);
+      if (detectedMime) {
+        return {
+          buffer: downloadedAny,
+          mimeType: detectedMime,
+          origin: "media_download",
+        };
+      }
+    }
+  }
+
   return null;
 }
 
@@ -400,7 +765,7 @@ async function downloadIncomingImageBuffer(args: {
       {},
       { logger: baileysLogger, reuploadRequest: socket.updateMediaMessage },
     );
-    if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
+    if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= AUTO_IMAGE_MAX_BYTES) {
       return downloaded;
     }
   } catch (error) {
@@ -416,7 +781,7 @@ async function downloadIncomingImageBuffer(args: {
       chunks.push(Buffer.from(chunk));
     }
     const buffer = Buffer.concat(chunks);
-    if (buffer.length > 0) return buffer;
+    if (buffer.length > 0 && buffer.length <= AUTO_IMAGE_MAX_BYTES) return buffer;
   } catch (error) {
     logger.warn({ sessionId, error: sanitizeError(error), mimeTypeHint: mimeTypeHint || "" }, "fallback image download failed");
   }
@@ -525,7 +890,20 @@ async function emitWebhook(state: SessionState, event: string, data: Record<stri
   });
 
   if (state.events.length > MAX_SESSION_EVENTS) {
-    state.events.splice(0, state.events.length - MAX_SESSION_EVENTS);
+    const dropped = state.events.length - MAX_SESSION_EVENTS;
+    if (dropped > 0) {
+      logger.warn(
+        {
+          sessionId: state.config.sessionId,
+          event,
+          dropped,
+          queuedBeforeTrim: state.events.length,
+          limit: MAX_SESSION_EVENTS,
+        },
+        "session event buffer overflow; dropping oldest queued events",
+      );
+      state.events.splice(0, dropped);
+    }
   }
 
   if (!state.config.webhookUrl) return;
@@ -608,6 +986,17 @@ async function createOrGetState(config: SessionConfig): Promise<SessionState> {
     pairingCooldownUntil: 0,
     groupNames: new Map<string, string>(),
     events: [],
+    recentInboundMessageKeys: new Map<string, number>(),
+    ingestion: {
+      upserts: 0,
+      messagesSeen: 0,
+      accepted: 0,
+      duplicates: 0,
+      dropped: {},
+      lastAcceptedAt: null,
+      lastDroppedAt: null,
+      lastDropReason: "",
+    },
   };
 
   sessionStates.set(config.sessionId, state);
@@ -799,75 +1188,116 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
 
     socket.ev.on("messages.upsert", async (upsert: Record<string, unknown>) => {
       if (state.generation !== generation) return;
-      if (state.status !== "online") return;
+      if (state.status !== "online" && state.status !== "connecting") {
+        bumpIngestionDrop(state, `state_not_ready_${state.status}`);
+        return;
+      }
 
       const type = upsert.type as string | undefined;
-      if (type !== "notify") return;
+      state.ingestion.upserts += 1;
+      const allowedType = type === "notify" || type === "append";
+      if (!allowedType) {
+        bumpIngestionDrop(state, `upsert_type_${String(type || "unknown")}`);
+        return;
+      }
 
       const messages = (upsert.messages || []) as Array<{
-        key?: { remoteJid?: string; participant?: string; fromMe?: boolean };
+        key?: { id?: string; remoteJid?: string; participant?: string; fromMe?: boolean };
         message?: proto.IMessage;
+        messageTimestamp?: unknown;
         pushName?: string;
       }>;
+      if (!Array.isArray(messages) || messages.length === 0) {
+        bumpIngestionDrop(state, "upsert_without_messages");
+        return;
+      }
 
       for (const message of messages) {
+        state.ingestion.messagesSeen += 1;
         const remoteJid = message.key?.remoteJid || "";
-        if (!remoteJid.endsWith("@g.us")) continue;
-        if (message.key?.fromMe) continue;
+        if (!remoteJid.endsWith("@g.us")) {
+          bumpIngestionDrop(state, "non_group_message");
+          continue;
+        }
+        const fromMe = Boolean(message.key?.fromMe);
+        if (fromMe) {
+          bumpIngestionDrop(state, "from_me");
+          continue;
+        }
+
+        const dedupeKey = buildInboundDedupeKey(message);
+        if (!markInboundMessageSeen(state, dedupeKey)) {
+          state.ingestion.duplicates += 1;
+          bumpIngestionDrop(state, "duplicate_message_key");
+          continue;
+        }
 
         const text = extractMessageText(message.message).trim();
-        const imagePayload = extractImagePayload(message.message);
+        const inboundMedia = extractInboundMediaInfo(message.message);
+        const imagePayload = inboundMedia?.kind === "image"
+          ? (inboundMedia.imagePayload || extractImagePayload(message.message))
+          : null;
         logMediaCaptureDebug("incoming_summary", {
           sessionId,
           groupId: remoteJid,
           hasText: Boolean(text),
           textLength: text.length,
+          hasMediaPayload: Boolean(inboundMedia),
+          mediaKind: inboundMedia?.kind || "",
           hasImagePayload: Boolean(imagePayload),
-          mimeTypeHint: imagePayload?.mimetype || "",
+          mimeTypeHint: imagePayload?.mimetype || inboundMedia?.mimetype || "",
+          upsertType: type || "",
+          dedupeKey,
         });
-        if (!text && !imagePayload) continue;
+        if (!text && !inboundMedia) {
+          bumpIngestionDrop(state, "empty_message_payload");
+          continue;
+        }
 
         const groupName = await resolveGroupName(state, remoteJid);
         let mediaData: Record<string, unknown> | null = null;
 
-        if (imagePayload) {
-          const downloaded = await downloadIncomingImageBuffer({
-            message,
-            socket,
+        const resolvedImage = await resolveInboundMediaAsImage({
+          message,
+          socket,
+          sessionId,
+          inboundMedia,
+          imagePayload,
+        });
+        if (resolvedImage) {
+          const stored = storeTemporaryImage(
+            resolvedImage.buffer,
+            state.config.userId,
+            resolvedImage.mimeType || "image/jpeg",
+          );
+          logMediaCaptureDebug("incoming_image_stored", {
             sessionId,
-            mimeTypeHint: imagePayload.mimetype,
+            groupId: remoteJid,
+            bytes: resolvedImage.buffer.length,
+            mimeType: resolvedImage.mimeType || "image/jpeg",
+            origin: resolvedImage.origin,
+            tokenPrefix: stored.token.slice(0, 8),
           });
-
-          if (downloaded && downloaded.length > 0) {
-            const stored = storeTemporaryImage(
-              downloaded,
-              state.config.userId,
-              imagePayload.mimetype || "image/jpeg",
-            );
-            logMediaCaptureDebug("incoming_image_stored", {
-              sessionId,
-              groupId: remoteJid,
-              bytes: downloaded.length,
-              mimeType: imagePayload.mimetype || "image/jpeg",
-              tokenPrefix: stored.token.slice(0, 8),
-            });
-            mediaData = {
-              kind: "image",
-              token: stored.token,
-              mimeType: imagePayload.mimetype || "image/jpeg",
-              fileName: stored.fileName,
-              sourcePlatform: "whatsapp",
-            };
-          } else {
-            logMediaCaptureDebug("incoming_image_download_failed", {
-              sessionId,
-              groupId: remoteJid,
-              hasText: Boolean(text),
-              textLength: text.length,
-              mimeTypeHint: imagePayload.mimetype || "",
-            });
-            logger.warn({ sessionId, groupId: remoteJid }, "incoming image detected but media payload could not be downloaded");
-          }
+          mediaData = {
+            kind: "image",
+            token: stored.token,
+            mimeType: resolvedImage.mimeType || "image/jpeg",
+            fileName: stored.fileName,
+            sourcePlatform: "whatsapp",
+          };
+        } else if (inboundMedia) {
+          logMediaCaptureDebug("incoming_image_download_failed", {
+            sessionId,
+            groupId: remoteJid,
+            hasText: Boolean(text),
+            textLength: text.length,
+            mediaKind: inboundMedia.kind,
+            mimeTypeHint: imagePayload?.mimetype || inboundMedia.mimetype || "",
+          });
+          logger.warn(
+            { sessionId, groupId: remoteJid, mediaKind: inboundMedia.kind },
+            "incoming media detected but no image payload could be extracted",
+          );
         }
 
         logMediaCaptureDebug("webhook_emit_message_received", {
@@ -883,8 +1313,12 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
           message: text,
           groupId: remoteJid,
           groupName,
+          hasMedia: Boolean(inboundMedia),
+          mediaKind: inboundMedia?.kind || undefined,
+          mediaMimeType: inboundMedia?.mimetype || undefined,
           media: mediaData || undefined,
         });
+        bumpIngestionAccepted(state);
       }
     });
 
@@ -1020,6 +1454,16 @@ app.get("/health", (req, res) => {
       status: state.status,
       reconnectAttempts: state.reconnectAttempts,
       queuedEvents: state.events.length,
+      ingestion: {
+        upserts: state.ingestion.upserts,
+        messagesSeen: state.ingestion.messagesSeen,
+        accepted: state.ingestion.accepted,
+        duplicates: state.ingestion.duplicates,
+        dropped: { ...state.ingestion.dropped },
+        lastAcceptedAt: state.ingestion.lastAcceptedAt,
+        lastDroppedAt: state.ingestion.lastDroppedAt,
+        lastDropReason: state.ingestion.lastDropReason,
+      },
     }));
     res.json({ ok: true, uptimeSec: Math.floor(process.uptime()), sessions });
   } else {

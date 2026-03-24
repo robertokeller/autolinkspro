@@ -219,8 +219,9 @@ export default function RoutesPage() {
 
       if (blockers.length > 0) {
         const uniqueBlockers = Array.from(new Set(blockers));
-        toast.error(`Não deu pra atualizar: ${uniqueBlockers.length} problema(s).`);
-        toast.error(uniqueBlockers.slice(0, 3).join(" | "));
+        const preview = uniqueBlockers.slice(0, 3).join(" | ");
+        const rest = uniqueBlockers.length > 3 ? ` | +${uniqueBlockers.length - 3} pendencias` : "";
+        toast.error(`Atualizacao nao concluida. ${preview}${rest}`);
         return;
       }
 
@@ -229,11 +230,39 @@ export default function RoutesPage() {
       const refreshedRoutes = await refreshAllRoutes();
       if (!refreshedRoutes) return;
 
-      const whatsappStatus = latestChannelHealth?.whatsapp.online === true ? "WhatsApp online" : "WhatsApp offline";
-      const telegramStatus = latestChannelHealth?.telegram.online === true ? "Telegram online" : "Telegram offline";
-      const shopeeStatus = shopeeHealthResult?.online === true ? "Shopee online" : "Shopee offline";
-      const meliStatus = meliHealthResult?.online === true ? "Mercado Livre online" : "Mercado Livre offline";
-      toast.success(`Tudo atualizado! ${whatsappStatus} | ${telegramStatus} | ${shopeeStatus} | ${meliStatus}`);
+      const serviceStatuses = [
+        {
+          label: "WhatsApp",
+          online: latestChannelHealth?.whatsapp.online === true ? true : latestChannelHealth?.whatsapp.online === false ? false : null,
+        },
+        {
+          label: "Telegram",
+          online: latestChannelHealth?.telegram.online === true ? true : latestChannelHealth?.telegram.online === false ? false : null,
+        },
+        {
+          label: "Shopee",
+          online: shopeeHealthResult?.online === true ? true : shopeeHealthResult?.online === false ? false : null,
+        },
+        {
+          label: "Mercado Livre",
+          online: meliHealthResult?.online === true ? true : meliHealthResult?.online === false ? false : null,
+        },
+      ] as const;
+
+      const okServices = serviceStatuses.filter((service) => service.online === true).map((service) => service.label);
+      const offlineServices = serviceStatuses.filter((service) => service.online === false).map((service) => service.label);
+      const unknownServices = serviceStatuses.filter((service) => service.online === null).map((service) => service.label);
+
+      const parts: string[] = [];
+      if (okServices.length > 0) parts.push(`Servicos OK: ${okServices.join(", ")}`);
+      if (offlineServices.length > 0) parts.push(`Indisponiveis: ${offlineServices.join(", ")}`);
+      if (unknownServices.length > 0) parts.push(`Sem resposta: ${unknownServices.join(", ")}`);
+
+      if (offlineServices.length === 0 && unknownServices.length === 0) {
+        toast.success(`Atualizacao concluida. ${parts.join(" | ")}`);
+      } else {
+        toast.warning(`Atualizacao concluida com alertas. ${parts.join(" | ")}`);
+      }
     } catch {
       toast.error("Não deu pra atualizar");
     } finally {
@@ -323,6 +352,7 @@ export default function RoutesPage() {
   const statusConfig: Record<string, { label: string; class: string }> = {
     active: { label: "Ativa", class: "bg-success/10 text-success border-success/20" },
     paused: { label: "Pausada", class: "bg-warning/10 text-warning border-warning/20" },
+    inactive: { label: "Inativa", class: "bg-muted/50 text-muted-foreground border-muted-foreground/20" },
     error: { label: "Erro", class: "bg-destructive/10 text-destructive border-destructive/20" },
   };
 
@@ -349,8 +379,8 @@ export default function RoutesPage() {
   };
 
   return (
-    <div className="ds-page">
-      <div className="sticky top-0 z-20 rounded-xl border border-border/60 bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
+    <>
+      <div className="sticky top-[var(--app-page-y)] z-20 mb-[var(--ds-page-gap)] rounded-xl border border-border/60 bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
         <PageHeader title="Rotas automaticas" description="Monte rotas pra copiar ofertas de um grupo e enviar pra outros no automatico">
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
@@ -896,7 +926,7 @@ export default function RoutesPage() {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
 

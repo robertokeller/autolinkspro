@@ -495,11 +495,7 @@ export default function Dashboard() {
 
   return (
     <div className="ds-page pb-[calc(var(--safe-area-bottom)+0.25rem)]">
-      <PageHeader title="Painel geral" description={`Resumo do dia • ${nowBRT("EEEE, d 'de' MMMM")}`}>
-        <Button asChild size={compactDashboard ? "default" : "sm"} className="w-full sm:w-auto">
-          <Link to={ROUTES.app.shopeeConversor}>Converter link</Link>
-        </Button>
-      </PageHeader>
+      <PageHeader title="Painel geral" description={`Resumo do dia • ${nowBRT("EEEE, d 'de' MMMM")}`} />
 
       {!isLoading && (
         <OnboardingChecklist

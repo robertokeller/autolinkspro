@@ -66,12 +66,20 @@ const HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const LOCAL_DB_UPDATED_EVENT = "autolinks:local-db-updated";
 
 // Seed accounts — override via VITE_DEMO_* env vars in .env.local (git-ignored).
+// WARNING: These fallback credentials are for LOCAL DEVELOPMENT ONLY.
+// Production deployments must set VITE_DEMO_ADMIN_PASSWORD and VITE_DEMO_USER_PASSWORD.
 const SUPPORT_CONTACT_EMAIL = "suporte@autolinks.pro";
 const ROBERTO_ADMIN_EMAIL = (import.meta.env.VITE_DEMO_ADMIN_EMAIL as string | undefined) || "admin@demo.autolinks.local";
-const ROBERTO_ADMIN_PASSWORD = (import.meta.env.VITE_DEMO_ADMIN_PASSWORD as string | undefined) || "demo-admin-change-me";
+const ROBERTO_ADMIN_PASSWORD = (import.meta.env.VITE_DEMO_ADMIN_PASSWORD as string | undefined) || (() => {
+  console.warn("[local-core] VITE_DEMO_ADMIN_PASSWORD não definido — usando placeholder de desenvolvimento.");
+  return "demo-admin-change-me";
+})();
 const ROBERTO_ADMIN_NAME = (import.meta.env.VITE_DEMO_ADMIN_NAME as string | undefined) || "Admin Demo";
 const ALIANCAS_USER_EMAIL = (import.meta.env.VITE_DEMO_USER_EMAIL as string | undefined) || "usuario@demo.autolinks.local";
-const ALIANCAS_USER_PASSWORD = (import.meta.env.VITE_DEMO_USER_PASSWORD as string | undefined) || "demo-user-change-me";
+const ALIANCAS_USER_PASSWORD = (import.meta.env.VITE_DEMO_USER_PASSWORD as string | undefined) || (() => {
+  console.warn("[local-core] VITE_DEMO_USER_PASSWORD não definido — usando placeholder de desenvolvimento.");
+  return "demo-user-change-me";
+})();
 const ALIANCAS_USER_NAME = (import.meta.env.VITE_DEMO_USER_NAME as string | undefined) || "Usuário Demo";
 const EXTRA_ADMIN_EMAILS = [ROBERTO_ADMIN_EMAIL];
 // Emails legados que devem ser removidos/migrados automaticamente no próximo loadDb()

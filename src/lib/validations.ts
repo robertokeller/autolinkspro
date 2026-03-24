@@ -14,6 +14,7 @@ export const templateSchema = z.object({
 export const perfilSchema = z.object({
   name: z.string().trim().min(1, "Nome é obrigatório").max(100, "Máximo 100 caracteres"),
   email: z.string().trim().email("Email inválido").max(255, "Máximo 255 caracteres"),
+  phone: z.string().trim().default(""),
 });
 
 export const agendamentoSchema = z.object({

@@ -86,3 +86,20 @@ export function validatePhone(input: string): PhoneValidation {
 
   return { valid: true, normalized, formatted, wasAutoCorrected };
 }
+
+/** Strip everything except digits and leading '+'. */
+export function sanitizePhone(raw: string): string {
+  return raw.replace(/[^\d+]/g, "");
+}
+
+/** Format a phone input as the user types — keeps "+", digits, spaces, parens and dashes. */
+export function formatPhoneInput(raw: string): string {
+  return raw.replace(/[^\d+() -]/g, "").slice(0, 20);
+}
+
+/** Detect whether a string looks like a phone number (vs. an email). */
+export function looksLikePhone(value: string): boolean {
+  return /^\+?\d[\d\s()-]{7,}$/.test(value.trim());
+}
+
+export const PHONE_PLACEHOLDER = "+55 (11) 91234-5678";

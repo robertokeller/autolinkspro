@@ -14,6 +14,7 @@ export function AdminRoutes() {
         <Route path={ROUTES.admin.access} element={<Pages.AdminAccess />} />
         <Route path={ROUTES.admin.logs} element={<Pages.AdminLogs />} />
         <Route path={ROUTES.admin.notifications} element={<Pages.AdminNotifications />} />
+        <Route path={ROUTES.admin.whatsapp} element={<Pages.AdminWhatsApp />} />
       </Route>
     </Route>
   );

@@ -231,9 +231,10 @@ export function useRotas() {
     return setRouteStatus(id, newStatus);
   }, [setRouteStatus]);
 
-  const setAllRoutesStatus = useCallback(async (status: Exclude<RouteStatus, "error">) => {
-    if (!user?.id) return false;
-    const { error } = await backend.from("routes").update({ status });
+  const setAllRoutesStatus = useCallback(async (status: Exclude<RouteStatus, "error" | "inactive">) => {
+    if (!user?.id || routes.length === 0) return false;
+    const routeIds = routes.map((r) => r.id);
+    const { error } = await backend.from("routes").update({ status }).in("id", routeIds);
     if (error) {
       toast.error("Não foi possível atualizar as rotas em massa");
       return false;
@@ -242,7 +243,7 @@ export function useRotas() {
     toast.success(status === "active" ? "Todas as rotas foram retomadas" : "Todas as rotas foram pausadas");
     await logHistorico(user.id, "route_forward", "Rotas", "-", "info", `Ação em massa: ${status === "active" ? "retomar" : "pausar"} todas`);
     return true;
-  }, [qc, user]);
+  }, [qc, user, routes]);
 
   const refreshAllRoutes = useCallback(async () => {
     if (!user?.id || routes.length === 0) return false;

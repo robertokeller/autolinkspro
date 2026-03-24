@@ -390,7 +390,7 @@ const auth = {
     };
   },
 
-  async updateUser(updates: { password?: string; current_password?: string; data?: Record<string, unknown>; email?: string }) {
+  async updateUser(updates: { password?: string; current_password?: string; data?: Record<string, unknown>; email?: string; phone?: string }) {
     try {
       const res = await apiFetch("/auth/update-user", { method: "POST", body: JSON.stringify(updates) });
       const user = res.data?.user ?? null;

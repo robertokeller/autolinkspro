@@ -232,17 +232,13 @@ export function GruposPorPlataforma({
           ) : (
             <div className="space-y-2">
               {filteredGroups.map((group) => {
-                const sessionName = sessionNameById.get(group.sessionId) || "Sessão removida";
-                const isOrphan = !sessionNameById.has(group.sessionId);
+                const sessionName = sessionNameById.get(group.sessionId) || "Sessão indisponível";
                 const isMultiSession = !!group.externalId && multiSessionExternalIds.has(group.externalId);
 
                 return (
                   <Card
                     key={group.id}
-                    className={cn(
-                      "glass overflow-hidden border-border/60",
-                      isOrphan && "border-warning/30 bg-warning/5",
-                    )}
+                    className={cn("glass overflow-hidden border-border/60")}
                   >
                     <CardContent className="p-3">
                       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -265,12 +261,7 @@ export function GruposPorPlataforma({
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                          <Badge
-                            variant={isOrphan ? "warning" : "outline"}
-                            className="text-2xs"
-                          >
-                            {isOrphan ? "[orfa] " : ""}{sessionName}
-                          </Badge>
+                          <Badge variant="outline" className="text-2xs">{sessionName}</Badge>
                           <Badge
                             variant={isWhatsApp ? "success" : "info"}
                             className="text-2xs"

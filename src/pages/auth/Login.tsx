@@ -11,9 +11,10 @@ import { z } from "zod";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { PasswordField } from "@/components/auth/PasswordField";
 import { ROUTES } from "@/lib/routes";
+import { looksLikePhone, sanitizePhone } from "@/lib/phone-utils";
 
 const loginSchema = z.object({
-  email: z.string().trim().email("E-mail inválido").max(255),
+  identifier: z.string().trim().min(1, "Informe seu e-mail ou telefone"),
   password: z.string().min(6, "Mínimo 6 caracteres").max(128),
 });
 
@@ -32,7 +33,7 @@ function isApiUnavailableMessage(message: string): boolean {
 
 export default function Login() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
@@ -52,17 +53,21 @@ export default function Login() {
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
-    const parsed = loginSchema.safeParse({ email, password });
+    const parsed = loginSchema.safeParse({ identifier, password });
 
     if (!parsed.success) {
       toast.error(parsed.error.errors[0].message);
       return;
     }
 
+    const rawIdentifier = parsed.data.identifier;
+    // If it looks like a phone number, send it sanitized; otherwise send as email
+    const emailValue = looksLikePhone(rawIdentifier) ? sanitizePhone(rawIdentifier) : rawIdentifier;
+
     setLoading(true);
     try {
       const result = await backend.auth.signInWithPassword({
-        email: parsed.data.email,
+        email: emailValue,
         password: parsed.data.password,
       });
       const error = result?.error;
@@ -75,7 +80,7 @@ export default function Login() {
           msg.toLowerCase().includes("email_not_confirmed") ||
           msg.toLowerCase().includes("ainda nao confirmado")
         ) {
-          setPendingVerificationEmail(parsed.data.email);
+          setPendingVerificationEmail(emailValue);
           toast.error("E-mail ainda nao confirmado. Use o botao para reenviar o link.");
           return;
         }
@@ -85,7 +90,11 @@ export default function Login() {
           return;
         }
 
-        toast.error(msg === "Invalid login credentials" ? "E-mail ou senha incorretos" : msg);
+        toast.error(
+          msg === "Invalid login credentials" || msg === "Credenciais inválidas"
+            ? "E-mail/telefone ou senha incorretos"
+            : msg,
+        );
         return;
       }
 
@@ -108,15 +117,15 @@ export default function Login() {
       <form onSubmit={handleLogin}>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="email">E-mail</Label>
+            <Label htmlFor="identifier">E-mail ou telefone</Label>
             <Input
-              id="email"
-              type="email"
-              placeholder="seu@email.com"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              id="identifier"
+              type="text"
+              placeholder="seu@email.com ou +55 11 91234-5678"
+              value={identifier}
+              onChange={(event) => setIdentifier(event.target.value)}
               required
-              autoComplete="email"
+              autoComplete="username"
             />
           </div>
 

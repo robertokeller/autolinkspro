@@ -61,11 +61,18 @@ function humanizeErrorMessage(value: string): string {
     negative_keyword: "Bloqueada por palavra-chave negativa",
     positive_keyword_missing: "Bloqueada: ausencia de palavra-chave obrigatoria",
     partner_link_required: "Bloqueada: mensagem sem link de afiliado obrigatorio",
+    marketplace_not_enabled: "Bloqueada: marketplace nao habilitado para esta rota",
+    from_me_ignored: "Bloqueada: mensagem de eco/origem propria foi ignorada para evitar loop",
     no_destination_groups: "Rota sem grupos de destino configurados",
     destination_not_found: "Grupo de destino nao encontrado",
     destination_session_offline: "Sessao do grupo de destino esta offline",
+    unsupported_media_type: "Bloqueada: midia recebida nao e suportada para roteamento",
     missing_image_required: "Bloqueada: rota exige imagem obrigatoria",
     missing_text_required: "Bloqueada: rota exige texto obrigatorio",
+    meli_session_missing: "Bloqueada: sessao do Mercado Livre nao configurada",
+    meli_conversion_failed: "Bloqueada: falha ao converter link Mercado Livre",
+    shopee_conversion_failed: "Bloqueada: falha ao converter link Shopee",
+    conversion_required: "Bloqueada: nao foi possivel converter os links obrigatorios",
   };
 
   if (map[key]) return map[key];

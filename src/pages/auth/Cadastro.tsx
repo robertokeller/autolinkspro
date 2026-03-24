@@ -12,10 +12,12 @@ import { AuthCard } from "@/components/auth/AuthCard";
 import { PasswordField } from "@/components/auth/PasswordField";
 import { ROUTES } from "@/lib/routes";
 import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from "@/lib/password-policy";
+import { formatPhoneInput, sanitizePhone, PHONE_PLACEHOLDER } from "@/lib/phone-utils";
 
 const cadastroSchema = z.object({
   name: z.string().trim().min(2, "Nome muito curto").max(100),
   email: z.string().trim().email("E-mail inválido").max(255),
+  phone: z.string().trim().refine((v) => sanitizePhone(v).length >= 10, { message: "Telefone inválido. Insira com DDD." }),
   password: z
     .string()
     .max(128)
@@ -28,12 +30,13 @@ export default function Cadastro() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleSignUp = async (event: React.FormEvent) => {
     event.preventDefault();
-    const parsed = cadastroSchema.safeParse({ name, email, password });
+    const parsed = cadastroSchema.safeParse({ name, email, phone, password });
 
     if (!parsed.success) {
       toast.error(parsed.error.errors[0].message);
@@ -45,7 +48,7 @@ export default function Cadastro() {
       email: parsed.data.email,
       password: parsed.data.password,
       options: {
-        data: { name: parsed.data.name },
+        data: { name: parsed.data.name, phone: sanitizePhone(parsed.data.phone) },
         emailRedirectTo: window.location.origin,
       },
     });
@@ -97,6 +100,19 @@ export default function Cadastro() {
               onChange={(event) => setEmail(event.target.value)}
               required
               autoComplete="email"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="phone">Telefone (WhatsApp)</Label>
+            <Input
+              id="phone"
+              type="tel"
+              placeholder={PHONE_PLACEHOLDER}
+              value={phone}
+              onChange={(event) => setPhone(formatPhoneInput(event.target.value))}
+              required
+              autoComplete="tel"
             />
           </div>
 

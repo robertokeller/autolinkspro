@@ -75,6 +75,7 @@ function rateLimitScopeKey(req: express.Request): string {
 }
 
 function rateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.path === "/health") { next(); return; }
   const key = rateLimitScopeKey(req);
   const now = Date.now();
   const entry = rateLimitStore.get(key);
@@ -85,6 +86,8 @@ function rateLimit(req: express.Request, res: express.Response, next: express.Ne
   }
   entry.count += 1;
   if (entry.count > RATE_LIMIT_REQUESTS) {
+    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ error: "Too Many Requests" });
     return;
   }

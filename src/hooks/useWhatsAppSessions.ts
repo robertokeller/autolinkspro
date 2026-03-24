@@ -21,6 +21,10 @@ interface RenameSessionInput {
   name: string;
 }
 
+interface RefreshOptions {
+  silent?: boolean;
+}
+
 function mapRowToSession(row: WhatsAppSessionRow): WhatsAppSession {
   const status = normalizeSessionStatus(row.status);
   const qrOrPairing = row.qr_code?.trim() ? row.qr_code : null;
@@ -75,16 +79,31 @@ export function useWhatsAppSessions() {
     qc.invalidateQueries({ queryKey: ["whatsapp-sessions"] });
   };
 
+  const refreshMutation = useMutation({
+    mutationFn: async (options?: RefreshOptions) => {
+      const payload = await invokeWhatsAppAction<Record<string, unknown>>("poll_events_all");
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["whatsapp-sessions"] }),
+        qc.invalidateQueries({ queryKey: ["groups"] }),
+        qc.invalidateQueries({ queryKey: ["master_groups"] }),
+      ]);
+      return { payload, silent: options?.silent === true };
+    },
+    onSuccess: ({ silent }) => {
+      if (silent) return;
+      toast.success("Atualização do WhatsApp concluída.");
+    },
+    onError: (err, options) => {
+      if (options?.silent) return;
+      const msg = toFriendlyRuntimeError(err, "Não foi possível atualizar o WhatsApp agora.");
+      toast.error(msg);
+    },
+  });
+
   // Polls the microservice for the latest events (status, groups, etc.) and then
   // invalidates both sessions and groups queries so the UI reflects real state.
-  const refresh = () => {
-    void invokeWhatsAppAction("poll_events_all")
-      .catch(() => undefined)
-      .finally(() => {
-        qc.invalidateQueries({ queryKey: ["whatsapp-sessions"] });
-        qc.invalidateQueries({ queryKey: ["groups"] });
-        qc.invalidateQueries({ queryKey: ["master_groups"] });
-      });
+  const refresh = (options?: RefreshOptions) => {
+    void refreshMutation.mutateAsync(options);
   };
 
   const createSessionMutation = useMutation({
@@ -272,6 +291,7 @@ export function useWhatsAppSessions() {
     isSyncingGroups: syncGroupsMutation.isPending,
     isRenaming: renameSessionMutation.isPending,
     isDeleting: deleteSessionMutation.isPending,
+    isRefreshing: refreshMutation.isPending,
     refresh,
   };
 }

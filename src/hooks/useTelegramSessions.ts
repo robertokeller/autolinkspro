@@ -1,5 +1,4 @@
-﻿import { useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+﻿import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { backend } from "@/integrations/backend/client";
 import type { Tables } from "@/integrations/backend/types";
@@ -31,6 +30,10 @@ interface VerifyPasswordInput {
 interface RenameSessionInput {
   sessionId: string;
   name: string;
+}
+
+interface RefreshOptions {
+  silent?: boolean;
 }
 
 function mapRowToSession(row: TelegramSessionRow): TelegramSession {
@@ -83,17 +86,32 @@ export function useTelegramSessions() {
     qc.invalidateQueries({ queryKey: ["telegram-sessions"] });
   };
 
-  // Polls the Telegram microservice for the latest events (status, groups, etc.) and
-  // invalidates both sessions and groups queries so the UI reflects real state.
-  const refresh = useCallback(() => {
-    void invokeTelegramAction("refresh_status")
-      .catch(() => undefined)
-      .finally(() => {
-        qc.invalidateQueries({ queryKey: ["telegram-sessions"] });
-        qc.invalidateQueries({ queryKey: ["groups"] });
-        qc.invalidateQueries({ queryKey: ["master_groups"] });
-      });
-  }, [qc]);
+  const refreshMutation = useMutation({
+    mutationFn: async (options?: RefreshOptions) => {
+      const payload = await invokeTelegramAction<Record<string, unknown>>("refresh_status");
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["telegram-sessions"] }),
+        qc.invalidateQueries({ queryKey: ["groups"] }),
+        qc.invalidateQueries({ queryKey: ["master_groups"] }),
+      ]);
+      return { payload, silent: options?.silent === true };
+    },
+    onSuccess: ({ silent }) => {
+      if (silent) return;
+      toast.success("Atualização do Telegram concluída.");
+    },
+    onError: (err, options) => {
+      if (options?.silent) return;
+      const msg = toFriendlyRuntimeError(err, "Não foi possível atualizar o Telegram agora.");
+      toast.error(msg);
+    },
+  });
+
+  // Polls the Telegram microservice for the latest events (status, groups, etc.) and then
+  // invalidates sessions/groups queries so the UI reflects the runtime state.
+  const refresh = (options?: RefreshOptions) => {
+    void refreshMutation.mutateAsync(options);
+  };
 
   const createSessionMutation = useMutation({
     mutationFn: async (input: CreateSessionInput) => {
@@ -265,7 +283,7 @@ export function useTelegramSessions() {
     mutationFn: async (sessionId: string) => {
       if (!user) throw new Error("Usuário não autenticado");
 
-      await invokeTelegramConnect(sessionId, "disconnect").catch(() => undefined);
+      await invokeTelegramConnect(sessionId, "disconnect", { clearSession: true }).catch(() => undefined);
 
       // Soft-delete groups: preserve UUIDs (routes reference them) by nullifying session_id
       // and recording deleted_at. Groups disappear from the UI but the rows remain in the DB for
@@ -319,6 +337,7 @@ export function useTelegramSessions() {
     isSyncingGroups: syncGroupsMutation.isPending,
     isRenaming: renameSessionMutation.isPending,
     isDeleting: deleteSessionMutation.isPending,
+    isRefreshing: refreshMutation.isPending,
     refresh,
   };
 }

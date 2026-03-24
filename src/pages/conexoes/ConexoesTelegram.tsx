@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+﻿import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SessoesTelegram } from "@/components/conexoes/SessoesTelegram";
 import { GruposPorPlataforma } from "@/components/conexoes/GruposPorPlataforma";
@@ -30,6 +30,7 @@ export default function ConexoesTelegram() {
     isSyncingGroups,
     isRenaming,
     isDeleting,
+    isRefreshing,
     refresh,
   } = useTelegramSessions();
   const { syncedGroups, isLoading: isLoadingGroups, refreshGroups } = useGrupos();
@@ -44,6 +45,16 @@ export default function ConexoesTelegram() {
     () => syncedGroups.filter((group) => group.platform === "telegram"),
     [syncedGroups],
   );
+
+  const handleRefreshGroups = useCallback((options?: { silent?: boolean }) => {
+    refreshGroups();
+    refresh(options);
+  }, [refreshGroups, refresh]);
+
+  const handleRefreshSessions = useCallback((options?: { silent?: boolean }) => {
+    refresh(options);
+    void refetchHealth();
+  }, [refresh, refetchHealth]);
 
   return (
     <ConexoesCanalLayout
@@ -61,6 +72,7 @@ export default function ConexoesTelegram() {
           isVerifyingCode={isVerifyingCode}
           isVerifyingPassword={isVerifyingPassword}
           isDisconnecting={isDisconnecting}
+          isRefreshing={isRefreshing}
           isUpdatingName={isRenaming}
           isDeleting={isDeleting}
           onCreateSession={createSession}
@@ -70,7 +82,7 @@ export default function ConexoesTelegram() {
           onDisconnect={disconnectSession}
           onUpdateName={(sessionId, name) => renameSession({ sessionId, name })}
           onDeleteSession={deleteSession}
-          onRefresh={() => { refresh(); void refetchHealth(); }}
+          onRefresh={handleRefreshSessions}
         />
       }
       groupsContent={
@@ -85,12 +97,10 @@ export default function ConexoesTelegram() {
           isLoading={isLoadingGroups}
           isSyncing={isSyncingGroups}
           onSyncSession={syncSessionGroups}
-          onRefresh={() => {
-            refreshGroups();
-            refresh();
-          }}
+          onRefresh={handleRefreshGroups}
         />
       }
     />
   );
 }
+

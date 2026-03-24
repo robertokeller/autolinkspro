@@ -219,10 +219,13 @@ function checkRateLimit(req) {
   const entry = rateLimitStore.get(ip);
   if (!entry || now > entry.resetAt) {
     rateLimitStore.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return false;
+    return { blocked: false, retryAfterSec: 0 };
   }
   entry.count += 1;
-  return entry.count > RATE_LIMIT_REQUESTS;
+  if (entry.count > RATE_LIMIT_REQUESTS) {
+    return { blocked: true, retryAfterSec: Math.ceil((entry.resetAt - now) / 1000) };
+  }
+  return { blocked: false, retryAfterSec: 0 };
 }
 
 function nowIso() {
@@ -866,7 +869,9 @@ const server = createServer(async (req, res) => {
   }
 
   // Per-IP rate limit — applied before any authentication or processing.
-  if (checkRateLimit(req)) {
+  const rlResult = checkRateLimit(req);
+  if (rlResult.blocked) {
+    res.setHeader("Retry-After", String(rlResult.retryAfterSec));
     sendJson(res, 429, { ok: false, error: "Too Many Requests" });
     return;
   }

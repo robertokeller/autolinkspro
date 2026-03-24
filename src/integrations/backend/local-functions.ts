@@ -2700,6 +2700,14 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
   const snapshot = loadDb();
   const capturedAt = nowIso();
   const routeMedia = await prepareRouteMediaForProcessing(input.media, input.userId);
+  const scheduleInboundMediaCleanup = async (): Promise<void> => {
+    if (!routeMedia?.token) return;
+    if (routeMedia.sourcePlatform === "whatsapp") {
+      await scheduleWhatsAppMediaDeletion(routeMedia.token, input.userId, 120_000);
+    } else if (routeMedia.sourcePlatform === "telegram") {
+      await scheduleTelegramMediaDeletion(routeMedia.token, input.userId, 120_000);
+    }
+  };
   const sourceExternalCandidates = new Set(buildSourceExternalIdCandidates(input.sourceExternalId));
   const sourceGroup = snapshot.tables.groups.find(
     (row) =>
@@ -2743,6 +2751,7 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         originPlatform: input.platform,
       });
     });
+    await scheduleInboundMediaCleanup();
     return { routesMatched: 0, processed: 0, sent: 0, skipped: 0, failed: 0 };
   }
 
@@ -2796,6 +2805,7 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
         originPlatform: input.platform,
       });
     });
+    await scheduleInboundMediaCleanup();
     return { routesMatched: 0, processed: 0, sent: 0, skipped: 0, failed: 0 };
   }
 
@@ -2861,6 +2871,8 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
     const enabledPartnerMarketplaces = partnerMarketplaces.filter((marketplace) =>
       isMarketplaceConversionEnabled(rules, marketplace),
     );
+    const requirePartnerLink = rules.requirePartnerLink !== false;
+    const shouldResolveUnknownLinks = requirePartnerLink ? true : shouldResolveBeforeValidate;
     const inspectedLinks: Array<{
       original: string;
       resolved: string;
@@ -2877,16 +2889,25 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
       let resolved = original;
       let resolvedMarketplace = originalMarketplace;
 
-      if (shouldResolveBeforeValidate) {
+      if (originalMarketplace && enabledPartnerMarketplaces.includes(originalMarketplace)) {
+        inspectedLinks.push({
+          original,
+          resolved,
+          originalMarketplace,
+          resolvedMarketplace,
+          partnerMarketplace: originalMarketplace,
+        });
+        continue;
+      }
+
+      if (!originalMarketplace && shouldResolveUnknownLinks) {
         resolved = await resolveLinkWithRedirect(original);
         resolvedMarketplace = detectPartnerMarketplace(resolved);
       }
 
-      const partnerMarketplace = originalMarketplace && enabledPartnerMarketplaces.includes(originalMarketplace)
-        ? originalMarketplace
-        : resolvedMarketplace && enabledPartnerMarketplaces.includes(resolvedMarketplace)
-          ? resolvedMarketplace
-          : null;
+      const partnerMarketplace = resolvedMarketplace && enabledPartnerMarketplaces.includes(resolvedMarketplace)
+        ? resolvedMarketplace
+        : null;
 
       inspectedLinks.push({
         original,
@@ -2928,7 +2949,7 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
     const partnerLinks = inspectedLinks.filter((item) => Boolean(item.partnerMarketplace));
 
     const hasPartnerLink = partnerLinks.length > 0;
-    if (rules.requirePartnerLink !== false && !hasPartnerLink) {
+    if (requirePartnerLink && !hasPartnerLink) {
       skipped += 1;
       withDb((db) => {
         appendRouteHistory(db, {
@@ -3376,15 +3397,9 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
       });
     }
 
-    if (routeSentCount > 0 && routeMedia?.token) {
-      if (routeMedia.sourcePlatform === "whatsapp") {
-        await scheduleWhatsAppMediaDeletion(routeMedia.token, input.userId, 120_000);
-      } else if (routeMedia.sourcePlatform === "telegram") {
-        await scheduleTelegramMediaDeletion(routeMedia.token, input.userId, 120_000);
-      }
-    }
   }
 
+  await scheduleInboundMediaCleanup();
   return {
     routesMatched: routes.length,
     processed,
@@ -3490,6 +3505,7 @@ function applyWhatsAppEvents(
       const groupName = String(data.groupName || data.groupId || "Grupo");
       const message = String(data.message || "");
       const from = String(data.from || "WhatsApp");
+      const fromMe = data.fromMe === true || data.from_me === true;
       const mediaRaw = data.media && typeof data.media === "object"
         ? (data.media as Record<string, unknown>)
         : null;
@@ -3503,6 +3519,71 @@ function applyWhatsAppEvents(
           fileName: typeof mediaRaw.fileName === "string" ? mediaRaw.fileName : undefined,
         }
         : null;
+      const mediaKindHint = String(data.mediaKind || data.media_kind || "").trim().toLowerCase();
+      const hasMediaHint = data.hasMedia === true || data.has_media === true || Boolean(mediaKindHint) || Boolean(media);
+      if (fromMe) {
+        appendInboundHistory(db, {
+          userId,
+          source: from,
+          destination: groupName,
+          message,
+          platform: "whatsapp",
+        });
+        db.tables.history_entries.push({
+          id: randomId("hist"),
+          user_id: userId,
+          type: "route_forward",
+          source: groupName,
+          destination: "-",
+          status: "info",
+          details: {
+            message,
+            reason: "from_me_ignored",
+            sourceExternalId: groupExternalId,
+            sessionId,
+            platform: "whatsapp",
+          },
+          direction: "inbound",
+          message_type: "text",
+          processing_status: "blocked",
+          block_reason: "from_me_ignored",
+          error_step: "route_filter",
+          created_at: nowIso(),
+        });
+        continue;
+      }
+      if (!message && !media && hasMediaHint) {
+        appendInboundHistory(db, {
+          userId,
+          source: from,
+          destination: groupName,
+          message: `[midia ${mediaKindHint || "desconhecida"} recebida]`,
+          platform: "whatsapp",
+        });
+        db.tables.history_entries.push({
+          id: randomId("hist"),
+          user_id: userId,
+          type: "route_forward",
+          source: groupName,
+          destination: "-",
+          status: "warning",
+          details: {
+            message: "",
+            reason: "unsupported_media_type",
+            mediaKind: mediaKindHint || "unknown",
+            sourceExternalId: groupExternalId,
+            sessionId,
+            platform: "whatsapp",
+          },
+          direction: "inbound",
+          message_type: "text",
+          processing_status: "blocked",
+          block_reason: "unsupported_media_type",
+          error_step: "media_ingestion",
+          created_at: nowIso(),
+        });
+        continue;
+      }
       appendInboundHistory(db, {
         userId,
         source: from,
@@ -3610,6 +3691,7 @@ function applyTelegramEvents(
       const groupName = String(data.groupName || data.groupId || "Grupo");
       const message = String(data.message || "");
       const from = String(data.from || "Telegram");
+      const fromMe = data.fromMe === true || data.from_me === true;
       const mediaRaw = data.media && typeof data.media === "object"
         ? (data.media as Record<string, unknown>)
         : null;
@@ -3623,6 +3705,71 @@ function applyTelegramEvents(
           fileName: typeof mediaRaw.fileName === "string" ? mediaRaw.fileName : undefined,
         }
         : null;
+      const mediaKindHint = String(data.mediaKind || data.media_kind || "").trim().toLowerCase();
+      const hasMediaHint = data.hasMedia === true || data.has_media === true || Boolean(mediaKindHint) || Boolean(media);
+      if (fromMe) {
+        appendInboundHistory(db, {
+          userId,
+          source: from,
+          destination: groupName,
+          message,
+          platform: "telegram",
+        });
+        db.tables.history_entries.push({
+          id: randomId("hist"),
+          user_id: userId,
+          type: "route_forward",
+          source: groupName,
+          destination: "-",
+          status: "info",
+          details: {
+            message,
+            reason: "from_me_ignored",
+            sourceExternalId: groupExternalId,
+            sessionId,
+            platform: "telegram",
+          },
+          direction: "inbound",
+          message_type: "text",
+          processing_status: "blocked",
+          block_reason: "from_me_ignored",
+          error_step: "route_filter",
+          created_at: nowIso(),
+        });
+        continue;
+      }
+      if (!message && !media && hasMediaHint) {
+        appendInboundHistory(db, {
+          userId,
+          source: from,
+          destination: groupName,
+          message: `[midia ${mediaKindHint || "desconhecida"} recebida]`,
+          platform: "telegram",
+        });
+        db.tables.history_entries.push({
+          id: randomId("hist"),
+          user_id: userId,
+          type: "route_forward",
+          source: groupName,
+          destination: "-",
+          status: "warning",
+          details: {
+            message: "",
+            reason: "unsupported_media_type",
+            mediaKind: mediaKindHint || "unknown",
+            sourceExternalId: groupExternalId,
+            sessionId,
+            platform: "telegram",
+          },
+          direction: "inbound",
+          message_type: "text",
+          processing_status: "blocked",
+          block_reason: "unsupported_media_type",
+          error_step: "media_ingestion",
+          created_at: nowIso(),
+        });
+        continue;
+      }
       appendInboundHistory(db, {
         userId,
         source: from,
@@ -4593,11 +4740,12 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     }
 
     if (action === "disconnect") {
+      const clearSession = body.clearSession === true || String(body.clearSession || "").trim().toLowerCase() === "true";
       try {
         await callService(TELEGRAM_MICROSERVICE_URL, "/api/telegram/disconnect", {
           method: "POST",
           userId,
-          body: { sessionId },
+          body: { sessionId, clearSession },
         });
 
         withDb((db) => {
@@ -4605,11 +4753,14 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
           if (!row) return;
           row.status = "offline";
           row.connected_at = null;
+          if (clearSession) {
+            row.session_string = "";
+          }
           row.error_message = "";
           row.updated_at = nowIso();
         });
 
-        return { data: { status: "offline" }, error: null };
+        return { data: { status: "offline", clear_session: clearSession }, error: null };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Falha ao desconectar sessão Telegram";
         withDb((db) => {

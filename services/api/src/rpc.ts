@@ -4,6 +4,7 @@ import { v4 as uuid } from "uuid";
 import { pool, query, queryOne, execute, transaction } from "./db.js";
 import { requireAuth, signToken } from "./auth.js";
 import { getPasswordPolicyError } from "./password-policy.js";
+import { decryptCredential } from "./credential-cipher.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -252,7 +253,7 @@ const OPS_URL       = process.env.OPS_CONTROL_URL
   ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3115" : "");
 const OPS_TOKEN     = String(process.env.OPS_CONTROL_TOKEN ?? "").trim();
 const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET ?? "").trim();
-const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance"]);
+const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance","admin-wa-broadcast"]);
 const MAX_URL_LENGTH = 2048;
 const MAX_SHOPEE_CONVERT_BATCH = 30;
 const MAX_MELI_CONVERT_BATCH = 50;
@@ -422,9 +423,9 @@ function isMercadoLivreProductUrlLike(raw: string): boolean {
   );
 }
 
-function consumeRpcFunctionRateLimit(scopeKey: string, funcName: string): { allowed: boolean; policy: RpcRatePolicy | null } {
+function consumeRpcFunctionRateLimit(scopeKey: string, funcName: string): { allowed: boolean; policy: RpcRatePolicy | null; retryAfterSec: number } {
   const policy = RPC_RATE_BY_FUNCTION[funcName] ?? null;
-  if (!policy) return { allowed: true, policy: null };
+  if (!policy) return { allowed: true, policy: null, retryAfterSec: 0 };
 
   const now = Date.now();
   const key = `${scopeKey}:${funcName}`;
@@ -432,11 +433,12 @@ function consumeRpcFunctionRateLimit(scopeKey: string, funcName: string): { allo
 
   if (!entry || now > entry.resetAt) {
     rpcFunctionRateStore.set(key, { count: 1, resetAt: now + policy.windowMs });
-    return { allowed: true, policy };
+    return { allowed: true, policy, retryAfterSec: 0 };
   }
 
   entry.count += 1;
-  return { allowed: entry.count <= policy.max, policy };
+  const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+  return { allowed: entry.count <= policy.max, policy, retryAfterSec };
 }
 
 setInterval(() => {
@@ -2296,6 +2298,54 @@ async function logRouteProcessingFailure(input: {
   console.error(`[rpc] route processing ${platform} failed: ${errorMessage}`);
 }
 
+async function appendInboundCaptureHistory(input: {
+  userId: string;
+  sourceName: string;
+  sourceExternalId: string;
+  sessionId: string;
+  platform: "whatsapp" | "telegram";
+  message: string;
+  media: RouteForwardMedia | null;
+  hasMediaHint: boolean;
+  mediaKindHint: string;
+}): Promise<void> {
+  const {
+    userId,
+    sourceName,
+    sourceExternalId,
+    sessionId,
+    platform,
+    message,
+    media,
+    hasMediaHint,
+    mediaKindHint,
+  } = input;
+
+  const capturedAt = nowIso();
+  const messageType = media ? "image" : "text";
+  const normalizedMessage = String(message || "").trim();
+  const fallbackMessage = (!normalizedMessage && hasMediaHint)
+    ? `[midia ${mediaKindHint || "desconhecida"} recebida]`
+    : normalizedMessage;
+
+  try {
+    await execute(
+      "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'session_event',$3,$4,'info',$5,'inbound',$6,'processed','','')",
+      [uuid(), userId, sourceName || "Grupo", "-", JSON.stringify({
+        message: fallbackMessage,
+        sourceExternalId,
+        sessionId,
+        platform,
+        hasMedia: !!media || hasMediaHint,
+        mediaKind: mediaKindHint || (media ? media.kind : ""),
+        capturedAt,
+      }), messageType],
+    );
+  } catch {
+    // Capture history is best-effort and must not break the route pipeline.
+  }
+}
+
 async function applyWhatsAppEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
   let groupsSynced = 0;
   for (const raw of events) {
@@ -2363,17 +2413,67 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
         const sourceExternalId = String(data.groupId ?? "").trim();
         const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
         const message = String(data.message ?? "").trim();
+        const fromMe = data.fromMe === true || data.from_me === true;
         const media = parseRouteForwardMedia(data.media);
+        const mediaKindHint = String(data.mediaKind ?? data.media_kind ?? "").trim().toLowerCase();
+        const hasMediaHint = data.hasMedia === true
+          || data.has_media === true
+          || Boolean(mediaKindHint)
+          || Boolean(media);
         logRouteMediaDebug("incoming.whatsapp.message_received", {
           userId,
           sessionId,
           sourceExternalId,
           sourceName,
+          fromMe,
           hasText: Boolean(message),
           textLength: message.length,
+          hasMediaHint,
+          mediaKindHint,
           media: summarizeRouteForwardMedia(media),
         });
-        if (!sourceExternalId || (!message && !media)) continue;
+        if (!sourceExternalId || (!message && !media && !hasMediaHint)) continue;
+
+        if (fromMe) {
+          await execute(
+            "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'info',$5,'inbound','text','blocked','from_me_ignored','route_filter')",
+            [uuid(), userId, sourceName, "-", JSON.stringify({
+              message,
+              sourceExternalId,
+              sessionId,
+              platform: "whatsapp",
+              reason: "from_me_ignored",
+            })],
+          );
+          continue;
+        }
+
+        await appendInboundCaptureHistory({
+          userId,
+          sourceName,
+          sourceExternalId,
+          sessionId,
+          platform: "whatsapp",
+          message,
+          media,
+          hasMediaHint,
+          mediaKindHint,
+        });
+
+        if (!message && !media && hasMediaHint) {
+          await execute(
+            "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound','text','blocked','unsupported_media_type','media_ingestion')",
+            [uuid(), userId, sourceName, "-", JSON.stringify({
+              message: "",
+              sourceExternalId,
+              sessionId,
+              platform: "whatsapp",
+              reason: "unsupported_media_type",
+              mediaKind: mediaKindHint || "unknown",
+            })],
+          );
+          continue;
+        }
 
         try {
           await processRouteMessageForUser({
@@ -2479,17 +2579,67 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
         const sourceExternalId = String(data.groupId ?? "").trim();
         const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
         const message = String(data.message ?? "").trim();
+        const fromMe = data.fromMe === true || data.from_me === true;
         const media = parseRouteForwardMedia(data.media);
+        const mediaKindHint = String(data.mediaKind ?? data.media_kind ?? "").trim().toLowerCase();
+        const hasMediaHint = data.hasMedia === true
+          || data.has_media === true
+          || Boolean(mediaKindHint)
+          || Boolean(media);
         logRouteMediaDebug("incoming.telegram.message_received", {
           userId,
           sessionId,
           sourceExternalId,
           sourceName,
+          fromMe,
           hasText: Boolean(message),
           textLength: message.length,
+          hasMediaHint,
+          mediaKindHint,
           media: summarizeRouteForwardMedia(media),
         });
-        if (!sourceExternalId || (!message && !media)) continue;
+        if (!sourceExternalId || (!message && !media && !hasMediaHint)) continue;
+
+        if (fromMe) {
+          await execute(
+            "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'info',$5,'inbound','text','blocked','from_me_ignored','route_filter')",
+            [uuid(), userId, sourceName, "-", JSON.stringify({
+              message,
+              sourceExternalId,
+              sessionId,
+              platform: "telegram",
+              reason: "from_me_ignored",
+            })],
+          );
+          continue;
+        }
+
+        await appendInboundCaptureHistory({
+          userId,
+          sourceName,
+          sourceExternalId,
+          sessionId,
+          platform: "telegram",
+          message,
+          media,
+          hasMediaHint,
+          mediaKindHint,
+        });
+
+        if (!message && !media && hasMediaHint) {
+          await execute(
+            "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound','text','blocked','unsupported_media_type','media_ingestion')",
+            [uuid(), userId, sourceName, "-", JSON.stringify({
+              message: "",
+              sourceExternalId,
+              sessionId,
+              platform: "telegram",
+              reason: "unsupported_media_type",
+              mediaKind: mediaKindHint || "unknown",
+            })],
+          );
+          continue;
+        }
 
         try {
           await processRouteMessageForUser({
@@ -2588,9 +2738,23 @@ function detectRoutePartnerMarketplace(url: string): string | null {
   return null;
 }
 
+function isPrivateNetworkUrl(urlStr: string): boolean {
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
+    const host = parsed.hostname.toLowerCase();
+    if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|169\.254\.|0\.0\.0\.0$)/.test(host)) return true;
+    if (host === "localhost" || host === "::1" || host.endsWith(".local") || host.endsWith(".internal")) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 async function resolveRouteLinkWithRedirect(url: string): Promise<string> {
   const target = String(url || "").trim();
   if (!/^https?:\/\//i.test(target)) return target;
+  if (isPrivateNetworkUrl(target)) return target;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4_000);
@@ -2600,7 +2764,10 @@ async function resolveRouteLinkWithRedirect(url: string): Promise<string> {
       redirect: "follow",
       signal: controller.signal,
     });
-    return response.url || target;
+    const finalUrl = response.url || target;
+    // Validate the final URL after all redirects to prevent SSRF
+    if (isPrivateNetworkUrl(finalUrl)) return target;
+    return finalUrl;
   } catch {
     return target;
   } finally {
@@ -2662,6 +2829,7 @@ async function processRouteMessageForUser(input: {
     "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id = $1 AND provider = 'shopee'",
     [userId],
   );
+  if (shopeeCredentials) shopeeCredentials.secret_key = decryptCredential(shopeeCredentials.secret_key);
   const shopeeConversionCache = new Map<string, {
     affiliateLink: string;
     resolvedUrl: string;
@@ -2673,6 +2841,9 @@ async function processRouteMessageForUser(input: {
   const meliConversionCache = new Map<string, { affiliateLink: string; ok: boolean; error?: string }>();
   const routeMeliSessionCache = new Map<string, string>();
   const routeTemplateCache = new Map<string, string | null>();
+  const shouldScheduleInboundMediaDeletion = Boolean(media?.token);
+
+  try {
 
   const sourceExternalCandidates = buildSourceExternalIdCandidates(sourceExternalId);
   const sourceCandidates = new Set<string>([sessionId, ...sourceExternalCandidates].filter(Boolean));
@@ -2721,7 +2892,7 @@ async function processRouteMessageForUser(input: {
        r.rules,
        COALESCE(json_agg(rd.group_id) FILTER (WHERE rd.group_id IS NOT NULL),'[]') AS dest_ids
      FROM routes r
-     LEFT JOIN groups sg ON sg.id = r.source_group_id AND sg.user_id::text = r.user_id::text
+     LEFT JOIN groups sg ON sg.id::text = r.source_group_id AND sg.user_id::text = r.user_id::text
      LEFT JOIN route_destinations rd ON rd.route_id = r.id
      WHERE r.user_id::text = $1 AND r.status = 'active'
      GROUP BY r.id, sg.external_id`,
@@ -2778,9 +2949,9 @@ async function processRouteMessageForUser(input: {
          FROM master_group_links l
          JOIN master_groups mg
            ON mg.id = l.master_group_id
-        WHERE l.master_group_id = ANY($1)
+       WHERE l.master_group_id = ANY($1::uuid[])
           AND l.is_active <> FALSE
-          AND mg.user_id = $2`,
+          AND mg.user_id::text = $2`,
       [[...allMasterGroupIds], userId],
     )
     : [];
@@ -2804,14 +2975,13 @@ async function processRouteMessageForUser(input: {
 
   const destGroupRows = allTargetGroupIds.size > 0
     ? await query<{ id: string; name: string; platform: string; session_id: string; external_id: string }>(
-      "SELECT id, name, platform, session_id, external_id FROM groups WHERE id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
+      "SELECT id, name, platform, session_id, external_id FROM groups WHERE id = ANY($1::uuid[]) AND user_id::text = $2 AND deleted_at IS NULL",
       [[...allTargetGroupIds], userId],
     )
     : [];
   const destGroupMap = new Map(destGroupRows.map((group) => [String(group.id), group]));
 
   let dispatched = 0;
-  let mediaUsedInSuccessfulDispatch = false;
   for (const route of matching) {
     let routeDispatched = 0;
     const rules = route.rules && typeof route.rules === "object" && !Array.isArray(route.rules)
@@ -2856,6 +3026,7 @@ async function processRouteMessageForUser(input: {
       isRouteMarketplaceConversionEnabled(rules, marketplace),
     );
     const requirePartnerLink = rules.requirePartnerLink !== false;
+    const shouldResolveUnknownLinks = requirePartnerLink ? true : shouldResolveBeforeValidate;
     const routeLinks = extractRouteLinks(message);
 
     const inspectedLinks: Array<{
@@ -2869,14 +3040,30 @@ async function processRouteMessageForUser(input: {
     for (const originalLink of routeLinks) {
       const original = String(originalLink || "").trim();
       if (!original) continue;
+
       const originalMarketplace = detectRoutePartnerMarketplace(original);
-      const resolved = shouldResolveBeforeValidate ? await resolveRouteLinkWithRedirect(original) : original;
-      const resolvedMarketplace = detectRoutePartnerMarketplace(resolved);
-      const partnerMarketplace = originalMarketplace && enabledPartnerMarketplaces.includes(originalMarketplace)
-        ? originalMarketplace
-        : resolvedMarketplace && enabledPartnerMarketplaces.includes(resolvedMarketplace)
-          ? resolvedMarketplace
-          : null;
+      let resolved = original;
+      let resolvedMarketplace = originalMarketplace;
+
+      if (originalMarketplace && enabledPartnerMarketplaces.includes(originalMarketplace)) {
+        inspectedLinks.push({
+          original,
+          resolved,
+          originalMarketplace,
+          resolvedMarketplace,
+          partnerMarketplace: originalMarketplace,
+        });
+        continue;
+      }
+
+      if (!originalMarketplace && shouldResolveUnknownLinks) {
+        resolved = await resolveRouteLinkWithRedirect(original);
+        resolvedMarketplace = detectRoutePartnerMarketplace(resolved);
+      }
+
+      const partnerMarketplace = resolvedMarketplace && enabledPartnerMarketplaces.includes(resolvedMarketplace)
+        ? resolvedMarketplace
+        : null;
       inspectedLinks.push({ original, resolved, originalMarketplace, resolvedMarketplace, partnerMarketplace });
     }
 
@@ -3319,9 +3506,6 @@ async function processRouteMessageForUser(input: {
 
       dispatched += 1;
       routeDispatched += 1;
-      if (mediaForDestination) {
-        mediaUsedInSuccessfulDispatch = true;
-      }
       await execute(
         "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'success',$5,'outbound',$6,'sent','','')",
         [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, platform, routeId: route.id, routeName: route.name, hasMedia: !!mediaForDestination, ...(autoImageSource ? { autoImageSource } : {}) }), mediaForDestination ? "image" : "text"],
@@ -3352,15 +3536,16 @@ async function processRouteMessageForUser(input: {
     }
   }
 
-  if (mediaUsedInSuccessfulDispatch) {
-    await scheduleRouteForwardMediaDeletion({
-      userId,
-      media,
-      delayMs: 120_000,
-    });
-  }
-
   return { dispatched, routesMatched: matching.length };
+  } finally {
+    if (shouldScheduleInboundMediaDeletion) {
+      await scheduleRouteForwardMediaDeletion({
+        userId,
+        media,
+        delayMs: 120_000,
+      });
+    }
+  }
 }
 
 async function pollWhatsAppEventsForSession(userId: string, sessionId: string): Promise<number> {
@@ -3530,6 +3715,7 @@ type ChannelPollRuntimeResult = {
   telegramEvents: number;
   telegramHealthFallbackAdded: number;
   failed: number;
+  orphanCleanup: ChannelOrphanCleanupResult | null;
 };
 
 type ChannelPollErrorEntry = {
@@ -3572,6 +3758,462 @@ const channelPollRuntime = {
   lastResult: null as ChannelPollRuntimeResult | null,
 };
 
+type ChannelRuntimeSessionRow = {
+  sessionId: string;
+  userId: string;
+  status: string;
+};
+
+type ChannelOrphanCleanupResult = {
+  scope: "user" | "global";
+  trigger: string;
+  runtime: {
+    scanned: { whatsapp: number; telegram: number };
+    staleDetected: { whatsapp: number; telegram: number };
+    removed: { whatsapp: number; telegram: number };
+    failed: { whatsapp: number; telegram: number };
+  };
+  db: {
+    groupsScanned: number;
+    remapPairs: number;
+    orphanGroupsDetected: number;
+    sourceRoutesRemapped: number;
+    routeDestinationsRemapped: number;
+    masterGroupLinksRemapped: number;
+    scheduledDestinationsRemapped: number;
+    sourceRoutesCleared: number;
+    routeDestinationsDeleted: number;
+    masterGroupLinksDeleted: number;
+    scheduledDestinationsDeleted: number;
+    groupsDeleted: number;
+  };
+  finishedAt: string;
+};
+
+const CHANNEL_ORPHAN_SWEEP_INTERVAL_MS = Math.max(
+  60_000,
+  Number(process.env.CHANNEL_ORPHAN_SWEEP_INTERVAL_MS || "180000"),
+);
+const CHANNEL_ORPHAN_SWEEP_AUTO_ENABLED = !IS_PRODUCTION
+  && String(process.env.CHANNEL_ORPHAN_SWEEP_AUTO || "1").trim() !== "0";
+let channelOrphanSweepLastRunMs = 0;
+let channelOrphanSweepInFlight: Promise<ChannelOrphanCleanupResult> | null = null;
+const channelOrphanSweepRuntime = {
+  lastStartedAt: null as string | null,
+  lastFinishedAt: null as string | null,
+  lastDurationMs: null as number | null,
+  successCount: 0,
+  failureCount: 0,
+  lastError: "",
+  lastResult: null as ChannelOrphanCleanupResult | null,
+};
+
+function parseConnectorRuntimeSessions(
+  payload: unknown,
+  requesterUserId: string,
+  canRunGlobal: boolean,
+): ChannelRuntimeSessionRow[] {
+  const root = (payload && typeof payload === "object")
+    ? payload as Record<string, unknown>
+    : {};
+  const sessionsRaw = Array.isArray(root.sessions) ? root.sessions : [];
+  const rows: ChannelRuntimeSessionRow[] = [];
+
+  for (const item of sessionsRaw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const sessionId = String(row.sessionId ?? row.id ?? "").trim();
+    const userId = String(row.userId ?? row.user_id ?? "").trim();
+    const status = String(row.status ?? "").trim().toLowerCase();
+    if (!sessionId || !userId) continue;
+    if (!canRunGlobal && userId !== requesterUserId) continue;
+    rows.push({ sessionId, userId, status });
+  }
+
+  return rows;
+}
+
+async function loadConnectorRuntimeSessions(input: {
+  platform: "whatsapp" | "telegram";
+  requesterUserId: string;
+  canRunGlobal: boolean;
+}): Promise<ChannelRuntimeSessionRow[]> {
+  const baseUrl = input.platform === "whatsapp" ? WHATSAPP_URL : TELEGRAM_URL;
+  if (!baseUrl) return [];
+  const headers = input.canRunGlobal ? {} : buildUserScopedHeaders(input.requesterUserId);
+  const upstream = await proxyMicroservice(baseUrl, "/health", "GET", null, headers, 8_000);
+  if (upstream.error) return [];
+  return parseConnectorRuntimeSessions(upstream.data, input.requesterUserId, input.canRunGlobal);
+}
+
+function scoreSessionStatus(statusRaw: string): number {
+  const status = String(statusRaw || "").trim().toLowerCase();
+  if (status === "online") return 3;
+  if (status === "connecting") return 2;
+  if (status === "qr_code" || status === "pairing_code" || status === "awaiting_code" || status === "awaiting_password") return 1;
+  return 0;
+}
+
+async function runChannelOrphanCleanup(input: {
+  requesterUserId: string;
+  canRunGlobal: boolean;
+  trigger: string;
+}): Promise<ChannelOrphanCleanupResult> {
+  const scope: "user" | "global" = input.canRunGlobal ? "global" : "user";
+  const scopeParams: unknown[] = [];
+  const scopeFilter = input.canRunGlobal ? "" : "WHERE user_id = $1";
+  if (!input.canRunGlobal) scopeParams.push(input.requesterUserId);
+
+  const [waSessionsDb, tgSessionsDb] = await Promise.all([
+    query<{ id: string; user_id: string; status: string }>(
+      `SELECT id, user_id, COALESCE(status, '') AS status FROM whatsapp_sessions ${scopeFilter}`,
+      scopeParams,
+    ),
+    query<{ id: string; user_id: string; status: string }>(
+      `SELECT id, user_id, COALESCE(status, '') AS status FROM telegram_sessions ${scopeFilter}`,
+      scopeParams,
+    ),
+  ]);
+
+  const waDbSet = new Set(waSessionsDb.map((row) => `${String(row.user_id)}::${String(row.id)}`));
+  const tgDbSet = new Set(tgSessionsDb.map((row) => `${String(row.user_id)}::${String(row.id)}`));
+  const waStatusBySession = new Map(waSessionsDb.map((row) => [`${String(row.user_id)}::${String(row.id)}`, String(row.status || "")]));
+  const tgStatusBySession = new Map(tgSessionsDb.map((row) => [`${String(row.user_id)}::${String(row.id)}`, String(row.status || "")]));
+
+  const runtime = {
+    scanned: { whatsapp: 0, telegram: 0 },
+    staleDetected: { whatsapp: 0, telegram: 0 },
+    removed: { whatsapp: 0, telegram: 0 },
+    failed: { whatsapp: 0, telegram: 0 },
+  };
+
+  const [waRuntime, tgRuntime] = await Promise.all([
+    loadConnectorRuntimeSessions({
+      platform: "whatsapp",
+      requesterUserId: input.requesterUserId,
+      canRunGlobal: input.canRunGlobal,
+    }),
+    loadConnectorRuntimeSessions({
+      platform: "telegram",
+      requesterUserId: input.requesterUserId,
+      canRunGlobal: input.canRunGlobal,
+    }),
+  ]);
+
+  runtime.scanned.whatsapp = waRuntime.length;
+  runtime.scanned.telegram = tgRuntime.length;
+
+  for (const row of waRuntime) {
+    const key = `${row.userId}::${row.sessionId}`;
+    if (waDbSet.has(key)) continue;
+    runtime.staleDetected.whatsapp += 1;
+    const disconnect = await proxyMicroservice(
+      WHATSAPP_URL,
+      `/api/sessions/${encodeURIComponent(row.sessionId)}/disconnect`,
+      "POST",
+      { sessionId: row.sessionId },
+      buildUserScopedHeaders(row.userId),
+      10_000,
+    );
+    if (disconnect.error) {
+      runtime.failed.whatsapp += 1;
+      pushChannelPollError({
+        platform: "whatsapp",
+        userId: row.userId,
+        sessionId: row.sessionId,
+        stage: "session_loop",
+        message: `orphan runtime cleanup failed: ${disconnect.error.message}`,
+        status: Number((disconnect.error as { status?: number }).status) || null,
+      });
+      continue;
+    }
+    runtime.removed.whatsapp += 1;
+  }
+
+  for (const row of tgRuntime) {
+    const key = `${row.userId}::${row.sessionId}`;
+    if (tgDbSet.has(key)) continue;
+    runtime.staleDetected.telegram += 1;
+    const disconnect = await proxyMicroservice(
+      TELEGRAM_URL,
+      "/api/telegram/disconnect",
+      "POST",
+      { sessionId: row.sessionId, clearSession: true },
+      buildUserScopedHeaders(row.userId),
+      10_000,
+    );
+    if (disconnect.error) {
+      runtime.failed.telegram += 1;
+      pushChannelPollError({
+        platform: "telegram",
+        userId: row.userId,
+        sessionId: row.sessionId,
+        stage: "session_loop",
+        message: `orphan runtime cleanup failed: ${disconnect.error.message}`,
+        status: Number((disconnect.error as { status?: number }).status) || null,
+      });
+      continue;
+    }
+    runtime.removed.telegram += 1;
+  }
+
+  const groups = await query<{
+    id: string;
+    user_id: string;
+    platform: string;
+    session_id: string | null;
+    external_id: string | null;
+    deleted_at: string | null;
+    updated_at: string | null;
+    created_at: string | null;
+  }>(
+    `SELECT id, user_id, platform, session_id, external_id, deleted_at, updated_at, created_at
+       FROM groups
+       ${scopeFilter}`,
+    scopeParams,
+  );
+
+  const isValidGroupSession = (row: {
+    user_id: string;
+    platform: string;
+    session_id: string | null;
+  }): boolean => {
+    const sessionId = String(row.session_id || "").trim();
+    if (!sessionId) return false;
+    const key = `${String(row.user_id)}::${sessionId}`;
+    if (String(row.platform || "") === "whatsapp") return waDbSet.has(key);
+    if (String(row.platform || "") === "telegram") return tgDbSet.has(key);
+    return false;
+  };
+
+  const remap = new Map<string, string>();
+  const activeGroups = groups.filter((row) => !row.deleted_at);
+  const duplicateBuckets = new Map<string, typeof activeGroups>();
+
+  for (const group of activeGroups) {
+    const externalId = String(group.external_id || "").trim().toLowerCase();
+    if (!externalId) continue;
+    const key = `${String(group.user_id)}::${String(group.platform)}::${externalId}`;
+    const bucket = duplicateBuckets.get(key) || [];
+    bucket.push(group);
+    duplicateBuckets.set(key, bucket);
+  }
+
+  for (const rows of duplicateBuckets.values()) {
+    if (rows.length <= 1) continue;
+    const validRows = rows.filter((row) => isValidGroupSession(row));
+    if (validRows.length === 0) continue;
+
+    const canonical = [...validRows].sort((a, b) => {
+      const aStatus = String(a.platform) === "whatsapp"
+        ? waStatusBySession.get(`${String(a.user_id)}::${String(a.session_id || "")}`) || ""
+        : tgStatusBySession.get(`${String(a.user_id)}::${String(a.session_id || "")}`) || "";
+      const bStatus = String(b.platform) === "whatsapp"
+        ? waStatusBySession.get(`${String(b.user_id)}::${String(b.session_id || "")}`) || ""
+        : tgStatusBySession.get(`${String(b.user_id)}::${String(b.session_id || "")}`) || "";
+      const statusDiff = scoreSessionStatus(bStatus) - scoreSessionStatus(aStatus);
+      if (statusDiff !== 0) return statusDiff;
+      const aUpdated = Date.parse(String(a.updated_at || a.created_at || ""));
+      const bUpdated = Date.parse(String(b.updated_at || b.created_at || ""));
+      if (Number.isFinite(aUpdated) && Number.isFinite(bUpdated) && bUpdated !== aUpdated) return bUpdated - aUpdated;
+      return String(a.id).localeCompare(String(b.id));
+    })[0];
+
+    for (const row of rows) {
+      const oldId = String(row.id);
+      const newId = String(canonical.id);
+      if (!oldId || !newId || oldId === newId) continue;
+      remap.set(oldId, newId);
+    }
+  }
+
+  const orphanGroupIds = new Set<string>();
+  for (const row of activeGroups) {
+    if (!isValidGroupSession(row)) {
+      orphanGroupIds.add(String(row.id));
+    }
+  }
+
+  for (const oldId of remap.keys()) {
+    orphanGroupIds.add(oldId);
+  }
+  for (const newId of remap.values()) {
+    orphanGroupIds.delete(newId);
+  }
+
+  const remapPairs = [...remap.entries()].filter(([oldId, newId]) => oldId !== newId);
+  const removeGroupIds = [...orphanGroupIds].filter(Boolean);
+
+  const dbStats = await transaction(async (client) => {
+    let sourceRoutesRemapped = 0;
+    let routeDestinationsRemapped = 0;
+    let masterGroupLinksRemapped = 0;
+    let scheduledDestinationsRemapped = 0;
+
+    for (const [oldId, newId] of remapPairs) {
+      if (!oldId || !newId || oldId === newId) continue;
+      const sourceRes = await client.query(
+        "UPDATE routes SET source_group_id = $1, updated_at = NOW() WHERE source_group_id = $2",
+        [newId, oldId],
+      );
+      sourceRoutesRemapped += sourceRes.rowCount ?? 0;
+
+      const routeDestInsert = await client.query(
+        `INSERT INTO route_destinations (route_id, group_id)
+         SELECT route_id, $1
+           FROM route_destinations
+          WHERE group_id = $2
+         ON CONFLICT (route_id, group_id) DO NOTHING`,
+        [newId, oldId],
+      );
+      routeDestinationsRemapped += routeDestInsert.rowCount ?? 0;
+      await client.query("DELETE FROM route_destinations WHERE group_id = $1", [oldId]);
+
+      const masterInsert = await client.query(
+        `INSERT INTO master_group_links (master_group_id, group_id, is_active)
+         SELECT master_group_id, $1, is_active
+           FROM master_group_links
+          WHERE group_id = $2
+         ON CONFLICT (master_group_id, group_id)
+         DO UPDATE SET is_active = (master_group_links.is_active OR EXCLUDED.is_active)`,
+        [newId, oldId],
+      );
+      masterGroupLinksRemapped += masterInsert.rowCount ?? 0;
+      await client.query("DELETE FROM master_group_links WHERE group_id = $1", [oldId]);
+
+      const scheduledInsert = await client.query(
+        `INSERT INTO scheduled_post_destinations (post_id, group_id)
+         SELECT post_id, $1
+           FROM scheduled_post_destinations
+          WHERE group_id = $2
+         ON CONFLICT (post_id, group_id) DO NOTHING`,
+        [newId, oldId],
+      );
+      scheduledDestinationsRemapped += scheduledInsert.rowCount ?? 0;
+      await client.query("DELETE FROM scheduled_post_destinations WHERE group_id = $1", [oldId]);
+    }
+
+    let sourceRoutesCleared = 0;
+    let routeDestinationsDeleted = 0;
+    let masterGroupLinksDeleted = 0;
+    let scheduledDestinationsDeleted = 0;
+    let groupsDeleted = 0;
+
+    if (removeGroupIds.length > 0) {
+      const sourceClear = await client.query(
+        `UPDATE routes
+            SET source_group_id = '',
+                status = CASE WHEN status = 'active' THEN 'inactive' ELSE status END,
+                updated_at = NOW()
+          WHERE source_group_id = ANY($1::text[])`,
+        [removeGroupIds],
+      );
+      sourceRoutesCleared = sourceClear.rowCount ?? 0;
+
+      const routeDestDelete = await client.query(
+        "DELETE FROM route_destinations WHERE group_id = ANY($1::uuid[])",
+        [removeGroupIds],
+      );
+      routeDestinationsDeleted = routeDestDelete.rowCount ?? 0;
+
+      const masterDelete = await client.query(
+        "DELETE FROM master_group_links WHERE group_id = ANY($1::uuid[])",
+        [removeGroupIds],
+      );
+      masterGroupLinksDeleted = masterDelete.rowCount ?? 0;
+
+      const scheduledDelete = await client.query(
+        "DELETE FROM scheduled_post_destinations WHERE group_id = ANY($1::uuid[])",
+        [removeGroupIds],
+      );
+      scheduledDestinationsDeleted = scheduledDelete.rowCount ?? 0;
+
+      const groupsDelete = await client.query(
+        "DELETE FROM groups WHERE id = ANY($1::uuid[])",
+        [removeGroupIds],
+      );
+      groupsDeleted = groupsDelete.rowCount ?? 0;
+    }
+
+    return {
+      sourceRoutesRemapped,
+      routeDestinationsRemapped,
+      masterGroupLinksRemapped,
+      scheduledDestinationsRemapped,
+      sourceRoutesCleared,
+      routeDestinationsDeleted,
+      masterGroupLinksDeleted,
+      scheduledDestinationsDeleted,
+      groupsDeleted,
+    };
+  });
+
+  return {
+    scope,
+    trigger: String(input.trigger || "manual"),
+    runtime,
+    db: {
+      groupsScanned: groups.length,
+      remapPairs: remapPairs.length,
+      orphanGroupsDetected: orphanGroupIds.size,
+      sourceRoutesRemapped: dbStats.sourceRoutesRemapped,
+      routeDestinationsRemapped: dbStats.routeDestinationsRemapped,
+      masterGroupLinksRemapped: dbStats.masterGroupLinksRemapped,
+      scheduledDestinationsRemapped: dbStats.scheduledDestinationsRemapped,
+      sourceRoutesCleared: dbStats.sourceRoutesCleared,
+      routeDestinationsDeleted: dbStats.routeDestinationsDeleted,
+      masterGroupLinksDeleted: dbStats.masterGroupLinksDeleted,
+      scheduledDestinationsDeleted: dbStats.scheduledDestinationsDeleted,
+      groupsDeleted: dbStats.groupsDeleted,
+    },
+    finishedAt: nowIso(),
+  };
+}
+
+async function maybeRunAutoChannelOrphanCleanup(input: {
+  requesterUserId: string;
+  canRunGlobal: boolean;
+  trigger: string;
+}): Promise<ChannelOrphanCleanupResult | null> {
+  if (!CHANNEL_ORPHAN_SWEEP_AUTO_ENABLED) return null;
+  if (!input.canRunGlobal) return null;
+
+  const nowMs = Date.now();
+  if (channelOrphanSweepInFlight) return null;
+  if (channelOrphanSweepLastRunMs > 0 && nowMs - channelOrphanSweepLastRunMs < CHANNEL_ORPHAN_SWEEP_INTERVAL_MS) {
+    return null;
+  }
+
+  channelOrphanSweepLastRunMs = nowMs;
+  channelOrphanSweepRuntime.lastStartedAt = nowIso();
+  const startedAtMs = Date.now();
+
+  const task = runChannelOrphanCleanup({
+    requesterUserId: input.requesterUserId,
+    canRunGlobal: true,
+    trigger: input.trigger,
+  });
+  channelOrphanSweepInFlight = task;
+
+  try {
+    const report = await task;
+    channelOrphanSweepRuntime.lastFinishedAt = nowIso();
+    channelOrphanSweepRuntime.lastDurationMs = Math.max(0, Date.now() - startedAtMs);
+    channelOrphanSweepRuntime.successCount += 1;
+    channelOrphanSweepRuntime.lastError = "";
+    channelOrphanSweepRuntime.lastResult = report;
+    return report;
+  } catch (error) {
+    channelOrphanSweepRuntime.lastFinishedAt = nowIso();
+    channelOrphanSweepRuntime.lastDurationMs = Math.max(0, Date.now() - startedAtMs);
+    channelOrphanSweepRuntime.failureCount += 1;
+    channelOrphanSweepRuntime.lastError = error instanceof Error ? error.message : String(error);
+    return null;
+  } finally {
+    channelOrphanSweepInFlight = null;
+  }
+}
+
 async function pollChannelEventsInScope(input: {
   requesterUserId: string;
   canRunGlobal: boolean;
@@ -3584,6 +4226,7 @@ async function pollChannelEventsInScope(input: {
   telegramEvents: number;
   telegramHealthFallbackAdded: number;
   failed: number;
+  orphanCleanup: ChannelOrphanCleanupResult | null;
 }> {
   const scope: "user" | "global" = input.canRunGlobal ? "global" : "user";
   const scopeParams: unknown[] = [];
@@ -3597,6 +4240,7 @@ async function pollChannelEventsInScope(input: {
   let telegramEvents = 0;
   let telegramHealthFallbackAdded = 0;
   let failed = 0;
+  let orphanCleanup: ChannelOrphanCleanupResult | null = null;
 
   if (WHATSAPP_URL) {
     const dbSessions = await query<ChannelPollSessionRow>(
@@ -3679,6 +4323,12 @@ async function pollChannelEventsInScope(input: {
     }
   }
 
+  orphanCleanup = await maybeRunAutoChannelOrphanCleanup({
+    requesterUserId: input.requesterUserId,
+    canRunGlobal: input.canRunGlobal,
+    trigger: "poll-channel-events:auto",
+  });
+
   return {
     scope,
     whatsappSessions,
@@ -3688,6 +4338,7 @@ async function pollChannelEventsInScope(input: {
     telegramEvents,
     telegramHealthFallbackAdded,
     failed,
+    orphanCleanup,
   };
 }
 
@@ -3770,6 +4421,11 @@ const MERCADO_LIVRE_BLOCKED_MESSAGE = "Mercado Livre não está disponível no s
 
 function normalizeEmail(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function sanitizePhone(raw: string): string {
+  const stripped = raw.replace(/[^\d+]/g, "");
+  return /^\+?\d{10,15}$/.test(stripped) ? stripped : "";
 }
 
 function isValidEmail(value: string): boolean {
@@ -3916,6 +4572,7 @@ async function listUsersWithMeta() {
              ELSE p.plan_expires_at
            END AS plan_expires_at,
            p.name AS profile_name,
+           COALESCE(p.phone, '') AS phone,
            COALESCE(r.role, 'user') AS role
     FROM users u
     LEFT JOIN profiles p ON p.user_id = u.id
@@ -3926,6 +4583,7 @@ async function listUsersWithMeta() {
     id: u.id, user_id: u.id,
     name: String(u.profile_name ?? u.metadata?.name ?? "Usuário"),
     email: u.email,
+    phone: String(u.phone ?? ""),
     plan_id: u.plan_id,
     plan_expires_at: u.plan_expires_at ?? null,
     created_at: u.created_at,
@@ -3988,6 +4646,9 @@ rpcRouter.post("/rpc", async (req, res) => {
     const rateScopeKey = userId || (req.ip ?? req.socket.remoteAddress ?? "unknown");
     const rateResult = consumeRpcFunctionRateLimit(rateScopeKey, funcName);
     if (!rateResult.allowed) {
+      if (rateResult.retryAfterSec > 0) {
+        res.setHeader("Retry-After", String(rateResult.retryAfterSec));
+      }
       fail(res, rateResult.policy?.message || "Limite de chamadas excedido. Aguarde alguns segundos.", 429);
       return;
     }
@@ -4038,6 +4699,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           telegramEvents: polled.telegramEvents,
           telegramHealthFallbackAdded: polled.telegramHealthFallbackAdded,
           failed: polled.failed,
+          orphanCleanup: polled.orphanCleanup,
         };
         ok(res, { ok: true, source, ...polled }); return;
       } catch (error) {
@@ -4045,6 +4707,37 @@ rpcRouter.post("/rpc", async (req, res) => {
         channelPollRuntime.lastDurationMs = Math.max(0, Date.now() - startedAtMs);
         channelPollRuntime.failureCount += 1;
         channelPollRuntime.lastError = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    }
+
+    // —— admin-sanitize-channel-orphans ———————————————————————————————
+    if (funcName === "admin-sanitize-channel-orphans") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
+      const requestedScope = String(params.scope ?? "global").trim().toLowerCase();
+      const canRunGlobal = requestedScope !== "user";
+
+      const startedAtMs = Date.now();
+      channelOrphanSweepRuntime.lastStartedAt = nowIso();
+      try {
+        const report = await runChannelOrphanCleanup({
+          requesterUserId: userId,
+          canRunGlobal,
+          trigger: String(params.trigger ?? "admin-manual"),
+        });
+        channelOrphanSweepRuntime.lastFinishedAt = nowIso();
+        channelOrphanSweepRuntime.lastDurationMs = Math.max(0, Date.now() - startedAtMs);
+        channelOrphanSweepRuntime.successCount += 1;
+        channelOrphanSweepRuntime.lastError = "";
+        channelOrphanSweepRuntime.lastResult = report;
+        channelOrphanSweepLastRunMs = Date.now();
+        ok(res, { ok: true, ...report });
+        return;
+      } catch (error) {
+        channelOrphanSweepRuntime.lastFinishedAt = nowIso();
+        channelOrphanSweepRuntime.lastDurationMs = Math.max(0, Date.now() - startedAtMs);
+        channelOrphanSweepRuntime.failureCount += 1;
+        channelOrphanSweepRuntime.lastError = error instanceof Error ? error.message : String(error);
         throw error;
       }
     }
@@ -4079,7 +4772,16 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "poll_events_all") {
         await reconcileWhatsAppSessionsFromHealth(userId).catch(() => ({ reconciled: 0, online: false }));
-        const sessions = await query<{ id: string }>("SELECT id FROM whatsapp_sessions WHERE user_id = $1", [userId]);
+        const dbSessions = await query<{ id: string }>("SELECT id FROM whatsapp_sessions WHERE user_id = $1", [userId]);
+        const dbRows = dedupeChannelPollSessions(
+          dbSessions.map((row) => ({ id: String(row?.id || ""), user_id: userId })),
+        );
+        const healthRows = await loadOnlineSessionsFromConnectorHealth({
+          platform: "whatsapp",
+          requesterUserId: userId,
+          canRunGlobal: false,
+        }).catch(() => []);
+        const sessions = dedupeChannelPollSessions([...dbRows, ...healthRows]);
         let totalEvents = 0;
         for (const row of sessions) {
           if (!row?.id) continue;
@@ -4089,7 +4791,12 @@ rpcRouter.post("/rpc", async (req, res) => {
             // best effort polling
           }
         }
-        ok(res, { success: true, sessions: sessions.length, events: totalEvents }); return;
+        ok(res, {
+          success: true,
+          sessions: sessions.length,
+          events: totalEvents,
+          healthFallbackAdded: Math.max(0, sessions.length - dbRows.length),
+        }); return;
       }
       // Ownership guard: verify session belongs to this user before any session-specific action
       if (sessionId && action !== "health" && action !== "poll_events_all") {
@@ -4225,7 +4932,16 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
       if (action === "poll_events_all") {
         const touched = await refreshTelegramHealthState(userId).catch(() => 0);
-        const sessions = await query<{ id: string }>("SELECT id FROM telegram_sessions WHERE user_id = $1", [userId]);
+        const dbSessions = await query<{ id: string }>("SELECT id FROM telegram_sessions WHERE user_id = $1", [userId]);
+        const dbRows = dedupeChannelPollSessions(
+          dbSessions.map((row) => ({ id: String(row?.id || ""), user_id: userId })),
+        );
+        const healthRows = await loadOnlineSessionsFromConnectorHealth({
+          platform: "telegram",
+          requesterUserId: userId,
+          canRunGlobal: false,
+        }).catch(() => []);
+        const sessions = dedupeChannelPollSessions([...dbRows, ...healthRows]);
         let totalEvents = 0;
         for (const row of sessions) {
           if (!row?.id) continue;
@@ -4235,11 +4951,26 @@ rpcRouter.post("/rpc", async (req, res) => {
             // best effort polling
           }
         }
-        ok(res, { success: true, sessions: sessions.length, events: totalEvents, touched }); return;
+        ok(res, {
+          success: true,
+          sessions: sessions.length,
+          events: totalEvents,
+          touched,
+          healthFallbackAdded: Math.max(0, sessions.length - dbRows.length),
+        }); return;
       }
       if (action === "refresh_status") {
         const touched = await refreshTelegramHealthState(userId).catch(() => 0);
-        const sessions = await query<{ id: string }>("SELECT id FROM telegram_sessions WHERE user_id = $1", [userId]);
+        const dbSessions = await query<{ id: string }>("SELECT id FROM telegram_sessions WHERE user_id = $1", [userId]);
+        const dbRows = dedupeChannelPollSessions(
+          dbSessions.map((row) => ({ id: String(row?.id || ""), user_id: userId })),
+        );
+        const healthRows = await loadOnlineSessionsFromConnectorHealth({
+          platform: "telegram",
+          requesterUserId: userId,
+          canRunGlobal: false,
+        }).catch(() => []);
+        const sessions = dedupeChannelPollSessions([...dbRows, ...healthRows]);
         let totalEvents = 0;
         for (const row of sessions) {
           if (!row?.id) continue;
@@ -4249,7 +4980,13 @@ rpcRouter.post("/rpc", async (req, res) => {
             // best effort polling
           }
         }
-        ok(res, { success: true, sessions: sessions.length, events: totalEvents, touched }); return;
+        ok(res, {
+          success: true,
+          sessions: sessions.length,
+          events: totalEvents,
+          touched,
+          healthFallbackAdded: Math.max(0, sessions.length - dbRows.length),
+        }); return;
       }
       // Ownership guard: verify session belongs to this user before any session-specific action
       if (sessionId && action !== "health" && action !== "poll_events_all") {
@@ -4296,12 +5033,29 @@ rpcRouter.post("/rpc", async (req, res) => {
         ok(res, r.data ?? { status: "connecting" }); return;
       }
       if (action === "disconnect") {
+        const clearSession = params.clearSession === true || String(params.clearSession ?? "").trim().toLowerCase() === "true";
         const tgHeaders = buildUserScopedHeaders(userId);
-        const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/disconnect", "POST", { sessionId }, tgHeaders);
+        const r = await proxyMicroservice(
+          TELEGRAM_URL,
+          "/api/telegram/disconnect",
+          "POST",
+          { sessionId, clearSession },
+          tgHeaders,
+        );
         if (r.error) { fail(res, r.error.message); return; }
-        await execute("UPDATE telegram_sessions SET status='offline', connected_at=NULL, phone_code_hash='', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+        await execute(
+          `UPDATE telegram_sessions
+              SET status = 'offline',
+                  connected_at = NULL,
+                  phone_code_hash = '',
+                  session_string = CASE WHEN $3 THEN '' ELSE session_string END,
+                  error_message = '',
+                  updated_at = NOW()
+            WHERE id = $1 AND user_id = $2`,
+          [sessionId, userId, clearSession],
+        );
         await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
-        ok(res, { status: "offline" }); return;
+        ok(res, { status: "offline", clear_session: clearSession }); return;
       }
       if (action === "sync_groups") {
         const tgHeaders = buildUserScopedHeaders(userId);
@@ -4797,6 +5551,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!SHOPEE_URL) { ok(res, { success: false, reason: "Shopee microservice não configurado.", region: "BR" }); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
       if (!cred) { ok(res, { success: false, reason: "Credenciais Shopee não configuradas.", region: "BR" }); return; }
+      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
       const fallbackRegion = String(cred.region || "BR").toUpperCase();
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(
@@ -4824,6 +5579,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
       if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
+      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
       const sourceUrl = String(params.url ?? params.link ?? "").trim();
       if (!sourceUrl) { fail(res, "URL Shopee obrigatoria"); return; }
       if (sourceUrl.length > MAX_URL_LENGTH) { fail(res, "URL Shopee excede o tamanho maximo permitido"); return; }
@@ -4842,6 +5598,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
       if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
+      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
       const urlsRaw = Array.isArray(params.urls) ? params.urls : (Array.isArray(params.links) ? params.links : []);
       const urls = urlsRaw
         .filter((item): item is string => typeof item === "string")
@@ -4889,6 +5646,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
       if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
+      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
       const queries = Array.isArray(params.queries) ? params.queries : [];
       if (queries.length > MAX_SHOPEE_BATCH_QUERIES) {
         fail(res, `Limite de ${MAX_SHOPEE_BATCH_QUERIES} consultas por lote Shopee`);
@@ -4976,6 +5734,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             [uniqueUserIds],
           )
         : [];
+      for (const row of credRows) { if (row.secret_key) row.secret_key = decryptCredential(row.secret_key); }
       const credsByUser = new Map(credRows.map((row) => [String(row.user_id), row]));
 
       let processed = 0;
@@ -6273,8 +7032,8 @@ rpcRouter.post("/rpc", async (req, res) => {
         [userId],
       );
 
-      let sessionId = latestSession?.id ? String(latestSession.id) : "";
-      let sessionName = latestSession?.name ? String(latestSession.name) : "";
+      const sessionId = latestSession?.id ? String(latestSession.id) : "";
+      const sessionName = latestSession?.name ? String(latestSession.name) : "";
       let sessionStatus = normalizeMeliSessionHealthStatus(latestSession?.status || "not_found");
       let sessionLastCheckedAt = latestSession?.last_checked_at ? String(latestSession.last_checked_at) : null;
       let sessionError = latestSession?.error_message ? String(latestSession.error_message) : "";
@@ -7611,6 +8370,18 @@ rpcRouter.post("/rpc", async (req, res) => {
               lastResult: channelPollRuntime.lastResult ? { ...channelPollRuntime.lastResult } : null,
               errorsRecent: channelPollErrors.slice(-50).map((item) => ({ ...item })),
             },
+            channelOrphanCleanup: {
+              autoEnabled: CHANNEL_ORPHAN_SWEEP_AUTO_ENABLED,
+              intervalMs: CHANNEL_ORPHAN_SWEEP_INTERVAL_MS,
+              inFlight: Boolean(channelOrphanSweepInFlight),
+              lastStartedAt: channelOrphanSweepRuntime.lastStartedAt,
+              lastFinishedAt: channelOrphanSweepRuntime.lastFinishedAt,
+              lastDurationMs: channelOrphanSweepRuntime.lastDurationMs,
+              successCount: channelOrphanSweepRuntime.successCount,
+              failureCount: channelOrphanSweepRuntime.failureCount,
+              lastError: channelOrphanSweepRuntime.lastError,
+              lastResult: channelOrphanSweepRuntime.lastResult ? { ...channelOrphanSweepRuntime.lastResult } : null,
+            },
           },
         },
         serviceConfig: {
@@ -7835,6 +8606,296 @@ rpcRouter.post("/rpc", async (req, res) => {
       fail(res, "Ação de comunicados inválida"); return;
     }
 
+    // ── admin-wa-broadcast ───────────────────────────────────────────────────
+    if (funcName === "admin-wa-broadcast") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
+      const action = String(params.action ?? "");
+
+      // ACTION: preview — list recipients matching filters
+      if (action === "preview") {
+        const filterPlan: string[] = Array.isArray(params.filterPlan) ? params.filterPlan.filter((p: unknown) => typeof p === "string") : [];
+        const filterStatus = String(params.filterStatus ?? "all");
+        const filterUserIds: string[] = Array.isArray(params.filterUserIds) ? params.filterUserIds.filter((u: unknown) => typeof u === "string") : [];
+
+        const users = await listUsersWithMeta();
+        const filtered = users.filter((u) => {
+          if (["inactive", "blocked", "archived"].includes(u.account_status)) return false;
+          if (u.role === "admin") return false;
+          if (!u.phone) return false;
+          if (filterUserIds.length > 0 && !filterUserIds.includes(u.user_id)) return false;
+          if (filterPlan.length > 0 && !filterPlan.includes(u.plan_id)) return false;
+          if (filterStatus === "active_plan") {
+            if (u.plan_expires_at && Date.parse(u.plan_expires_at) <= Date.now()) return false;
+          } else if (filterStatus === "expired_plan") {
+            if (!u.plan_expires_at || Date.parse(u.plan_expires_at) > Date.now()) return false;
+          }
+          return true;
+        });
+
+        ok(res, {
+          count: filtered.length,
+          users: filtered.slice(0, 300).map((u) => ({
+            user_id: u.user_id,
+            name: u.name,
+            email: u.email,
+            phone: u.phone,
+            plan_id: u.plan_id,
+          })),
+        });
+        return;
+      }
+
+      // ACTION: send — send broadcast immediately
+      if (action === "send") {
+        const message = String(params.message ?? "").trim();
+        if (!message) { fail(res, "Mensagem é obrigatória"); return; }
+
+        const filterPlan: string[] = Array.isArray(params.filterPlan) ? params.filterPlan.filter((p: unknown) => typeof p === "string") : [];
+        const filterStatus = String(params.filterStatus ?? "all");
+        const filterUserIds: string[] = Array.isArray(params.filterUserIds) ? params.filterUserIds.filter((u: unknown) => typeof u === "string") : [];
+
+        // Get admin's WA session
+        const adminSession = await queryOne<{ id: string; status: string }>(
+          "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 ORDER BY created_at LIMIT 1",
+          [userId],
+        );
+        if (!adminSession) { fail(res, "Nenhuma sessão WhatsApp do admin encontrada"); return; }
+        if (adminSession.status !== "online") { fail(res, "WhatsApp do admin não está online"); return; }
+
+        // Resolve recipients
+        const allUsers = await listUsersWithMeta();
+        const recipients = allUsers.filter((u) => {
+          if (["inactive", "blocked", "archived"].includes(u.account_status)) return false;
+          if (u.role === "admin") return false;
+          if (!u.phone) return false;
+          if (filterUserIds.length > 0 && !filterUserIds.includes(u.user_id)) return false;
+          if (filterPlan.length > 0 && !filterPlan.includes(u.plan_id)) return false;
+          if (filterStatus === "active_plan") {
+            if (u.plan_expires_at && Date.parse(u.plan_expires_at) <= Date.now()) return false;
+          } else if (filterStatus === "expired_plan") {
+            if (!u.plan_expires_at || Date.parse(u.plan_expires_at) > Date.now()) return false;
+          }
+          return true;
+        });
+
+        if (recipients.length === 0) { fail(res, "Nenhum destinatário encontrado com os filtros informados"); return; }
+
+        // Create broadcast record
+        const broadcastId = uuid();
+        await execute(
+          `INSERT INTO admin_wa_broadcasts (id, admin_user_id, message, filter_plan, filter_status, filter_user_ids, total_recipients, status, started_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', NOW())`,
+          [broadcastId, userId, message, filterPlan, filterStatus, filterUserIds.length > 0 ? filterUserIds : [], recipients.length],
+        );
+
+        // Send messages with delay between each to avoid WhatsApp rate limits
+        const outbound = formatMessageForPlatform(message, "whatsapp");
+        const waHeaders = buildUserScopedHeaders(userId);
+        let sentCount = 0;
+        let failedCount = 0;
+        const errors: Array<{ phone: string; error: string }> = [];
+
+        for (let i = 0; i < recipients.length; i++) {
+          const recipient = recipients[i];
+          const phone = String(recipient.phone).replace(/\D/g, "");
+          if (!phone) { failedCount++; errors.push({ phone: recipient.phone, error: "Telefone inválido" }); continue; }
+
+          const jid = `${phone}@s.whatsapp.net`;
+          try {
+            const r = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+              sessionId: adminSession.id,
+              jid,
+              content: outbound,
+            }, waHeaders, 15_000);
+
+            if (r.error) {
+              failedCount++;
+              errors.push({ phone, error: String(r.error.message || "Falha no envio") });
+            } else {
+              sentCount++;
+            }
+          } catch (e: unknown) {
+            failedCount++;
+            errors.push({ phone, error: e instanceof Error ? e.message : String(e) });
+          }
+
+          // Delay 1.5s between messages to avoid rate limiting
+          if (i < recipients.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+        }
+
+        const finalStatus = failedCount === 0 ? "sent" : sentCount === 0 ? "failed" : "partial";
+        await execute(
+          `UPDATE admin_wa_broadcasts SET status=$1, sent_count=$2, failed_count=$3, error_details=$4::jsonb, completed_at=NOW() WHERE id=$5`,
+          [finalStatus, sentCount, failedCount, JSON.stringify(errors.slice(0, 50)), broadcastId],
+        );
+
+        await appendAudit("admin_wa_broadcast", userId, null, {
+          broadcast_id: broadcastId,
+          total: recipients.length,
+          sent: sentCount,
+          failed: failedCount,
+        });
+
+        ok(res, {
+          broadcast_id: broadcastId,
+          total: recipients.length,
+          sent: sentCount,
+          failed: failedCount,
+          status: finalStatus,
+        });
+        return;
+      }
+
+      // ACTION: schedule — schedule broadcast for later
+      if (action === "schedule") {
+        const message = String(params.message ?? "").trim();
+        if (!message) { fail(res, "Mensagem é obrigatória"); return; }
+        const scheduledAt = String(params.scheduledAt ?? "").trim();
+        if (!scheduledAt || !Date.parse(scheduledAt)) { fail(res, "Data de agendamento inválida"); return; }
+        if (Date.parse(scheduledAt) <= Date.now()) { fail(res, "Data de agendamento deve ser no futuro"); return; }
+
+        const filterPlan: string[] = Array.isArray(params.filterPlan) ? params.filterPlan.filter((p: unknown) => typeof p === "string") : [];
+        const filterStatus = String(params.filterStatus ?? "all");
+        const filterUserIds: string[] = Array.isArray(params.filterUserIds) ? params.filterUserIds.filter((u: unknown) => typeof u === "string") : [];
+
+        // Preview count
+        const allUsers2 = await listUsersWithMeta();
+        const recipientCount = allUsers2.filter((u) => {
+          if (["inactive", "blocked", "archived"].includes(u.account_status)) return false;
+          if (u.role === "admin") return false;
+          if (!u.phone) return false;
+          if (filterUserIds.length > 0 && !filterUserIds.includes(u.user_id)) return false;
+          if (filterPlan.length > 0 && !filterPlan.includes(u.plan_id)) return false;
+          if (filterStatus === "active_plan") {
+            if (u.plan_expires_at && Date.parse(u.plan_expires_at) <= Date.now()) return false;
+          } else if (filterStatus === "expired_plan") {
+            if (!u.plan_expires_at || Date.parse(u.plan_expires_at) > Date.now()) return false;
+          }
+          return true;
+        }).length;
+
+        const broadcastId = uuid();
+        await execute(
+          `INSERT INTO admin_wa_broadcasts (id, admin_user_id, message, filter_plan, filter_status, filter_user_ids, total_recipients, status, scheduled_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', $8)`,
+          [broadcastId, userId, message, filterPlan, filterStatus, filterUserIds.length > 0 ? filterUserIds : [], recipientCount, scheduledAt],
+        );
+
+        await appendAudit("admin_wa_broadcast_scheduled", userId, null, { broadcast_id: broadcastId, scheduled_at: scheduledAt, recipients: recipientCount });
+
+        ok(res, { broadcast_id: broadcastId, scheduled_at: scheduledAt, recipients: recipientCount });
+        return;
+      }
+
+      // ACTION: cancel — cancel a scheduled broadcast
+      if (action === "cancel") {
+        const broadcastId = String(params.broadcastId ?? "").trim();
+        if (!broadcastId) { fail(res, "ID do broadcast é obrigatório"); return; }
+        const row = await queryOne<{ status: string }>("SELECT status FROM admin_wa_broadcasts WHERE id=$1 AND admin_user_id=$2", [broadcastId, userId]);
+        if (!row) { fail(res, "Broadcast não encontrado"); return; }
+        if (row.status !== "scheduled") { fail(res, "Apenas broadcasts agendados podem ser cancelados"); return; }
+        await execute("UPDATE admin_wa_broadcasts SET status='cancelled', updated_at=NOW() WHERE id=$1", [broadcastId]);
+        ok(res, { success: true });
+        return;
+      }
+
+      // ACTION: list — list broadcast history
+      if (action === "list") {
+        const rows = await query(
+          "SELECT * FROM admin_wa_broadcasts WHERE admin_user_id=$1 ORDER BY created_at DESC LIMIT 50",
+          [userId],
+        );
+        ok(res, { broadcasts: rows });
+        return;
+      }
+
+      // ACTION: dispatch_scheduled — process scheduled broadcasts (called by scheduler)
+      if (action === "dispatch_scheduled") {
+        const due = await query(
+          `UPDATE admin_wa_broadcasts SET status='processing', started_at=NOW(), updated_at=NOW()
+           WHERE id IN (
+             SELECT id FROM admin_wa_broadcasts
+             WHERE status='scheduled' AND scheduled_at <= NOW()
+             ORDER BY scheduled_at LIMIT 5
+             FOR UPDATE SKIP LOCKED
+           ) RETURNING *`,
+        );
+
+        let dispatched = 0;
+        for (const broadcast of due) {
+          const bcastSession = await queryOne<{ id: string; status: string }>(
+            "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 ORDER BY created_at LIMIT 1",
+            [broadcast.admin_user_id],
+          );
+          if (!bcastSession || bcastSession.status !== "online") {
+            await execute("UPDATE admin_wa_broadcasts SET status='failed', error_details=$1::jsonb, completed_at=NOW() WHERE id=$2", [JSON.stringify([{ phone: "", error: "WhatsApp do admin não está online" }]), broadcast.id]);
+            continue;
+          }
+
+          const bcastUsers = await listUsersWithMeta();
+          const bFilterPlan: string[] = Array.isArray(broadcast.filter_plan) ? broadcast.filter_plan : [];
+          const bFilterStatus = String(broadcast.filter_status ?? "all");
+          const bFilterUserIds: string[] = Array.isArray(broadcast.filter_user_ids) ? broadcast.filter_user_ids : [];
+
+          const bRecipients = bcastUsers.filter((u) => {
+            if (["inactive", "blocked", "archived"].includes(u.account_status)) return false;
+            if (u.role === "admin") return false;
+            if (!u.phone) return false;
+            if (bFilterUserIds.length > 0 && !bFilterUserIds.includes(u.user_id)) return false;
+            if (bFilterPlan.length > 0 && !bFilterPlan.includes(u.plan_id)) return false;
+            if (bFilterStatus === "active_plan") {
+              if (u.plan_expires_at && Date.parse(u.plan_expires_at) <= Date.now()) return false;
+            } else if (bFilterStatus === "expired_plan") {
+              if (!u.plan_expires_at || Date.parse(u.plan_expires_at) > Date.now()) return false;
+            }
+            return true;
+          });
+
+          const bOutbound = formatMessageForPlatform(String(broadcast.message), "whatsapp");
+          const bWaHeaders = buildUserScopedHeaders(String(broadcast.admin_user_id));
+          let bSentCount = 0;
+          let bFailedCount = 0;
+          const bErrors: Array<{ phone: string; error: string }> = [];
+
+          for (let j = 0; j < bRecipients.length; j++) {
+            const bRecipient = bRecipients[j];
+            const bPhone = String(bRecipient.phone).replace(/\D/g, "");
+            if (!bPhone) { bFailedCount++; bErrors.push({ phone: bRecipient.phone, error: "Telefone inválido" }); continue; }
+            const bJid = `${bPhone}@s.whatsapp.net`;
+            try {
+              const br = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+                sessionId: bcastSession.id,
+                jid: bJid,
+                content: bOutbound,
+              }, bWaHeaders, 15_000);
+              if (br.error) { bFailedCount++; bErrors.push({ phone: bPhone, error: String(br.error.message || "Falha") }); }
+              else { bSentCount++; }
+            } catch (e: unknown) {
+              bFailedCount++;
+              bErrors.push({ phone: bPhone, error: e instanceof Error ? e.message : String(e) });
+            }
+            // Delay between messages
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+
+          const bFinalStatus = bFailedCount === 0 ? "sent" : bSentCount === 0 ? "failed" : "partial";
+          await execute(
+            `UPDATE admin_wa_broadcasts SET status=$1, sent_count=$2, failed_count=$3, total_recipients=$4, error_details=$5::jsonb, completed_at=NOW() WHERE id=$6`,
+            [bFinalStatus, bSentCount, bFailedCount, bRecipients.length, JSON.stringify(bErrors.slice(0, 50)), broadcast.id],
+          );
+          dispatched++;
+        }
+
+        ok(res, { dispatched, checked: due.length });
+        return;
+      }
+
+      fail(res, "Ação de broadcast inválida");
+      return;
+    }
+
     // â”€â”€ admin-users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (funcName === "admin-users") {
       if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
@@ -7939,6 +9000,7 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (action === "create_user") {
         const email = normalizeEmail(params.email); const password = String(params.password ?? "");
         const name = String(params.name ?? "Usuário").trim() || "Usuário"; const role = String(params.role ?? "user") === "admin" ? "admin" : "user";
+        const phone = sanitizePhone(String(params.phone ?? ""));
         const requestedPlanId = String(params.plan_id ?? "").trim();
         const planId = role === "admin"
           ? ADMIN_PANEL_PLAN_ID
@@ -7954,8 +9016,8 @@ rpcRouter.post("/rpc", async (req, res) => {
           await client.query("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,NOW())", [newId, email, hash, JSON.stringify({ name, account_status: "active", status_updated_at: nowIso() })]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), newId, role]);
           await client.query(
-            "INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at) VALUES ($1,$2,$3,$4,$5,$6)",
-            [uuid(), newId, name, email, planId, role === "admin" ? null : planExpiresAt(cp, planId)],
+            "INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at, phone) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            [uuid(), newId, name, email, planId, role === "admin" ? null : planExpiresAt(cp, planId), phone],
           );
         });
         await appendAudit("create_user", userId, newId, { email, role, plan_id: planId });
@@ -7966,6 +9028,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             user_id: newId,
             name,
             email,
+            phone,
             plan_id: planId,
             role,
             account_status: "active",
@@ -7980,6 +9043,8 @@ rpcRouter.post("/rpc", async (req, res) => {
         const name = String(params.name ?? "").trim();
         const emailProvided = params.email !== undefined;
         const email = normalizeEmail(params.email);
+        const phoneProvided = params.phone !== undefined;
+        const phone = phoneProvided ? sanitizePhone(String(params.phone ?? "")) : "";
         if (emailProvided) {
           if (!email || !isValidEmail(email)) { fail(res, "Email inválido"); return; }
           const duplicate = await queryOne("SELECT id FROM users WHERE email=$1 AND id<>$2", [email, tid]);
@@ -8026,6 +9091,9 @@ rpcRouter.post("/rpc", async (req, res) => {
             await client.query("UPDATE users SET email=$1, updated_at=NOW() WHERE id=$2", [email, tid]);
             await client.query("UPDATE profiles SET email=$1, updated_at=NOW() WHERE user_id=$2", [email, tid]);
           }
+          if (phoneProvided) {
+            await client.query("UPDATE profiles SET phone=$1, updated_at=NOW() WHERE user_id=$2", [phone, tid]);
+          }
           if (name) {
             await client.query("UPDATE profiles SET name=$1, updated_at=NOW() WHERE user_id=$2", [name, tid]);
           }
@@ -8041,6 +9109,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         await appendAudit("update_user", userId, tid, {
           name: name || undefined,
           email: emailProvided ? email : undefined,
+          phone: phoneProvided ? phone : undefined,
           plan_id: nextPlanId,
           role,
           account_status: accountStatus || undefined,
@@ -8091,6 +9160,42 @@ rpcRouter.post("/rpc", async (req, res) => {
         if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (!reason) { fail(res, "Motivo obrigatório"); return; }
         const noteType = ["refund","credit","note"].includes(String(params.note_type)) ? String(params.note_type) : "note";
         await appendAudit(`billing_${noteType}`, userId, tid, { note_type: noteType, amount: Number(params.amount ?? 0), reason });
+        ok(res, { success: true }); return;
+      }
+      if (action === "send_whatsapp_contact") {
+        const tid = String(params.user_id ?? "");
+        const phone = String(params.phone ?? "").trim();
+        const message = String(params.message ?? "").trim();
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
+        if (!phone) { fail(res, "Telefone do usuário obrigatório"); return; }
+        if (!message) { fail(res, "Mensagem obrigatória"); return; }
+
+        // Get admin WA session
+        const adminWaSession = await queryOne<{ id: string; status: string }>(
+          "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 ORDER BY created_at LIMIT 1",
+          [userId],
+        );
+        if (!adminWaSession) { fail(res, "Nenhuma sessão WhatsApp do admin encontrada. Configure seu WhatsApp na aba de Conexão."); return; }
+        if (adminWaSession.status !== "online") { fail(res, "WhatsApp do admin não está online. Conecte-se primeiro na aba de Conexão."); return; }
+
+        const cleanPhone = phone.replace(/\D/g, "");
+        if (!cleanPhone) { fail(res, "Número de telefone inválido"); return; }
+        const jid = `${cleanPhone}@s.whatsapp.net`;
+        const outbound = formatMessageForPlatform(message, "whatsapp");
+        const waHeaders = buildUserScopedHeaders(userId);
+
+        console.log(`[rpc] admin send_whatsapp_contact to=${cleanPhone} user=${tid} message="${message.substring(0, 80)}..."`);
+        const waResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+          sessionId: adminWaSession.id,
+          jid,
+          content: outbound,
+        }, waHeaders, 15_000);
+
+        if (waResult.error) {
+          fail(res, `Falha ao enviar mensagem: ${String(waResult.error.message || waResult.error)}`); return;
+        }
+
+        await appendAudit("send_whatsapp_contact", userId, tid, { phone: cleanPhone, message: message.substring(0, 500) });
         ok(res, { success: true }); return;
       }
       fail(res, "Ação administrativa inválida"); return;

@@ -62,7 +62,7 @@ export interface MasterGroup {
 
 // ===== Rotas =====
 
-export type RouteStatus = "active" | "paused" | "error";
+export type RouteStatus = "active" | "paused" | "inactive" | "error";
 
 export interface AppRoute {
   id: string;

@@ -202,9 +202,15 @@ async function runChannelEventsCycle() {
     const tgEvents = Number(payload?.telegramEvents || 0);
     const tgFallbackAdded = Number(payload?.telegramHealthFallbackAdded || 0);
     const failed = Number(payload?.failed || 0);
+    const orphanCleanup = payload?.orphanCleanup && typeof payload.orphanCleanup === "object"
+      ? payload.orphanCleanup
+      : null;
+    const orphanGroupsDeleted = Number(orphanCleanup?.db?.groupsDeleted || 0);
+    const orphanRuntimeRemovedWa = Number(orphanCleanup?.runtime?.removed?.whatsapp || 0);
+    const orphanRuntimeRemovedTg = Number(orphanCleanup?.runtime?.removed?.telegram || 0);
 
     log(
-      `channel events cycle ok: scope=${scope} wa_sessions=${waSessions} wa_events=${waEvents} wa_fallback=${waFallbackAdded} tg_sessions=${tgSessions} tg_events=${tgEvents} tg_fallback=${tgFallbackAdded} failed=${failed} pressure=${pressure.level}`,
+      `channel events cycle ok: scope=${scope} wa_sessions=${waSessions} wa_events=${waEvents} wa_fallback=${waFallbackAdded} tg_sessions=${tgSessions} tg_events=${tgEvents} tg_fallback=${tgFallbackAdded} failed=${failed} orphan_groups_deleted=${orphanGroupsDeleted} orphan_runtime_removed_wa=${orphanRuntimeRemovedWa} orphan_runtime_removed_tg=${orphanRuntimeRemovedTg} pressure=${pressure.level}`,
     );
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

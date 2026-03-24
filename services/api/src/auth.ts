@@ -7,13 +7,35 @@ import { queryOne, execute } from "./db.js";
 import { getPasswordPolicyError } from "./password-policy.js";
 import { isEmailDeliveryConfigured, sendEmail } from "./mailer.js";
 
-const SECRET = process.env.JWT_SECRET ?? "changeme-jwt-secret-32chars-minimum";
-const EXPIRES_IN = "7d";
+const SECRET = (() => {
+  const s = process.env.JWT_SECRET;
+  if (!s || s === "changeme-jwt-secret-32chars-minimum") {
+    if (String(process.env.NODE_ENV || "").toLowerCase() === "production") {
+      throw new Error("JWT_SECRET é obrigatório em produção. Defina uma chave forte com pelo menos 32 caracteres.");
+    }
+    console.warn("[auth] JWT_SECRET não definido — usando placeholder de desenvolvimento. NÃO use em produção.");
+    return "changeme-jwt-secret-32chars-minimum";
+  }
+  return s;
+})();
+const EXPIRES_IN = process.env.JWT_EXPIRES_IN || "2h";
+
+/** Strip everything except digits and leading '+'. E.g. "+55 (11) 9 1234-5678" → "+5511912345678" */
+function sanitizePhone(raw: string): string {
+  const stripped = raw.replace(/[^\d+]/g, "");
+  return /^\+?\d{10,15}$/.test(stripped) ? stripped : "";
+}
+
 const SERVICE_TOKEN_RAW = String(process.env.SERVICE_TOKEN ?? "");
 const SERVICE_TOKEN = SERVICE_TOKEN_RAW.trim();
 const IS_PRODUCTION = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 const AUTH_COOKIE_NAME = String(process.env.AUTH_COOKIE_NAME || "autolinks_at").trim() || "autolinks_at";
-const AUTH_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+const AUTH_COOKIE_MAX_AGE_SECONDS = (() => {
+  const envVal = Number(process.env.AUTH_COOKIE_MAX_AGE_SECONDS);
+  if (Number.isFinite(envVal) && envVal > 0) return envVal;
+  // Default: 2 hours (matches JWT expiry)
+  return 2 * 60 * 60;
+})();
 
 function resolveCookieSameSite(): "Strict" | "Lax" | "None" {
   const raw = String(process.env.AUTH_COOKIE_SAMESITE || "lax").trim().toLowerCase();
@@ -359,7 +381,8 @@ export interface TokenPayload {
 }
 
 export function signToken(payload: Omit<TokenPayload, "iat" | "exp">): string {
-  return jwt.sign(payload, SECRET, { expiresIn: EXPIRES_IN, algorithm: "HS256" });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return jwt.sign(payload, SECRET, { expiresIn: EXPIRES_IN as any, algorithm: "HS256" });
 }
 
 export function verifyToken(token: string): TokenPayload | null {
@@ -605,8 +628,10 @@ authRouter.post("/signup", async (req, res) => {
       res.status(503).json({ data: { user: null, session: null }, error: { message: "Servico de e-mail indisponivel. Tente novamente mais tarde." } }); return;
     }
 
-    const { email, password, options } = req.body as { email: string; password: string; options?: { data?: { name?: string } } };
+    const { email, password, options } = req.body as { email: string; password: string; options?: { data?: { name?: string; phone?: string } } };
+    const phone = sanitizePhone(String(options?.data?.phone ?? ""));
     if (!email || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email e senha obrigatórios" } }); return; }
+    if (!phone) { res.json({ data: { user: null, session: null }, error: { message: "Telefone (WhatsApp) obrigatório" } }); return; }
     const passwordPolicyError = getPasswordPolicyError(password);
     if (passwordPolicyError) { res.json({ data: { user: null, session: null }, error: { message: passwordPolicyError } }); return; }
     const normalizedEmail = email.toLowerCase().trim();
@@ -622,7 +647,7 @@ authRouter.post("/signup", async (req, res) => {
 
     await execute("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,$5)", [id, normalizedEmail, hash, JSON.stringify(metadata), null]);
     await execute("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,'user')", [uuid(), id]);
-    await execute("INSERT INTO profiles (id, user_id, name, email, plan_id) VALUES ($1,$2,$3,$4,$5)", [uuid(), id, name, normalizedEmail, signupPlanId]);
+    await execute("INSERT INTO profiles (id, user_id, name, email, plan_id, phone) VALUES ($1,$2,$3,$4,$5,$6)", [uuid(), id, name, normalizedEmail, signupPlanId, phone]);
     const verifyToken = await createAuthEmailToken(id, "email_verification", VERIFY_TOKEN_TTL_MINUTES);
 
     const user = await getUserWithRole(id);
@@ -791,17 +816,33 @@ authRouter.get("/verify-email", async (req, res) => {
 // POST /auth/signin
 authRouter.post("/signin", async (req, res) => {
   try {
-    const { email, password } = req.body as { email: string; password: string };
-    if (!email || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email e senha obrigatórios" } }); return; }
-    const emailForLog = maskEmailForLog(email);
-    const user = await queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string; email_confirmed_at: string | null }>(
-      "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM users WHERE email = $1", [email.toLowerCase().trim()]
-    );
+    const { email: rawIdentifier, password } = req.body as { email: string; password: string };
+    if (!rawIdentifier || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email ou telefone e senha obrigatórios" } }); return; }
+    const identifier = rawIdentifier.trim();
+    // Detect whether the user typed a phone number or an email
+    const isPhone = /^\+?\d[\d\s()-]{7,}$/.test(identifier);
+    const lookupValue = isPhone ? sanitizePhone(identifier) : identifier.toLowerCase();
+    const emailForLog = isPhone ? `phone:${lookupValue.slice(0, 4)}***` : maskEmailForLog(identifier);
+    const user = await (async () => {
+      if (isPhone) {
+        // Find user via profile phone
+        const profile = await queryOne<{ user_id: string }>(
+          "SELECT user_id FROM profiles WHERE phone = $1 LIMIT 1", [lookupValue],
+        );
+        if (!profile) return null;
+        return queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string; email_confirmed_at: string | null }>(
+          "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM users WHERE id = $1", [profile.user_id],
+        );
+      }
+      return queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string; email_confirmed_at: string | null }>(
+        "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM users WHERE email = $1", [lookupValue],
+      );
+    })();
     if (!user) {
       await bcrypt.compare(password, SIGNIN_DUMMY_HASH); // constant-time — prevents email enumeration via timing oracle
       const rid = (req as { rid?: string }).rid ?? "-";
       console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "user_not_found", email: emailForLog, ip: req.ip ?? "-", rid }));
-      res.json({ data: { user: null, session: null }, error: { message: "Email ou senha inválidos" } }); return;
+      res.json({ data: { user: null, session: null }, error: { message: "Credenciais inválidas" } }); return;
     }
 
     const meta = user.metadata ?? {};
@@ -815,7 +856,7 @@ authRouter.post("/signin", async (req, res) => {
     if (!valid) {
       const rid = (req as { rid?: string }).rid ?? "-";
       console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_failed", reason: "wrong_password", email: emailForLog, ip: req.ip ?? "-", rid }));
-      res.json({ data: { user: null, session: null }, error: { message: "Email ou senha inválidos" } }); return;
+      res.json({ data: { user: null, session: null }, error: { message: "Credenciais inválidas" } }); return;
     }
 
     if (!user.email_confirmed_at) {
@@ -880,11 +921,12 @@ authRouter.get("/session", requireAuth, async (req, res) => {
 // POST /auth/update-user
 authRouter.post("/update-user", requireAuth, async (req, res) => {
   try {
-    const { password, current_password, data: metadata, email } = req.body as {
+    const { password, current_password, data: metadata, email, phone: rawPhone } = req.body as {
       password?: string;
       current_password?: string;
       data?: Record<string, unknown>;
       email?: string;
+      phone?: string;
     };
     const userId = req.currentUser!.sub;
 
@@ -924,6 +966,15 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
       await execute(
         "UPDATE profiles SET email = $1, updated_at = NOW() WHERE user_id = $2",
         [normalizedEmail, userId],
+      );
+    }
+
+    if (rawPhone !== undefined) {
+      const phone = sanitizePhone(String(rawPhone || ""));
+      if (!phone) { res.json({ data: { user: null }, error: { message: "Telefone inválido. Use formato com DDD, ex: +5511912345678" } }); return; }
+      await execute(
+        "UPDATE profiles SET phone = $1, updated_at = NOW() WHERE user_id = $2",
+        [phone, userId],
       );
     }
 

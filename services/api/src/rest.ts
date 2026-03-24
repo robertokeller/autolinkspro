@@ -2,6 +2,30 @@ import { Router, Request, Response } from "express";
 import { v4 as uuid } from "uuid";
 import { pool } from "./db.js";
 import { requireAuth } from "./auth.js";
+import { encryptCredential, decryptCredential } from "./credential-cipher.js";
+
+// Columns that must be encrypted at rest per table
+const ENCRYPTED_COLUMNS: Record<string, Set<string>> = {
+  api_credentials: new Set(["secret_key"]),
+};
+
+function encryptRow(table: string, row: Record<string, unknown>): void {
+  const cols = ENCRYPTED_COLUMNS[table];
+  if (!cols) return;
+  for (const col of cols) {
+    if (typeof row[col] === "string") row[col] = encryptCredential(row[col] as string);
+  }
+}
+
+function decryptRows(table: string, rows: Record<string, unknown>[]): void {
+  const cols = ENCRYPTED_COLUMNS[table];
+  if (!cols) return;
+  for (const row of rows) {
+    for (const col of cols) {
+      if (typeof row[col] === "string") row[col] = decryptCredential(row[col] as string);
+    }
+  }
+}
 
 export const restRouter = Router();
 restRouter.use(requireAuth);
@@ -259,6 +283,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       }
 
       const rows = result.rows;
+      decryptRows(table, rows as Record<string, unknown>[]);
       if (normalizedOptions.maybeSingle) { res.json({ data: rows[0] ?? null, count: null, error: null }); return; }
       if (normalizedOptions.single) {
         if (rows.length === 0) { res.json({ data: null, count: null, error: { message: "No rows found" } }); return; }
@@ -300,6 +325,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
           }
         }
 
+        encryptRow(table, row);
         const keys = Object.keys(row);
         const cols = keys.map(safeIdent).join(", ");
         const phs = keys.map((_, i) => `$${i + 1}`).join(", ");
@@ -307,14 +333,14 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
         const result = await client.query(`INSERT INTO "${table}" (${cols}) VALUES (${phs}) RETURNING *`, vals);
         inserted.push(...result.rows);
       }
+      decryptRows(table, inserted as Record<string, unknown>[]);
       const ret = Array.isArray(data) ? inserted : (inserted[0] ?? null);
       res.json({ data: ret, count: inserted.length, error: null }); return;
     }
 
     // ── UPDATE ─────────────────────────────────────────────────────────────────
     if (op === "update") {
-      const updateData = data as Record<string, unknown>;
-      if (!updateData || typeof updateData !== "object" || Array.isArray(updateData)) {
+      const updateData = data as Record<string, unknown>;      if (updateData && typeof updateData === "object" && !Array.isArray(updateData)) encryptRow(table, updateData);      if (!updateData || typeof updateData !== "object" || Array.isArray(updateData)) {
         res.status(400).json({ data: null, count: null, error: { message: "Payload de update invalido" } }); return;
       }
       // Strip admin-only columns to prevent privilege escalation via self-service
@@ -361,6 +387,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       if (!whereSql) { res.json({ data: null, count: 0, error: { message: "UPDATE sem WHERE é proibido" } }); return; }
 
       const result = await client.query(`UPDATE "${table}" SET ${setClause} ${whereSql} RETURNING *`, params);
+      decryptRows(table, result.rows as Record<string, unknown>[]);
       res.json({ data: result.rows, count: result.rowCount ?? 0, error: null }); return;
     }
 
@@ -439,9 +466,11 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
             onConflictClause = `ON CONFLICT (${conflictCols}) DO UPDATE SET ${updateExpr}`;
           }
         }
+        encryptRow(table, row);
         const result = await client.query(`INSERT INTO "${table}" (${cols}) VALUES (${phs}) ${onConflictClause} RETURNING *`, vals);
         upserted.push(...result.rows);
       }
+      decryptRows(table, upserted as Record<string, unknown>[]);
       const ret = Array.isArray(data) ? upserted : (upserted[0] ?? null);
       res.json({ data: ret, count: upserted.length, error: null }); return;
     }

@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from "react";
-import { Archive, Ban, Calendar, CalendarCheck, CalendarX, CheckCircle2, Edit, FileText, Key, RefreshCw, RotateCcw, Search, Shield, Trash2, UserPlus, Users } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Archive, Ban, Calendar, CalendarCheck, CalendarX, CheckCircle2, Edit, FileText, Key, RefreshCw, RotateCcw, Search, Send, Shield, Trash2, UserPlus, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,9 +16,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
+import { Checkbox } from "@/components/ui/checkbox";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
 import { formatBRT } from "@/lib/timezone";
@@ -29,6 +33,7 @@ import type { ManagedPlan } from "@/lib/admin-control-plane";
 import { loadAdminSystemObservability, type UserObservabilityRow } from "@/lib/system-observability";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
 import { getPasswordPolicyError, PASSWORD_POLICY_HINT } from "@/lib/password-policy";
+import { ROUTES } from "@/lib/routes";
 
 type UserRole = "admin" | "user";
 type AccountStatus = "active" | "inactive" | "blocked" | "archived";
@@ -38,6 +43,7 @@ interface AdminUserRow {
   user_id: string;
   name: string;
   email: string;
+  phone: string;
   plan_id: string;
   created_at: string;
   role: UserRole;
@@ -80,20 +86,24 @@ const STATUS_BADGE: Record<AccountStatus, { label: string; variant: "default" | 
 export default function AdminUsers() {
   const { state: controlPlane } = useAdminControlPlane();
   const { user: currentUser } = useAuth();
+  const navigate = useNavigate();
   const [userList, setUserList] = useState<AdminUserRow[]>([]);
   const [search, setSearch] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
 
   const [editUser, setEditUser] = useState<AdminUserRow | null>(null);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
+  const [editPhone, setEditPhone] = useState("");
   const [editRole, setEditRole] = useState<UserRole>("user");
   const [editStatus, setEditStatus] = useState<AccountStatus>("active");
   const [savingEdit, setSavingEdit] = useState(false);
 
   const [openCreate, setOpenCreate] = useState(false);
   const [createName, setCreateName] = useState("");
+  const [createPhone, setCreatePhone] = useState("");
 
   const [extendPlanTarget, setExtendPlanTarget] = useState<AdminUserRow | null>(null);
   const [extendingPlan, setExtendingPlan] = useState(false);
@@ -119,6 +129,11 @@ export default function AdminUsers() {
   const [deletingUser, setDeletingUser] = useState(false);
   const [blockTarget, setBlockTarget] = useState<AdminUserRow | null>(null);
   const [showAdminPromotionConfirm, setShowAdminPromotionConfirm] = useState(false);
+  // WhatsApp contact dialog
+  const [waContactUser, setWaContactUser] = useState<AdminUserRow | null>(null);
+  const [waMessage, setWaMessage] = useState("");
+  const [sendingWaMessage, setSendingWaMessage] = useState(false);
+
   const [userUsageMap, setUserUsageMap] = useState<Record<string, UserObservabilityRow["usage"]>>({});
   const [usageSummary, setUsageSummary] = useState({
     usersActive: 0,
@@ -220,6 +235,7 @@ export default function AdminUsers() {
       (user) =>
         user.name.toLowerCase().includes(term) ||
         user.email.toLowerCase().includes(term) ||
+        (user.phone || "").includes(term) ||
         user.plan_id.toLowerCase().includes(term) ||
         user.role.toLowerCase().includes(term) ||
         user.account_status.toLowerCase().includes(term),
@@ -235,6 +251,7 @@ export default function AdminUsers() {
     setEditUser(user);
     setEditName(user.name || "");
     setEditEmail(user.email || "");
+    setEditPhone(user.phone || "");
     setEditRole(user.role);
     setEditStatus(user.account_status || "active");
   };
@@ -248,6 +265,7 @@ export default function AdminUsers() {
         user_id: editUser.user_id,
         name: editName,
         email: editEmail,
+        phone: editPhone,
         role: editRole,
         account_status: editStatus,
       });
@@ -292,6 +310,7 @@ export default function AdminUsers() {
         action: "create_user",
         name: createName,
         email: createEmail,
+        phone: createPhone,
         password: createPassword,
         role: createRole,
       });
@@ -308,6 +327,7 @@ export default function AdminUsers() {
       setOpenCreate(false);
       setCreateName("");
       setCreateEmail("");
+      setCreatePhone("");
       setCreatePassword("");
       setCreateRole("user");
       await loadData();
@@ -505,6 +525,48 @@ export default function AdminUsers() {
     }
   };
 
+  const toggleUserSelection = (userId: string) => {
+    setSelectedUsers((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId); else next.add(userId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedUsers.size === filtered.length && filtered.length > 0) {
+      setSelectedUsers(new Set());
+    } else {
+      setSelectedUsers(new Set(filtered.map((u) => u.user_id)));
+    }
+  };
+
+  const handleBulkWhatsApp = () => {
+    if (selectedUsers.size === 0) return;
+    const ids = Array.from(selectedUsers);
+    navigate(`${ROUTES.admin.whatsapp}?users=${ids.join(",")}`);
+  };
+
+  const handleSendWhatsAppMessage = async () => {
+    if (!waContactUser || sendingWaMessage || !waMessage.trim()) return;
+    setSendingWaMessage(true);
+    try {
+      await invokeAdmin({
+        action: "send_whatsapp_contact",
+        user_id: waContactUser.user_id,
+        phone: waContactUser.phone,
+        message: waMessage.trim(),
+      });
+      toast.success(`Mensagem enviada para ${waContactUser.name || waContactUser.phone}`);
+      setWaContactUser(null);
+      setWaMessage("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Não foi possível enviar a mensagem");
+    } finally {
+      setSendingWaMessage(false);
+    }
+  };
+
   const statusBadge = (status: AccountStatus) => {
     const { label, variant } = STATUS_BADGE[status] ?? { label: status, variant: "outline" as const };
     return <Badge variant={variant} className="text-xs">{label}</Badge>;
@@ -556,9 +618,58 @@ export default function AdminUsers() {
         <Badge variant={usageSummary.errors24h > 0 ? "destructive" : "secondary"} className="admin-chip">Erros 24h: {usageSummary.errors24h}</Badge>
       </div>
 
+      {selectedUsers.size > 0 && (
+        <div className="admin-toolbar border-green-500/30 bg-green-50/50 dark:bg-green-950/20 justify-between">
+          <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
+            <Checkbox
+              checked={selectedUsers.size === filtered.length && filtered.length > 0}
+              onCheckedChange={toggleSelectAll}
+              className="data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
+            />
+            <span className="font-medium">
+              {selectedUsers.size} {selectedUsers.size === 1 ? "usuário selecionado" : "usuários selecionados"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 text-muted-foreground"
+              onClick={() => setSelectedUsers(new Set())}
+            >
+              Limpar seleção
+            </Button>
+            <Button
+              size="sm"
+              className="gap-1.5 bg-green-600 text-white hover:bg-green-700 dark:bg-green-600 dark:hover:bg-green-700"
+              onClick={handleBulkWhatsApp}
+            >
+              <WhatsAppIcon className="h-3.5 w-3.5" />
+              Enviar via WhatsApp ({selectedUsers.size})
+            </Button>
+          </div>
+        </div>
+      )}
+
       <Card className="admin-card">
         <CardContent className="p-0">
           <div className="divide-y">
+            {!loading && filtered.length > 0 && (
+              <div className="flex items-center gap-3 px-4 py-2 border-b bg-muted/20">
+                <Checkbox
+                  checked={selectedUsers.size === filtered.length && filtered.length > 0}
+                  onCheckedChange={toggleSelectAll}
+                  className="data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
+                />
+                <span className="text-xs text-muted-foreground">
+                  {selectedUsers.size === 0
+                    ? "Selecionar todos"
+                    : selectedUsers.size === filtered.length
+                      ? "Desmarcar todos"
+                      : `${selectedUsers.size} de ${filtered.length} selecionados`}
+                </span>
+              </div>
+            )}
             {loading && (
               <div className="p-6">
                 <RoutePendingState label="Carregando..." />
@@ -567,11 +678,20 @@ export default function AdminUsers() {
             {!loading && filtered.map((user) => (
               <div
                 key={user.user_id}
-                className="flex flex-col gap-3 p-4 transition-colors hover:bg-secondary/30 sm:flex-row sm:items-center sm:justify-between"
+                className={`flex flex-col gap-3 p-4 transition-colors hover:bg-secondary/30 sm:flex-row sm:items-center sm:justify-between ${selectedUsers.has(user.user_id) ? "bg-green-50/30 dark:bg-green-950/10" : ""}`}
               >
+                <div className="flex items-start gap-3 min-w-0">
+                  <Checkbox
+                    checked={selectedUsers.has(user.user_id)}
+                    onCheckedChange={() => toggleUserSelection(user.user_id)}
+                    className="mt-0.5 shrink-0 data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
+                  />
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{user.name || "Sem nome"}</p>
                   <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                  {user.phone && (
+                    <p className="truncate text-xs text-muted-foreground/70">{user.phone}</p>
+                  )}
                   <p className="mt-0.5 text-xs text-muted-foreground/60">
                     Desde {formatBRT(new Date(user.created_at), "dd/MM/yyyy")}
                   </p>
@@ -602,6 +722,7 @@ export default function AdminUsers() {
                       </>
                     );
                   })()}
+                </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end sm:flex-nowrap">
@@ -635,6 +756,16 @@ export default function AdminUsers() {
                   <Badge variant={user.role === "admin" ? "destructive" : "secondary"} className="admin-chip">
                     {user.role === "admin" ? "Admin" : "Usuário"}
                   </Badge>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-50 dark:text-green-500 dark:hover:text-green-400 dark:hover:bg-green-950/40"
+                    onClick={() => { setWaContactUser(user); setWaMessage(""); }}
+                    title={user.phone ? `Contatar via WhatsApp (${user.phone})` : "Sem telefone cadastrado"}
+                    disabled={!user.phone}
+                  >
+                    <WhatsAppIcon className="h-3.5 w-3.5" />
+                  </Button>
                   <Button
                     size="icon"
                     variant="ghost"
@@ -739,6 +870,15 @@ export default function AdminUsers() {
                   value={editEmail}
                   onChange={(event) => setEditEmail(event.target.value)}
                   placeholder="email@dominio.com"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Telefone (WhatsApp)</Label>
+                <Input
+                  type="tel"
+                  value={editPhone}
+                  onChange={(event) => setEditPhone(event.target.value)}
+                  placeholder="+55 (11) 91234-5678"
                 />
               </div>
               <div className="rounded-md border bg-muted/30 p-3 space-y-2">
@@ -1003,6 +1143,15 @@ export default function AdminUsers() {
               />
             </div>
             <div className="space-y-2">
+              <Label>Telefone (WhatsApp)</Label>
+              <Input
+                type="tel"
+                value={createPhone}
+                onChange={(event) => setCreatePhone(event.target.value)}
+                placeholder="+55 (11) 91234-5678"
+              />
+            </div>
+            <div className="space-y-2">
               <Label>Senha</Label>
               <Input
                 type="password"
@@ -1063,6 +1212,64 @@ export default function AdminUsers() {
             <Button onClick={handleCreateUser} disabled={savingCreate} className="gap-2">
               <UserPlus className="h-4 w-4" />
               {savingCreate ? "Criando..." : "Criar Usuário"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── WhatsApp Contact Dialog ────────────────────────────────── */}
+      <Dialog
+        open={!!waContactUser}
+        onOpenChange={(open) => { if (!open && !sendingWaMessage) { setWaContactUser(null); setWaMessage(""); } }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <WhatsAppIcon className="h-5 w-5 text-green-600 dark:text-green-500" />
+              Contato via WhatsApp
+            </DialogTitle>
+          </DialogHeader>
+
+          {waContactUser && (
+            <div className="space-y-4">
+              <div className="rounded-md border bg-muted/30 px-3 py-2.5 space-y-0.5">
+                <p className="text-sm font-medium">{waContactUser.name || "Sem nome"}</p>
+                <p className="text-xs text-muted-foreground">{waContactUser.email}</p>
+                <p className="text-xs text-green-600 dark:text-green-500 font-medium">{waContactUser.phone}</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="wa-message">Mensagem</Label>
+                <Textarea
+                  id="wa-message"
+                  placeholder="Escreva a mensagem que deseja enviar..."
+                  value={waMessage}
+                  onChange={(e) => setWaMessage(e.target.value)}
+                  rows={5}
+                  className="resize-y"
+                />
+                <p className="text-xs text-muted-foreground">
+                  A mensagem será enviada para o WhatsApp cadastrado do usuário.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => { setWaContactUser(null); setWaMessage(""); }}
+              disabled={sendingWaMessage}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => void handleSendWhatsAppMessage()}
+              disabled={sendingWaMessage || !waMessage.trim()}
+              className="gap-2 bg-green-600 text-white hover:bg-green-700 dark:bg-green-600 dark:hover:bg-green-700"
+            >
+              <Send className="h-3.5 w-3.5" />
+              {sendingWaMessage ? "Enviando..." : "Enviar Mensagem"}
             </Button>
           </DialogFooter>
         </DialogContent>
