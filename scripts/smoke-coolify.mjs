@@ -10,7 +10,7 @@
  *   SMOKE_SHOPEE_URL=https://shopee-api.seudominio.com \
  *   SMOKE_MELI_URL=https://meli-api.seudominio.com \
  *   SMOKE_OPS_URL=https://ops-api.seudominio.com \
- *   SMOKE_WEB_URL=https://app.seudominio.com \
+ *   SMOKE_WEB_URL=https://seudominio.com \
  *   SMOKE_WEBHOOK_SECRET=xxx \
  *   SMOKE_OPS_TOKEN=xxx \
  *   node scripts/smoke-coolify.mjs

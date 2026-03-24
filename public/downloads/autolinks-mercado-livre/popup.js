@@ -9,7 +9,6 @@ const DEFAULT_API_ORIGINS = [
 const TRUSTED_PRODUCTION_HOSTS = new Set([
   "autolinks.pro",
   "www.autolinks.pro",
-  "app.autolinks.pro",
   "api.autolinks.pro",
 ]);
 
@@ -114,7 +113,7 @@ function deriveApiOriginsFromOrigin(origin) {
       return unique(derived.map((value) => normalizeOrigin(value)));
     }
 
-    if (host === "autolinks.pro" || host === "www.autolinks.pro" || host === "app.autolinks.pro") {
+    if (host === "autolinks.pro" || host === "www.autolinks.pro") {
       derived.push("https://api.autolinks.pro");
     }
 

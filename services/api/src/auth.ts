@@ -47,7 +47,7 @@ function resolveCookieSameSite(): "Strict" | "Lax" | "None" {
 const AUTH_COOKIE_SAME_SITE = resolveCookieSameSite();
 
 // Cookie Domain — set to ".seudominio.com" in production so the cookie is
-// shared between app.seudominio.com (frontend) and api.seudominio.com (API).
+// shared between the frontend domain and api.seudominio.com (API).
 // Leave empty for localhost/dev environments.
 const APP_PUBLIC_URL = resolvePublicUrl(process.env.APP_PUBLIC_URL || "");
 const API_PUBLIC_URL = resolvePublicUrl(process.env.API_PUBLIC_URL || "");
