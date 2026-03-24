@@ -75,7 +75,7 @@ interface SendBody {
   jid?: string;
   content?: string;
   media?: {
-    kind?: "image";
+    kind?: "image" | "video";
     token?: string;
     base64?: string;
     mimeType?: string;
@@ -108,6 +108,7 @@ const inFlightSends = new Map<string, Promise<SendResponsePayload>>();
 const mediaStore = new Map<string, {
   token: string;
   userId: string;
+  kind: "image" | "video";
   data: Buffer;
   mimeType: string;
   fileName: string;
@@ -126,6 +127,10 @@ const INBOUND_MESSAGE_DEDUPE_MAX_KEYS = Math.max(
   Number(process.env.WA_INBOUND_DEDUPE_MAX_KEYS || "5000"),
 );
 const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const ROUTE_MEDIA_MAX_BYTES = Math.max(
+  AUTO_IMAGE_MAX_BYTES,
+  Number(process.env.ROUTE_MEDIA_MAX_BYTES || "67108864"),
+);
 
 const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
@@ -503,6 +508,30 @@ function inferImageMimeTypeFromFileName(fileName: string | null | undefined): st
   return null;
 }
 
+function inferVideoMimeTypeFromFileName(fileName: string | null | undefined): string | null {
+  const normalized = String(fileName || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.endsWith(".mp4") || normalized.endsWith(".m4v")) return "video/mp4";
+  if (normalized.endsWith(".mov") || normalized.endsWith(".qt")) return "video/quicktime";
+  if (normalized.endsWith(".webm")) return "video/webm";
+  if (normalized.endsWith(".mkv")) return "video/x-matroska";
+  if (normalized.endsWith(".avi")) return "video/x-msvideo";
+  if (normalized.endsWith(".3gp")) return "video/3gpp";
+  return null;
+}
+
+function classifyDocumentMediaKind(
+  mimeType: string | null | undefined,
+  fileName: string | null | undefined,
+): "image" | "video" | "document" {
+  const normalizedMime = String(mimeType || "").trim().toLowerCase();
+  if (normalizedMime.startsWith("image/")) return "image";
+  if (normalizedMime.startsWith("video/")) return "video";
+  if (inferImageMimeTypeFromFileName(fileName)) return "image";
+  if (inferVideoMimeTypeFromFileName(fileName)) return "video";
+  return "document";
+}
+
 function detectGenericMessagePayloadKind(contentType: string): WhatsAppInboundMediaKind | null {
   const normalized = String(contentType || "").toLowerCase();
   if (!normalized) return null;
@@ -532,10 +561,18 @@ function extractInboundMediaInfo(
   if (message.videoMessage) return { kind: "video", mimetype: message.videoMessage.mimetype || null };
   if (message.audioMessage) return { kind: "audio", mimetype: message.audioMessage.mimetype || null };
   if (message.documentMessage) {
+    const mimeType = message.documentMessage.mimetype || null;
+    const fileName = message.documentMessage.fileName || null;
+    const kind = classifyDocumentMediaKind(mimeType, fileName);
+    const inferredMime = kind === "image"
+      ? inferImageMimeTypeFromFileName(fileName)
+      : kind === "video"
+        ? inferVideoMimeTypeFromFileName(fileName)
+        : null;
     return {
-      kind: "document",
-      mimetype: message.documentMessage.mimetype || null,
-      fileName: message.documentMessage.fileName || null,
+      kind,
+      mimetype: mimeType || inferredMime || null,
+      fileName,
     };
   }
   if (message.stickerMessage) return { kind: "sticker", mimetype: message.stickerMessage.mimetype || "image/webp" };
@@ -566,6 +603,19 @@ function extractInboundMediaInfo(
       imagePayload: payload as { mimetype?: string | null },
     };
   }
+  if (genericKind === "document") {
+    const kind = classifyDocumentMediaKind(mimeType, fileName);
+    const inferredMime = kind === "image"
+      ? inferImageMimeTypeFromFileName(fileName)
+      : kind === "video"
+        ? inferVideoMimeTypeFromFileName(fileName)
+        : null;
+    return {
+      kind,
+      mimetype: mimeType || inferredMime,
+      fileName,
+    };
+  }
   if (genericKind) {
     return {
       kind: genericKind,
@@ -577,6 +627,17 @@ function extractInboundMediaInfo(
   const row = payload as Record<string, unknown>;
   const hasMediaLikeShape = ("url" in row) || ("mediaKey" in row) || ("fileLength" in row) || ("jpegThumbnail" in row);
   if (!hasMediaLikeShape) return null;
+  const inferredKind = classifyDocumentMediaKind(mimeType, fileName);
+  if (inferredKind === "image" || inferredKind === "video") {
+    const inferredMime = inferredKind === "image"
+      ? inferImageMimeTypeFromFileName(fileName)
+      : inferVideoMimeTypeFromFileName(fileName);
+    return {
+      kind: inferredKind,
+      mimetype: mimeType || inferredMime,
+      fileName,
+    };
+  }
   return {
     kind: "other",
     mimetype: mimeType,
@@ -724,7 +785,7 @@ function extractInboundThumbnailBuffer(message: proto.IMessage | null | undefine
 
     for (const key of thumbnailKeys) {
       const candidate = coerceBinaryToBuffer(row[key]);
-      if (!candidate || candidate.length === 0 || candidate.length > AUTO_IMAGE_MAX_BYTES) continue;
+      if (!candidate || candidate.length === 0 || candidate.length > ROUTE_MEDIA_MAX_BYTES) continue;
       const detected = detectImageMimeTypeFromBuffer(candidate);
       if (detected) return candidate;
     }
@@ -761,11 +822,11 @@ async function downloadIncomingMediaBuffer(args: {
       {},
       { logger: baileysLogger, reuploadRequest: socket.updateMediaMessage },
     );
-    if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= AUTO_IMAGE_MAX_BYTES) {
+    if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= ROUTE_MEDIA_MAX_BYTES) {
       return downloaded;
     }
   } catch (error) {
-    logger.warn({ sessionId, error: sanitizeError(error) }, "generic media download failed while resolving inbound image");
+    logger.warn({ sessionId, error: sanitizeError(error) }, "generic media download failed while resolving inbound media");
   }
   return null;
 }
@@ -828,6 +889,24 @@ async function resolveInboundMediaAsImage(args: {
   return null;
 }
 
+async function resolveInboundMediaAsVideo(args: {
+  message: { message?: proto.IMessage };
+  socket: WASocket;
+  sessionId: string;
+  inboundMedia: WhatsAppInboundMediaInfo | null;
+}): Promise<{ buffer: Buffer; mimeType: string; origin: "media_download" } | null> {
+  const { message, socket, sessionId, inboundMedia } = args;
+  const downloaded = await downloadIncomingMediaBuffer({ message, socket, sessionId });
+  if (!downloaded || downloaded.length === 0) return null;
+
+  const mimeTypeHint = String(inboundMedia?.mimetype || "").trim().toLowerCase();
+  return {
+    buffer: downloaded,
+    mimeType: mimeTypeHint.startsWith("video/") ? mimeTypeHint : "video/mp4",
+    origin: "media_download",
+  };
+}
+
 async function downloadIncomingImageBuffer(args: {
   message: { message?: proto.IMessage };
   socket: WASocket;
@@ -843,7 +922,7 @@ async function downloadIncomingImageBuffer(args: {
       {},
       { logger: baileysLogger, reuploadRequest: socket.updateMediaMessage },
     );
-    if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= AUTO_IMAGE_MAX_BYTES) {
+    if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= ROUTE_MEDIA_MAX_BYTES) {
       return downloaded;
     }
   } catch (error) {
@@ -859,7 +938,7 @@ async function downloadIncomingImageBuffer(args: {
       chunks.push(Buffer.from(chunk));
     }
     const buffer = Buffer.concat(chunks);
-    if (buffer.length > 0 && buffer.length <= AUTO_IMAGE_MAX_BYTES) return buffer;
+    if (buffer.length > 0 && buffer.length <= ROUTE_MEDIA_MAX_BYTES) return buffer;
   } catch (error) {
     logger.warn({ sessionId, error: sanitizeError(error), mimeTypeHint: mimeTypeHint || "" }, "fallback image download failed");
   }
@@ -873,8 +952,16 @@ function generateMediaToken(): string {
 
 const MEDIA_STALE_RETENTION_MS = 45 * 60 * 1000;
 
-function detectImageExtension(mimeType: string): string {
+function detectMediaExtension(kind: "image" | "video", mimeType: string): string {
   const normalized = mimeType.toLowerCase();
+  if (kind === "video") {
+    if (normalized.includes("webm")) return "webm";
+    if (normalized.includes("quicktime")) return "mov";
+    if (normalized.includes("x-matroska") || normalized.includes("mkv")) return "mkv";
+    if (normalized.includes("avi")) return "avi";
+    if (normalized.includes("3gpp")) return "3gp";
+    return "mp4";
+  }
   if (normalized.includes("png")) return "png";
   if (normalized.includes("webp")) return "webp";
   if (normalized.includes("gif")) return "gif";
@@ -894,17 +981,24 @@ function sanitizeFileName(name: string): string {
     .slice(0, 255) || "file";
 }
 
-function storeTemporaryImage(buffer: Buffer, userId: string, mimeType: string, fileName?: string): { token: string; fileName: string } {
+function storeTemporaryMedia(
+  kind: "image" | "video",
+  buffer: Buffer,
+  userId: string,
+  mimeType: string,
+  fileName?: string,
+): { token: string; fileName: string } {
   const token = generateMediaToken();
-  const safeMimeType = mimeType || "image/jpeg";
+  const safeMimeType = mimeType || (kind === "video" ? "video/mp4" : "image/jpeg");
   const rawName = fileName?.trim();
   const finalFileName = rawName
     ? sanitizeFileName(rawName)
-    : `route_image_${Date.now()}.${detectImageExtension(safeMimeType)}`;
+    : `route_${kind}_${Date.now()}.${detectMediaExtension(kind, safeMimeType)}`;
   const createdAt = Date.now();
   mediaStore.set(token, {
     token,
     userId,
+    kind,
     data: buffer,
     mimeType: safeMimeType,
     fileName: finalFileName,
@@ -914,6 +1008,7 @@ function storeTemporaryImage(buffer: Buffer, userId: string, mimeType: string, f
   logger.info(
     {
       token,
+      kind,
       mimeType: safeMimeType,
       fileName: finalFileName,
       size: buffer.length,
@@ -1339,37 +1434,66 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
 
         const groupName = await resolveGroupName(state, remoteJid);
         let mediaData: Record<string, unknown> | null = null;
+        let resolvedMedia: { kind: "image" | "video"; buffer: Buffer; mimeType: string; origin: string } | null = null;
 
-        const resolvedImage = await resolveInboundMediaAsImage({
-          message,
-          socket,
-          sessionId,
-          inboundMedia,
-          imagePayload,
-        });
-        if (resolvedImage) {
-          const stored = storeTemporaryImage(
-            resolvedImage.buffer,
+        if (inboundMedia?.kind === "image") {
+          const resolvedImage = await resolveInboundMediaAsImage({
+            message,
+            socket,
+            sessionId,
+            inboundMedia,
+            imagePayload,
+          });
+          if (resolvedImage) {
+            resolvedMedia = {
+              kind: "image",
+              buffer: resolvedImage.buffer,
+              mimeType: resolvedImage.mimeType || "image/jpeg",
+              origin: resolvedImage.origin,
+            };
+          }
+        } else if (inboundMedia?.kind === "video") {
+          const resolvedVideo = await resolveInboundMediaAsVideo({
+            message,
+            socket,
+            sessionId,
+            inboundMedia,
+          });
+          if (resolvedVideo) {
+            resolvedMedia = {
+              kind: "video",
+              buffer: resolvedVideo.buffer,
+              mimeType: resolvedVideo.mimeType || "video/mp4",
+              origin: resolvedVideo.origin,
+            };
+          }
+        }
+
+        if (resolvedMedia) {
+          const stored = storeTemporaryMedia(
+            resolvedMedia.kind,
+            resolvedMedia.buffer,
             state.config.userId,
-            resolvedImage.mimeType || "image/jpeg",
+            resolvedMedia.mimeType,
           );
-          logMediaCaptureDebug("incoming_image_stored", {
+          logMediaCaptureDebug("incoming_media_stored", {
             sessionId,
             groupId: remoteJid,
-            bytes: resolvedImage.buffer.length,
-            mimeType: resolvedImage.mimeType || "image/jpeg",
-            origin: resolvedImage.origin,
+            mediaKind: resolvedMedia.kind,
+            bytes: resolvedMedia.buffer.length,
+            mimeType: resolvedMedia.mimeType,
+            origin: resolvedMedia.origin,
             tokenPrefix: stored.token.slice(0, 8),
           });
           mediaData = {
-            kind: "image",
+            kind: resolvedMedia.kind,
             token: stored.token,
-            mimeType: resolvedImage.mimeType || "image/jpeg",
+            mimeType: resolvedMedia.mimeType,
             fileName: stored.fileName,
             sourcePlatform: "whatsapp",
           };
         } else if (inboundMedia) {
-          logMediaCaptureDebug("incoming_image_download_failed", {
+          logMediaCaptureDebug("incoming_media_download_failed", {
             sessionId,
             groupId: remoteJid,
             hasText: Boolean(text),
@@ -1379,7 +1503,7 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
           });
           logger.warn(
             { sessionId, groupId: remoteJid, mediaKind: inboundMedia.kind },
-            "incoming media detected but no image payload could be extracted",
+            "incoming media detected but payload could not be extracted",
           );
         }
 
@@ -1580,6 +1704,7 @@ app.get("/api/media/:token", async (req: Request<{ token: string }>, res) => {
   res.json({
     ok: true,
     token: item.token,
+    kind: item.kind,
     mimeType: item.mimeType,
     fileName: item.fileName,
     base64: item.data.toString("base64"),
@@ -1826,10 +1951,10 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
 
   const { sessionId, jid, content, media } = req.body || {};
   const messageContent = typeof content === "string" ? content : "";
-  const hasImageMedia = media?.kind === "image";
+  const hasSupportedMedia = media?.kind === "image" || media?.kind === "video";
 
-  if (!sessionId || !jid || (!messageContent.trim() && !hasImageMedia)) {
-    res.status(400).json({ error: "sessionId e jid são obrigatórios, com content ou media de imagem" });
+  if (!sessionId || !jid || (!messageContent.trim() && !hasSupportedMedia)) {
+    res.status(400).json({ error: "sessionId e jid são obrigatórios, com content ou media (imagem/video)" });
     return;
   }
 
@@ -1846,7 +1971,6 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
     }
 
     const targetJid = normalizeJid(jid);
-    const mediaKind = media?.kind === "image" ? "image" : "";
     const sendKey = buildSendDedupKey({
       sessionId,
       jid: targetJid,
@@ -1863,10 +1987,15 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
 
     const sendPromise: Promise<SendResponsePayload> = (async () => {
       let sendResult: any;
+      let mediaKind: "image" | "video" | "" = media?.kind === "video"
+        ? "video"
+        : media?.kind === "image"
+          ? "image"
+          : "";
 
-      if (mediaKind === "image") {
-        let imageBuffer: Buffer | null = null;
-        let imageMimeType = media?.mimeType || "image/jpeg";
+      if (mediaKind) {
+        let mediaBuffer: Buffer | null = null;
+        let mediaMimeType = media?.mimeType || (mediaKind === "video" ? "video/mp4" : "image/jpeg");
 
         if (media?.token) {
           const item = mediaStore.get(media.token);
@@ -1876,21 +2005,30 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
           if (item.userId !== state.config.userId) {
             throw new Error("Mídia temporária não pertence ao usuário da sessão");
           }
-          imageBuffer = item.data;
-          imageMimeType = item.mimeType || imageMimeType;
+          mediaBuffer = item.data;
+          mediaKind = item.kind;
+          mediaMimeType = item.mimeType || mediaMimeType;
         } else if (media?.base64) {
-          imageBuffer = Buffer.from(media.base64, "base64");
+          mediaBuffer = Buffer.from(media.base64, "base64");
         }
 
-        if (!imageBuffer || imageBuffer.length === 0) {
-          throw new Error("Imagem invalida para envio");
+        if (!mediaBuffer || mediaBuffer.length === 0) {
+          throw new Error("Mídia inválida para envio");
         }
 
-        sendResult = await state.socket!.sendMessage(targetJid, {
-          image: imageBuffer,
-          caption: messageContent,
-          mimetype: imageMimeType,
-        });
+        if (mediaKind === "video") {
+          sendResult = await state.socket!.sendMessage(targetJid, {
+            video: mediaBuffer,
+            caption: messageContent,
+            mimetype: mediaMimeType,
+          });
+        } else {
+          sendResult = await state.socket!.sendMessage(targetJid, {
+            image: mediaBuffer,
+            caption: messageContent,
+            mimetype: mediaMimeType,
+          });
+        }
       } else {
         sendResult = await state.socket!.sendMessage(targetJid, { text: messageContent });
       }
@@ -1900,7 +2038,7 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
       await emitWebhook(state, "message_sent", {
         to: targetJid,
         groupName,
-        messageType: mediaKind === "image" ? "image" : "text",
+        messageType: mediaKind || "text",
         message: messageContent,
       });
 
@@ -1927,7 +2065,7 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
       res.status(403).json({ error: message });
       return;
     }
-    if (message === "Imagem invalida para envio") {
+    if (message === "Mídia inválida para envio") {
       res.status(400).json({ error: message });
       return;
     }

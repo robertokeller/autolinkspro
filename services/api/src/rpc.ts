@@ -860,7 +860,7 @@ async function insertAutomationHistoryEntry(input: {
   details?: Record<string, unknown>;
   blockReason?: string;
   errorStep?: string;
-  messageType?: "text" | "image";
+  messageType?: "text" | "image" | "video";
 }) {
   await execute(
     "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'automation_run',$3,$4,$5,$6,'outbound',$7,$8,$9,$10)",
@@ -1151,7 +1151,7 @@ function buildUserScopedHeaders(userId: string) {
 }
 
 type RouteForwardMedia = {
-  kind: "image";
+  kind: "image" | "video";
   sourcePlatform?: "whatsapp" | "telegram" | "auto";
   token?: string;
   base64?: string;
@@ -1159,10 +1159,17 @@ type RouteForwardMedia = {
   fileName?: string;
 };
 
+function routeMediaDefaultsByKind(kind: RouteForwardMedia["kind"]): { mimeType: string; fileName: string } {
+  if (kind === "video") {
+    return { mimeType: "video/mp4", fileName: "route_video.mp4" };
+  }
+  return { mimeType: "image/jpeg", fileName: "route_image.jpg" };
+}
+
 function summarizeRouteForwardMedia(media: RouteForwardMedia | null | undefined): Record<string, unknown> {
-  if (!media || media.kind !== "image") return { kind: "none" };
+  if (!media) return { kind: "none" };
   return {
-    kind: "image",
+    kind: media.kind,
     sourcePlatform: media.sourcePlatform || "unknown",
     hasToken: Boolean(media.token),
     hasBase64: Boolean(media.base64),
@@ -1184,23 +1191,26 @@ function logRouteMediaDebug(event: string, payload: Record<string, unknown>): vo
 function parseRouteForwardMedia(raw: unknown): RouteForwardMedia | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Record<string, unknown>;
-  if (row.kind !== "image") return null;
+  const rawKind = String(row.kind || "").trim().toLowerCase();
+  if (rawKind !== "image" && rawKind !== "video") return null;
+  const kind = rawKind as RouteForwardMedia["kind"];
 
   const token = typeof row.token === "string" ? row.token.trim() : "";
   const base64 = typeof row.base64 === "string" ? row.base64.trim() : "";
   if (!token && !base64) return null;
+  const defaults = routeMediaDefaultsByKind(kind);
   const sourcePlatformRaw = typeof row.sourcePlatform === "string" ? row.sourcePlatform.trim().toLowerCase() : "";
   const sourcePlatform = sourcePlatformRaw === "whatsapp" || sourcePlatformRaw === "telegram" || sourcePlatformRaw === "auto"
     ? sourcePlatformRaw as "whatsapp" | "telegram" | "auto"
     : undefined;
 
   return {
-    kind: "image",
+    kind,
     sourcePlatform,
     token: token || undefined,
     base64: base64 || undefined,
-    mimeType: typeof row.mimeType === "string" && row.mimeType.trim() ? row.mimeType.trim() : "image/jpeg",
-    fileName: typeof row.fileName === "string" && row.fileName.trim() ? row.fileName.trim() : "route_image.jpg",
+    mimeType: typeof row.mimeType === "string" && row.mimeType.trim() ? row.mimeType.trim() : defaults.mimeType,
+    fileName: typeof row.fileName === "string" && row.fileName.trim() ? row.fileName.trim() : defaults.fileName,
   };
 }
 
@@ -1497,17 +1507,23 @@ async function resolveRouteForwardMediaForPlatform(input: {
     platform,
     media: summarizeRouteForwardMedia(media),
   });
-  if (!media || media.kind !== "image") return null;
+  if (!media || (media.kind !== "image" && media.kind !== "video")) return null;
   if (platform !== "whatsapp" && platform !== "telegram") return null;
 
-  const withDefaults = (partial: RouteForwardMedia): RouteForwardMedia => ({
-    kind: "image",
-    sourcePlatform: partial.sourcePlatform || media.sourcePlatform,
-    token: partial.token,
-    base64: partial.base64,
-    mimeType: partial.mimeType || media.mimeType || "image/jpeg",
-    fileName: partial.fileName || media.fileName || "route_image.jpg",
-  });
+  const withDefaults = (partial: Partial<RouteForwardMedia>): RouteForwardMedia => {
+    const resolvedKind = (partial.kind === "image" || partial.kind === "video")
+      ? partial.kind
+      : media.kind;
+    const defaults = routeMediaDefaultsByKind(resolvedKind);
+    return {
+      kind: resolvedKind,
+      sourcePlatform: partial.sourcePlatform || media.sourcePlatform,
+      token: partial.token,
+      base64: partial.base64,
+      mimeType: partial.mimeType || media.mimeType || defaults.mimeType,
+      fileName: partial.fileName || media.fileName || defaults.fileName,
+    };
+  };
 
   const fetchFromServiceByToken = async (
     service: "whatsapp" | "telegram",
@@ -1570,7 +1586,7 @@ async function resolveRouteForwardMediaForPlatform(input: {
     });
 
     return withDefaults({
-      kind: "image",
+      kind: media.kind,
       sourcePlatform: service,
       base64,
       mimeType: typeof payload.mimeType === "string" && payload.mimeType.trim()
@@ -1584,7 +1600,7 @@ async function resolveRouteForwardMediaForPlatform(input: {
 
   if (media.base64) {
     return withDefaults({
-      kind: "image",
+      kind: media.kind,
       sourcePlatform: media.sourcePlatform,
       base64: media.base64,
     });
@@ -1601,7 +1617,7 @@ async function resolveRouteForwardMediaForPlatform(input: {
       tokenPrefix: String(media.token || "").slice(0, 8),
     });
     return withDefaults({
-      kind: "image",
+      kind: media.kind,
       sourcePlatform: "whatsapp",
       token: media.token,
     });
@@ -1614,7 +1630,7 @@ async function resolveRouteForwardMediaForPlatform(input: {
       tokenPrefix: String(media.token || "").slice(0, 8),
     });
     return withDefaults({
-      kind: "image",
+      kind: media.kind,
       sourcePlatform: "telegram",
       token: media.token,
     });
@@ -2288,7 +2304,7 @@ async function logRouteProcessingFailure(input: {
           hasMedia: !!media,
           error: errorMessage,
         }),
-        media ? "image" : "text",
+        media ? media.kind : "text",
       ],
     );
   } catch {
@@ -2322,7 +2338,7 @@ async function appendInboundCaptureHistory(input: {
   } = input;
 
   const capturedAt = nowIso();
-  const messageType = media ? "image" : "text";
+  const messageType = media ? media.kind : "text";
   const normalizedMessage = String(message || "").trim();
   const fallbackMessage = (!normalizedMessage && hasMediaHint)
     ? `[midia ${mediaKindHint || "desconhecida"} recebida]`
@@ -2483,6 +2499,8 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
             sourceName,
             message,
             media,
+            hasMediaHint,
+            mediaKindHint,
           });
         } catch (error) {
           await logRouteProcessingFailure({
@@ -2649,6 +2667,8 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
             sourceName,
             message,
             media,
+            hasMediaHint,
+            mediaKindHint,
           });
         } catch (error) {
           await logRouteProcessingFailure({
@@ -2812,9 +2832,21 @@ async function processRouteMessageForUser(input: {
   sourceName: string;
   message: string;
   media?: RouteForwardMedia | null;
+  hasMediaHint?: boolean;
+  mediaKindHint?: string;
 }) {
-  const { userId, sessionId, sourceExternalId, sourceName, message, media = null } = input;
-  const messageType = media ? "image" : "text";
+  const {
+    userId,
+    sessionId,
+    sourceExternalId,
+    sourceName,
+    message,
+    media = null,
+    hasMediaHint = false,
+    mediaKindHint = "",
+  } = input;
+  const normalizedMediaKindHint = String(mediaKindHint || "").trim().toLowerCase();
+  const messageType = media ? media.kind : "text";
   logRouteMediaDebug("route.process.start", {
     userId,
     sessionId,
@@ -2822,6 +2854,8 @@ async function processRouteMessageForUser(input: {
     sourceName,
     hasText: Boolean(message),
     textLength: message.length,
+    hasMediaHint,
+    mediaKindHint: normalizedMediaKindHint,
     media: summarizeRouteForwardMedia(media),
   });
 
@@ -2921,7 +2955,7 @@ async function processRouteMessageForUser(input: {
     });
     await execute(
       "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','warning',$4,'inbound',$5,'blocked','no_active_routes','route_match')",
-      [uuid(), userId, sourceName, JSON.stringify({ message, sourceExternalId, sessionId, reason: "no_active_routes", hasMedia: !!media }), media ? "image" : "text"],
+      [uuid(), userId, sourceName, JSON.stringify({ message, sourceExternalId, sessionId, reason: "no_active_routes", hasMedia: !!media }), media ? media.kind : "text"],
     );
     return { dispatched: 0, routesMatched: 0 };
   }
@@ -3320,8 +3354,12 @@ async function processRouteMessageForUser(input: {
       routeMedia = await tryAutoDownloadImageFromMessage(outboundText);
       if (routeMedia) autoImageSource = "url_extraction";
     }
-    const routeMessageType = routeMedia ? "image" : "text";
+    const routeMessageType = routeMedia ? routeMedia.kind : "text";
     if (!routeMedia) {
+      const inferredImageIngestionFailure = !media && hasMediaHint && normalizedMediaKindHint === "image";
+      const missingImageReason = inferredImageIngestionFailure
+        ? "image_ingestion_failed"
+        : "missing_image_required";
       logRouteMediaDebug("route.process.blocked.missing_image_required.inbound", {
         userId,
         sessionId,
@@ -3331,17 +3369,22 @@ async function processRouteMessageForUser(input: {
         sourceName,
         hasText: Boolean(outboundText),
         textLength: String(outboundText || "").trim().length,
+        reason: missingImageReason,
+        hasMediaHint,
+        mediaKindHint: normalizedMediaKindHint,
         originalMedia: summarizeRouteForwardMedia(media),
       });
       await execute(
-        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked','missing_image_required','media_requirements')",
+        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'inbound',$6,'blocked',$7,'media_requirements')",
         [uuid(), userId, sourceName, route.name, JSON.stringify({
           message: outboundText,
           routeId: route.id,
           routeName: route.name,
-          reason: "missing_image_required",
+          reason: missingImageReason,
           hasMedia: false,
-        }), routeMessageType],
+          hasMediaHint,
+          mediaKindHint: normalizedMediaKindHint || undefined,
+        }), routeMessageType, missingImageReason],
       );
       continue;
     }
@@ -3499,7 +3542,7 @@ async function processRouteMessageForUser(input: {
         });
         await execute(
           "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound',$6,'failed','destination_send_failed','send_message')",
-          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform, hasMedia: !!mediaForDestination }), mediaForDestination ? "image" : "text"],
+          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform, hasMedia: !!mediaForDestination }), mediaForDestination ? mediaForDestination.kind : "text"],
         );
         continue;
       }
@@ -3508,7 +3551,7 @@ async function processRouteMessageForUser(input: {
       routeDispatched += 1;
       await execute(
         "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'success',$5,'outbound',$6,'sent','','')",
-        [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, platform, routeId: route.id, routeName: route.name, hasMedia: !!mediaForDestination, ...(autoImageSource ? { autoImageSource } : {}) }), mediaForDestination ? "image" : "text"],
+        [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, platform, routeId: route.id, routeName: route.name, hasMedia: !!mediaForDestination, ...(autoImageSource ? { autoImageSource } : {}) }), mediaForDestination ? mediaForDestination.kind : "text"],
       );
     }
 
@@ -5180,7 +5223,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         errorStep: string;
         platform?: string;
         error?: string;
-        messageType?: "text" | "image";
+        messageType?: "text" | "image" | "video";
       }) => {
         await execute(
           "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'error',$4,'outbound',$5,'failed',$6,$7)",
@@ -5305,7 +5348,7 @@ rpcRouter.post("/rpc", async (req, res) => {
             reason: "no_destination_groups",
             errorStep: "route_targets",
             error: "Agendamento cancelado: nenhum destino válido.",
-            messageType: scheduleMedia ? "image" : "text",
+            messageType: scheduleMedia ? scheduleMedia.kind : "text",
           });
           continue;
         }
@@ -5354,7 +5397,7 @@ rpcRouter.post("/rpc", async (req, res) => {
               reason: "destination_not_found",
               errorStep: "destination_lookup",
               error: `Grupo destino não encontrado: ${gid}`,
-              messageType: scheduleMedia ? "image" : "text",
+              messageType: scheduleMedia ? scheduleMedia.kind : "text",
             });
             break;
           }
@@ -5373,7 +5416,7 @@ rpcRouter.post("/rpc", async (req, res) => {
               reason: "destination_session_offline",
               errorStep: "destination_validation",
               error: "Sessão do destino offline ou grupo sem identificador externo.",
-              messageType: scheduleMedia ? "image" : "text",
+              messageType: scheduleMedia ? scheduleMedia.kind : "text",
             });
             break;
           }
@@ -5429,13 +5472,13 @@ rpcRouter.post("/rpc", async (req, res) => {
               reason: "destination_send_failed",
               errorStep: "send_message",
               error: String(sentResult.error.message || "Falha ao enviar para o destino."),
-              messageType: mediaForDestination ? "image" : "text",
+              messageType: mediaForDestination ? mediaForDestination.kind : "text",
             });
             break;
           }
 
           await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'success',$4,'outbound',$5,'sent','','')",
-            [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform, hasMedia: !!mediaForDestination }), mediaForDestination ? "image" : "text"]);
+            [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform, hasMedia: !!mediaForDestination }), mediaForDestination ? mediaForDestination.kind : "text"]);
           sent++;
           postSentCount += 1;
         }

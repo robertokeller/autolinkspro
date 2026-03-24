@@ -65,19 +65,23 @@ function parseScheduledImageFromMeta(meta: Record<string, unknown>): OutboundMed
   const raw = meta.media;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const media = raw as Record<string, unknown>;
-  if (media.kind !== "image") return null;
+  const kindRaw = String(media.kind || "").trim().toLowerCase();
+  if (kindRaw !== "image" && kindRaw !== "video") return null;
+  const kind = kindRaw as OutboundMediaPayload["kind"];
   const base64 = typeof media.base64 === "string" ? media.base64.trim() : "";
   if (!base64) return null;
 
-  const mimeType = typeof media.mimeType === "string" && media.mimeType.startsWith("image/")
-    ? media.mimeType
-    : "image/jpeg";
+  const mimeType = (() => {
+    const rawMime = typeof media.mimeType === "string" ? media.mimeType.trim().toLowerCase() : "";
+    if (kind === "video") return rawMime.startsWith("video/") ? rawMime : "video/mp4";
+    return rawMime.startsWith("image/") ? rawMime : "image/jpeg";
+  })();
   const fileName = typeof media.fileName === "string" && media.fileName.trim()
     ? media.fileName.trim()
-    : "schedule_image.jpg";
+    : kind === "video" ? "schedule_video.mp4" : "schedule_image.jpg";
 
   return {
-    kind: "image",
+    kind,
     base64,
     mimeType,
     fileName,
@@ -1215,8 +1219,10 @@ type InboundMessageInput = {
   sourceName: string;
   from: string;
   message: string;
+  hasMediaHint?: boolean;
+  mediaKindHint?: string;
   media?: {
-    kind: "image";
+    kind: "image" | "video";
     sourcePlatform: "whatsapp" | "telegram";
     token?: string;
     base64?: string;
@@ -1226,12 +1232,18 @@ type InboundMessageInput = {
 };
 
 type OutboundMediaPayload = {
-  kind: "image";
+  kind: "image" | "video";
   token?: string;
   base64?: string;
   mimeType?: string;
   fileName?: string;
 };
+
+function normalizeForwardableMediaKind(value: unknown): OutboundMediaPayload["kind"] | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "image" || normalized === "video") return normalized;
+  return null;
+}
 
 const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const AUTO_IMAGE_FETCH_TIMEOUT_MS = 12_000;
@@ -2209,33 +2221,35 @@ async function resolveOutboundMedia(
   userId: string,
   destinationPlatform: "whatsapp" | "telegram",
 ): Promise<OutboundMediaPayload | null> {
-  if (!media || media.kind !== "image") return null;
+  if (!media || (media.kind !== "image" && media.kind !== "video")) return null;
+  const defaultMimeType = media.kind === "video" ? "video/mp4" : "image/jpeg";
+  const defaultFileName = media.kind === "video" ? "route_video.mp4" : "route_image.jpg";
 
   // Prefer stable payload to avoid token lifecycle races during route fan-out.
   if (media.base64) {
     return {
-      kind: "image",
+      kind: media.kind,
       base64: media.base64,
-      mimeType: media.mimeType || "image/jpeg",
-      fileName: media.fileName || "route_image.jpg",
+      mimeType: media.mimeType || defaultMimeType,
+      fileName: media.fileName || defaultFileName,
     };
   }
 
   // Fast path: WhatsApp -> WhatsApp can reuse media token directly in the same service.
   if (media.sourcePlatform === "whatsapp" && destinationPlatform === "whatsapp" && media.token) {
     return {
-      kind: "image",
+      kind: media.kind,
       token: media.token,
-      mimeType: media.mimeType || "image/jpeg",
-      fileName: media.fileName || "route_image.jpg",
+      mimeType: media.mimeType || defaultMimeType,
+      fileName: media.fileName || defaultFileName,
     };
   }
   if (media.sourcePlatform === "telegram" && destinationPlatform === "telegram" && media.token) {
     return {
-      kind: "image",
+      kind: media.kind,
       token: media.token,
-      mimeType: media.mimeType || "image/jpeg",
-      fileName: media.fileName || "route_image.jpg",
+      mimeType: media.mimeType || defaultMimeType,
+      fileName: media.fileName || defaultFileName,
     };
   }
 
@@ -2243,20 +2257,20 @@ async function resolveOutboundMedia(
     const fetched = await fetchWhatsAppMediaByToken(media.token, userId);
     if (!fetched.base64) return null;
     return {
-      kind: "image",
+      kind: media.kind,
       base64: fetched.base64,
-      mimeType: fetched.mimeType,
-      fileName: fetched.fileName,
+      mimeType: fetched.mimeType || defaultMimeType,
+      fileName: fetched.fileName || defaultFileName,
     };
   }
   if (media.sourcePlatform === "telegram" && media.token && TELEGRAM_MICROSERVICE_URL) {
     const fetched = await fetchTelegramMediaByToken(media.token, userId);
     if (!fetched.base64) return null;
     return {
-      kind: "image",
+      kind: media.kind,
       base64: fetched.base64,
-      mimeType: fetched.mimeType,
-      fileName: fetched.fileName,
+      mimeType: fetched.mimeType || defaultMimeType,
+      fileName: fetched.fileName || defaultFileName,
     };
   }
 
@@ -2267,7 +2281,7 @@ async function prepareRouteMediaForProcessing(
   media: InboundMessageInput["media"],
   userId: string,
 ): Promise<InboundMessageInput["media"]> {
-  if (!media || media.kind !== "image") return media;
+  if (!media || (media.kind !== "image" && media.kind !== "video")) return media;
   if (!media.token) return media;
 
   if (media.sourcePlatform === "whatsapp") {
@@ -2287,8 +2301,8 @@ async function prepareRouteMediaForProcessing(
     return {
       ...media,
       base64: fetched.base64,
-      mimeType: media.mimeType || fetched.mimeType,
-      fileName: media.fileName || fetched.fileName,
+      mimeType: media.mimeType || fetched.mimeType || (media.kind === "video" ? "video/mp4" : "image/jpeg"),
+      fileName: media.fileName || fetched.fileName || (media.kind === "video" ? "route_video.mp4" : "route_image.jpg"),
     };
   } catch {
     return media;
@@ -2699,6 +2713,8 @@ function buildSourceExternalIdCandidates(rawValue: string): string[] {
 async function processInboundMessageForRoutes(input: InboundMessageInput): Promise<RouteProcessResult> {
   const snapshot = loadDb();
   const capturedAt = nowIso();
+  const hasMediaHint = input.hasMediaHint === true;
+  const mediaKindHint = String(input.mediaKindHint || "").trim().toLowerCase();
   const routeMedia = await prepareRouteMediaForProcessing(input.media, input.userId);
   const scheduleInboundMediaCleanup = async (): Promise<void> => {
     if (!routeMedia?.token) return;
@@ -3237,6 +3253,10 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
       }
     }
     if (!effectiveMedia) {
+      const inferredImageIngestionFailure = !routeMedia && hasMediaHint && mediaKindHint === "image";
+      const missingImageReason = inferredImageIngestionFailure
+        ? "image_ingestion_failed"
+        : "missing_image_required";
       failed += 1;
       withDb((db) => {
         appendRouteHistory(db, {
@@ -3246,13 +3266,15 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
           status: "info",
           message: finalMessage,
           processingStatus: "blocked",
-          blockReason: "missing_image_required",
+          blockReason: missingImageReason,
           routeId: String(route.id),
           routeName,
           originPlatform: input.platform,
           messageData: {
-            reason: "missing_image_required",
+            reason: missingImageReason,
             hasMedia: false,
+            hasMediaHint,
+            mediaKindHint: mediaKindHint || undefined,
           },
         });
       });
@@ -3281,7 +3303,7 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
       continue;
     }
 
-    const routeHasMedia = Boolean(effectiveMedia && effectiveMedia.kind === "image");
+    const routeHasMedia = Boolean(effectiveMedia && (effectiveMedia.kind === "image" || effectiveMedia.kind === "video"));
 
     for (const destinationId of destinationGroupIds) {
       const destinationGroup = snapshot.tables.groups.find(
@@ -3350,7 +3372,7 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
           ? await resolveOutboundMedia(effectiveMedia, input.userId, destinationPlatformTyped)
           : null;
         if (!outboundMedia) {
-          throw new Error("Envio cancelado: não foi possível preparar o anexo de imagem da mensagem.");
+          throw new Error("Envio cancelado: não foi possível preparar o anexo de mídia da mensagem.");
         }
         if (!String(finalMessage || "").trim()) {
           throw new Error("Envio cancelado: a mensagem de texto está vazia.");
@@ -3509,9 +3531,10 @@ function applyWhatsAppEvents(
       const mediaRaw = data.media && typeof data.media === "object"
         ? (data.media as Record<string, unknown>)
         : null;
-      const media = mediaRaw && String(mediaRaw.kind || "") === "image"
+      const mediaKind = normalizeForwardableMediaKind(mediaRaw?.kind);
+      const media = mediaRaw && mediaKind
         ? {
-          kind: "image" as const,
+          kind: mediaKind,
           sourcePlatform: "whatsapp" as const,
           token: typeof mediaRaw.token === "string" ? mediaRaw.token : undefined,
           base64: typeof mediaRaw.base64 === "string" ? mediaRaw.base64 : undefined,
@@ -3599,6 +3622,8 @@ function applyWhatsAppEvents(
         sourceName: groupName,
         from,
         message,
+        hasMediaHint,
+        mediaKindHint,
         media,
       });
       continue;
@@ -3695,9 +3720,10 @@ function applyTelegramEvents(
       const mediaRaw = data.media && typeof data.media === "object"
         ? (data.media as Record<string, unknown>)
         : null;
-      const media = mediaRaw && String(mediaRaw.kind || "") === "image"
+      const mediaKind = normalizeForwardableMediaKind(mediaRaw?.kind);
+      const media = mediaRaw && mediaKind
         ? {
-          kind: "image" as const,
+          kind: mediaKind,
           sourcePlatform: "telegram" as const,
           token: typeof mediaRaw.token === "string" ? mediaRaw.token : undefined,
           base64: typeof mediaRaw.base64 === "string" ? mediaRaw.base64 : undefined,
@@ -3785,6 +3811,8 @@ function applyTelegramEvents(
         sourceName: groupName,
         from,
         message,
+        hasMediaHint,
+        mediaKindHint,
         media,
       });
       continue;
@@ -4187,7 +4215,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     const from = String(body.from || (platform === "telegram" ? "Telegram" : "WhatsApp")).trim();
     const message = String(body.message || "").trim();
     const rawMedia = body.media && typeof body.media === "object" ? (body.media as Record<string, unknown>) : null;
-    const mediaKind = String(rawMedia?.kind || "").trim();
+    const mediaKind = normalizeForwardableMediaKind(rawMedia?.kind);
     const mediaBase64 = String(rawMedia?.base64 || "").trim();
     const mediaToken = String(rawMedia?.token || "").trim();
     const mediaMimeType = String(rawMedia?.mimeType || "").trim();
@@ -4196,9 +4224,9 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
     const mediaSourcePlatform: "whatsapp" | "telegram" = mediaSourcePlatformRaw === "telegram"
       ? "telegram"
       : platform;
-    const media = mediaKind === "image" && (mediaBase64 || mediaToken)
+    const media = mediaKind && (mediaBase64 || mediaToken)
       ? {
-          kind: "image" as const,
+          kind: mediaKind,
           sourcePlatform: mediaSourcePlatform,
           token: mediaToken || undefined,
           base64: mediaBase64 || undefined,
@@ -4206,9 +4234,11 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
           fileName: mediaFileName || undefined,
         }
       : null;
+    const mediaKindHint = String(body.mediaKind || body.media_kind || mediaKind || "").trim().toLowerCase();
+    const hasMediaHint = body.hasMedia === true || body.has_media === true || Boolean(mediaKindHint) || Boolean(media);
 
-    if (!sessionId || !sourceExternalId || !message) {
-      return fail("sessionId, groupId e message são obrigatórios");
+    if (!sessionId || !sourceExternalId || (!message && !media && !hasMediaHint)) {
+      return fail("sessionId e groupId são obrigatórios, com message ou media");
     }
 
     const result = await processInboundMessageForRoutes({
@@ -4219,6 +4249,8 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
       sourceName,
       from,
       message,
+      hasMediaHint,
+      mediaKindHint,
       media,
     });
 
@@ -5037,7 +5069,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
               status: "success",
               details: { message, platform: String(group.platform || "") },
               direction: "outbound",
-              message_type: scheduleMedia ? "image" : "text",
+              message_type: scheduleMedia ? scheduleMedia.kind : "text",
               processing_status: "sent",
               block_reason: "",
               error_step: "",
@@ -6152,7 +6184,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                   hasMedia: !!automationMedia,
                 },
                 direction: "outbound",
-                message_type: automationMedia ? "image" : "text",
+                message_type: automationMedia ? automationMedia.kind : "text",
                 processing_status: "failed",
                 block_reason: reason,
                 error_step: "automation_send",
@@ -6321,7 +6353,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                 hasMedia: !!automationMedia,
               },
               direction: "outbound",
-              message_type: automationMedia ? "image" : "text",
+              message_type: automationMedia ? automationMedia.kind : "text",
               processing_status: "blocked",
               block_reason: "destination_session_offline",
               error_step: "automation_send",
@@ -6379,7 +6411,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                 hasMedia: !!automationMedia,
               },
               direction: "outbound",
-              message_type: automationMedia ? "image" : "text",
+              message_type: automationMedia ? automationMedia.kind : "text",
               processing_status: "sent",
               block_reason: "",
               error_step: "",
@@ -6423,7 +6455,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
                 hasMedia: !!automationMedia,
               },
               direction: "outbound",
-              message_type: automationMedia ? "image" : "text",
+              message_type: automationMedia ? automationMedia.kind : "text",
               processing_status: "failed",
               block_reason: reason,
               error_step: "automation_send",
@@ -7364,7 +7396,7 @@ export async function invokeLocalFunction(name: string, options?: { body?: Recor
             status: "success",
             details: { message, platform: String(group.platform || "") },
             direction: "outbound",
-            message_type: scheduleMedia ? "image" : "text",
+            message_type: scheduleMedia ? scheduleMedia.kind : "text",
             processing_status: "sent",
             block_reason: "",
             error_step: "",

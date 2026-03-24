@@ -77,7 +77,7 @@ interface SendMessageBody {
   chatId?: string;
   message?: string;
   media?: {
-    kind?: "image";
+    kind?: "image" | "video";
     token?: string;
     base64?: string;
     mimeType?: string;
@@ -99,6 +99,10 @@ const SESSIONS_ROOT = path.resolve(process.env.TELEGRAM_SESSIONS_DIR || path.joi
 const SESSION_DIR_PREFIX = "tg_";
 const URL_REGEX = /https?:\/\/[^\s<>"']+/gi;
 const AUTO_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const ROUTE_MEDIA_MAX_BYTES = Math.max(
+  AUTO_IMAGE_MAX_BYTES,
+  Number(process.env.ROUTE_MEDIA_MAX_BYTES || "67108864"),
+);
 const DEFAULT_AUTO_IMAGE_FILE_NAME = "route_image.jpg";
 const OUTBOUND_ECHO_WINDOW_MS = Math.max(10_000, Number(process.env.TELEGRAM_OUTBOUND_ECHO_WINDOW_MS || "120000"));
 // Telegram API credentials — stored in the service .env, never in the frontend bundle
@@ -112,6 +116,7 @@ const inFlightSends = new Map<string, Promise<{ id: number | null }>>();
 const mediaStore = new Map<string, {
   token: string;
   userId: string;
+  kind: "image" | "video";
   data: Buffer;
   mimeType: string;
   fileName: string;
@@ -659,7 +664,7 @@ function extractTelegramThumbnailBuffer(media: unknown): Buffer | null {
     const row = current as Record<string, unknown>;
     for (const key of thumbnailKeys) {
       const candidate = coerceBinaryToBuffer(row[key]);
-      if (!candidate || candidate.length === 0 || candidate.length > AUTO_IMAGE_MAX_BYTES) continue;
+      if (!candidate || candidate.length === 0 || candidate.length > ROUTE_MEDIA_MAX_BYTES) continue;
       const detected = detectImageMimeTypeFromBuffer(candidate);
       if (detected) return candidate;
     }
@@ -674,15 +679,17 @@ function extractTelegramThumbnailBuffer(media: unknown): Buffer | null {
   return null;
 }
 
-function shouldAttemptTelegramMediaDownloadForImage(info: TelegramInboundMediaInfo | null): boolean {
+function shouldAttemptTelegramMediaDownloadForRoute(info: TelegramInboundMediaInfo | null): boolean {
   if (!info) return false;
+  if (info.kind === "video") return true;
   if (info.kind === "document") return true;
   if (info.kind === "image" || info.kind === "sticker") return true;
   if (info.mimeType.startsWith("image/")) return true;
+  if (info.mimeType.startsWith("video/")) return true;
   return Boolean(inferImageMimeTypeFromFileName(info.fileName));
 }
 
-async function downloadIncomingTelegramImageBuffer(args: {
+async function downloadIncomingTelegramMediaBuffer(args: {
   client: TelegramClient;
   message: Api.Message;
   media: unknown;
@@ -697,7 +704,7 @@ async function downloadIncomingTelegramImageBuffer(args: {
   for (const attempt of attempts) {
     try {
       const downloaded = await attempt();
-      if (Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= AUTO_IMAGE_MAX_BYTES) {
+      if (Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= ROUTE_MEDIA_MAX_BYTES) {
         return downloaded;
       }
     } catch (error) {
@@ -708,27 +715,30 @@ async function downloadIncomingTelegramImageBuffer(args: {
   return null;
 }
 
-async function resolveTelegramInboundImage(args: {
+async function resolveTelegramInboundMedia(args: {
   client: TelegramClient;
   message: Api.Message;
   media: unknown;
   mediaInfo: TelegramInboundMediaInfo | null;
   sessionId: string;
-}): Promise<{ buffer: Buffer; mimeType: string; origin: "full_media" | "thumbnail" } | null> {
+}): Promise<{ kind: "image" | "video"; buffer: Buffer; mimeType: string; origin: "full_media" | "thumbnail" } | null> {
   const { client, message, media, mediaInfo, sessionId } = args;
 
-  const thumb = extractTelegramThumbnailBuffer(media);
-  if (thumb && thumb.length > 0) {
-    const thumbMime = detectImageMimeTypeFromBuffer(thumb) || "image/jpeg";
-    return {
-      buffer: thumb,
-      mimeType: thumbMime,
-      origin: "thumbnail",
-    };
+  if (mediaInfo?.kind === "image") {
+    const thumb = extractTelegramThumbnailBuffer(media);
+    if (thumb && thumb.length > 0) {
+      const thumbMime = detectImageMimeTypeFromBuffer(thumb) || "image/jpeg";
+      return {
+        kind: "image",
+        buffer: thumb,
+        mimeType: thumbMime,
+        origin: "thumbnail",
+      };
+    }
   }
 
-  if (!shouldAttemptTelegramMediaDownloadForImage(mediaInfo)) return null;
-  const downloaded = await downloadIncomingTelegramImageBuffer({
+  if (!shouldAttemptTelegramMediaDownloadForRoute(mediaInfo)) return null;
+  const downloaded = await downloadIncomingTelegramMediaBuffer({
     client,
     message,
     media,
@@ -736,13 +746,20 @@ async function resolveTelegramInboundImage(args: {
   });
   if (!downloaded || downloaded.length === 0) return null;
 
-  const detectedMime = detectImageMimeTypeFromBuffer(downloaded);
+  const hintedKind = mediaInfo?.kind === "video"
+    ? "video"
+    : mediaInfo?.kind === "image"
+      ? "image"
+      : (String(mediaInfo?.mimeType || "").trim().toLowerCase().startsWith("video/") ? "video" : "image");
   const hintMime = String(mediaInfo?.mimeType || "").trim().toLowerCase();
-  const mimeFromHint = hintMime.startsWith("image/") ? hintMime : "";
-  const mimeFromFileName = inferImageMimeTypeFromFileName(mediaInfo?.fileName);
-  const mimeType = detectedMime || mimeFromHint || mimeFromFileName;
-  if (!mimeType) return null;
+  const detectedImageMime = detectImageMimeTypeFromBuffer(downloaded);
+  const mimeFromImageFileName = inferImageMimeTypeFromFileName(mediaInfo?.fileName);
+  const mimeType = hintedKind === "video"
+    ? (hintMime.startsWith("video/") ? hintMime : "video/mp4")
+    : (detectedImageMime || (hintMime.startsWith("image/") ? hintMime : "") || mimeFromImageFileName || "image/jpeg");
+
   return {
+    kind: hintedKind,
     buffer: downloaded,
     mimeType,
     origin: "full_media",
@@ -757,8 +774,8 @@ function normalizeEchoText(message: string): string {
   return message.trim().replace(/\s+/g, " ").slice(0, 2048);
 }
 
-function makeOutboundEchoKey(sessionId: string, groupId: string, message: string, hasImage: boolean): string {
-  return `${sessionId}|${groupId}|${normalizeEchoText(message)}|${hasImage ? "image" : "text"}`;
+function makeOutboundEchoKey(sessionId: string, groupId: string, message: string, hasMedia: boolean): string {
+  return `${sessionId}|${groupId}|${normalizeEchoText(message)}|${hasMedia ? "media" : "text"}`;
 }
 
 function pruneOutboundEchoes(nowMs: number): void {
@@ -769,18 +786,18 @@ function pruneOutboundEchoes(nowMs: number): void {
   }
 }
 
-function rememberOutboundEcho(sessionId: string, groupId: string, message: string, hasImage: boolean): void {
+function rememberOutboundEcho(sessionId: string, groupId: string, message: string, hasMedia: boolean): void {
   const nowMs = Date.now();
   pruneOutboundEchoes(nowMs);
   recentOutboundEchoes.set(
-    makeOutboundEchoKey(sessionId, groupId, message, hasImage),
+    makeOutboundEchoKey(sessionId, groupId, message, hasMedia),
     nowMs + OUTBOUND_ECHO_WINDOW_MS,
   );
 }
 
-function isRecentOutboundEcho(sessionId: string, groupId: string, message: string, hasImage: boolean): boolean {
+function isRecentOutboundEcho(sessionId: string, groupId: string, message: string, hasMedia: boolean): boolean {
   const nowMs = Date.now();
-  const key = makeOutboundEchoKey(sessionId, groupId, message, hasImage);
+  const key = makeOutboundEchoKey(sessionId, groupId, message, hasMedia);
   const expiresAt = recentOutboundEchoes.get(key);
   if (!expiresAt) {
     return false;
@@ -818,7 +835,14 @@ function mimeTypeToFileExtension(mimeType: string): string {
   if (normalized === "image/avif") return "avif";
   if (normalized === "image/heic") return "heic";
   if (normalized === "image/heif") return "heif";
-  return "jpg";
+  if (normalized === "video/mp4") return "mp4";
+  if (normalized === "video/webm") return "webm";
+  if (normalized === "video/quicktime") return "mov";
+  if (normalized === "video/x-matroska") return "mkv";
+  if (normalized === "video/x-msvideo") return "avi";
+  if (normalized === "video/3gpp") return "3gp";
+  if (normalized.startsWith("video/")) return "mp4";
+  return "bin";
 }
 
 function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
@@ -903,7 +927,8 @@ function generateMediaToken(): string {
   return `tgm_${randomBytes(18).toString("hex")}`;
 }
 
-function storeTemporaryImage(
+function storeTemporaryMedia(
+  kind: "image" | "video",
   buffer: Buffer,
   userId: string,
   mimeType: string,
@@ -911,15 +936,19 @@ function storeTemporaryImage(
 ): { token: string; fileName: string } {
   const token = generateMediaToken();
   const nowMs = Date.now();
-  const safeMimeType = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+  const safeMimeType = kind === "video"
+    ? (mimeType.startsWith("video/") ? mimeType : "video/mp4")
+    : (mimeType.startsWith("image/") ? mimeType : "image/jpeg");
   const extension = mimeTypeToFileExtension(safeMimeType);
-  const rawName = (fileName || DEFAULT_AUTO_IMAGE_FILE_NAME).trim();
+  const defaultName = kind === "video" ? "route_video" : "route_image";
+  const rawName = (fileName || defaultName).trim();
   const hasExtension = /\.[a-zA-Z0-9]+$/.test(rawName);
-  const finalFileName = hasExtension ? rawName : `${rawName || "route_image"}.${extension}`;
+  const finalFileName = hasExtension ? rawName : `${rawName || defaultName}.${extension}`;
 
   mediaStore.set(token, {
     token,
     userId,
+    kind,
     data: buffer,
     mimeType: safeMimeType,
     fileName: finalFileName,
@@ -1195,14 +1224,16 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       const messageMedia = message.media;
       const mediaInfo = extractTelegramMediaInfo(messageMedia);
       const hasMedia = hasTelegramMedia(messageMedia);
-      const hasImageMedia = isTelegramImageMedia(messageMedia);
+      const hasForwardableMedia = Boolean(
+        mediaInfo && (mediaInfo.kind === "image" || mediaInfo.kind === "video"),
+      );
       logMediaCaptureDebug("incoming_summary", {
         sessionId: state.config.sessionId,
         hasText: Boolean(content),
         textLength: content.length,
         hasMedia,
         mediaKind: mediaInfo?.kind || "",
-        hasImageMedia,
+        hasForwardableMedia,
         mediaMimeTypeHint: mediaInfo?.mimeType || readTelegramMediaMimeType(messageMedia),
       });
 
@@ -1249,8 +1280,8 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       }
 
       let mediaData: Record<string, unknown> | undefined;
-      const resolvedImage = hasMedia && state.client
-        ? await resolveTelegramInboundImage({
+      const resolvedMedia = hasMedia && state.client
+        ? await resolveTelegramInboundMedia({
             client: state.client,
             message: message as Api.Message,
             media: messageMedia,
@@ -1258,25 +1289,31 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
             sessionId: state.config.sessionId,
           })
         : null;
-      if (resolvedImage) {
-        const stored = storeTemporaryImage(resolvedImage.buffer, state.config.userId, resolvedImage.mimeType);
-        logMediaCaptureDebug("incoming_image_stored", {
+      if (resolvedMedia) {
+        const stored = storeTemporaryMedia(
+          resolvedMedia.kind,
+          resolvedMedia.buffer,
+          state.config.userId,
+          resolvedMedia.mimeType,
+        );
+        logMediaCaptureDebug("incoming_media_stored", {
           sessionId: state.config.sessionId,
           groupId,
-          bytes: resolvedImage.buffer.length,
-          mimeType: resolvedImage.mimeType,
-          origin: resolvedImage.origin,
+          mediaKind: resolvedMedia.kind,
+          bytes: resolvedMedia.buffer.length,
+          mimeType: resolvedMedia.mimeType,
+          origin: resolvedMedia.origin,
           tokenPrefix: stored.token.slice(0, 8),
         });
         mediaData = {
-          kind: "image",
+          kind: resolvedMedia.kind,
           token: stored.token,
-          mimeType: resolvedImage.mimeType,
+          mimeType: resolvedMedia.mimeType,
           fileName: stored.fileName,
           sourcePlatform: "telegram",
         };
       } else if (hasMedia) {
-        logMediaCaptureDebug("incoming_image_download_failed", {
+        logMediaCaptureDebug("incoming_media_download_failed", {
           sessionId: state.config.sessionId,
           groupId,
           hasText: Boolean(content),
@@ -1286,7 +1323,7 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
         });
         logger.warn(
           { sessionId: state.config.sessionId, groupId, mediaKind: mediaInfo?.kind || "unknown" },
-          "incoming telegram media detected but no image payload could be extracted",
+          "incoming telegram media detected but payload could not be extracted",
         );
       }
 
@@ -1394,8 +1431,8 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
       }
 
       let mediaData: Record<string, unknown> | undefined;
-      const resolvedImage = hasMedia && state.client
-        ? await resolveTelegramInboundImage({
+      const resolvedMedia = hasMedia && state.client
+        ? await resolveTelegramInboundMedia({
             client: state.client,
             message: rawMessage as Api.Message,
             media: messageMedia,
@@ -1403,12 +1440,17 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
             sessionId: state.config.sessionId,
           })
         : null;
-      if (resolvedImage) {
-        const stored = storeTemporaryImage(resolvedImage.buffer, state.config.userId, resolvedImage.mimeType);
+      if (resolvedMedia) {
+        const stored = storeTemporaryMedia(
+          resolvedMedia.kind,
+          resolvedMedia.buffer,
+          state.config.userId,
+          resolvedMedia.mimeType,
+        );
         mediaData = {
-          kind: "image",
+          kind: resolvedMedia.kind,
           token: stored.token,
-          mimeType: resolvedImage.mimeType,
+          mimeType: resolvedMedia.mimeType,
           fileName: stored.fileName,
           sourcePlatform: "telegram",
         };
@@ -1869,6 +1911,7 @@ app.get("/api/telegram/media/:token", async (req: Request<{ token: string }>, re
   res.json({
     ok: true,
     token: item.token,
+    kind: item.kind,
     mimeType: item.mimeType,
     fileName: item.fileName,
     base64: item.data.toString("base64"),
@@ -2120,10 +2163,10 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
   if (!requestUserId) return;
 
   const { sessionId = "", chatId = "", message = "", media } = req.body || {};
-  const hasImageMedia = media?.kind === "image";
+  const hasSupportedMedia = media?.kind === "image" || media?.kind === "video";
 
-  if (!sessionId || !chatId || (!message.trim() && !hasImageMedia)) {
-    res.status(400).json({ error: "sessionId e chatId são obrigatórios, com message ou media de imagem" });
+  if (!sessionId || !chatId || (!message.trim() && !hasSupportedMedia)) {
+    res.status(400).json({ error: "sessionId e chatId são obrigatórios, com message ou media (imagem/video)" });
     return;
   }
 
@@ -2147,8 +2190,9 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
   const client = state.client;
 
   const trimmedMessage = message.trim();
-  const mediaSignature = media?.kind === "image"
+  const mediaSignature = media?.kind === "image" || media?.kind === "video"
     ? [
+      String(media.kind || ""),
       String(media.token || ""),
       String(media.fileName || ""),
       String(media.mimeType || ""),
@@ -2171,14 +2215,18 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
   const sendPromise = (async () => {
     const target = parseChatTarget(chatId);
     const entity = await client.getInputEntity(target);
-    let mediaKind = media?.kind === "image" ? "image" : "";
+    let mediaKind: "image" | "video" | "" = media?.kind === "video"
+      ? "video"
+      : media?.kind === "image"
+        ? "image"
+        : "";
     let outboundMessage = trimmedMessage;
     let sent: { id?: number } | null = null;
     let mediaFileBuffer: Buffer | null = null;
-    let mediaFileName = media?.fileName || DEFAULT_AUTO_IMAGE_FILE_NAME;
-    let mediaMimeType = media?.mimeType || "image/jpeg";
+    let mediaFileName = media?.fileName || (mediaKind === "video" ? "route_video.mp4" : DEFAULT_AUTO_IMAGE_FILE_NAME);
+    let mediaMimeType = media?.mimeType || (mediaKind === "video" ? "video/mp4" : "image/jpeg");
 
-    if (mediaKind === "image") {
+    if (mediaKind) {
       if (media?.token) {
         const stored = mediaStore.get(media.token);
         if (!stored) {
@@ -2187,16 +2235,24 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
         if (stored.userId !== state.config.userId) {
           throw new Error("Mídia temporária não pertence ao usuário da sessão");
         }
+        mediaKind = stored.kind;
         mediaFileBuffer = stored.data;
         mediaMimeType = stored.mimeType || mediaMimeType;
         mediaFileName = stored.fileName || mediaFileName;
       } else if (media?.base64) {
         const fileBuffer = Buffer.from(media.base64, "base64");
-        const detectedMimeType = detectImageMimeTypeFromBuffer(fileBuffer);
         const mimeTypeFromPayload = (media?.mimeType || "").trim().toLowerCase();
-        if (detectedMimeType || mimeTypeFromPayload.startsWith("image/")) {
-          mediaFileBuffer = fileBuffer;
-          mediaMimeType = detectedMimeType || mimeTypeFromPayload || "image/jpeg";
+        if (mediaKind === "video") {
+          if (fileBuffer.length > 0 && (mimeTypeFromPayload.startsWith("video/") || !mimeTypeFromPayload)) {
+            mediaFileBuffer = fileBuffer;
+            mediaMimeType = mimeTypeFromPayload.startsWith("video/") ? mimeTypeFromPayload : "video/mp4";
+          }
+        } else {
+          const detectedMimeType = detectImageMimeTypeFromBuffer(fileBuffer);
+          if (detectedMimeType || mimeTypeFromPayload.startsWith("image/")) {
+            mediaFileBuffer = fileBuffer;
+            mediaMimeType = detectedMimeType || mimeTypeFromPayload || "image/jpeg";
+          }
         }
       }
     } else {
@@ -2214,9 +2270,10 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
       }
     }
 
-    if (mediaKind === "image" && mediaFileBuffer) {
+    if (mediaKind && mediaFileBuffer) {
       const extension = mimeTypeToFileExtension(mediaMimeType);
-      const safeFileName = mediaFileName.trim() || DEFAULT_AUTO_IMAGE_FILE_NAME;
+      const fallbackName = mediaKind === "video" ? "route_video" : "route_image";
+      const safeFileName = mediaFileName.trim() || fallbackName;
       const hasExtension = /\.[a-zA-Z0-9]+$/.test(safeFileName);
       const finalFileName = hasExtension ? safeFileName : `${safeFileName}.${extension}`;
       const mediaFile = new CustomFile(finalFileName, mediaFileBuffer.length, "", mediaFileBuffer);
@@ -2226,6 +2283,7 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
         caption: outboundMessage || undefined,
         parseMode: "html",
         forceDocument: false,
+        supportsStreaming: mediaKind === "video",
       }) as { id?: number };
     } else {
       sent = await client.sendMessage(entity, {
@@ -2248,12 +2306,12 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
       // ignore entity name failures
     }
 
-    rememberOutboundEcho(state.config.sessionId, groupId, outboundMessage, mediaKind === "image");
+    rememberOutboundEcho(state.config.sessionId, groupId, outboundMessage, Boolean(mediaKind));
 
     await emitWebhook(state, "message_sent", {
       to: chatId,
       groupName,
-      messageType: mediaKind === "image" ? "image" : "text",
+      messageType: mediaKind || "text",
       message: outboundMessage,
     });
 
@@ -2263,8 +2321,8 @@ app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, Sen
       chatId,
       groupName,
       messageId,
-      messageType: mediaKind === "image" ? "image" : "text",
-      hasMedia: mediaKind === "image",
+      messageType: mediaKind || "text",
+      hasMedia: Boolean(mediaKind),
     }, "telegram message sent");
     return { id: messageId };
   })();
