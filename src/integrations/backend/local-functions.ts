@@ -3253,8 +3253,8 @@ async function processInboundMessageForRoutes(input: InboundMessageInput): Promi
       }
     }
     if (!effectiveMedia) {
-      const inferredImageIngestionFailure = !routeMedia && hasMediaHint && mediaKindHint === "image";
-      const missingImageReason = inferredImageIngestionFailure
+      const inferredMediaIngestionFailure = hasMediaHint;
+      const missingImageReason = inferredMediaIngestionFailure
         ? "image_ingestion_failed"
         : "missing_image_required";
       failed += 1;

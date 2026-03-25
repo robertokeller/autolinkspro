@@ -68,7 +68,7 @@ function humanizeErrorMessage(value: string): string {
     destination_session_offline: "Sessao do grupo de destino esta offline",
     unsupported_media_type: "Bloqueada: midia recebida nao e suportada para roteamento",
     missing_image_required: "Bloqueada: rota exige imagem obrigatoria",
-    image_ingestion_failed: "Bloqueada: imagem recebida, mas nao foi possivel processar",
+    image_ingestion_failed: "Bloqueada: midia recebida, mas nao foi possivel processar",
     missing_text_required: "Bloqueada: rota exige texto obrigatorio",
     meli_session_missing: "Bloqueada: sessao do Mercado Livre nao configurada",
     meli_conversion_failed: "Bloqueada: falha ao converter link Mercado Livre",

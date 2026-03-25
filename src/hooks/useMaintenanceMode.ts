@@ -12,6 +12,26 @@ export interface MaintenanceModeState {
   updated_by_user_id: string;
 }
 
+const MAINTENANCE_QUERY_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
+
 const DEFAULT_STATE: MaintenanceModeState = {
   maintenance_enabled: false,
   maintenance_title: "Sistema em manutencao",
@@ -47,11 +67,15 @@ export function useMaintenanceMode() {
     queryKey: ["app-maintenance-mode"],
     retry: false, // sem retentativas — evita delay quando API está offline
     queryFn: async () => {
-      const { data, error } = await backend
-        .from("app_runtime_flags")
-        .select("maintenance_enabled, maintenance_title, maintenance_message, maintenance_eta, allow_admin_bypass, updated_by_user_id")
-        .eq("id", "global")
-        .maybeSingle();
+      const { data, error } = await withTimeout(
+        backend
+          .from("app_runtime_flags")
+          .select("maintenance_enabled, maintenance_title, maintenance_message, maintenance_eta, allow_admin_bypass, updated_by_user_id")
+          .eq("id", "global")
+          .maybeSingle(),
+        MAINTENANCE_QUERY_TIMEOUT_MS,
+        "Timeout ao carregar status de manutenção",
+      );
 
       // Quando API está offline, retorna estado padrão (sem manutenção) silenciosamente
       if (error) return DEFAULT_STATE;

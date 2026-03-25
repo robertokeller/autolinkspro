@@ -7,13 +7,16 @@ const DEV_API_PROXY_TARGET = String(process.env.VITE_DEV_API_PROXY_URL || "http:
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
   server: {
-    host: "0.0.0.0",
+    host: "127.0.0.1",
     port: 5173,
-    strictPort: false,
+    strictPort: true,
+    allowedHosts: true,
     open: false,
     hmr: {
       overlay: false,
-      host: "localhost",
+      host: "127.0.0.1",
+      port: 5173,
+      clientPort: 5173,
       protocol: "ws",
     },
     proxy: {
@@ -25,9 +28,10 @@ export default defineConfig(() => ({
     },
   },
   preview: {
-    host: "0.0.0.0",
+    host: "127.0.0.1",
     port: 5173,
-    strictPort: false,
+    strictPort: true,
+    allowedHosts: true,
   },
   plugins: [react()],
   build: {

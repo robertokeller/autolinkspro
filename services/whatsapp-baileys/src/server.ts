@@ -731,6 +731,62 @@ function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
   return null;
 }
 
+function detectVideoMimeTypeFromBuffer(buffer: Buffer): string | null {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+
+  // AVI: RIFF....AVI 
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x41 &&
+    buffer[9] === 0x56 &&
+    buffer[10] === 0x49 &&
+    buffer[11] === 0x20
+  ) {
+    return "video/x-msvideo";
+  }
+
+  // EBML: Matroska/WebM
+  if (
+    buffer[0] === 0x1a &&
+    buffer[1] === 0x45 &&
+    buffer[2] === 0xdf &&
+    buffer[3] === 0xa3
+  ) {
+    return "video/webm";
+  }
+
+  // ISO BMFF family (MP4/MOV/3GP)
+  if (
+    buffer.length >= 12 &&
+    buffer[4] === 0x66 &&
+    buffer[5] === 0x74 &&
+    buffer[6] === 0x79 &&
+    buffer[7] === 0x70
+  ) {
+    const brand = buffer.subarray(8, 12).toString("ascii").toLowerCase();
+    if (brand.startsWith("3gp")) return "video/3gpp";
+    if (brand === "qt  ") return "video/quicktime";
+    if (
+      brand.startsWith("mp4") ||
+      brand.startsWith("m4v") ||
+      brand.startsWith("iso") ||
+      brand.startsWith("avc") ||
+      brand.startsWith("dash") ||
+      brand === "isom" ||
+      brand === "iso2" ||
+      brand === "mp41" ||
+      brand === "mp42"
+    ) {
+      return "video/mp4";
+    }
+  }
+
+  return null;
+}
+
 function coerceBinaryToBuffer(value: unknown): Buffer | null {
   if (!value) return null;
   if (Buffer.isBuffer(value)) return value.length > 0 ? value : null;
@@ -800,13 +856,15 @@ function extractInboundThumbnailBuffer(message: proto.IMessage | null | undefine
   return null;
 }
 
-function shouldAttemptFullMediaDownloadAsImageCandidate(media: WhatsAppInboundMediaInfo | null): boolean {
+function shouldAttemptFullMediaDownloadForRoute(media: WhatsAppInboundMediaInfo | null): boolean {
   if (!media) return false;
-  if (media.kind === "document") return true;
-  if (media.kind === "image" || media.kind === "sticker") return true;
+  if (media.kind === "document" || media.kind === "image" || media.kind === "video" || media.kind === "sticker" || media.kind === "other") {
+    return true;
+  }
   const mime = String(media.mimetype || "").trim().toLowerCase();
   if (mime.startsWith("image/")) return true;
-  return Boolean(inferImageMimeTypeFromFileName(media.fileName));
+  if (mime.startsWith("video/")) return true;
+  return Boolean(inferImageMimeTypeFromFileName(media.fileName) || inferVideoMimeTypeFromFileName(media.fileName));
 }
 
 async function downloadIncomingMediaBuffer(args: {
@@ -837,7 +895,7 @@ async function resolveInboundMediaAsImage(args: {
   sessionId: string;
   inboundMedia: WhatsAppInboundMediaInfo | null;
   imagePayload: { mimetype?: string | null } | null;
-}): Promise<{ buffer: Buffer; mimeType: string; origin: "image_payload" | "thumbnail" | "media_download" } | null> {
+}): Promise<{ buffer: Buffer; mimeType: string; origin: "image_payload" | "media_download" } | null> {
   const { message, socket, sessionId, inboundMedia, imagePayload } = args;
 
   if (imagePayload) {
@@ -858,17 +916,7 @@ async function resolveInboundMediaAsImage(args: {
     }
   }
 
-  const thumbnail = extractInboundThumbnailBuffer(message.message);
-  if (thumbnail && thumbnail.length > 0) {
-    const detectedMime = detectImageMimeTypeFromBuffer(thumbnail) || "image/jpeg";
-    return {
-      buffer: thumbnail,
-      mimeType: detectedMime,
-      origin: "thumbnail",
-    };
-  }
-
-  if (shouldAttemptFullMediaDownloadAsImageCandidate(inboundMedia)) {
+  if (shouldAttemptFullMediaDownloadForRoute(inboundMedia)) {
     const downloadedAny = await downloadIncomingMediaBuffer({ message, socket, sessionId });
     if (downloadedAny && downloadedAny.length > 0) {
       const detectedMime = detectImageMimeTypeFromBuffer(downloadedAny);
@@ -905,6 +953,79 @@ async function resolveInboundMediaAsVideo(args: {
     mimeType: mimeTypeHint.startsWith("video/") ? mimeTypeHint : "video/mp4",
     origin: "media_download",
   };
+}
+
+async function resolveInboundMediaForRoute(args: {
+  message: { message?: proto.IMessage };
+  socket: WASocket;
+  sessionId: string;
+  inboundMedia: WhatsAppInboundMediaInfo | null;
+  imagePayload: { mimetype?: string | null } | null;
+}): Promise<{ kind: "image" | "video"; buffer: Buffer; mimeType: string; origin: "image_payload" | "media_download" } | null> {
+  const { message, socket, sessionId, inboundMedia, imagePayload } = args;
+  if (!inboundMedia) return null;
+
+  if (inboundMedia.kind === "image") {
+    const resolvedImage = await resolveInboundMediaAsImage({
+      message,
+      socket,
+      sessionId,
+      inboundMedia,
+      imagePayload,
+    });
+    if (!resolvedImage) return null;
+    return {
+      kind: "image",
+      buffer: resolvedImage.buffer,
+      mimeType: resolvedImage.mimeType || "image/jpeg",
+      origin: resolvedImage.origin,
+    };
+  }
+
+  if (inboundMedia.kind === "video") {
+    const resolvedVideo = await resolveInboundMediaAsVideo({
+      message,
+      socket,
+      sessionId,
+      inboundMedia,
+    });
+    if (!resolvedVideo) return null;
+    return {
+      kind: "video",
+      buffer: resolvedVideo.buffer,
+      mimeType: resolvedVideo.mimeType || "video/mp4",
+      origin: resolvedVideo.origin,
+    };
+  }
+
+  if (!shouldAttemptFullMediaDownloadForRoute(inboundMedia)) return null;
+  const downloadedAny = await downloadIncomingMediaBuffer({ message, socket, sessionId });
+  if (!downloadedAny || downloadedAny.length === 0) return null;
+
+  const hintMime = String(inboundMedia.mimetype || "").trim().toLowerCase();
+  const mimeFromImageFileName = inferImageMimeTypeFromFileName(inboundMedia.fileName);
+  const mimeFromVideoFileName = inferVideoMimeTypeFromFileName(inboundMedia.fileName);
+  const detectedImageMime = detectImageMimeTypeFromBuffer(downloadedAny);
+  if (detectedImageMime || hintMime.startsWith("image/") || mimeFromImageFileName) {
+    return {
+      kind: "image",
+      buffer: downloadedAny,
+      mimeType: detectedImageMime || (hintMime.startsWith("image/") ? hintMime : "") || mimeFromImageFileName || "image/jpeg",
+      origin: "media_download",
+    };
+  }
+
+  const detectedVideoMime = detectVideoMimeTypeFromBuffer(downloadedAny);
+  if (detectedVideoMime || hintMime.startsWith("video/") || mimeFromVideoFileName) {
+    return {
+      kind: "video",
+      buffer: downloadedAny,
+      mimeType: detectedVideoMime || (hintMime.startsWith("video/") ? hintMime : "") || mimeFromVideoFileName || "video/mp4",
+      origin: "media_download",
+    };
+  }
+
+  return null;
 }
 
 async function downloadIncomingImageBuffer(args: {
@@ -1434,40 +1555,15 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
 
         const groupName = await resolveGroupName(state, remoteJid);
         let mediaData: Record<string, unknown> | null = null;
-        let resolvedMedia: { kind: "image" | "video"; buffer: Buffer; mimeType: string; origin: string } | null = null;
-
-        if (inboundMedia?.kind === "image") {
-          const resolvedImage = await resolveInboundMediaAsImage({
+        const resolvedMedia = inboundMedia
+          ? await resolveInboundMediaForRoute({
             message,
             socket,
             sessionId,
             inboundMedia,
             imagePayload,
-          });
-          if (resolvedImage) {
-            resolvedMedia = {
-              kind: "image",
-              buffer: resolvedImage.buffer,
-              mimeType: resolvedImage.mimeType || "image/jpeg",
-              origin: resolvedImage.origin,
-            };
-          }
-        } else if (inboundMedia?.kind === "video") {
-          const resolvedVideo = await resolveInboundMediaAsVideo({
-            message,
-            socket,
-            sessionId,
-            inboundMedia,
-          });
-          if (resolvedVideo) {
-            resolvedMedia = {
-              kind: "video",
-              buffer: resolvedVideo.buffer,
-              mimeType: resolvedVideo.mimeType || "video/mp4",
-              origin: resolvedVideo.origin,
-            };
-          }
-        }
+          })
+          : null;
 
         if (resolvedMedia) {
           const stored = storeTemporaryMedia(

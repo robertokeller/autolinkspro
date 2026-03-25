@@ -6,6 +6,26 @@ import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
 import { subscribeAdminControlPlane } from "@/lib/admin-control-plane";
 import { getFeatureAccessPolicyByPlan, isFeatureEnabledByPlan, resolvePlan, type AppFeature } from "@/lib/access-control";
 
+const PROFILE_PLAN_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
+
 export function useAccessControl() {
   const { user, isAdmin, isLoading: authLoading } = useAuth();
   const queryClient = useQueryClient();
@@ -13,11 +33,15 @@ export function useAccessControl() {
   const { data, isLoading: profileLoading } = useQuery({
     queryKey: ["profile-plan", user?.id],
     queryFn: async () => {
-      const { data: profile, error } = await backend
-        .from("profiles")
-        .select("plan_id, plan_expires_at")
-        .eq("user_id", user!.id)
-        .maybeSingle();
+      const { data: profile, error } = await withTimeout(
+        backend
+          .from("profiles")
+          .select("plan_id, plan_expires_at")
+          .eq("user_id", user!.id)
+          .maybeSingle(),
+        PROFILE_PLAN_TIMEOUT_MS,
+        "Timeout ao validar plano do usuário",
+      );
       if (error) throw error;
       return profile;
     },

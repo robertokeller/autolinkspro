@@ -3356,8 +3356,8 @@ async function processRouteMessageForUser(input: {
     }
     const routeMessageType = routeMedia ? routeMedia.kind : "text";
     if (!routeMedia) {
-      const inferredImageIngestionFailure = !media && hasMediaHint && normalizedMediaKindHint === "image";
-      const missingImageReason = inferredImageIngestionFailure
+      const inferredMediaIngestionFailure = hasMediaHint;
+      const missingImageReason = inferredMediaIngestionFailure
         ? "image_ingestion_failed"
         : "missing_image_required";
       logRouteMediaDebug("route.process.blocked.missing_image_required.inbound", {

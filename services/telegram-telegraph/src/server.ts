@@ -585,6 +585,18 @@ function inferImageMimeTypeFromFileName(fileName: string | null | undefined): st
   return null;
 }
 
+function inferVideoMimeTypeFromFileName(fileName: string | null | undefined): string | null {
+  const normalized = String(fileName || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.endsWith(".mp4") || normalized.endsWith(".m4v")) return "video/mp4";
+  if (normalized.endsWith(".mov") || normalized.endsWith(".qt")) return "video/quicktime";
+  if (normalized.endsWith(".webm")) return "video/webm";
+  if (normalized.endsWith(".mkv")) return "video/x-matroska";
+  if (normalized.endsWith(".avi")) return "video/x-msvideo";
+  if (normalized.endsWith(".3gp")) return "video/3gpp";
+  return null;
+}
+
 function extractTelegramMediaInfo(media: unknown): TelegramInboundMediaInfo | null {
   if (!media || typeof media !== "object") return null;
   const row = media as Record<string, unknown>;
@@ -686,7 +698,7 @@ function shouldAttemptTelegramMediaDownloadForRoute(info: TelegramInboundMediaIn
   if (info.kind === "image" || info.kind === "sticker") return true;
   if (info.mimeType.startsWith("image/")) return true;
   if (info.mimeType.startsWith("video/")) return true;
-  return Boolean(inferImageMimeTypeFromFileName(info.fileName));
+  return Boolean(inferImageMimeTypeFromFileName(info.fileName) || inferVideoMimeTypeFromFileName(info.fileName));
 }
 
 async function downloadIncomingTelegramMediaBuffer(args: {
@@ -708,7 +720,7 @@ async function downloadIncomingTelegramMediaBuffer(args: {
         return downloaded;
       }
     } catch (error) {
-      logger.warn({ sessionId, error: sanitizeError(error) }, "failed to download incoming telegram image on one attempt");
+      logger.warn({ sessionId, error: sanitizeError(error) }, "failed to download incoming telegram media on one attempt");
     }
   }
 
@@ -721,21 +733,8 @@ async function resolveTelegramInboundMedia(args: {
   media: unknown;
   mediaInfo: TelegramInboundMediaInfo | null;
   sessionId: string;
-}): Promise<{ kind: "image" | "video"; buffer: Buffer; mimeType: string; origin: "full_media" | "thumbnail" } | null> {
+}): Promise<{ kind: "image" | "video"; buffer: Buffer; mimeType: string; origin: "full_media" } | null> {
   const { client, message, media, mediaInfo, sessionId } = args;
-
-  if (mediaInfo?.kind === "image") {
-    const thumb = extractTelegramThumbnailBuffer(media);
-    if (thumb && thumb.length > 0) {
-      const thumbMime = detectImageMimeTypeFromBuffer(thumb) || "image/jpeg";
-      return {
-        kind: "image",
-        buffer: thumb,
-        mimeType: thumbMime,
-        origin: "thumbnail",
-      };
-    }
-  }
 
   if (!shouldAttemptTelegramMediaDownloadForRoute(mediaInfo)) return null;
   const downloaded = await downloadIncomingTelegramMediaBuffer({
@@ -746,24 +745,37 @@ async function resolveTelegramInboundMedia(args: {
   });
   if (!downloaded || downloaded.length === 0) return null;
 
-  const hintedKind = mediaInfo?.kind === "video"
-    ? "video"
-    : mediaInfo?.kind === "image"
-      ? "image"
-      : (String(mediaInfo?.mimeType || "").trim().toLowerCase().startsWith("video/") ? "video" : "image");
   const hintMime = String(mediaInfo?.mimeType || "").trim().toLowerCase();
   const detectedImageMime = detectImageMimeTypeFromBuffer(downloaded);
+  const detectedVideoMime = detectVideoMimeTypeFromBuffer(downloaded);
   const mimeFromImageFileName = inferImageMimeTypeFromFileName(mediaInfo?.fileName);
-  const mimeType = hintedKind === "video"
-    ? (hintMime.startsWith("video/") ? hintMime : "video/mp4")
-    : (detectedImageMime || (hintMime.startsWith("image/") ? hintMime : "") || mimeFromImageFileName || "image/jpeg");
+  const mimeFromVideoFileName = inferVideoMimeTypeFromFileName(mediaInfo?.fileName);
 
-  return {
-    kind: hintedKind,
-    buffer: downloaded,
-    mimeType,
-    origin: "full_media",
-  };
+  const hasImageHint = mediaInfo?.kind === "image"
+    || hintMime.startsWith("image/")
+    || Boolean(mimeFromImageFileName);
+  if (detectedImageMime || hasImageHint) {
+    return {
+      kind: "image",
+      buffer: downloaded,
+      mimeType: detectedImageMime || (hintMime.startsWith("image/") ? hintMime : "") || mimeFromImageFileName || "image/jpeg",
+      origin: "full_media",
+    };
+  }
+
+  const hasVideoHint = mediaInfo?.kind === "video"
+    || hintMime.startsWith("video/")
+    || Boolean(mimeFromVideoFileName);
+  if (detectedVideoMime || hasVideoHint) {
+    return {
+      kind: "video",
+      buffer: downloaded,
+      mimeType: detectedVideoMime || (hintMime.startsWith("video/") ? hintMime : "") || mimeFromVideoFileName || "video/mp4",
+      origin: "full_media",
+    };
+  }
+
+  return null;
 }
 
 function parseChatTarget(chatId: string): string {
@@ -917,6 +929,62 @@ function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
     if (brand === "heic" || brand === "heix" || brand === "hevc" || brand === "hevx" || brand === "mif1" || brand === "msf1") {
       if (brand === "mif1" || brand === "msf1") return "image/heif";
       return "image/heic";
+    }
+  }
+
+  return null;
+}
+
+function detectVideoMimeTypeFromBuffer(buffer: Buffer): string | null {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+
+  // AVI: RIFF....AVI 
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x41 &&
+    buffer[9] === 0x56 &&
+    buffer[10] === 0x49 &&
+    buffer[11] === 0x20
+  ) {
+    return "video/x-msvideo";
+  }
+
+  // EBML: Matroska/WebM
+  if (
+    buffer[0] === 0x1a &&
+    buffer[1] === 0x45 &&
+    buffer[2] === 0xdf &&
+    buffer[3] === 0xa3
+  ) {
+    return "video/webm";
+  }
+
+  // ISO BMFF family (MP4/MOV/3GP)
+  if (
+    buffer.length >= 12 &&
+    buffer[4] === 0x66 &&
+    buffer[5] === 0x74 &&
+    buffer[6] === 0x79 &&
+    buffer[7] === 0x70
+  ) {
+    const brand = buffer.subarray(8, 12).toString("ascii").toLowerCase();
+    if (brand.startsWith("3gp")) return "video/3gpp";
+    if (brand === "qt  ") return "video/quicktime";
+    if (
+      brand.startsWith("mp4") ||
+      brand.startsWith("m4v") ||
+      brand.startsWith("iso") ||
+      brand.startsWith("avc") ||
+      brand.startsWith("dash") ||
+      brand === "isom" ||
+      brand === "iso2" ||
+      brand === "mp41" ||
+      brand === "mp42"
+    ) {
+      return "video/mp4";
     }
   }
 

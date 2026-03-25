@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 const API_HEALTH_URL = "http://127.0.0.1:3116/health";
+const OPS_HEALTH_URL = "http://127.0.0.1:3115/health";
+const WEB_HEALTH_URL = "http://127.0.0.1:5173/";
 const npmCliPath = process.env.npm_execpath || "";
 const LOCAL_PG_HOST = process.env.POSTGRES_HOST || "localhost";
 const LOCAL_PG_PORT = Number(process.env.POSTGRES_PORT || "5432");
@@ -221,11 +223,30 @@ async function ensureDatabaseReady() {
 }
 
 async function startRuntime(withApi) {
-  if (withApi) {
-    await runNpm(["run", "dev:runtime"], "runtime services");
+  if (!withApi) {
+    await runNpm(["run", "dev:runtime:degraded"], "runtime services (degraded)");
     return;
   }
-  await runNpm(["run", "dev:runtime:degraded"], "runtime services (degraded)");
+
+  const [apiHealthy, opsHealthy, webHealthy] = await Promise.all([
+    fetchHealth(API_HEALTH_URL),
+    fetchHealth(OPS_HEALTH_URL),
+    fetchHealth(WEB_HEALTH_URL),
+  ]);
+
+  if (apiHealthy && opsHealthy && webHealthy) {
+    console.log("[dev] API (:3116), Ops (:3115) and WEB (:5173) are already healthy. Reusing existing stack.");
+    console.log("[dev] Open: http://127.0.0.1:5173/");
+    return;
+  }
+
+  if (apiHealthy && opsHealthy) {
+    console.log("[dev] Existing API (:3116) and Ops (:3115) are healthy. Starting attach mode (SCHED + WEB).");
+    await runNpm(["run", "dev:runtime:attach"], "runtime services (attach)");
+    return;
+  }
+
+  await runNpm(["run", "dev:runtime"], "runtime services");
 }
 
 async function main() {

@@ -10,6 +10,35 @@ function readArg(name, fallback = "") {
   return fallback;
 }
 
+function readBoolArg(name, fallback = false) {
+  const index = process.argv.findIndex((arg) => arg === `--${name}`);
+  if (index < 0) return fallback;
+  const next = process.argv[index + 1];
+  if (!next || String(next).startsWith("--")) return true;
+  const normalized = String(next).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y", "sim"].includes(normalized)) return true;
+  if (["0", "false", "no", "off", "n", "nao"].includes(normalized)) return false;
+  return fallback;
+}
+
+const REASON_HINTS = {
+  missing_image_required: "A rota exige imagem, mas ela nao estava disponivel para envio.",
+  image_ingestion_failed: "A imagem foi detectada, mas falhou na captura/download.",
+  unsupported_media_type: "Tipo de midia nao suportado pela rota.",
+  destination_send_failed: "Falha no envio para o destino (verificar sessao/conector).",
+  destination_session_offline: "Sessao de destino offline ou sem identificador.",
+  destination_not_found: "Grupo de destino nao encontrado.",
+  no_active_routes: "Nao havia rota ativa para a origem da mensagem.",
+  no_destination_groups: "Rota sem grupos de destino configurados.",
+  no_destination_groups_for_session: "Rota sem destino para a sessao filtrada.",
+  route_processing_error: "Erro interno no processamento da rota.",
+  partner_link_required: "A rota exige link parceiro e a mensagem nao tinha um valido.",
+  marketplace_not_enabled: "Marketplace do link nao esta habilitado na rota.",
+  missing_text_required: "A mensagem ficou sem texto valido apos processamento.",
+  negative_keyword: "Mensagem bloqueada por palavra-chave negativa.",
+  positive_keyword_missing: "Mensagem nao contem palavra-chave positiva exigida.",
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -29,6 +58,107 @@ function normalizeProcessingStatus(row) {
   if (status === "error") return "failed";
   if (status === "warning") return "blocked";
   return "processed";
+}
+
+function parseDetails(raw) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const normalized = String(value).trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function shorten(value, max = 140) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(max - 3, 0))}...`;
+}
+
+function summarizeRouteIssues(rows, maxSamples = 3) {
+  const all = Array.isArray(rows) ? rows : [];
+  const issues = [];
+  const buckets = new Map();
+  let failed = 0;
+  let blocked = 0;
+  let imageIssues = 0;
+
+  for (const row of all) {
+    const processing = normalizeProcessingStatus(row);
+    const hasIssue = processing === "failed" || processing === "blocked";
+    if (!hasIssue) continue;
+
+    const details = parseDetails(row?.details);
+    const reason = String(firstText(
+      row?.block_reason,
+      details?.reason,
+      processing === "failed" ? "failed_without_reason" : "blocked_without_reason",
+    )).toLowerCase();
+    const step = String(firstText(row?.error_step, details?.errorStep, "-")).toLowerCase();
+    const key = `${reason}|${step}`;
+    buckets.set(key, {
+      reason,
+      step,
+      count: Number((buckets.get(key)?.count || 0)) + 1,
+    });
+
+    if (processing === "failed") failed += 1;
+    if (processing === "blocked") blocked += 1;
+    if (reason.includes("image") || step.includes("media")) imageIssues += 1;
+
+    const detailMessage = firstText(
+      details?.error,
+      details?.message,
+      details?.reason,
+      row?.block_reason,
+    );
+
+    issues.push({
+      createdAt: row?.created_at || null,
+      type: firstText(row?.type, "-"),
+      direction: firstText(row?.direction, "-"),
+      processing,
+      reason,
+      step,
+      destination: firstText(row?.destination, "-"),
+      source: firstText(row?.source, "-"),
+      messageType: firstText(row?.message_type, "-"),
+      detailMessage: shorten(detailMessage, 180),
+    });
+  }
+
+  const sortedBuckets = [...buckets.values()]
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
+    .slice(0, 6);
+  const sampleSize = Math.max(0, Number(maxSamples || 0));
+  const samples = sampleSize > 0 ? issues.slice(0, sampleSize) : [];
+
+  return {
+    total: issues.length,
+    failed,
+    blocked,
+    imageIssues,
+    topReasons: sortedBuckets,
+    samples,
+  };
+}
+
+function reasonHint(reason) {
+  return REASON_HINTS[String(reason || "").trim().toLowerCase()] || "";
 }
 
 async function jsonRequest(path, options = {}) {
@@ -235,7 +365,7 @@ function summarizeTelegramHandlerState(rawSessions) {
   return { total, bound, withClient };
 }
 
-async function collectSnapshot(cookie, userId, windowMinutes, sourceTag) {
+async function collectSnapshot(cookie, userId, windowMinutes, sourceTag, issueSamplesLimit) {
   const wa = await rpc(cookie, "whatsapp-connect", { action: "health" });
   const tg = await rpc(cookie, "telegram-connect", { action: "health" });
   const poll = await rpc(cookie, "poll-channel-events", { source: sourceTag });
@@ -243,7 +373,7 @@ async function collectSnapshot(cookie, userId, windowMinutes, sourceTag) {
   const fromIso = new Date(Date.now() - windowMinutes * 60_000).toISOString();
   const routeHistory = await rest(cookie, "history_entries", {
     op: "select",
-    columns: "id,type,status,direction,processing_status,block_reason,error_step,created_at,destination",
+    columns: "id,type,status,source,destination,direction,message_type,processing_status,block_reason,error_step,details,created_at",
     filters: [
       { type: "gte", col: "created_at", val: fromIso },
       { type: "in", col: "type", val: ["route_forward", "schedule_sent"] },
@@ -293,6 +423,7 @@ async function collectSnapshot(cookie, userId, windowMinutes, sourceTag) {
   const waIngestion = aggregateConnectorIngestion(wa.data?.sessions);
   const tgIngestion = aggregateConnectorIngestion(tg.data?.sessions);
   const tgHandler = summarizeTelegramHandlerState(tg.data?.sessions);
+  const routeIssues = summarizeRouteIssues(routeHistory.data, issueSamplesLimit);
 
   return {
     checkedAt: nowIso(),
@@ -333,6 +464,7 @@ async function collectSnapshot(cookie, userId, windowMinutes, sourceTag) {
       from: fromIso,
       ...historySummary,
     },
+    routeIssues,
     captureWindow: {
       minutes: windowMinutes,
       from: fromIso,
@@ -341,7 +473,8 @@ async function collectSnapshot(cookie, userId, windowMinutes, sourceTag) {
   };
 }
 
-function printSnapshot(snapshot) {
+function printSnapshot(snapshot, options = {}) {
+  const onlyIssues = options.onlyIssues === true;
   const {
     checkedAt,
     health,
@@ -351,6 +484,7 @@ function printSnapshot(snapshot) {
     telegramRuntime,
     groups,
     historyWindow,
+    routeIssues,
     captureWindow,
   } = snapshot;
 
@@ -358,6 +492,10 @@ function printSnapshot(snapshot) {
   const tgState = health.tgOnline ? "ONLINE" : "OFFLINE";
   const waErr = health.waError ? ` err=${health.waError}` : "";
   const tgErr = health.tgError ? ` err=${health.tgError}` : "";
+
+  if (onlyIssues && routeIssues.total === 0) {
+    return;
+  }
 
   console.log(`[monitor] ${checkedAt}`);
   console.log(`[monitor] WA=${waState}${waErr} | TG=${tgState}${tgErr}`);
@@ -389,6 +527,32 @@ function printSnapshot(snapshot) {
     `[monitor] history ${historyWindow.minutes}m total=${historyWindow.total} sent=${historyWindow.sent} ` +
     `failed=${historyWindow.failed} blocked=${historyWindow.blocked} processed=${historyWindow.processed}`,
   );
+  if (routeIssues.total > 0) {
+    console.log(
+      `[monitor] issues ${historyWindow.minutes}m total=${routeIssues.total} failed=${routeIssues.failed} ` +
+      `blocked=${routeIssues.blocked} imageRelated=${routeIssues.imageIssues}`,
+    );
+    if (routeIssues.topReasons.length > 0) {
+      const topText = routeIssues.topReasons
+        .map((bucket) => `${bucket.reason}@${bucket.step}=${bucket.count}`)
+        .join(" | ");
+      console.log(`[monitor] issues top ${topText}`);
+    }
+    for (const issue of routeIssues.samples) {
+      const hint = reasonHint(issue.reason);
+      const hintText = hint ? ` hint=${hint}` : "";
+      console.log(
+        `[monitor] issue at=${shortTs(issue.createdAt)} type=${issue.type} dir=${issue.direction} ` +
+        `proc=${issue.processing} reason=${issue.reason} step=${issue.step} ` +
+        `dest=${issue.destination} src=${issue.source} msgType=${issue.messageType}${hintText}`,
+      );
+      if (issue.detailMessage) {
+        console.log(`[monitor] issue detail ${issue.detailMessage}`);
+      }
+    }
+  } else {
+    console.log(`[monitor] issues ${historyWindow.minutes}m none`);
+  }
   console.log(
     `[monitor] history dir inbound=${historyWindow.inbound} outbound=${historyWindow.outbound}`,
   );
@@ -402,11 +566,15 @@ async function main() {
   const intervalMs = Math.max(2_000, Number(readArg("interval-ms", "8000")) || 8000);
   const windowMinutes = Math.max(1, Number(readArg("window-min", "20")) || 20);
   const maxTicks = Math.max(0, Number(readArg("ticks", "0")) || 0);
+  const issuesLimit = Math.max(0, Number(readArg("issues-limit", "3")) || 3);
+  const onlyIssues = readBoolArg("only-issues", false);
+  const exitOnIssue = readBoolArg("exit-on-issue", false);
 
   const { cookie, userId } = await signIn();
   console.log(`[monitor] authenticated user=${userId} api=${API_URL}`);
   console.log(
-    `[monitor] interval=${intervalMs}ms window=${windowMinutes}m ticks=${maxTicks === 0 ? "infinite" : maxTicks}`,
+    `[monitor] interval=${intervalMs}ms window=${windowMinutes}m ticks=${maxTicks === 0 ? "infinite" : maxTicks} ` +
+    `issuesLimit=${issuesLimit} onlyIssues=${onlyIssues ? "on" : "off"} exitOnIssue=${exitOnIssue ? "on" : "off"}`,
   );
   console.log("");
 
@@ -415,8 +583,12 @@ async function main() {
     tick += 1;
     const sourceTag = `monitor-channel-flow-${tick}`;
     try {
-      const snapshot = await collectSnapshot(cookie, userId, windowMinutes, sourceTag);
-      printSnapshot(snapshot);
+      const snapshot = await collectSnapshot(cookie, userId, windowMinutes, sourceTag, issuesLimit);
+      printSnapshot(snapshot, { onlyIssues });
+      if (exitOnIssue && snapshot.routeIssues.total > 0) {
+        console.error(`[monitor] aborting after detecting route issues.`);
+        process.exit(2);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[monitor] snapshot failed: ${message}`);
