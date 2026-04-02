@@ -36,3 +36,5 @@ _tmp_*/
 *.njsproj
 *.sln
 *.sw?
+
+supabase/.temp/
