@@ -1,48 +1,50 @@
-# Setup do banco de dados local (desenvolvimento)
+# Setup do banco local (modo Supabase)
 
-Este projeto usa PostgreSQL para todos os dados. Nenhum dado de negócio fica em localStorage.
+Este projeto usa **Supabase PostgreSQL remoto** em desenvolvimento local e em producao.
 
 ## Requisitos
 
 - Node.js 20+ e npm
-- Docker Desktop (para subir o PostgreSQL local)
+- Supabase CLI instalado
+- `DATABASE_URL` configurado no ambiente local
 
-## Subindo o banco local
+## Setup inicial
 
 ```sh
-# 1. Sobe PostgreSQL local (porta 5432)
-npm run db:dev
-
-# 2. Instala dependências (primeira vez)
+# 1) Instalar dependencias
 npm install
 npm --prefix services/api install
 
-# 3. Inicia tudo (OPS + API + Frontend)
+# 2) Inicializar e linkar Supabase (uma vez por maquina/projeto)
+supabase login
+supabase init --force --yes
+supabase link --project-ref rwurwyuhxvlnykosfkdj --yes
+
+# 3) Aplicar migrations e seed no mesmo banco do deploy
+npm run db:migrate:dev
+npm run seed:dev
+
+# 4) Subir ambiente local (OPS + API + Frontend)
 npm run dev
 ```
 
-URL: `http://localhost:5173`
+URL local: `http://localhost:5173`
 
-## Credenciais de acesso (admin)
+## Credenciais de acesso (seed)
 
-- E-mail: `robertokellercontato@gmail.com`
-- Senha: `abacate1`
+- Admin: `robertokellercontato@gmail.com` / `abacate1`
+- User: `aliancaslovely@gmail.com` / `abacate1`
 
-> Em ambiente local, o usuário é semeado pelas migrations/scripts SQL (`database/migrations/006_seed_users.sql` e `scripts/seed-users.mjs`) com senha `abacate1`.
-> A função `seedAdminIfEmpty()` em `services/api/src/index.ts` só cria admin quando a tabela `users` está vazia e `ADMIN_PASSWORD` está definido.
+## Variaveis de ambiente minimas
 
-## Variáveis de ambiente em dev
+- `DATABASE_URL`
+- `DB_SSL=true`
+- `JWT_SECRET`
+- `SERVICE_TOKEN`
+- `WEBHOOK_SECRET`
 
-O script `svc:api:dev` já injeta as vars de Postgres local automaticamente. Não é necessário criar `.env` para dev.
+## Observacoes
 
-## Parar o banco
-
-```sh
-npm run db:dev:stop
-```
-
-## Observações
-
-- Dados persistem entre reinicializações via volume Docker `postgres_dev_data`.
-- Para resetar o banco do zero: `docker volume rm autolinks-codex_postgres_dev_data`
-- Testes rodam sem Docker (banco in-memory mock).
+- Nao existe mais banco Docker local (`db:dev` e `db:dev:stop` sao no-op).
+- O banco e compartilhado entre local e deploy; tenha cuidado com seeds/dados reais.
+- Testes continuam sem depender de banco Docker.

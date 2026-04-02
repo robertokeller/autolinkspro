@@ -1,15 +1,14 @@
 /**
- * migrate-dev.mjs — Apply SQL migrations from database/migrations to local dev Postgres.
+ * migrate-dev.mjs - Apply SQL migrations from supabase/migrations.
  *
  * Usage:
  *   node scripts/migrate-dev.mjs
  *
- * Connection env vars (defaults match docker-compose.dev.yml):
- *   POSTGRES_HOST     default: localhost
- *   POSTGRES_PORT     default: 5432
- *   POSTGRES_DB       default: autolinks
- *   POSTGRES_USER     default: autolinks
- *   POSTGRES_PASSWORD default: autolinks
+ * Required env vars:
+ *   DATABASE_URL      Supabase Postgres connection string
+ *
+ * Optional:
+ *   DB_SSL=true|false (default true)
  */
 
 import pg from "pg";
@@ -18,15 +17,20 @@ import path from "node:path";
 
 const { Pool } = pg;
 
-const MIGRATIONS_DIR = path.resolve("database", "migrations");
+const MIGRATIONS_DIR = path.resolve("supabase", "migrations");
 const MIGRATIONS_TABLE = "public.schema_migrations";
 
+const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
+const USE_SSL = String(process.env.DB_SSL || "true").toLowerCase() !== "false";
+
+if (!DATABASE_URL) {
+  console.error("[migrate] DATABASE_URL is required.");
+  process.exit(1);
+}
+
 const pool = new Pool({
-  host: process.env.POSTGRES_HOST ?? "localhost",
-  port: Number(process.env.POSTGRES_PORT ?? 5432),
-  database: process.env.POSTGRES_DB ?? "autolinks",
-  user: process.env.POSTGRES_USER ?? "autolinks",
-  password: process.env.POSTGRES_PASSWORD ?? "autolinks",
+  connectionString: DATABASE_URL,
+  ssl: USE_SSL ? { rejectUnauthorized: false } : false,
   connectionTimeoutMillis: 8000,
 });
 
@@ -37,7 +41,7 @@ async function ensureMigrationsTable(client) {
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name = 'schema_migrations'
-    `
+    `,
   );
 
   if (columnsRes.rowCount === 0) {
@@ -58,13 +62,13 @@ async function getMigrationsKeyColumn(client) {
       WHERE table_schema = 'public'
         AND table_name = 'schema_migrations'
         AND column_name IN ('version', 'name')
-    `
+    `,
   );
   const cols = new Set(res.rows.map((r) => String(r.column_name)));
   if (cols.has("version")) return "version";
   if (cols.has("name")) return "name";
   throw new Error(
-    "schema_migrations exists but has neither 'version' nor 'name' column; cannot record applied migrations"
+    "schema_migrations exists but has neither 'version' nor 'name' column; cannot record applied migrations",
   );
 }
 
@@ -87,7 +91,7 @@ async function applyMigration(client, keyColumn, version, sql) {
 
     await client.query(
       `INSERT INTO ${MIGRATIONS_TABLE} (${keyColumn}) VALUES ($1) ON CONFLICT (${keyColumn}) DO NOTHING`,
-      [version]
+      [version],
     );
     await client.query("COMMIT");
   } catch (err) {

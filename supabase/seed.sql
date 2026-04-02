@@ -1,0 +1,2 @@
+-- Supabase seed file
+-- Keep empty by default; application/bootstrap handles admin creation.

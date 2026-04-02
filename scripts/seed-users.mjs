@@ -1,19 +1,18 @@
 /**
- * seed-users.mjs — Upsert operational users directly into PostgreSQL.
+ * seed-users.mjs - Upsert operational users in Supabase PostgreSQL.
  *
  * Usage:
  *   node scripts/seed-users.mjs
  *
- * Reads connection from env vars (defaults match docker-compose.dev.yml):
- *   POSTGRES_HOST     default: localhost
- *   POSTGRES_PORT     default: 5432
- *   POSTGRES_DB       default: autolinks
- *   POSTGRES_USER     default: autolinks
- *   POSTGRES_PASSWORD default: autolinks
+ * Required env vars:
+ *   DATABASE_URL      Supabase Postgres connection string
+ *
+ * Optional:
+ *   DB_SSL=true|false (default true)
  *
  * Users seeded:
- *   admin : robertokellercontato@gmail.com  / abacate1  (role=admin, plan=admin)
- *   normal: aliancaslovely@gmail.com         / abacate1  (role=user,  plan=plan-starter)
+ *   admin : robertokellercontato@gmail.com / abacate1 (role=admin, plan=admin)
+ *   normal: aliancaslovely@gmail.com / abacate1 (role=user,  plan=plan-starter)
  */
 
 import pg from "pg";
@@ -22,29 +21,34 @@ import { randomUUID } from "node:crypto";
 
 const { Pool } = pg;
 
+const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
+const USE_SSL = String(process.env.DB_SSL || "true").toLowerCase() !== "false";
+
+if (!DATABASE_URL) {
+  console.error("[seed] DATABASE_URL is required.");
+  process.exit(1);
+}
+
 const pool = new Pool({
-  host:     process.env.POSTGRES_HOST     ?? "localhost",
-  port:     Number(process.env.POSTGRES_PORT ?? 5432),
-  database: process.env.POSTGRES_DB       ?? "autolinks",
-  user:     process.env.POSTGRES_USER     ?? "autolinks",
-  password: process.env.POSTGRES_PASSWORD ?? "autolinks",
+  connectionString: DATABASE_URL,
+  ssl: USE_SSL ? { rejectUnauthorized: false } : false,
   connectionTimeoutMillis: 8000,
 });
 
 const USERS = [
   {
-    email:    "robertokellercontato@gmail.com",
+    email: "robertokellercontato@gmail.com",
     password: "abacate1",
-    name:     "Roberto Keller",
-    role:     "admin",
-    plan:     "admin",
+    name: "Roberto Keller",
+    role: "admin",
+    plan: "admin",
   },
   {
-    email:    "aliancaslovely@gmail.com",
+    email: "aliancaslovely@gmail.com",
     password: "abacate1",
-    name:     "Aliancas Lovely",
-    role:     "user",
-    plan:     "plan-starter",
+    name: "Aliancas Lovely",
+    role: "user",
+    plan: "plan-starter",
   },
 ];
 
@@ -56,7 +60,6 @@ async function upsertUser(client, { email, password, name, role, plan }) {
     status_updated_at: new Date().toISOString(),
   });
 
-  // Upsert user
   await client.query(
     `INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at)
      VALUES ($1, $2, $3, $4::jsonb, NOW())
@@ -68,13 +71,9 @@ async function upsertUser(client, { email, password, name, role, plan }) {
     [randomUUID(), email, hash, metadata],
   );
 
-  const row = await client.query(
-    "SELECT id FROM users WHERE email = $1",
-    [email],
-  );
+  const row = await client.query("SELECT id FROM users WHERE email = $1", [email]);
   const userId = row.rows[0].id;
 
-  // Upsert role
   await client.query(
     `INSERT INTO user_roles (id, user_id, role)
      VALUES ($1, $2, $3)
@@ -82,7 +81,6 @@ async function upsertUser(client, { email, password, name, role, plan }) {
     [randomUUID(), userId, role],
   );
 
-  // Upsert profile
   await client.query(
     `INSERT INTO profiles (id, user_id, name, email, plan_id)
      VALUES ($1, $2, $3, $4, $5)
@@ -107,7 +105,7 @@ try {
   console.log("[seed] All users seeded successfully.");
 } catch (err) {
   await client.query("ROLLBACK");
-  console.error("[seed] ERROR — rolled back:", err.message);
+  console.error("[seed] ERROR - rolled back:", err.message);
   process.exitCode = 1;
 } finally {
   client.release();

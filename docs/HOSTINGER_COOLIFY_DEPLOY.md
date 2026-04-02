@@ -14,7 +14,7 @@ Guia oficial para subir o Auto Links em producao com dominio, SSL e execucao con
 Crie os registros `A` apontando para o IP da VPS:
 
 - `seudominio.com` -> frontend
-- `api.seudominio.com` -> API backend (Node.js + PostgreSQL)
+- `api.seudominio.com` -> API backend (Node.js + Supabase PostgreSQL)
 - `wa-api.seudominio.com` -> WhatsApp
 - `tg-api.seudominio.com` -> Telegram
 - `shopee-api.seudominio.com` -> Shopee
@@ -38,7 +38,7 @@ Crie os registros `A` apontando para o IP da VPS:
 5. Faca o primeiro deploy.
 
 > **Importante:** nao use `Application` com `Nixpacks` para este repositorio.
-> Este projeto depende do stack multi-servico definido no compose (`web`, `api`, `postgres`, `whatsapp`, `telegram`, `shopee`, `meli`, `ops-control`, `scheduler`).
+> Este projeto depende do stack multi-servico definido no compose (`web`, `api`, `whatsapp`, `telegram`, `shopee`, `meli`, `ops-control`, `scheduler`, `sessions-backup`).
 
 ## 5) Dominios e SSL no Coolify
 
@@ -115,7 +115,8 @@ Configure as variáveis abaixo **antes** de clicar em Deploy. Variáveis marcada
 
 | Variável | Valor esperado | Obrigatório |
 |---|---|---|
-| `POSTGRES_PASSWORD` | Senha forte (≥ 16 chars) | `*` |
+| `DATABASE_URL` | URL direta do Postgres Supabase | `*` |
+| `DB_SSL` | `true` | `*` |
 | `JWT_SECRET` | String aleatória ≥ 32 chars | `*` |
 | `SERVICE_TOKEN` | Token opaco, único por ambiente | `*` |
 | `CORS_ORIGIN` | `https://seudominio.com` — **nunca `*`** | `*` |
@@ -189,13 +190,11 @@ Saída esperada (8 linhas `[smoke] OK ...`):
 
 **Volumes — sempre preservados:**
 - `wa_sessions`, `tg_sessions`, `meli_sessions` — sessões de autenticação.
-- `postgres_data` — banco de dados completo.
 - Nunca execute `docker volume rm` nesses volumes sem um backup validado.
 
 **Se a migração falhou:**
-1. Verifique os logs do container `migrate` no Coolify.
-2. Corrija o SQL problemático em `database/migrations/`.
-3. Crie um novo commit e faça novo deploy — o container `migrate` roda novamente.
-4. O container `api` (e todos os serviços dependentes) só sobe **após** `migrate` completar com sucesso (boot order enforced pelo `depends_on`).
-
+1. Verifique logs de `api`/`scheduler` no Coolify.
+2. Corrija o SQL problemático em `supabase/migrations/`.
+3. Rode `supabase db push --linked --include-all` para aplicar o ajuste.
+4. Faça novo deploy do compose para sincronizar serviços.
 

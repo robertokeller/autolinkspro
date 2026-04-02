@@ -29,7 +29,7 @@ npm run preview
 ```
 
 - URL padrao (sem parametros): `http://127.0.0.1:5173` (com fallback para `5174` e, se necessario, proxima porta livre)
-- `npm run preview` agora sobe automaticamente banco local (Docker), migracoes, seeds, API e microservicos necessarios.
+- `npm run preview` usa o mesmo banco Supabase de producao (via `DATABASE_URL`), aplica migrations/seeds e sobe API + microservicos necessarios.
 - Ao salvar codigo, a pagina recarrega automaticamente.
 
 Para porta local padrao (`127.0.0.1:5173`, com fallback automatico para `5174`):
@@ -38,7 +38,7 @@ Para porta local padrao (`127.0.0.1:5173`, com fallback automatico para `5174`):
 npm run preview:local
 ```
 
-- Esse comando tambem sobe automaticamente banco + API + servicos (WhatsApp/Telegram/Shopee/Mercado Livre) antes do preview.
+- Esse comando tambem valida banco Supabase + API + servicos (WhatsApp/Telegram/Shopee/Mercado Livre) antes do preview.
 
 Para subir somente o frontend em porta livre automaticamente:
 
@@ -46,7 +46,7 @@ Para subir somente o frontend em porta livre automaticamente:
 npm run preview:safe
 ```
 
-Para subir tudo pronto (PostgreSQL + API + microservicos + preview) com um comando:
+Para subir tudo pronto (Supabase + API + microservicos + preview) com um comando:
 
 ```bash
 npm run preview:ready -- --host 127.0.0.1 --port 5174
@@ -211,7 +211,7 @@ npm run pm2:bootstrap
 
 - `npm run dev`: frontend + Ops Control em paralelo (fluxo recomendado para desenvolvimento)
 - `npm run dev:web`: apenas frontend (sem Ops Control)
-- `npm run preview`: sobe stack local completa (PostgreSQL + API + WhatsApp + Telegram + Shopee + Mercado Livre + preview)
+- `npm run preview`: sobe stack local completa (Supabase + API + WhatsApp + Telegram + Shopee + Mercado Livre + preview)
 - `npm run preview:local`: sobe stack completa e preview local em `127.0.0.1:5173` (fallback sequencial: `5174`, `5175`, ...)
 - `npm run preview:safe`: inicia somente o frontend em porta livre automaticamente (a partir da `5173`)
 - `npm run preview:live`: sobe stack completa e preview na rede local (`0.0.0.0`)
@@ -242,4 +242,4 @@ npm run pm2:bootstrap
 
 ## Observacoes
 
-- O projeto roda 100% local sem plataforma externa obrigatoria.
+- O projeto usa Supabase PostgreSQL como banco unico (mesmo ambiente para local e deploy).

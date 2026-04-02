@@ -4,21 +4,22 @@ import type { PoolClient } from "pg";
 const { Pool } = pg;
 
 const IS_PRODUCTION_DB = String(process.env.NODE_ENV || "").toLowerCase() === "production";
-if (IS_PRODUCTION_DB && !process.env.POSTGRES_PASSWORD) {
-  throw new Error("POSTGRES_PASSWORD é obrigatório em produção. Defina a senha do banco de dados.");
+const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
+
+if (!DATABASE_URL) {
+  throw new Error("DATABASE_URL is required.");
 }
 
+const forceSsl = String(process.env.DB_SSL || (IS_PRODUCTION_DB ? "true" : "false")).toLowerCase() !== "false";
+
 export const pool = new Pool({
-  host:     process.env.POSTGRES_HOST     ?? "localhost",
-  port:     Number(process.env.POSTGRES_PORT ?? 5432),
-  database: process.env.POSTGRES_DB       ?? "autolinks",
-  user:     process.env.POSTGRES_USER     ?? "autolinks",
-  password: process.env.POSTGRES_PASSWORD ?? "autolinks",
-  max: 35,
+  connectionString: DATABASE_URL,
+  ssl: forceSsl ? { rejectUnauthorized: false } : false,
+  // Supabase has tighter connection budgets; keep pool conservative.
+  max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-  // Kill any individual query that runs longer than 15 s — prevents runaway
-  // queries from holding a pool slot indefinitely under load or during incidents.
+  connectionTimeoutMillis: 8000,
+  // Prevent runaway queries from holding pool slots indefinitely.
   statement_timeout: 15000,
 });
 
@@ -30,8 +31,7 @@ pool.on("error", (err) => {
 const SLOW_QUERY_MS = 2000;
 
 function logSlowQuery(sql: string, durationMs: number): void {
-  // Truncate SQL to avoid flooding logs with huge INSERT/UPDATE payloads.
-  const truncated = sql.length > 200 ? sql.slice(0, 200) + "…" : sql;
+  const truncated = sql.length > 200 ? `${sql.slice(0, 200)}...` : sql;
   console.warn(JSON.stringify({
     ts: new Date().toISOString(),
     svc: "api",

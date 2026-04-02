@@ -1,4 +1,4 @@
-﻿-- Migration 007: rename api_credentials.encrypted_secret -> secret_key
+-- Migration 007: rename api_credentials.encrypted_secret -> secret_key
 -- Idempotent: only rename on legacy schema where old column exists.
 
 DO $$

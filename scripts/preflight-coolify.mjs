@@ -17,22 +17,20 @@ const requiredFiles = [
   "docker/meli.Dockerfile",
   "docker/ops-control.Dockerfile",
   "docker/scheduler.Dockerfile",
-  "docker/migrate.Dockerfile",
+  "supabase/config.toml",
 ];
 
 const requiredDirs = [
   "src",
   "services",
   "docker",
-  "database",
+  "supabase",
   "scripts",
 ];
 
 const requiredComposeServices = [
   "web",
   "api",
-  "postgres",
-  "migrate",
   "scheduler",
   "whatsapp",
   "telegram",
@@ -42,8 +40,8 @@ const requiredComposeServices = [
 ];
 
 const requiredEnvVars = [
-  "POSTGRES_PASSWORD",
-  "APPLY_SEED_MIGRATIONS",
+  "DATABASE_URL",
+  "DB_SSL",
   "JWT_SECRET",
   "SERVICE_TOKEN",
   "CREDENTIAL_ENCRYPTION_KEY",

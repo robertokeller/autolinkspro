@@ -153,7 +153,7 @@ function ensureRequiredEnvVars() {
   if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") return;
 
   const required = [
-    "POSTGRES_PASSWORD",
+    "DATABASE_URL",
     "JWT_SECRET",
     "SERVICE_TOKEN",
     "CREDENTIAL_ENCRYPTION_KEY",
