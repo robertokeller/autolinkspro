@@ -19,6 +19,9 @@ dist-ssr
 !.env.coolify.example
 services/**/.sessions
 _tmp_*/
+*.tmp
+.tmp_*/
+.tmp_ext_unzip/
 **/attached_assets/
 *.backup.ts
 *.bak

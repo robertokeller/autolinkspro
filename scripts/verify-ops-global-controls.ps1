@@ -1,6 +1,6 @@
 Param(
   [string]$BaseUrl = "http://127.0.0.1:3115",
-  [string]$OpsToken = "autolinks-local-webhook-secret",
+  [string]$OpsToken = "",
   [int]$StartWaitSeconds = 10,
   [int]$RestartWaitSeconds = 10,
   [int]$StopWaitSeconds = 4
