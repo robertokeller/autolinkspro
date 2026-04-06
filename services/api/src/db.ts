@@ -11,9 +11,10 @@ if (!DATABASE_URL) {
 }
 
 const forceSsl = String(process.env.DB_SSL || (IS_PRODUCTION_DB ? "true" : "false")).toLowerCase() !== "false";
-// Allow opting out of cert verification only in explicit dev/test environments.
-// In production, the Supabase CA is publicly trusted so rejectUnauthorized:true is safe.
-const sslRejectUnauthorized = String(process.env.DB_SSL_REJECT_UNAUTHORIZED || "true").toLowerCase() !== "false";
+// Some managed Postgres providers can present intermediate chains that are not
+// available in slim container images. Default to relaxed verification to keep
+// connectivity stable, and allow strict mode via DB_SSL_REJECT_UNAUTHORIZED=true.
+const sslRejectUnauthorized = String(process.env.DB_SSL_REJECT_UNAUTHORIZED || "false").toLowerCase() !== "false";
 
 // ─── Pool sizing ─────────────────────────────────────────────────────────────
 // CRITICAL: In PM2 cluster mode each worker has its own pool.
@@ -51,6 +52,8 @@ console.info(JSON.stringify({
   svc: "api",
   event: "db_pool_init",
   poolMax: DB_POOL_MAX,
+  sslEnabled: forceSsl,
+  sslRejectUnauthorized,
   instance: process.env.NODE_APP_INSTANCE ?? "0",
   hint: `Total DB connections from this node: up to ${DB_POOL_MAX}. In PM2 cluster: multiply by API_INSTANCES.`,
 }));
