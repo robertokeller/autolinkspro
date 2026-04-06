@@ -668,6 +668,15 @@ function resolveUserName(metadata: Record<string, unknown> | null | undefined, e
   const value = typeof metadata?.name === "string" ? metadata.name.trim() : "";
   return value || email.split("@")[0] || "Usuario";
 }
+
+function readBodyObject(req: Request): Record<string, unknown> {
+  const candidate = req.body;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    return candidate as Record<string, unknown>;
+  }
+  return {};
+}
+
 function maskEmailForLog(value: string) {
   const normalized = String(value || "").toLowerCase().trim();
   const [local = "", domain = ""] = normalized.split("@");
@@ -716,7 +725,12 @@ authRouter.post("/signup", async (req, res) => {
       res.status(503).json({ data: { user: null, session: null }, error: { message: "Servico de e-mail indisponível. Tente novamente mais tarde." } }); return;
     }
 
-    const { email, password, options } = req.body as { email: string; password: string; options?: { data?: { name?: string; phone?: string } } };
+    const body = readBodyObject(req);
+    const email = String(body.email ?? "");
+    const password = String(body.password ?? "");
+    const options = (body.options && typeof body.options === "object" && !Array.isArray(body.options))
+      ? body.options as { data?: { name?: string; phone?: string } }
+      : undefined;
     const phone = sanitizePhone(String(options?.data?.phone ?? ""));
     if (!email || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email e senha obrigatórios" } }); return; }
     if (!phone) { res.json({ data: { user: null, session: null }, error: { message: "Telefone (WhatsApp) obrigatório" } }); return; }
@@ -774,7 +788,8 @@ authRouter.post("/resend-verification", async (req, res) => {
       res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponível no momento." } }); return;
     }
 
-    const { email } = req.body as { email?: string };
+    const body = readBodyObject(req);
+    const email = String(body.email ?? "");
     const normalizedEmail = String(email || "").toLowerCase().trim();
     if (!normalizedEmail) {
       res.json({ data: { sent: true }, error: null }); return;
@@ -807,7 +822,11 @@ authRouter.post("/forgot-password", async (req, res) => {
       res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponível no momento." } }); return;
     }
 
-    const { email, options } = req.body as { email?: string; options?: { redirectTo?: string } };
+    const body = readBodyObject(req);
+    const email = String(body.email ?? "");
+    const options = (body.options && typeof body.options === "object" && !Array.isArray(body.options))
+      ? body.options as { redirectTo?: string }
+      : undefined;
     const normalizedEmail = String(email || "").toLowerCase().trim();
     if (!normalizedEmail) {
       res.json({ data: { sent: true }, error: null }); return;
@@ -837,7 +856,9 @@ authRouter.post("/forgot-password", async (req, res) => {
 // POST /auth/reset-password
 authRouter.post("/reset-password", async (req, res) => {
   try {
-    const { token, password } = req.body as { token?: string; password?: string };
+    const body = readBodyObject(req);
+    const token = String(body.token ?? "");
+    const password = String(body.password ?? "");
     const rawToken = String(token || "").trim();
     const nextPassword = String(password || "");
     if (!rawToken || !nextPassword) {
@@ -912,7 +933,9 @@ authRouter.get("/verify-email", async (req, res) => {
 // POST /auth/signin
 authRouter.post("/signin", async (req, res) => {
   try {
-    const { email: rawIdentifier, password } = req.body as { email: string; password: string };
+    const body = readBodyObject(req);
+    const rawIdentifier = String(body.email ?? "");
+    const password = String(body.password ?? "");
     if (!rawIdentifier || !password) { res.json({ data: { user: null, session: null }, error: { message: "Email ou telefone e senha obrigatórios" } }); return; }
     const identifier = rawIdentifier.trim();
     // Detect whether the user typed a phone number or an email
@@ -1035,13 +1058,14 @@ authRouter.post("/refresh", requireAuth, async (req, res) => {
 // POST /auth/update-user
 authRouter.post("/update-user", requireAuth, async (req, res) => {
   try {
-    const { password, current_password, data: metadata, email, phone: rawPhone } = req.body as {
-      password?: string;
-      current_password?: string;
-      data?: Record<string, unknown>;
-      email?: string;
-      phone?: string;
-    };
+    const body = readBodyObject(req);
+    const password = typeof body.password === "string" ? body.password : String(body.password ?? "");
+    const current_password = typeof body.current_password === "string" ? body.current_password : String(body.current_password ?? "");
+    const metadata = (body.data && typeof body.data === "object" && !Array.isArray(body.data))
+      ? body.data as Record<string, unknown>
+      : undefined;
+    const email = typeof body.email === "string" ? body.email : String(body.email ?? "");
+    const rawPhone = typeof body.phone === "string" ? body.phone : String(body.phone ?? "");
     const userId = req.currentUser!.sub;
 
     if (password) {
