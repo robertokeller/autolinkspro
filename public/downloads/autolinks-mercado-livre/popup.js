@@ -87,6 +87,16 @@ function isLikelyAppOrigin(origin) {
   }
 }
 
+function isLocalOrigin(origin) {
+  try {
+    const parsed = new URL(String(origin || ""));
+    const host = String(parsed.hostname || "").toLowerCase();
+    return TRUSTED_LOCAL_HOSTS.has(host);
+  } catch {
+    return false;
+  }
+}
+
 function deriveApiOriginsFromOrigin(origin) {
   const normalized = normalizeOrigin(origin);
   if (!normalized) return [];
@@ -123,10 +133,17 @@ function deriveApiOriginsFromOrigin(origin) {
   }
 }
 
-function getOriginPriority(origin) {
+function getOriginPriority(origin, preferLocal = false) {
   try {
     const parsed = new URL(String(origin || ""));
     const host = String(parsed.hostname || "").toLowerCase();
+    if (preferLocal) {
+      if ((host === "localhost" || host === "127.0.0.1") && parsed.port === "3116") return 0;
+      if (host === "localhost" || host === "127.0.0.1") return 1;
+      if (host === "api.autolinks.pro") return 2;
+      if (TRUSTED_PRODUCTION_HOSTS.has(host)) return 3;
+      return 4;
+    }
     if (host === "api.autolinks.pro") return 0;
     if ((host === "localhost" || host === "127.0.0.1") && parsed.port === "3116") return 1;
     if (host === "localhost" || host === "127.0.0.1") return 2;
@@ -280,6 +297,7 @@ async function getCandidateApiOrigins() {
   const derivedFromCurrent = deriveApiOriginsFromOrigin(safeCurrent);
   const derivedFromStored = deriveApiOriginsFromOrigin(storedApiOrigin);
   const derivedFromTabs = fromTabs.flatMap((origin) => deriveApiOriginsFromOrigin(origin));
+  const localContextDetected = [storedApiOrigin, safeCurrent, ...fromTabs].some((origin) => isLocalOrigin(origin));
 
   return unique([
     storedApiOrigin,
@@ -291,7 +309,7 @@ async function getCandidateApiOrigins() {
     ...fromTabs,
   ])
     .filter((origin) => isLikelyAppOrigin(origin))
-    .sort((left, right) => getOriginPriority(left) - getOriginPriority(right));
+    .sort((left, right) => getOriginPriority(left, localContextDetected) - getOriginPriority(right, localContextDetected));
 }
 
 async function readAuthTokenFromCookies(origin) {
