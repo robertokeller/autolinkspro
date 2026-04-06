@@ -796,7 +796,7 @@ authRouter.post("/resend-verification", async (req, res) => {
     }
 
     const user = await queryOne<{ id: string; email: string; metadata: Record<string, unknown>; email_confirmed_at: string | null }>(
-      "SELECT id, email, metadata, email_confirmed_at FROM users WHERE email = $1",
+      "SELECT id, email, metadata, email_confirmed_at FROM public.users WHERE email = $1",
       [normalizedEmail],
     );
 
@@ -833,7 +833,7 @@ authRouter.post("/forgot-password", async (req, res) => {
     }
 
     const user = await queryOne<{ id: string; email: string; metadata: Record<string, unknown> }>(
-      "SELECT id, email, metadata FROM users WHERE email = $1",
+      "SELECT id, email, metadata FROM public.users WHERE email = $1",
       [normalizedEmail],
     );
 
@@ -946,15 +946,15 @@ authRouter.post("/signin", async (req, res) => {
       if (isPhone) {
         // Find user via profile phone
         const profile = await queryOne<{ user_id: string }>(
-          "SELECT user_id FROM profiles WHERE phone = $1 LIMIT 1", [lookupValue],
+          "SELECT user_id FROM public.profiles WHERE phone = $1 LIMIT 1", [lookupValue],
         );
         if (!profile) return null;
         return queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string; email_confirmed_at: string | null }>(
-          "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM users WHERE id = $1", [profile.user_id],
+          "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM public.users WHERE id = $1", [profile.user_id],
         );
       }
       return queryOne<{ id: string; email: string; password_hash: string; metadata: Record<string, unknown>; created_at: string; email_confirmed_at: string | null }>(
-        "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM users WHERE email = $1", [lookupValue],
+        "SELECT id, email, password_hash, metadata, created_at, email_confirmed_at FROM public.users WHERE email = $1", [lookupValue],
       );
     })();
     if (!user) {
@@ -984,7 +984,7 @@ authRouter.post("/signin", async (req, res) => {
       res.json({ data: { user: null, session: null }, error: { message: "E-mail ainda não confirmado. Verifique sua caixa de entrada." } }); return;
     }
 
-    const roleRow = await queryOne<{ role: string }>("SELECT role FROM user_roles WHERE user_id = $1", [user.id]);
+    const roleRow = await queryOne<{ role: string }>("SELECT role FROM public.user_roles WHERE user_id = $1", [user.id]);
     const role = roleRow?.role ?? "user";
     const rid = (req as { rid?: string }).rid ?? "-";
     console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "signin_success", userId: user.id, ip: req.ip ?? "-", rid }));

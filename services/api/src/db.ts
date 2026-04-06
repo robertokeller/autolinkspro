@@ -47,6 +47,16 @@ pool.on("error", (err) => {
   console.error("[db] Unexpected pool error:", err);
 });
 
+// After the DB migration/swap, some roles may have a non-public default
+// search_path. Force public to keep unqualified table queries stable.
+pool.on("connect", (client) => {
+  client
+    .query("SET search_path TO public")
+    .catch((err) => {
+      console.warn("[db] Failed to set search_path=public on connect:", err?.message || err);
+    });
+});
+
 console.info(JSON.stringify({
   ts: new Date().toISOString(),
   svc: "api",
