@@ -473,20 +473,32 @@ async function seedAdminIfEmpty() {
 
 async function main() {
   ensureRequiredEnvVars();
-  // Verify DB connection
+  // Verify DB connection.
+  // In production we keep the process alive even if DB is temporarily unavailable
+  // so orchestrator healthchecks do not continuously restart the container.
+  let dbConnected = false;
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
       await pool.query("SELECT 1");
       console.log("[api] Database connected");
+      dbConnected = true;
       break;
     } catch (e) {
-      if (attempt === 10) throw e;
+      if (attempt === 10) break;
       console.warn(`[api] DB not ready (attempt ${attempt}/10), retrying in 3s...`);
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
 
-  await seedAdminIfEmpty();
+  if (!dbConnected) {
+    console.error("[api] Database not reachable after startup retries. Continuing in degraded mode; /ready will return 503 until DB recovers.");
+  }
+
+  if (dbConnected) {
+    await seedAdminIfEmpty();
+  } else {
+    console.warn("[api] Skipping admin seed while DB is unavailable.");
+  }
 
   async function detectExistingApi(port: number) {
     const controller = new AbortController();
