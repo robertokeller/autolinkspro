@@ -11,21 +11,49 @@ if (!DATABASE_URL) {
 }
 
 const forceSsl = String(process.env.DB_SSL || (IS_PRODUCTION_DB ? "true" : "false")).toLowerCase() !== "false";
+// Allow opting out of cert verification only in explicit dev/test environments.
+// In production, the Supabase CA is publicly trusted so rejectUnauthorized:true is safe.
+const sslRejectUnauthorized = String(process.env.DB_SSL_REJECT_UNAUTHORIZED || "true").toLowerCase() !== "false";
+
+// ─── Pool sizing ─────────────────────────────────────────────────────────────
+// CRITICAL: In PM2 cluster mode each worker has its own pool.
+// Total connections = DB_POOL_MAX * API_INSTANCES.
+// Keep total well below Postgres max_connections (typically 60–100).
+// Rule: DB_POOL_MAX * API_INSTANCES + ~15 (internal) ≤ max_connections.
+// Default: 5 per worker → 4 workers × 5 = 20 total (safe for any plan).
+// Override with DB_POOL_MAX=N env variable.
+const DB_POOL_MAX = (() => {
+  const parsed = Number(process.env.DB_POOL_MAX ?? "");
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : 5;
+})();
 
 export const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: forceSsl ? { rejectUnauthorized: false } : false,
-  // Supabase has tighter connection budgets; keep pool conservative.
-  max: 20,
+  ssl: forceSsl ? { rejectUnauthorized: sslRejectUnauthorized } : false,
+  max: DB_POOL_MAX,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 8000,
+  // Keep-alive prevents idle connections from being silently dropped by VPS
+  // firewalls or Supabase's connection pooler idle-timeout.
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
   // Prevent runaway queries from holding pool slots indefinitely.
-  statement_timeout: 15000,
+  // Configurable via env to allow vitrine syncs with large catalogs.
+  statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || "30000"),
 });
 
 pool.on("error", (err) => {
   console.error("[db] Unexpected pool error:", err);
 });
+
+console.info(JSON.stringify({
+  ts: new Date().toISOString(),
+  svc: "api",
+  event: "db_pool_init",
+  poolMax: DB_POOL_MAX,
+  instance: process.env.NODE_APP_INSTANCE ?? "0",
+  hint: `Total DB connections from this node: up to ${DB_POOL_MAX}. In PM2 cluster: multiply by API_INSTANCES.`,
+}));
 
 // Queries taking longer than this threshold are logged for investigation.
 const SLOW_QUERY_MS = 2000;

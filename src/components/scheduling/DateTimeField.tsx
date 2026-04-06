@@ -122,13 +122,13 @@ export function DateTimeField({
               </Button>
             </PopoverTrigger>
 
-            <PopoverContent align="start" className="w-[298px] p-3">
+            <PopoverContent align="start" className="w-[min(20rem,calc(100vw-1rem))] p-2.5 sm:w-[298px] sm:p-3">
               <div className="mb-3 flex items-center justify-between">
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8"
+                  className="h-9 w-9 sm:h-8 sm:w-8"
                   onClick={() => setDisplayMonth((prev) => addMonths(prev, -1))}
                 >
                   <ChevronLeft className="h-4 w-4" />
@@ -140,7 +140,7 @@ export function DateTimeField({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8"
+                  className="h-9 w-9 sm:h-8 sm:w-8"
                   onClick={() => setDisplayMonth((prev) => addMonths(prev, 1))}
                 >
                   <ChevronRight className="h-4 w-4" />
@@ -164,7 +164,7 @@ export function DateTimeField({
                       key={dayIso}
                       type="button"
                       variant={isSelected ? "default" : "ghost"}
-                      className={cn("h-8 w-8 min-w-0 p-0 text-xs", muted && "text-muted-foreground")}
+                      className={cn("h-9 w-9 min-w-0 p-0 text-xs sm:h-8 sm:w-8", muted && "text-muted-foreground")}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
                         const resolvedTime = selectedTime || nowTimeLabel();

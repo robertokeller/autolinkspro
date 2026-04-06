@@ -62,6 +62,28 @@ function normalizeConnectionState(status: string): "online" | "pending" | "offli
   return "offline";
 }
 
+function parseClockToMinutes(value: unknown, fallback: number): number {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!match) return fallback;
+
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) return fallback;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return fallback;
+  return (hh * 60) + mm;
+}
+
+function isInsideQuietHours(startTime: unknown, endTime: unknown, now = new Date()): boolean {
+  const nowMinutes = (now.getHours() * 60) + now.getMinutes();
+  const startMinutes = parseClockToMinutes(startTime, 22 * 60);
+  const endMinutes = parseClockToMinutes(endTime, 8 * 60);
+
+  if (startMinutes === endMinutes) return false;
+  if (startMinutes < endMinutes) return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+}
+
 function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel; steps: HealthStep[]; issues: PipelineIssue[] } {
   const {
     route,
@@ -77,7 +99,19 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
   } = props;
   const steps: HealthStep[] = [];
 
-  // --- Etapa 1: Captura (sessão + grupo de origem) ---
+  // --- Etapa 1: Estado geral da rota ---
+  if (route.status !== "active") {
+    const statusLabel = route.status === "paused" ? "pausada" : route.status;
+    steps.push({
+      label: "Estado da rota",
+      status: "error",
+      detail: `Rota ${statusLabel} - o fluxo não encaminha mensagens enquanto não estiver ativa`,
+    });
+  } else {
+    steps.push({ label: "Estado da rota", status: "ok", detail: "Rota ativa e pronta para processar mensagens" });
+  }
+
+  // --- Etapa 2: Captura (sessão + grupo de origem) ---
   const sourceGroup = groupsById.get(route.sourceGroupId);
   if (!sourceGroup) {
     steps.push({ label: "Captura", status: "error", detail: "Grupo de origem não encontrado" });
@@ -91,16 +125,15 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
     } else if (normalizeConnectionState(sourceSession.status) === "pending") {
       steps.push({ label: "Captura", status: "warn", detail: `Sessão "${sourceSession.label}" está conectando` });
     } else if (getPlatformServiceOnline(sourceSession.platform, whatsappOnline, telegramOnline) === false) {
-      // Keep capture healthy when the session is online, even if service health is transiently stale.
-      steps.push({ label: "Captura", status: "ok", detail: `"${sourceGroup.name}" via ${sourceSession.label}` });
+      steps.push({ label: "Captura", status: "warn", detail: `Sessão online, mas canal ${sourceSession.platform} reporta instabilidade` });
     } else if (getPlatformServiceOnline(sourceSession.platform, whatsappOnline, telegramOnline) === null) {
-      steps.push({ label: "Captura", status: "ok", detail: `"${sourceGroup.name}" via ${sourceSession.label}` });
+      steps.push({ label: "Captura", status: "warn", detail: `Sem telemetria em tempo real do canal ${sourceSession.platform}` });
     } else {
       steps.push({ label: "Captura", status: "ok", detail: `"${sourceGroup.name}" via ${sourceSession.label}` });
     }
   }
 
-  // --- Etapa 2: Conversão Shopee (opcional) ---
+  // --- Etapa 3: Conversão Shopee (opcional) ---
   if (route.rules.autoConvertShopee) {
     if (shopeeOnline === null) {
       steps.push({ label: "Conversão Shopee", status: "warn", detail: "Verificando serviço…" });
@@ -111,7 +144,7 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
     }
   }
 
-  // --- Etapa 3: Conversão Mercado Livre (opcional) ---
+  // --- Etapa 4: Conversão Mercado Livre (opcional) ---
   if (route.rules.autoConvertMercadoLivre) {
     if (meliOnline === null) {
       steps.push({ label: "Conversão ML", status: "warn", detail: "Verificando serviço…" });
@@ -144,7 +177,12 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
     }
   }
 
-  // --- Etapa 4: Template (opcional) ---
+  // --- Etapa 5: Conversão Amazon (opcional) ---
+  if (route.rules.autoConvertAmazon) {
+    steps.push({ label: "Conversão Amazon", status: "ok", detail: "Conversão local com tag de afiliado" });
+  }
+
+  // --- Etapa 6: Template (opcional) ---
   if (route.rules.templateId) {
     const template = templatesById.get(route.rules.templateId);
     if (!template) {
@@ -154,7 +192,36 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
     }
   }
 
-  // --- Etapa 5: Envio (sessão + grupos de destino) ---
+  if (route.rules.amazonTemplateId) {
+    const amazonTemplate = templatesById.get(route.rules.amazonTemplateId);
+    if (!amazonTemplate) {
+      steps.push({ label: "Template Amazon", status: "warn", detail: "Template não encontrado — usando mensagem original" });
+    } else {
+      steps.push({ label: "Template Amazon", status: "ok", detail: `"${amazonTemplate.name}"` });
+    }
+  }
+
+  // --- Etapa 7: Janela de funcionamento (opcional) ---
+  if (route.rules.quietHoursEnabled === true) {
+    const startTime = route.rules.quietHoursStart || "22:00";
+    const endTime = route.rules.quietHoursEnd || "08:00";
+    const blockedNow = isInsideQuietHours(startTime, endTime);
+    if (blockedNow) {
+      steps.push({
+        label: "Janela de funcionamento",
+        status: "warn",
+        detail: `No momento está em silêncio (${startTime}-${endTime}) - mensagens entram na fila`,
+      });
+    } else {
+      steps.push({
+        label: "Janela de funcionamento",
+        status: "ok",
+        detail: `Fora da janela de silêncio (${startTime}-${endTime}) - envio liberado`,
+      });
+    }
+  }
+
+  // --- Etapa 8: Envio (sessão + grupos de destino) ---
   const destSessionId = route.rules.sessionId;
   if (!destSessionId) {
     steps.push({ label: "Envio", status: "error", detail: "Sessão de envio não configurada" });
@@ -167,6 +234,10 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
       steps.push({ label: "Envio", status: "error", detail: `Sessão "${destSession.label}" está ${statusLabel}` });
     } else if (normalizeConnectionState(destSession.status) === "pending") {
       steps.push({ label: "Envio", status: "warn", detail: `Sessão "${destSession.label}" está conectando` });
+    } else if (getPlatformServiceOnline(destSession.platform, whatsappOnline, telegramOnline) === false) {
+      steps.push({ label: "Envio", status: "warn", detail: `Sessão online, mas canal ${destSession.platform} reporta instabilidade` });
+    } else if (getPlatformServiceOnline(destSession.platform, whatsappOnline, telegramOnline) === null) {
+      steps.push({ label: "Envio", status: "warn", detail: `Sem telemetria em tempo real do canal ${destSession.platform}` });
     } else {
       const masterGroupIds = route.rules.masterGroupIds || (route.masterGroupId ? [route.masterGroupId] : []);
       if (masterGroupIds.length > 0) {
@@ -211,24 +282,27 @@ function computeHealth(props: RouteHealthBadgeProps): { level: RouteHealthLevel;
 
 const levelConfig: Record<
   RouteHealthLevel,
-  { label: string; dotClass: string; textClass: string; borderClass: string; pingClass: string }
+  { label: string; shortLabel: string; dotClass: string; textClass: string; borderClass: string; pingClass: string }
 > = {
   healthy: {
-    label: "Saudável",
+    label: "Funcionando",
+    shortLabel: "Funcionando",
     dotClass: "bg-success",
     textClass: "text-success",
     borderClass: "border-success/30 bg-success/10",
     pingClass: "animate-ping",
   },
   partial: {
-    label: "Parcial",
+    label: "Funcionando com alertas",
+    shortLabel: "Com alertas",
     dotClass: "bg-warning",
     textClass: "text-warning",
     borderClass: "border-warning/30 bg-warning/10",
     pingClass: "animate-pulse",
   },
   error: {
-    label: "Com problemas",
+    label: "Não funcionando",
+    shortLabel: "Não funcionando",
     dotClass: "bg-destructive",
     textClass: "text-destructive",
     borderClass: "border-destructive/30 bg-destructive/10",
@@ -248,8 +322,8 @@ export function RouteHealthBadge(props: RouteHealthBadgeProps) {
   const primaryIssue = issues[0] || null;
   const hasMultipleIssues = issues.length > 1;
   const triggerLabel = primaryIssue
-    ? `${config.label} · Etapa ${primaryIssue.stepNumber}: ${primaryIssue.label}`
-    : config.label;
+    ? `${config.shortLabel} · Problema na etapa ${primaryIssue.stepNumber}`
+    : config.shortLabel;
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -279,11 +353,14 @@ export function RouteHealthBadge(props: RouteHealthBadgeProps) {
           </div>
         </TooltipTrigger>
         <TooltipContent side="bottom" align="start" className="w-[min(92vw,560px)] max-w-[min(92vw,560px)] max-h-[70vh] overflow-y-auto p-3 whitespace-normal break-words">
-          <p className="mb-2 text-xs font-semibold text-foreground">Monitor de Saúde da Rota</p>
+          <p className="mb-1 text-xs font-semibold text-foreground">Monitor de Saúde da Rota</p>
+          <p className={cn("mb-2 text-xs font-medium", config.textClass)}>
+            Status atual: {config.label}
+          </p>
             {primaryIssue && (
               <div className="mb-2 rounded-md border border-border/60 bg-muted/40 px-2 py-1.5 text-xs">
                 <p className="font-medium text-foreground">
-                  {primaryIssue.status === "error" ? "Falha principal" : "Atenção principal"}: Etapa {primaryIssue.stepNumber} - {primaryIssue.label}
+                  Parte exata com problema: Etapa {primaryIssue.stepNumber} - {primaryIssue.label}
                 </p>
                 <p className={cn(primaryIssue.status === "error" ? "text-destructive" : "text-warning")}>
                   {primaryIssue.detail}

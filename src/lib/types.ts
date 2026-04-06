@@ -74,6 +74,7 @@ export interface AppRoute {
   rules: {
     autoConvertShopee: boolean;
     autoConvertMercadoLivre?: boolean;
+    autoConvertAmazon?: boolean;
     resolvePartnerLinks: boolean;
     requirePartnerLink: boolean;
     partnerMarketplaces: string[];
@@ -81,9 +82,13 @@ export interface AppRoute {
     negativeKeywords: string[];
     positiveKeywords: string[];
     templateId: string | null;
+    amazonTemplateId?: string | null;
     groupType: "ofertas";
     sessionId: string | null;
     masterGroupIds?: string[];
+    quietHoursEnabled?: boolean;
+    quietHoursStart?: string;
+    quietHoursEnd?: string;
   };
   messagesForwarded: number;
   createdAt: string;
@@ -134,7 +139,7 @@ export interface ScheduledPost {
 // ===== Templates =====
 
 export type TemplateCategory = "oferta" | "cupom" | "geral";
-export type TemplateScope = "shopee" | "meli";
+export type TemplateScope = "shopee" | "meli" | "amazon";
 
 // Template type - canonical version used by useTemplates hook (TemplateRow)
 export interface Template {

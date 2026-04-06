@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { loadProjectEnv } from "./load-env.mjs";
+
+loadProjectEnv();
 
 const WA_HEALTH_URL = "http://127.0.0.1:3111/health";
 const TELEGRAM_HEALTH_URL = "http://127.0.0.1:3112/health";
@@ -10,8 +14,19 @@ const OPS_HEALTH_URL = "http://127.0.0.1:3115/health";
 const API_HEALTH_URL = "http://127.0.0.1:3116/health";
 const npmCliPath = process.env.npm_execpath || "";
 const LOCAL_HOST = "127.0.0.1";
-const LOCAL_PG_HOST = process.env.POSTGRES_HOST || "localhost";
-const LOCAL_PG_PORT = Number(process.env.POSTGRES_PORT || "5432");
+const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
+const ALLOW_PARTIAL_SERVICES = String(process.env.PREVIEW_ALLOW_PARTIAL_SERVICES || "").trim() === "1";
+const PREVIEW_WEBHOOK_SECRET = String(
+  process.env.WEBHOOK_SECRET
+  || process.env.PREVIEW_WEBHOOK_SECRET
+  || "autolinks-preview-webhook-local",
+).trim();
+const PREVIEW_JWT_SECRET = String(process.env.JWT_SECRET || randomBytes(32).toString("hex")).trim();
+const PREVIEW_SERVICE_TOKEN = String(process.env.SERVICE_TOKEN || randomBytes(24).toString("hex")).trim();
+const PREVIEW_OPS_CONTROL_TOKEN = String(process.env.OPS_CONTROL_TOKEN || randomBytes(24).toString("hex")).trim();
+const PREVIEW_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || randomBytes(18).toString("hex")).trim();
+const USING_FALLBACK_PREVIEW_WEBHOOK_SECRET = !String(process.env.WEBHOOK_SECRET || "").trim()
+  && !String(process.env.PREVIEW_WEBHOOK_SECRET || "").trim();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -81,7 +96,7 @@ async function maybeStartDockerDesktop(lastErrorMessage, logPrefix = "[preview:r
 
   const likelyEngineOffline = isDockerEngineUnavailableMessage(lastErrorMessage);
   if (!likelyEngineOffline) {
-    console.warn(`${logPrefix} Docker compose falhou e o engine nao respondeu ao 'docker info'. Tentando iniciar Docker Desktop...`);
+    console.warn(`${logPrefix} Docker compose falhou e o engine não respondeu ao 'docker info'. Tentando iniciar Docker Desktop...`);
   }
 
   const dockerDesktopExe = findDockerDesktopExe();
@@ -136,23 +151,32 @@ function parsePositionalPort() {
   return candidate ? Number(candidate) : null;
 }
 
-async function isPortFree(host, port) {
+async function canBindPort(port, host = null) {
   const { createServer } = await import("node:net");
   return new Promise((resolve) => {
     const server = createServer();
     server.once("error", () => resolve(false));
-    server.listen(port, host, () => server.close(() => resolve(true)));
+
+    const listenOptions = host ? { host, port } : { port };
+    server.listen(listenOptions, () => server.close(() => resolve(true)));
   });
 }
 
-async function findFreePort(host, startPort, maxAttempts = 50) {
+async function isPortFree(port) {
+  // Probe both wildcard and loopback bindings to avoid false positives on dual-stack listeners.
+  if (!await canBindPort(port)) return false;
+  if (!await canBindPort(port, LOCAL_HOST)) return false;
+  return true;
+}
+
+async function findFreePort(startPort, maxAttempts = 50) {
   for (let offset = 0; offset < maxAttempts; offset += 1) {
     const candidate = startPort + offset;
-    if (await isPortFree(host, candidate)) {
+    if (await isPortFree(candidate)) {
       return candidate;
     }
   }
-  throw new Error(`Nao foi possivel encontrar porta livre a partir de ${startPort}`);
+  throw new Error(`Não foi possivel encontrar porta livre a partir de ${startPort}`);
 }
 
 async function fetchHealth(url, timeoutMs = 2500, headers = null) {
@@ -195,7 +219,7 @@ function runNpm(args, label) {
     });
 
     child.on("error", (error) => {
-      reject(new Error(`${label} nao iniciou: ${error instanceof Error ? error.message : String(error)}`));
+      reject(new Error(`${label} não iniciou: ${error instanceof Error ? error.message : String(error)}`));
     });
   });
 }
@@ -217,70 +241,33 @@ function runCommand(command, args, label, options = {}) {
     });
 
     child.on("error", (error) => {
-      reject(new Error(`${label} nao iniciou: ${error instanceof Error ? error.message : String(error)}`));
+      reject(new Error(`${label} não iniciou: ${error instanceof Error ? error.message : String(error)}`));
     });
   });
 }
 
 async function ensureDatabaseReady() {
-  const skipDocker = String(process.env.PREVIEW_SKIP_DOCKER || "").trim() === "1";
-  let composeError = null;
-
-  if (!skipDocker) {
-    try {
-      console.log("[preview:ready] Garantindo PostgreSQL local (docker compose dev)...");
-      await runCommand(
-        "docker",
-        ["compose", "-f", "docker-compose.dev.yml", "up", "-d", "--wait"],
-        "subir postgres local",
-      );
-    } catch (error) {
-      composeError = errorMessage(error);
-      const dockerStarted = await maybeStartDockerDesktop(composeError);
-
-      if (dockerStarted) {
-        try {
-          console.log("[preview:ready] Tentando docker compose novamente apos iniciar Docker Desktop...");
-          await runCommand(
-            "docker",
-            ["compose", "-f", "docker-compose.dev.yml", "up", "-d", "--wait"],
-            "subir postgres local",
-          );
-          composeError = null;
-        } catch (retryError) {
-          composeError = errorMessage(retryError);
-        }
-      }
-    }
-  } else {
-    console.log("[preview:ready] PREVIEW_SKIP_DOCKER=1 detectado. Pulando docker compose.");
+  if (!DATABASE_URL) {
+    throw new Error(
+      "DATABASE_URL não configurado. Crie .env ou .env.local a partir de .env.example. " +
+      "Em modo Supabase, local e deploy devem usar o mesmo banco remoto.",
+    );
   }
 
+  console.log("[preview:ready] DATABASE_URL detectado. Usando banco Supabase compartilhado.");
+  console.log("[preview:ready] Validando conectividade e schema do banco...");
+  await runNpm(["run", "db:check"], "válidação do banco");
+
   try {
-    console.log("[preview:ready] Aplicando migracoes no banco local...");
+    console.log("[preview:ready] Aplicando migracoes no banco Supabase...");
     await runNpm(["run", "db:migrate:dev"], "migracoes do banco");
 
     console.log("[preview:ready] Sincronizando usuarios seed...");
     await runNpm(["run", "seed:dev"], "seed de usuarios");
-
-    if (composeError) {
-      console.warn(`[preview:ready] Docker compose indisponivel: ${composeError}`);
-      console.warn(`[preview:ready] Continuando com PostgreSQL ja acessivel em ${LOCAL_PG_HOST}:${LOCAL_PG_PORT}.`);
-    }
   } catch (error) {
-    const bootstrapError = errorMessage(error);
-    if (composeError) {
-      console.warn(`[preview:ready] Docker compose indisponivel: ${composeError}`);
-    }
-
-    const dockerEngineOffline = !(await isDockerEngineReady());
-    if (dockerEngineOffline || isDockerEngineUnavailableMessage(composeError || bootstrapError)) {
-      throw new Error(
-        `Banco local indisponivel. Inicie o Docker Desktop e rode novamente, ou use PREVIEW_SKIP_DOCKER=1 com PostgreSQL ativo em ${LOCAL_PG_HOST}:${LOCAL_PG_PORT}. Detalhe: ${bootstrapError}`,
-      );
-    }
-
-    throw new Error(`Falha ao preparar banco local (${LOCAL_PG_HOST}:${LOCAL_PG_PORT}): ${bootstrapError}`);
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[preview:ready] Bootstrap de migrate/seed ignorado: ${message}`);
+    console.warn("[preview:ready] Continuando com o schema já existente do banco compartilhado.");
   }
 }
 
@@ -331,10 +318,12 @@ async function ensureServiceOnline(serviceConfig) {
     healthPath,
     envKey,
     runtimeEnv,
+    forceFreshStartWhenOnline = false,
   } = serviceConfig;
 
-  if (await fetchHealth(healthUrl, 2500, healthHeaders || null)) {
-    console.log(`[preview:ready] ${name} ja estava online`);
+  const alreadyOnline = await fetchHealth(healthUrl, 2500, healthHeaders || null);
+  if (alreadyOnline && !forceFreshStartWhenOnline) {
+    console.log(`[preview:ready] ${name} já estava online`);
     return {
       name,
       ok: true,
@@ -345,12 +334,16 @@ async function ensureServiceOnline(serviceConfig) {
     };
   }
 
+  if (alreadyOnline && forceFreshStartWhenOnline) {
+    console.warn(`[preview:ready] ${name} já estava online, mas será iniciado um runtime novo para evitar código stale.`);
+  }
+
   let servicePort = defaultPort;
-  const portFree = await isPortFree(LOCAL_HOST, defaultPort);
+  const portFree = await isPortFree(defaultPort);
 
   if (!portFree) {
-    servicePort = await findFreePort(LOCAL_HOST, defaultPort + 1);
-    console.warn(`[preview:ready] Porta ${defaultPort} ocupada. ${name} sera iniciado na porta ${servicePort}.`);
+    servicePort = await findFreePort(defaultPort + 1);
+    console.warn(`[preview:ready] Porta ${defaultPort} ocupada. ${name} será iniciado na porta ${servicePort}.`);
   }
 
   const endpoint = `http://${LOCAL_HOST}:${servicePort}`;
@@ -370,18 +363,33 @@ async function ensureServiceOnline(serviceConfig) {
   const processEnv = {
     PORT: String(servicePort),
     ALLOW_INSECURE_NO_SECRET: process.env.ALLOW_INSECURE_NO_SECRET || "false",
-    WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || "preview-local-dev-secret",
+    WEBHOOK_SECRET: PREVIEW_WEBHOOK_SECRET,
     ...runtimeEnv(servicePort),
   };
 
   const serviceProcess = startNodeService(distPath, processEnv);
   const online = await waitForHealth(resolvedHealthUrl, 30, 1000, healthHeaders || null);
 
+  if (online && serviceProcess.exitCode !== null) {
+    console.warn(
+      `[preview:ready] ${name} respondeu health em ${resolvedHealthUrl}, `
+      + `mas o processo iniciado encerrou (code=${serviceProcess.exitCode}). Reutilizando runtime já existente.`,
+    );
+    return {
+      name,
+      ok: true,
+      endpoint,
+      envKey,
+      process: null,
+      startedHere: false,
+    };
+  }
+
   if (!online) {
     if (!serviceProcess.killed) {
       serviceProcess.kill("SIGTERM");
     }
-    throw new Error(`${name}: nao respondeu em ${resolvedHealthUrl}`);
+    throw new Error(`${name}: não respondeu em ${resolvedHealthUrl}`);
   }
 
   return {
@@ -400,7 +408,11 @@ async function main() {
   const strictPreviewPort = process.argv.includes("--strictPort") || process.argv.includes("strictPort");
 
   if (!Number.isFinite(startPort) || startPort <= 0) {
-    throw new Error("Porta inicial invalida para preview");
+    throw new Error("Porta inicial inválida para preview");
+  }
+
+  if (USING_FALLBACK_PREVIEW_WEBHOOK_SECRET) {
+    console.warn("[preview:ready] WEBHOOK_SECRET não definido. Usando fallback estável local para evitar conflito entre runtimes de preview.");
   }
 
   await ensureDatabaseReady();
@@ -432,7 +444,7 @@ async function main() {
           const newChild = startNodeService(config.distPath, entry.env);
           const healthUrl = `http://${LOCAL_HOST}:${port}${config.healthPath}`;
           const ok = await waitForHealth(healthUrl, 20, 1000, config.healthHeaders || null);
-          if (!ok) console.warn(`[preview:ready] ${name} reiniciou mas nao respondeu health check`);
+          if (!ok) console.warn(`[preview:ready] ${name} reiniciou mas não respondeu health check`);
           else console.log(`[preview:ready] ${name} reiniciado com sucesso`);
 
           // Replace in startedProcesses
@@ -551,7 +563,7 @@ async function main() {
       name: "Mercado Livre",
       healthUrl: MELI_HEALTH_URL,
       healthPath: "/api/meli/health",
-      healthHeaders: { "x-webhook-secret": process.env.WEBHOOK_SECRET || "preview-local-dev-secret" },
+      healthHeaders: { "x-webhook-secret": PREVIEW_WEBHOOK_SECRET },
       defaultPort: 3114,
       buildScript: "svc:meli:build",
       distPath: "services/mercadolivre-rpa/dist/server.js",
@@ -572,7 +584,7 @@ async function main() {
     const processEnv = {
       PORT: String(port),
       ALLOW_INSECURE_NO_SECRET: process.env.ALLOW_INSECURE_NO_SECRET || "false",
-      WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || "preview-local-dev-secret",
+      WEBHOOK_SECRET: PREVIEW_WEBHOOK_SECRET,
       ...(serviceConfig.runtimeEnv ? serviceConfig.runtimeEnv(port) : {}),
     };
     attachAutoRestart(serviceConfig.name, serviceResult.process, serviceConfig, processEnv, port);
@@ -595,10 +607,17 @@ async function main() {
   }
 
   if (failures.length > 0) {
+    if (!ALLOW_PARTIAL_SERVICES) {
+      stopAll();
+      throw new Error(
+        `Falha ao iniciar todos os servicos obrigatórios: ${failures.join(" | ")}. ` +
+        "Corrijá o serviço com erro ou use PREVIEW_ALLOW_PARTIAL_SERVICES=1 apenas para diagnóstico.",
+      );
+    }
     console.warn(
-      `[preview:ready] Alguns servicos nao iniciaram automaticamente: ${failures.join(" | ")}`,
+      `[preview:ready] Alguns servicos não iniciaram automaticamente: ${failures.join(" | ")}`,
     );
-    console.warn("[preview:ready] O frontend sera iniciado mesmo assim. Funcionalidades desses servicos podem ficar indisponiveis.");
+    console.warn("[preview:ready] O frontend será iniciado mesmo assim. Funcionalidades desses servicos podem ficar indisponiveis.");
   }
 
   const apiConfig = {
@@ -610,20 +629,19 @@ async function main() {
     buildScript: "svc:api:build",
     distPath: "services/api/dist/index.js",
     envKey: "VITE_API_URL",
+    forceFreshStartWhenOnline: String(process.env.PREVIEW_API_FORCE_FRESH_START || "0").trim() === "1",
     runtimeEnv: () => ({
       NODE_ENV: process.env.NODE_ENV || "development",
       HOST: "0.0.0.0",
-      POSTGRES_HOST: process.env.POSTGRES_HOST || "localhost",
-      POSTGRES_PORT: process.env.POSTGRES_PORT || "5432",
-      POSTGRES_DB: process.env.POSTGRES_DB || "autolinks",
-      POSTGRES_USER: process.env.POSTGRES_USER || "autolinks",
-      POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD || "autolinks",
-      JWT_SECRET: process.env.JWT_SECRET || "dev-jwt-secret-local-only-32chars!!",
-      SERVICE_TOKEN: process.env.SERVICE_TOKEN || "dev-service-token-local-only",
-      CORS_ORIGIN: process.env.CORS_ORIGIN || "*",
-      ADMIN_EMAIL: process.env.ADMIN_EMAIL || "robertokellercontato@gmail.com",
-      ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || "abacate1",
-      OPS_CONTROL_TOKEN: process.env.OPS_CONTROL_TOKEN || "preview-ops-token",
+      DATABASE_URL: process.env.DATABASE_URL || "",
+      DB_SSL: process.env.DB_SSL || "true",
+      DB_SSL_REJECT_UNAUTHORIZED: process.env.DB_SSL_REJECT_UNAUTHORIZED || "false",
+      JWT_SECRET: PREVIEW_JWT_SECRET,
+      SERVICE_TOKEN: PREVIEW_SERVICE_TOKEN,
+      CORS_ORIGIN: process.env.CORS_ORIGIN || "http://127.0.0.1:5173",
+      ADMIN_EMAIL: process.env.ADMIN_EMAIL || "admin@localhost.local",
+      ADMIN_PASSWORD: PREVIEW_ADMIN_PASSWORD,
+      OPS_CONTROL_TOKEN: PREVIEW_OPS_CONTROL_TOKEN,
       OPS_CONTROL_URL: runtimeEndpoints.VITE_OPS_CONTROL_URL,
       WHATSAPP_MICROSERVICE_URL: runtimeEndpoints.VITE_WHATSAPP_MICROSERVICE_URL,
       TELEGRAM_MICROSERVICE_URL: runtimeEndpoints.VITE_TELEGRAM_MICROSERVICE_URL,
@@ -638,7 +656,7 @@ async function main() {
     apiResult = await ensureServiceOnline(apiConfig);
   } catch (error) {
     stopAll();
-    throw new Error(`API indisponivel para preview: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`API indisponível para preview: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   registerStartedProcess(apiConfig, apiResult);
@@ -648,7 +666,7 @@ async function main() {
     console.warn("[preview:ready] PREVIEW_DISABLE_SCHEDULER=1 detectado. Polling continuo de canais foi desativado.");
   } else {
     const schedulerScriptPath = "scripts/dispatch-scheduler.mjs";
-    const schedulerServiceToken = process.env.SERVICE_TOKEN || "dev-service-token-local-only";
+    const schedulerServiceToken = process.env.SERVICE_TOKEN || PREVIEW_SERVICE_TOKEN;
     const schedulerBaseUrl = process.env.SCHEDULER_RPC_BASE_URL || runtimeEndpoints.VITE_API_URL;
     const schedulerEnv = {
       NODE_ENV: process.env.NODE_ENV || "development",

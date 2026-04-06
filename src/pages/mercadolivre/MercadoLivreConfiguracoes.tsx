@@ -8,11 +8,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { ShoppingCart, Loader2, Trash2, RefreshCw, CheckCircle2, AlertCircle, Clock, Plus, Download, PlugZap } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ShoppingCart, Loader2, Trash2, RefreshCw, CheckCircle2, AlertCircle, Clock, Plus, Download, PlugZap, ChevronDown } from "lucide-react";
 import { useMercadoLivreSessions, type MeliSession, type MeliSessionStatus } from "@/hooks/useMercadoLivreSessions";
 import { useServiceHealth } from "@/hooks/useServiceHealth";
 import { useAuth } from "@/contexts/AuthContext";
 import { backend } from "@/integrations/backend/client";
+import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { formatBRT } from "@/lib/timezone";
 import { toast } from "sonner";
 import { InlineLoadingState } from "@/components/InlineLoadingState";
@@ -106,7 +108,7 @@ function SessionCard({ session, onDelete }: {
           <AlertDialogHeader>
             <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
             <AlertDialogDescription>
-              A conta <strong>{session.name}</strong> e os cookies salvos vão ser apagados. Não tem como desfazer.
+              A conta <strong>{session.name}</strong> e os cookies salvos vão ser apagados. Não há como desfazer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -120,13 +122,16 @@ function SessionCard({ session, onDelete }: {
 }
 
 export default function MercadoLivreConfiguracoes() {
-  const { sessions, isLoading, testAllSessions, deleteSession, saveSession } = useMercadoLivreSessions({ enableAutoMonitor: false });
+  const { sessions, isLoading, testAllSessions, deleteSession, saveSession, refreshSessions } = useMercadoLivreSessions({ enableAutoMonitor: false });
   const { health, isRefreshing: isHealthRefreshing, refresh: refreshHealth } = useServiceHealth("meli");
   const { user } = useAuth();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [isRefreshingView, setIsRefreshingView] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [sessionName, setSessionName] = useState("");
   const [cookiesJson, setCookiesJson] = useState("");
+  const [guideOpen, setGuideOpen] = useState(false);
   const bridgeTokenRef = useRef("");
 
   const getBridgeToken = () => {
@@ -155,7 +160,72 @@ export default function MercadoLivreConfiguracoes() {
     });
   };
 
+  const resolveConversionProbeUrl = async (): Promise<string> => {
+    const listProbeProduct = async () => {
+      const payload = await invokeBackendRpc<{ items?: Array<{ productUrl?: string }> }>("meli-vitrine-list", {
+        body: {
+          tab: "destaques",
+          page: 1,
+          limit: 1,
+        },
+      });
+      return String(payload.items?.[0]?.productUrl || "").trim();
+    };
+
+    const existingProductUrl = await listProbeProduct();
+    if (existingProductUrl) return existingProductUrl;
+
+    await invokeBackendRpc("meli-vitrine-sync", {
+      body: {
+        source: "meli-configuracoes-test",
+      },
+    });
+
+    const syncedProductUrl = await listProbeProduct();
+    if (syncedProductUrl) return syncedProductUrl;
+
+    throw new Error("Não foi possível obter um produto da vitrine para validar a conversão.");
+  };
+
+  const validateLinkConversion = async () => {
+    const productUrl = await resolveConversionProbeUrl();
+    const conversion = await invokeBackendRpc<{ affiliateLink?: string }>("meli-convert-link", {
+      body: {
+        url: productUrl,
+        source: "meli-configuracoes-test",
+      },
+    });
+
+    const affiliateLink = String(conversion.affiliateLink || "").trim();
+    if (!affiliateLink) {
+      throw new Error("Conversão de link retornou vazio.");
+    }
+  };
+
+  const handleRefreshView = async () => {
+    setIsRefreshingView(true);
+    try {
+      await refreshSessions();
+      const status = await refreshHealth();
+
+      if (status?.online === false && status.error) {
+        toast.warning("Página atualizada com alerta", {
+          description: status.error,
+        });
+      } else {
+        toast.success("Página atualizada", {
+          description: "Contas e status recarregados sem recarregar a página inteira.",
+        });
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível atualizar os dados da página");
+    } finally {
+      setIsRefreshingView(false);
+    }
+  };
+
   const handleTestConnection = async () => {
+    setIsTestingConnection(true);
     try {
       const status = await refreshHealth();
       if (!status?.online) {
@@ -165,7 +235,7 @@ export default function MercadoLivreConfiguracoes() {
 
       if (sessions.length === 0) {
         toast.error("Conexão incompleta", {
-          description: "Serviço online, mas não tem nenhuma conta de cookies. Adicione uma pra continuar.",
+          description: "Serviço online, mas não há nenhuma conta de cookies. Adicione uma para continuar.",
         });
         return;
       }
@@ -185,27 +255,39 @@ export default function MercadoLivreConfiguracoes() {
         return;
       }
 
+      try {
+        await validateLinkConversion();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Falha ao validar conversão";
+        toast.error("Conexão parcial", {
+          description: `Cookies autenticam, mas a conversão de link falhou: ${message}`,
+        });
+        return;
+      }
+
       if (problemCount > 0) {
         toast.warning("Conexão testada com alertas", {
-          description: `${activeCount} ativa(s), ${problemCount} com problema.`,
+          description: `${activeCount} ativa(s), ${problemCount} com problema. Conversão validada.`,
         });
       } else if (noAffiliateCount > 0) {
         toast.warning("Conexão testada com alertas", {
-          description: `${activeCount} ativa(s), ${noAffiliateCount} sem programa de afiliados.`,
+          description: `${activeCount} ativa(s), ${noAffiliateCount} sem programa de afiliados. Conversão validada.`,
         });
       } else {
         toast.success("Conexão OK!", {
-          description: `${activeCount} conta(s) ativa(s).`,
+          description: `${activeCount} conta(s) ativa(s) e conversão de link validada.`,
         });
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Não deu pra testar a conexão");
+      toast.error(error instanceof Error ? error.message : "Não foi possível testar a conexão");
+    } finally {
+      setIsTestingConnection(false);
     }
   };
 
   const handleCreateSession = async () => {
     if (!sessionName.trim()) {
-      toast.error("Dê um nome pra conta");
+      toast.error("Dê um nome para a conta");
       return;
     }
     if (!cookiesJson.trim()) {
@@ -215,8 +297,9 @@ export default function MercadoLivreConfiguracoes() {
 
     setIsCreating(true);
     try {
+      const targetSessionId = String(sessions[0]?.id || "").trim() || buildSessionId();
       await saveSession({
-        sessionId: buildSessionId(),
+        sessionId: targetSessionId,
         name: sessionName.trim(),
         cookies: cookiesJson.trim(),
       });
@@ -224,7 +307,7 @@ export default function MercadoLivreConfiguracoes() {
       setIsCreateOpen(false);
       resetCreateForm();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Não deu pra adicionar a conta");
+      toast.error(error instanceof Error ? error.message : "Não foi possível adicionar a conta");
     } finally {
       setIsCreating(false);
     }
@@ -361,7 +444,7 @@ export default function MercadoLivreConfiguracoes() {
 
           const suggestedName = String(data.payload?.suggestedName || "").trim();
           const finalName = suggestedName || "Conta principal";
-          const sessionId = buildSessionId();
+          const sessionId = String(sessions[0]?.id || "").trim() || buildSessionId();
 
           await saveSession({
             sessionId,
@@ -409,8 +492,17 @@ export default function MercadoLivreConfiguracoes() {
         description="Conecte e veja sua conta do Mercado Livre"
       >
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => void handleTestConnection()} disabled={isHealthRefreshing}>
-            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${isHealthRefreshing ? "animate-spin" : ""}`} />
+          <Button size="sm" variant="outline" onClick={() => void handleRefreshView()} disabled={isRefreshingView}>
+            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${isRefreshingView ? "animate-spin" : ""}`} />
+            Atualizar
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void handleTestConnection()}
+            disabled={isHealthRefreshing || isTestingConnection}
+          >
+            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${(isHealthRefreshing || isTestingConnection) ? "animate-spin" : ""}`} />
             Testar conexão
           </Button>
         </div>
@@ -423,36 +515,6 @@ export default function MercadoLivreConfiguracoes() {
           </CardContent>
         </Card>
       ) : null}
-
-      <Card className="glass border-primary/30 bg-primary/5">
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="space-y-1">
-              <CardTitle className="flex items-center gap-2">
-                <PlugZap className="h-4 w-4 text-primary" />
-                Extensão AutoLinks - Mercado Livre
-              </CardTitle>
-              <CardDescription>
-                Faça login na extensão e envie os cookies direto pra sua conta, sem copiar e colar JSON.
-              </CardDescription>
-            </div>
-            <Button asChild>
-              <a href="/downloads/autolinks-mercado-livre.zip" download="AutoLinks - Mercado Livre.zip">
-                <Download className="mr-1.5 h-4 w-4" />
-                Baixar extensão (.zip)
-              </a>
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p><strong>Como usar (leva 2 minutos):</strong></p>
-          <p>1. Baixe o arquivo .zip e extraia em uma pasta do seu computador.</p>
-          <p>2. Abra <strong>chrome://extensions</strong> e ative o <strong>Modo do desenvolvedor</strong>.</p>
-          <p>3. Clique em <strong>Carregar sem compactação</strong> e selecione a pasta da extensão.</p>
-          <p>4. Abra uma aba do Mercado Livre e faça login na conta que deseja conectar.</p>
-          <p>5. Na extensão, use <strong>Entrar</strong> e depois <strong>Capturar e enviar cookies</strong>.</p>
-        </CardContent>
-      </Card>
 
       <Card className="glass">
         <CardHeader>
@@ -468,7 +530,7 @@ export default function MercadoLivreConfiguracoes() {
             <div className="flex flex-col items-center gap-3 py-10 text-center text-muted-foreground">
               <ShoppingCart className="h-10 w-10 opacity-40" />
               <p className="text-sm">Nenhuma conta conectada</p>
-              <p className="text-xs">Use a extensão AutoLinks pra conectar sua conta.</p>
+              <p className="text-xs">Use a extensão AutoLinks para conectar sua conta.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -483,6 +545,119 @@ export default function MercadoLivreConfiguracoes() {
           )}
         </CardContent>
       </Card>
+
+      {/* Guide Instructions */}
+      <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
+        <Card className="glass">
+          <CollapsibleTrigger asChild>
+            <CardHeader className="cursor-pointer select-none hover:bg-muted/40 transition-colors">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <PlugZap className="h-5 w-5 text-primary" />
+                  <div>
+                    <CardTitle className="text-base">Extensão AutoLinks - Mercado Livre</CardTitle>
+                    <CardDescription className="text-xs mt-0.5">
+                      Faça login na extensão e envie os cookies direto para sua conta, sem copiar e colar JSON
+                    </CardDescription>
+                  </div>
+                </div>
+                <ChevronDown
+                  className={`h-5 w-5 text-muted-foreground transition-transform duration-300 shrink-0 ${
+                    guideOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </div>
+            </CardHeader>
+          </CollapsibleTrigger>
+
+          <CollapsibleContent>
+            <CardContent className="border-t space-y-6 pt-6 bg-muted/20">
+              <Button asChild className="w-full">
+                <a href="/downloads/autolinks-mercado-livre.zip" download="AutoLinks - Mercado Livre.zip">
+                  <Download className="mr-1.5 h-4 w-4" />
+                  Baixar extensão (.zip)
+                </a>
+              </Button>
+
+              <div className="relative flex gap-5">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                  1
+                </div>
+                <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+                  <p className="text-sm font-semibold">Baixe a extensão</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Clique no botão acima para fazer o download do arquivo da extensão AutoLinks.
+                  </p>
+                </div>
+              </div>
+
+              <div className="relative flex gap-5">
+                <div className="absolute left-4 top-0 bottom-12 w-px bg-border/40" />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                  2
+                </div>
+                <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+                  <p className="text-sm font-semibold">Extraia o arquivo</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Extraia o arquivo .zip em uma pasta do seu computador. Será criada uma pasta com os arquivos da extensão.
+                  </p>
+                </div>
+              </div>
+
+              <div className="relative flex gap-5">
+                <div className="absolute left-4 top-0 bottom-12 w-px bg-border/40" />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                  3
+                </div>
+                <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+                  <p className="text-sm font-semibold">Ative o Modo do Desenvolvedor</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Abra <code className="bg-muted px-1 py-0.5 rounded text-xs">chrome://extensions</code> no navegador e ative o <strong>Modo do desenvolvedor</strong> no canto superior direito.
+                  </p>
+                </div>
+              </div>
+
+              <div className="relative flex gap-5">
+                <div className="absolute left-4 top-0 bottom-12 w-px bg-border/40" />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                  4
+                </div>
+                <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+                  <p className="text-sm font-semibold">Carregue a extensão</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Clique em <strong>Carregar sem compactação</strong> e selecione a pasta onde você extraiu a extensão.
+                  </p>
+                </div>
+              </div>
+
+              <div className="relative flex gap-5">
+                <div className="absolute left-4 top-0 bottom-12 w-px bg-border/40" />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                  5
+                </div>
+                <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+                  <p className="text-sm font-semibold">Abra o Mercado Livre</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Abra uma nova aba do Mercado Livre e faça login na conta que você deseja conectar ao AutoLinks.
+                  </p>
+                </div>
+              </div>
+
+              <div className="relative flex gap-5">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                  6
+                </div>
+                <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+                  <p className="text-sm font-semibold">Envie os cookies</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Na extensão, clique em <strong>Entrar</strong> e depois em <strong>Capturar e enviar cookies</strong>. Pronto! Sua conta será adicionada automaticamente aqui.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
 
     </div>
   );

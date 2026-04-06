@@ -188,18 +188,50 @@ export class MercadoLivreLinkConverter {
     return this.buildSessionPath(this.sessionsDir, sessionId);
   }
 
+  private extractLegacySessionId(sessionId: string): string | null {
+    const raw = String(sessionId || "").trim();
+    const sep = raw.indexOf("__");
+    if (sep <= 0 || sep >= raw.length - 2) return null;
+    const legacy = raw.slice(sep + 2).trim();
+    return legacy && legacy !== raw ? legacy : null;
+  }
+
   private getSessionPathCandidates(sessionId: string): string[] {
-    const primary = this.buildSessionPath(this.sessionsDir, sessionId);
-    const legacy = this.buildSessionPath(this.legacySessionsDir, sessionId);
-    const workspace = this.buildSessionPath(this.workspaceSessionsDir, sessionId);
-    return Array.from(new Set([primary, legacy, workspace]));
+    const ids = [String(sessionId || "").trim()];
+    const legacyId = this.extractLegacySessionId(sessionId);
+    if (legacyId) ids.push(legacyId);
+
+    const candidates: string[] = [];
+    for (const id of ids) {
+      if (!id) continue;
+      candidates.push(this.buildSessionPath(this.sessionsDir, id));
+      candidates.push(this.buildSessionPath(this.legacySessionsDir, id));
+      candidates.push(this.buildSessionPath(this.workspaceSessionsDir, id));
+    }
+    return Array.from(new Set(candidates));
   }
 
   private async resolveExistingSessionPath(sessionId: string): Promise<string | null> {
+    const primary = this.getSessionPath(sessionId);
     const candidates = this.getSessionPathCandidates(sessionId);
     for (const candidate of candidates) {
       const exists = await fs.access(candidate).then(() => true).catch(() => false);
-      if (exists) return candidate;
+      if (!exists) continue;
+
+      if (candidate !== primary) {
+        try {
+          await fs.mkdir(path.dirname(primary), { recursive: true });
+          const primaryExists = await fs.access(primary).then(() => true).catch(() => false);
+          if (!primaryExists) {
+            await fs.copyFile(candidate, primary);
+          }
+          return primary;
+        } catch {
+          // Non-fatal: fallback to the discovered candidate.
+        }
+      }
+
+      return candidate;
     }
     return null;
   }

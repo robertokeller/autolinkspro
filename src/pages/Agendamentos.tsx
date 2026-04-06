@@ -34,17 +34,17 @@ import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
 import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
 
-const statusStyle: Record<string, string> = {
-  scheduled: "bg-info/10 text-info", pending: "bg-info/10 text-info", sent: "bg-success/10 text-success",
-  processing: "bg-warning/10 text-warning",
-  failed: "bg-destructive/10 text-destructive", cancelled: "bg-muted text-muted-foreground",
+const statusVariant: Record<string, "info" | "success" | "warning" | "destructive" | "secondary"> = {
+  scheduled: "info", pending: "info", sent: "success",
+  processing: "warning",
+  failed: "destructive", cancelled: "secondary",
 };
 const statusLabel: Record<string, string> = {
   scheduled: "Na fila",
   pending: "Na fila",
   processing: "Enviando",
   sent: "Enviado",
-  failed: "Deu erro",
+  failed: "Falhou",
   cancelled: "Cancelado",
 };
 const recurrenceLabel: Record<string, string> = { none: "Uma vez", once: "Uma vez", daily: "Todo dia", weekly: "Toda semana" };
@@ -228,7 +228,7 @@ export default function Schedules() {
 
     const parsed = agendamentoSchema.safeParse({ content: draft.content, scheduledAt: effectiveScheduledAt });
     if (!parsed.success) { toast.error(parsed.error.errors[0].message); return; }
-    if (!draft.name.trim()) { toast.error("Dê um nome pro agendamento"); return; }
+    if (!draft.name.trim()) { toast.error("Dê um nome para o agendamento"); return; }
     if (!draft.sessionId) { toast.error("Escolha a sessão de envio"); return; }
     if (destinationMode === "individual" && draft.destinationGroupIds.length === 0) { toast.error("Escolha pelo menos um grupo de destino"); return; }
     if (destinationMode === "master" && draft.masterGroupIds.length === 0) { toast.error("Escolha pelo menos um grupo mestre"); return; }
@@ -395,7 +395,7 @@ export default function Schedules() {
               )}
               <TypeIcon className="h-4 w-4 text-muted-foreground shrink-0" />
               <p className="text-sm font-semibold tracking-tight truncate">{post.name}</p>
-              <Badge variant="secondary" className={`text-xs shrink-0 ${statusStyle[postStatus] || ""}`}>{postStatusLabel}</Badge>
+              <Badge variant={statusVariant[postStatus] || "secondary"} className="text-xs shrink-0">{postStatusLabel}</Badge>
               {post.scheduleSource === "shopee_catalog" && (
                 <Badge variant="outline" className="text-xs shrink-0">Shopee</Badge>
               )}
@@ -464,19 +464,13 @@ export default function Schedules() {
 
   return (
     <div className="ds-page">
-      <PageHeader title="Agendamentos" description="Agende mensagens pra enviar na hora certa">
+      <PageHeader title="Agendamentos" description="Agende mensagens paara enviar na hora certa">
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1.5" />Novo agendamento</Button>
         </div>
       </PageHeader>
 
       <div className="space-y-4">
-        <Card className="glass border-info/30">
-          <CardContent className="py-3 text-xs text-muted-foreground text-center">
-            Na fila: <span className="font-medium text-foreground">{queuePosts.length}</span> agendamento(s) esperando envio, do mais próximo pro mais longe.
-          </CardContent>
-        </Card>
-
         {queuePosts.length > 0 ? (
           <div className="space-y-3">
             {queuePosts.map((post, index) => renderPostCard(post, index + 1))}
@@ -518,7 +512,7 @@ export default function Schedules() {
                 </Badge>
               </div>
               <DialogDescription>
-                Escreva a mensagem, escolha quando enviar e pra quais grupos.
+                Escreva a mensagem, escolha quando enviar e para quais grupos.
               </DialogDescription>
             </DialogHeader>
 
@@ -679,7 +673,7 @@ export default function Schedules() {
 
                 {!draft.sessionId && (
                   <div className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
-                    Escolha uma sessão pra ver os grupos disponíveis.
+                    Escolha uma sessão para ver os grupos disponíveis.
                   </div>
                 )}
 

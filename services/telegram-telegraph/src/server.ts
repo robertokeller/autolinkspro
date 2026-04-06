@@ -85,6 +85,17 @@ interface SendMessageBody {
   };
 }
 
+interface PullMessagesBody {
+  sessionId?: string;
+  limit?: number;
+  chats?: Array<{
+    chatId?: string;
+    minMessageId?: string | number;
+    since?: string;
+    limit?: string | number;
+  }>;
+}
+
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || "3112");
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "12mb";
@@ -105,6 +116,14 @@ const ROUTE_MEDIA_MAX_BYTES = Math.max(
 );
 const DEFAULT_AUTO_IMAGE_FILE_NAME = "route_image.jpg";
 const OUTBOUND_ECHO_WINDOW_MS = Math.max(10_000, Number(process.env.TELEGRAM_OUTBOUND_ECHO_WINDOW_MS || "120000"));
+const TELEGRAM_PULL_MESSAGES_DEFAULT_LIMIT = Math.max(
+  1,
+  Math.min(20, Number(process.env.TELEGRAM_PULL_MESSAGES_DEFAULT_LIMIT || "10") || 10),
+);
+const TELEGRAM_PULL_MESSAGES_MAX_LIMIT = Math.max(
+  TELEGRAM_PULL_MESSAGES_DEFAULT_LIMIT,
+  Math.min(100, Number(process.env.TELEGRAM_PULL_MESSAGES_MAX_LIMIT || "25") || 25),
+);
 // Telegram API credentials — stored in the service .env, never in the frontend bundle
 const DEFAULT_API_ID = Number(process.env.TELEGRAM_API_ID ?? 0);
 const DEFAULT_API_HASH = String(process.env.TELEGRAM_API_HASH ?? "");
@@ -140,6 +159,7 @@ const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
 
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 app.use(cors({
   origin: (origin, callback) => {
     // Allow server-to-server / non-browser requests (no Origin header).
@@ -778,6 +798,111 @@ async function resolveTelegramInboundMedia(args: {
   return null;
 }
 
+function normalizeTelegramMessageId(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized;
+  }
+  return "";
+}
+
+function normalizeTelegramMessageDateIso(value: unknown): string {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value * 1000).toISOString();
+  }
+  if (typeof value === "bigint" && value > 0n) {
+    return new Date(Number(value) * 1000).toISOString();
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized) return "";
+    const asNumber = Number(normalized);
+    if (Number.isFinite(asNumber) && asNumber > 0) {
+      return new Date(asNumber * 1000).toISOString();
+    }
+    const parsed = Date.parse(normalized);
+    if (Number.isFinite(parsed)) {
+      return new Date(parsed).toISOString();
+    }
+  }
+  return "";
+}
+
+async function buildTelegramInboundMediaPayload(args: {
+  state: SessionState;
+  message: Api.Message;
+  media: unknown;
+  mediaInfo: TelegramInboundMediaInfo | null;
+  groupId: string;
+  content: string;
+}): Promise<Record<string, unknown> | undefined> {
+  const { state, message, media, mediaInfo, groupId, content } = args;
+  if (!media || !state.client) return undefined;
+
+  const resolvedMedia = await resolveTelegramInboundMedia({
+    client: state.client,
+    message,
+    media,
+    mediaInfo,
+    sessionId: state.config.sessionId,
+  });
+  if (!resolvedMedia) {
+    logMediaCaptureDebug("incoming_media_download_failed", {
+      sessionId: state.config.sessionId,
+      groupId,
+      hasText: Boolean(content),
+      textLength: content.length,
+      mediaKind: mediaInfo?.kind || "",
+      mediaMimeTypeHint: readTelegramMediaMimeType(media),
+    });
+    logger.warn(
+      { sessionId: state.config.sessionId, groupId, mediaKind: mediaInfo?.kind || "unknown" },
+      "incoming telegram media detected but payload could not be extracted",
+    );
+    return undefined;
+  }
+
+  const stored = storeTemporaryMedia(
+    resolvedMedia.kind,
+    resolvedMedia.buffer,
+    state.config.userId,
+    resolvedMedia.mimeType,
+  );
+  logMediaCaptureDebug("incoming_media_stored", {
+    sessionId: state.config.sessionId,
+    groupId,
+    mediaKind: resolvedMedia.kind,
+    bytes: resolvedMedia.buffer.length,
+    mimeType: resolvedMedia.mimeType,
+    origin: resolvedMedia.origin,
+    tokenPrefix: stored.token.slice(0, 8),
+  });
+  return {
+    kind: resolvedMedia.kind,
+    token: stored.token,
+    mimeType: resolvedMedia.mimeType,
+    fileName: stored.fileName,
+    sourcePlatform: "telegram",
+  };
+}
+
+function parsePullMessagesLimit(rawLimit: unknown, fallback = TELEGRAM_PULL_MESSAGES_DEFAULT_LIMIT): number {
+  const parsed = Number(rawLimit);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(TELEGRAM_PULL_MESSAGES_MAX_LIMIT, Math.trunc(parsed)));
+}
+
 function parseChatTarget(chatId: string): string {
   return chatId.trim();
 }
@@ -1347,53 +1472,18 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
         }
       }
 
-      let mediaData: Record<string, unknown> | undefined;
-      const resolvedMedia = hasMedia && state.client
-        ? await resolveTelegramInboundMedia({
-            client: state.client,
+      const mediaData = hasMedia
+        ? await buildTelegramInboundMediaPayload({
+            state,
             message: message as Api.Message,
             media: messageMedia,
             mediaInfo,
-            sessionId: state.config.sessionId,
+            groupId,
+            content,
           })
-        : null;
-      if (resolvedMedia) {
-        const stored = storeTemporaryMedia(
-          resolvedMedia.kind,
-          resolvedMedia.buffer,
-          state.config.userId,
-          resolvedMedia.mimeType,
-        );
-        logMediaCaptureDebug("incoming_media_stored", {
-          sessionId: state.config.sessionId,
-          groupId,
-          mediaKind: resolvedMedia.kind,
-          bytes: resolvedMedia.buffer.length,
-          mimeType: resolvedMedia.mimeType,
-          origin: resolvedMedia.origin,
-          tokenPrefix: stored.token.slice(0, 8),
-        });
-        mediaData = {
-          kind: resolvedMedia.kind,
-          token: stored.token,
-          mimeType: resolvedMedia.mimeType,
-          fileName: stored.fileName,
-          sourcePlatform: "telegram",
-        };
-      } else if (hasMedia) {
-        logMediaCaptureDebug("incoming_media_download_failed", {
-          sessionId: state.config.sessionId,
-          groupId,
-          hasText: Boolean(content),
-          textLength: content.length,
-          mediaKind: mediaInfo?.kind || "",
-          mediaMimeTypeHint: readTelegramMediaMimeType(messageMedia),
-        });
-        logger.warn(
-          { sessionId: state.config.sessionId, groupId, mediaKind: mediaInfo?.kind || "unknown" },
-          "incoming telegram media detected but payload could not be extracted",
-        );
-      }
+        : undefined;
+      const sourceMessageId = normalizeTelegramMessageId((message as { id?: unknown }).id);
+      const sourceMessageDate = normalizeTelegramMessageDateIso((message as { date?: unknown }).date);
 
       logMediaCaptureDebug("webhook_emit_message_received", {
         sessionId: state.config.sessionId,
@@ -1403,12 +1493,15 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
         hasMedia,
         mediaTokenPrefix: typeof mediaData?.token === "string" ? mediaData.token.slice(0, 8) : "",
         dedupeKey,
+        sourceMessageId,
       });
       await emitWebhook(state, "message_received", {
         from: from || groupName,
         message: content,
         groupId,
         groupName,
+        messageId: sourceMessageId || undefined,
+        messageDate: sourceMessageDate || undefined,
         hasMedia,
         mediaKind: mediaInfo?.kind || undefined,
         mediaMimeType: mediaInfo?.mimeType || undefined,
@@ -1434,6 +1527,7 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
           className?: string;
           out?: boolean;
           id?: unknown;
+          date?: unknown;
           message?: string;
           media?: unknown;
           peerId?: unknown;
@@ -1498,37 +1592,26 @@ async function bindMessageHandler(state: SessionState): Promise<void> {
         return;
       }
 
-      let mediaData: Record<string, unknown> | undefined;
-      const resolvedMedia = hasMedia && state.client
-        ? await resolveTelegramInboundMedia({
-            client: state.client,
+      const mediaData = hasMedia
+        ? await buildTelegramInboundMediaPayload({
+            state,
             message: rawMessage as Api.Message,
             media: messageMedia,
             mediaInfo,
-            sessionId: state.config.sessionId,
+            groupId,
+            content,
           })
-        : null;
-      if (resolvedMedia) {
-        const stored = storeTemporaryMedia(
-          resolvedMedia.kind,
-          resolvedMedia.buffer,
-          state.config.userId,
-          resolvedMedia.mimeType,
-        );
-        mediaData = {
-          kind: resolvedMedia.kind,
-          token: stored.token,
-          mimeType: resolvedMedia.mimeType,
-          fileName: stored.fileName,
-          sourcePlatform: "telegram",
-        };
-      }
+        : undefined;
+      const sourceMessageId = normalizeTelegramMessageId(rawMessage.id);
+      const sourceMessageDate = normalizeTelegramMessageDateIso(rawMessage.date);
 
       await emitWebhook(state, "message_received", {
         from: groupId,
         message: content,
         groupId,
         groupName: groupId,
+        messageId: sourceMessageId || undefined,
+        messageDate: sourceMessageDate || undefined,
         hasMedia,
         mediaKind: mediaInfo?.kind || undefined,
         mediaMimeType: mediaInfo?.mimeType || undefined,
@@ -1880,7 +1963,11 @@ function readRequestUserId(req: Request<any, any, any, any>, res: Response): str
     res.status(400).json({ error: "x-autolinks-user-id é obrigatório" });
     return null;
   }
-  return userId;
+  if (userId.length > 64 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)) {
+    res.status(400).json({ error: "x-autolinks-user-id invalido" });
+    return null;
+  }
+  return userId.toLowerCase();
 }
 
 app.get("/health", (req, res) => {
@@ -2224,6 +2311,131 @@ app.post("/api/telegram/sync_groups", async (req: Request<unknown, unknown, Acti
   } catch (error) {
     res.status(500).json({ error: sanitizeError(error) });
   }
+});
+
+app.post("/api/telegram/pull-messages", async (req: Request<unknown, unknown, PullMessagesBody>, res) => {
+  const requestUserId = readRequestUserId(req, res);
+  if (!requestUserId) return;
+
+  const sessionId = String(req.body?.sessionId || "").trim();
+  const chatsRaw = Array.isArray(req.body?.chats) ? req.body.chats : [];
+  if (!sessionId || chatsRaw.length === 0) {
+    res.status(400).json({ error: "sessionId e chats são obrigatórios" });
+    return;
+  }
+
+  const state = await loadStateFromDisk(sessionId);
+  if (!state) {
+    res.status(404).json({ error: "Sessão não encontrada" });
+    return;
+  }
+
+  if (state.config.userId !== requestUserId) {
+    res.status(403).json({ error: "Sessão não pertence ao usuário informado" });
+    return;
+  }
+
+  const online = await ensureConnected(state);
+  if (!online || !state.client || state.status !== "online") {
+    res.status(409).json({ error: "Sessão Telegram não está online" });
+    return;
+  }
+
+  const defaultLimit = parsePullMessagesLimit(req.body?.limit, TELEGRAM_PULL_MESSAGES_DEFAULT_LIMIT);
+  const events: Array<{
+    event: "message_received";
+    data: Record<string, unknown>;
+  }> = [];
+  const errors: Array<{ chatId: string; error: string }> = [];
+
+  for (const row of chatsRaw) {
+    const chatId = String(row?.chatId || "").trim();
+    if (!chatId) continue;
+
+    const minMessageId = Math.max(0, Number(row?.minMessageId) || 0);
+    const limit = parsePullMessagesLimit(row?.limit, defaultLimit);
+    const sinceRaw = String(row?.since || "").trim();
+    const sinceMs = sinceRaw ? Date.parse(sinceRaw) : Number.NaN;
+
+    try {
+      const entity = await state.client.getEntity(chatId);
+      const groupId = formatEntityId(entity) || chatId;
+      const groupName = getEntityName(entity, groupId);
+      const pulled = await state.client.getMessages(entity, {
+        limit,
+        minId: minMessageId,
+      });
+      const orderedMessages = [...pulled].sort((a, b) => {
+        const left = Number((a as { id?: unknown }).id) || 0;
+        const right = Number((b as { id?: unknown }).id) || 0;
+        return left - right;
+      });
+
+      for (const item of orderedMessages) {
+        const message = item as Api.Message & {
+          out?: boolean;
+          id?: unknown;
+          date?: unknown;
+          message?: string;
+          media?: unknown;
+        };
+        const content = typeof message.message === "string" ? message.message.trim() : "";
+        const messageMedia = message.media;
+        const mediaInfo = extractTelegramMediaInfo(messageMedia);
+        const hasMedia = hasTelegramMedia(messageMedia);
+        if (!content && !hasMedia) continue;
+        if (message.out) continue;
+
+        const sourceMessageId = normalizeTelegramMessageId(message.id);
+        if (sourceMessageId && minMessageId > 0 && Number(sourceMessageId) <= minMessageId) continue;
+
+        const sourceMessageDate = normalizeTelegramMessageDateIso(message.date);
+        if (Number.isFinite(sinceMs) && sourceMessageDate) {
+          const messageDateMs = Date.parse(sourceMessageDate);
+          if (Number.isFinite(messageDateMs) && messageDateMs <= sinceMs) continue;
+        }
+
+        const mediaData = hasMedia
+          ? await buildTelegramInboundMediaPayload({
+              state,
+              message,
+              media: messageMedia,
+              mediaInfo,
+              groupId,
+              content,
+            })
+          : undefined;
+
+        events.push({
+          event: "message_received",
+          data: {
+            from: groupName,
+            fromMe: false,
+            message: content,
+            groupId,
+            groupName,
+            messageId: sourceMessageId || undefined,
+            messageDate: sourceMessageDate || undefined,
+            hasMedia,
+            mediaKind: mediaInfo?.kind || undefined,
+            mediaMimeType: mediaInfo?.mimeType || undefined,
+            ...(mediaData ? { media: mediaData } : {}),
+          },
+        });
+      }
+    } catch (error) {
+      const errorMessage = sanitizeError(error);
+      logger.warn({ sessionId, chatId, error: errorMessage }, "telegram pull-messages failed for one chat");
+      errors.push({ chatId, error: errorMessage });
+    }
+  }
+
+  res.json({
+    ok: true,
+    sessionId,
+    events,
+    errors,
+  });
 });
 
 app.post("/api/telegram/send-message", async (req: Request<unknown, unknown, SendMessageBody>, res) => {

@@ -11,8 +11,8 @@ import { useGrupos } from "@/hooks/useGrupos";
 import { useSessoes } from "@/hooks/useSessoes";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
-import { applyMeliTemplatePlaceholders, buildMeliTemplatePlaceholderData } from "@/lib/meli-template-placeholders";
-import type { ScheduledMediaAttachment, ScheduledPost } from "@/lib/types";
+import type { ScheduledMediaAttachment, ScheduledPost, TemplateScope } from "@/lib/types";
+import { getMarketplaceTemplateModule } from "@/lib/marketplace-template-modules";
 import { toast } from "sonner";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
@@ -20,10 +20,14 @@ import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown"
 import { formatBRT } from "@/lib/timezone";
 import { extractMarketplaceLinks } from "@/lib/marketplace-utils";
 
+type MarketplaceTemplateScope = Extract<TemplateScope, "meli" | "amazon">;
+
 interface MercadoLivreScheduleModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialTemplateId?: string;
+  templateScope?: MarketplaceTemplateScope;
+  marketplaceLabel?: string;
   product?: {
     title?: string;
     affiliateLink: string;
@@ -35,6 +39,9 @@ interface MercadoLivreScheduleModalProps {
     seller?: string;
     rating?: number | null;
     reviewsCount?: number | null;
+    discountText?: string;
+    badgeText?: string;
+    asin?: string;
   };
   editingPost?: ScheduledPost;
 }
@@ -45,7 +52,7 @@ function dataUrlToBase64(dataUrl: string): string {
   return dataUrl.includes(",") ? dataUrl.split(",")[1] : "";
 }
 
-async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaAttachment> {
+async function fetchImageAsAttachment(imageUrl: string, fileName: string): Promise<ScheduledMediaAttachment> {
   const target = String(imageUrl || "").trim();
   if (!/^https?:\/\//i.test(target)) {
     throw new Error("URL de imagem invalida para anexo");
@@ -58,7 +65,7 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
 
   const blob = await response.blob();
   if (!blob.type.startsWith("image/")) {
-    throw new Error("Arquivo retornado nao eh uma imagem");
+    throw new Error("Arquivo retornado não é uma imagem");
   }
   if (blob.size > MAX_SCHEDULE_IMAGE_BYTES) {
     throw new Error("Imagem da oferta excede 8MB");
@@ -80,7 +87,7 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
     kind: "image",
     base64,
     mimeType: blob.type || "image/jpeg",
-    fileName: "meli_offer.jpg",
+    fileName,
   };
 }
 
@@ -98,13 +105,21 @@ export function MercadoLivreScheduleModal({
   open,
   onOpenChange,
   initialTemplateId,
+  templateScope = "meli",
+  marketplaceLabel,
   product,
   editingPost,
 }: MercadoLivreScheduleModalProps) {
-  const {
-    templates,
-    defaultTemplate,
-  } = useTemplates("meli");
+  const resolvedScope: MarketplaceTemplateScope = templateScope === "amazon" ? "amazon" : "meli";
+  const marketplaceShortLabel = String(marketplaceLabel || "").trim() || (resolvedScope === "amazon" ? "Amazon" : "ML");
+  const defaultOfferName = resolvedScope === "amazon" ? "Oferta Amazon" : "Oferta Mercado Livre";
+  const defaultOfferPrefix = resolvedScope === "amazon" ? "Oferta Amazon: " : "Oferta ML: ";
+  const templateFieldLabel = resolvedScope === "amazon" ? "Template Amazon" : "Template Meli";
+  const defaultScheduleSource = `${resolvedScope}_vitrine`;
+  const defaultImageFileName = `${resolvedScope}_offer.jpg`;
+  const templateModule = useMemo(() => getMarketplaceTemplateModule(resolvedScope), [resolvedScope]);
+
+  const { templates, defaultTemplate } = useTemplates(resolvedScope);
   const { syncedGroups, masterGroups } = useGrupos();
   const { allSessions } = useSessoes();
   const { createPost, updatePost } = useAgendamentos();
@@ -137,20 +152,25 @@ export function MercadoLivreScheduleModal({
   });
 
   const fallbackContent = editingPost?.content || product?.affiliateLink || product?.productUrl || "";
-  const placeholderData = useMemo(() => buildMeliTemplatePlaceholderData(
-    product ? {
-      title: product.title,
-      productUrl: product.productUrl,
-      imageUrl: product.imageUrl,
-      price: product.price,
-      oldPrice: product.oldPrice,
-      installmentsText: product.installmentsText,
-      seller: product.seller,
-      rating: product.rating,
-      reviewsCount: product.reviewsCount,
-    } : null,
-    product?.affiliateLink || "",
-  ), [product]);
+  const placeholderData = useMemo(() => {
+    return templateModule.buildPlaceholderData(
+      product ? {
+        title: product.title,
+        productUrl: product.productUrl,
+        imageUrl: product.imageUrl,
+        price: product.price,
+        oldPrice: product.oldPrice,
+        discountText: product.discountText,
+        installmentsText: product.installmentsText,
+        seller: product.seller,
+        badgeText: product.badgeText,
+        asin: product.asin,
+        rating: product.rating,
+        reviewsCount: product.reviewsCount,
+      } : null,
+      product?.affiliateLink || "",
+    );
+  }, [product, templateModule]);
   const baseTemplateData = useMemo(
     () => (editingPost?.templateData && Object.keys(editingPost.templateData).length > 0
       ? editingPost.templateData
@@ -167,15 +187,15 @@ export function MercadoLivreScheduleModal({
       || templates[0]
       || null;
     if (!template) return fallbackContent;
-    return applyMeliTemplatePlaceholders(template.content, scheduleTemplateData);
-  }, [defaultTemplate, fallbackContent, resolvedTemplateId, scheduleTemplateData, templates]);
+    return templateModule.applyPlaceholders(template.content, scheduleTemplateData);
+  }, [defaultTemplate, fallbackContent, resolvedTemplateId, scheduleTemplateData, templateModule, templates]);
 
   const requiresImageAttachment = useMemo(() => {
     if (product) return true;
     const policy = String(editingPost?.imagePolicy || "").trim().toLowerCase();
     const source = String(editingPost?.scheduleSource || "").trim().toLowerCase();
-    return policy === "required" || source === "meli_vitrine";
-  }, [editingPost?.imagePolicy, editingPost?.scheduleSource, product]);
+    return policy === "required" || source === defaultScheduleSource;
+  }, [defaultScheduleSource, editingPost?.imagePolicy, editingPost?.scheduleSource, product]);
   const preferredImageUrl = useMemo(() => {
     const fromProduct = String(product?.imageUrl || "").trim();
     if (/^https?:\/\//i.test(fromProduct)) return fromProduct;
@@ -189,15 +209,15 @@ export function MercadoLivreScheduleModal({
 
     setPreparingImageAttachment(true);
     try {
-      const media = await fetchImageAsAttachment(preferredImageUrl);
+      const media = await fetchImageAsAttachment(preferredImageUrl, defaultImageFileName);
       setImageAttachment(media);
     } catch {
       setImageAttachment(null);
-      toast.error("Nao foi possivel preparar a imagem para esse agendamento");
+      toast.error("Não foi possível preparar a imagem para esse agendamento");
     } finally {
       setPreparingImageAttachment(false);
     }
-  }, [preferredImageUrl, requiresImageAttachment]);
+  }, [defaultImageFileName, preferredImageUrl, requiresImageAttachment]);
 
   const handleSessionChange = (sessionId: string) => {
     setSelectedSessionId(sessionId);
@@ -236,12 +256,12 @@ export function MercadoLivreScheduleModal({
     if (!open || editingPost || !product) return;
 
     const generatedName = product.title
-      ? `Oferta ML: ${product.title.slice(0, 60)}`
-      : "Oferta Mercado Livre";
+      ? `${defaultOfferPrefix}${product.title.slice(0, 60)}`
+      : defaultOfferName;
 
     setScheduleName(generatedName);
     setMessageContent(templateContent || product.affiliateLink || product.productUrl || "");
-  }, [editingPost, open, product, templateContent]);
+  }, [defaultOfferName, defaultOfferPrefix, editingPost, open, product, templateContent]);
 
   useEffect(() => {
     if (!open) return;
@@ -267,7 +287,7 @@ export function MercadoLivreScheduleModal({
     setSelectedTemplateId(templateId);
     const template = templates.find((item) => item.id === templateId) || null;
     const nextContent = template
-      ? applyMeliTemplatePlaceholders(template.content, scheduleTemplateData)
+      ? templateModule.applyPlaceholders(template.content, scheduleTemplateData)
       : fallbackContent;
     setMessageContent(nextContent || fallbackContent);
   };
@@ -305,7 +325,7 @@ export function MercadoLivreScheduleModal({
       const detectedLinks = detectedLinksFromContent.length > 0
         ? detectedLinksFromContent
         : (editingPost?.detectedLinks || []);
-      const scheduleSource = editingPost?.scheduleSource || (product ? "meli_vitrine" : "");
+      const scheduleSource = editingPost?.scheduleSource || (product ? defaultScheduleSource : "");
       const imagePolicy = requiresImageAttachment ? "required" : (editingPost?.imagePolicy || "");
       const payload = {
         name: scheduleName.trim(),
@@ -336,7 +356,7 @@ export function MercadoLivreScheduleModal({
       onOpenChange(false);
       resetForm();
     } catch {
-      toast.error(editingPost ? "Nao foi possivel atualizar o agendamento" : "Nao foi possivel criar o agendamento");
+      toast.error(editingPost ? "Não foi possível atualizar o agendamento" : "Não foi possível criar o agendamento");
     } finally {
       setSubmitting(false);
     }
@@ -360,7 +380,7 @@ export function MercadoLivreScheduleModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <CalendarDays className="h-5 w-5 text-primary" />
-            {isEditing ? "Editar agendamento ML" : "Agendar envio"}
+            {isEditing ? `Editar agendamento ${marketplaceShortLabel}` : "Agendar envio"}
           </DialogTitle>
         </DialogHeader>
 
@@ -392,14 +412,14 @@ export function MercadoLivreScheduleModal({
           <div className="space-y-2">
             <Label>Nome *</Label>
             <Input
-              placeholder="Ex: Oferta ML para grupos VIP"
+              placeholder={resolvedScope === "amazon" ? "Ex: Oferta Amazon para grupos VIP" : "Ex: Oferta ML para grupos VIP"}
               value={scheduleName}
               onChange={(event) => setScheduleName(event.target.value)}
             />
           </div>
 
           <div className="space-y-2">
-            <Label>Template Meli</Label>
+            <Label>{templateFieldLabel}</Label>
             <Select value={resolvedTemplateId} onValueChange={handleTemplateChange}>
               <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
               <SelectContent>

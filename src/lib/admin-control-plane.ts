@@ -4,6 +4,7 @@ import { loadAdminConfig, saveAdminConfig, subscribeLocalDbChanges } from "@/int
 export type AppFeature =
   | "telegramConnections"
   | "mercadoLivre"
+  | "amazon"
   | "shopeeAutomations"
   | "templates"
   | "routes"
@@ -53,6 +54,8 @@ export interface ManagedPlan extends Plan {
   accountTitle: string;
   accountDescription: string;
   // billingPeriod and monthlyEquivalentPrice are inherited from Plan
+  /** Base limits before access level caps are applied. Admin-editable. */
+  baseLimits?: PlanLimits;
 }
 
 export interface AdminControlPlaneState {
@@ -68,6 +71,7 @@ export interface AdminControlPlaneState {
 const DEFAULT_FEATURES: AppFeature[] = [
   "telegramConnections",
   "mercadoLivre",
+  "amazon",
   "shopeeAutomations",
   "templates",
   "routes",
@@ -192,6 +196,18 @@ function normalizeFeatureAccessMap(input: unknown, fallbackPermissions: AppFeatu
   return DEFAULT_FEATURES.reduce((acc, feature) => {
     const raw = source[feature];
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      // Backward compat: if 'amazon' rule is not stored, inherit from 'mercadoLivre'.
+      if (feature === "amazon") {
+        const mlRaw = source["mercadoLivre"];
+        if (mlRaw && typeof mlRaw === "object" && !Array.isArray(mlRaw)) {
+          const mlRow = mlRaw as Record<string, unknown>;
+          const derivedMode = mlRow.mode === "enabled" || mlRow.mode === "hidden" || mlRow.mode === "blocked"
+            ? mlRow.mode
+            : fallback[feature].mode;
+          acc[feature] = { mode: derivedMode, blockedMessage: DEFAULT_BLOCKED_MESSAGE };
+          return acc;
+        }
+      }
       acc[feature] = fallback[feature];
       return acc;
     }
@@ -231,10 +247,10 @@ const DEFAULT_ACCESS_LEVELS: AccessLevel[] = [
   {
     id: "level-business",
     name: "Business",
-    description: "Todos os recursos incluindo Mercado Livre",
-    featureRules: buildFeatureAccessMap(["telegramConnections", "mercadoLivre", "shopeeAutomations", "templates", "routes", "schedules", "linkHub"]),
+    description: "Todos os recursos incluindo Mercado Livre e Amazon",
+    featureRules: buildFeatureAccessMap(["telegramConnections", "mercadoLivre", "amazon", "shopeeAutomations", "templates", "routes", "schedules", "linkHub"]),
     limitOverrides: emptyLimitOverrides(),
-    permissions: ["telegramConnections", "mercadoLivre", "shopeeAutomations", "templates", "routes", "schedules", "linkHub"],
+    permissions: ["telegramConnections", "mercadoLivre", "amazon", "shopeeAutomations", "templates", "routes", "schedules", "linkHub"],
     isSystem: true,
   },
 ];
@@ -327,6 +343,7 @@ function defaultManagedPlans(): ManagedPlan[] {
         : highlights,
       accountTitle: plan.name,
       accountDescription: description,
+      baseLimits: { ...plan.limits },
     };
   });
 }
@@ -393,6 +410,8 @@ export function normalizeAdminControlPlaneState(input: AdminControlPlaneState | 
       .filter((plan) => plan && typeof plan.id === "string" && plan.id.trim())
       .map((plan, index) => {
         const basePlan = staticPlans.find((item) => item.id === plan.id) || staticPlans[0];
+        const storedBaseLimits = (plan as { baseLimits?: Partial<PlanLimits> }).baseLimits;
+        const baseLimits = normalizeLimits(storedBaseLimits ?? plan.limits, basePlan.limits);
         return {
           id: String(plan.id),
           name: String(plan.name || basePlan.name),
@@ -437,6 +456,7 @@ export function normalizeAdminControlPlaneState(input: AdminControlPlaneState | 
           monthlyEquivalentPrice: typeof plan.monthlyEquivalentPrice === "number"
             ? plan.monthlyEquivalentPrice
             : basePlan.monthlyEquivalentPrice,
+          baseLimits,
         };
       })
     : [];

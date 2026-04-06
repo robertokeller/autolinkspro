@@ -42,7 +42,7 @@ async function findFreePort(host, startPort, maxAttempts = 30) {
     const free = await canListen(host, port);
     if (free) return port;
   }
-  throw new Error(`Nao foi possivel encontrar porta livre a partir de ${startPort}`);
+  throw new Error(`Não foi possivel encontrar porta livre a partir de ${startPort}`);
 }
 
 async function findPreviewPort(host, startPort, maxAttempts = 30) {
@@ -54,9 +54,12 @@ async function main() {
   const positionalPort = parsePositionalPort();
   const startPort = Number(parseArgValue("port") || positionalPort || process.env.PREVIEW_PORT || "5173");
   const strict = process.argv.includes("--strictPort");
+  const shouldOpenBrowser =
+    process.argv.includes("--open")
+    || String(process.env.PREVIEW_OPEN_BROWSER || "").trim() === "1";
 
   if (!Number.isFinite(startPort) || startPort <= 0) {
-    throw new Error("Porta inicial invalida para preview");
+    throw new Error("Porta inicial inválida para preview");
   }
 
   const port = strict ? startPort : await findPreviewPort(host, startPort);
@@ -68,7 +71,8 @@ async function main() {
   }
 
   const viteCliPath = path.resolve(process.cwd(), "node_modules", "vite", "bin", "vite.js");
-  const viteArgs = [viteCliPath, "--host", host, "--port", String(port), "--open"];
+  const viteArgs = [viteCliPath, "--host", host, "--port", String(port)];
+  if (shouldOpenBrowser) viteArgs.push("--open");
   if (strict) viteArgs.push("--strictPort");
 
   const child = spawn(process.execPath, viteArgs, {

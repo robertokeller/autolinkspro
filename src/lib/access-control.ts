@@ -78,6 +78,8 @@ function hasFeatureCapacity(feature: AppFeature, limits: PlanLimits) {
       return hasPositiveLimit(limits.telegramSessions);
     case "mercadoLivre":
       return hasPositiveLimit(limits.meliSessions);
+    case "amazon":
+      return true; // Amazon only requires an affiliate tag — no session-based capacity limit
     case "shopeeAutomations":
       return hasPositiveLimit(limits.automations);
     case "templates":

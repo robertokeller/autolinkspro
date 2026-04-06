@@ -136,6 +136,7 @@ const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
 
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 app.use(cors({
   origin: (origin, callback) => {
     // Allow server-to-server / non-browser requests (no Origin header).
@@ -1739,7 +1740,11 @@ function readRequestUserId(req: Request<any, any, any, any>, res: Response): str
     res.status(400).json({ error: "x-autolinks-user-id é obrigatório" });
     return null;
   }
-  return userId;
+  if (userId.length > 64 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)) {
+    res.status(400).json({ error: "x-autolinks-user-id invalido" });
+    return null;
+  }
+  return userId.toLowerCase();
 }
 
 app.get("/health", (req, res) => {

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   ArrowLeftRight,
@@ -11,6 +11,7 @@ import {
   Layers,
   Link2,
   LogOut,
+  Package,
   Route,
   SearchCheck,
   ShoppingBag,
@@ -45,17 +46,24 @@ import { ROUTES } from "@/lib/routes";
 
 const shopeeSubNav = [
   { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
-  { title: "Pesquisa de ofertas", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
+  { title: "Pesquisa de Ofertas", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.shopeeAutomacoes },
   { title: "Templates Shopee", icon: FileText, href: ROUTES.app.shopeeTemplates },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.shopeeConfiguracoes },
 ];
 
 const meliSubNav = [
-  { title: "Vitrine de Ofertas", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
+  { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.automacoesMeli },
   { title: "Templates Meli", icon: FileText, href: ROUTES.app.templatesMeli },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.mercadolivreConfiguracoes },
+];
+
+const amazonSubNav = [
+  { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.vitrineAmazon },
+  { title: "Piloto automático", icon: Bot, href: ROUTES.app.automacoesamazon },
+  { title: "Templates Amazon", icon: FileText, href: ROUTES.app.templatesAmazon },
+  { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.amazonConfiguracoes },
 ];
 
 export function AppSidebar() {
@@ -68,6 +76,7 @@ export function AppSidebar() {
   const featureVisibility = {
     telegramConnections: canSeeFeature("telegramConnections"),
     mercadoLivre: canSeeFeature("mercadoLivre"),
+    amazon: canSeeFeature("amazon"),
     shopeeAutomations: canSeeFeature("shopeeAutomations"),
     templates: canSeeFeature("templates"),
     routes: canSeeFeature("routes"),
@@ -81,6 +90,26 @@ export function AppSidebar() {
     || location.pathname === ROUTES.app.vitrineMl
     || location.pathname === ROUTES.app.automacoesMeli
     || location.pathname === ROUTES.app.templatesMeli;
+  const isAmazonActive = location.pathname.startsWith(ROUTES.app.amazonRoot)
+    || location.pathname === ROUTES.app.vitrineAmazon
+    || location.pathname === ROUTES.app.automacoesamazon
+    || location.pathname === ROUTES.app.templatesAmazon;
+
+  const [isShopeeOpen, setIsShopeeOpen] = useState(isShopeeActive);
+  const [isMeliOpen, setIsMeliOpen] = useState(isMeliActive);
+  const [isAmazonOpen, setIsAmazonOpen] = useState(isAmazonActive);
+
+  useEffect(() => {
+    if (isShopeeActive) setIsShopeeOpen(true);
+  }, [isShopeeActive]);
+
+  useEffect(() => {
+    if (isMeliActive) setIsMeliOpen(true);
+  }, [isMeliActive]);
+
+  useEffect(() => {
+    if (isAmazonActive) setIsAmazonOpen(true);
+  }, [isAmazonActive]);
 
   const closeMobileSidebar = useCallback(() => {
     if (isMobile) setOpenMobile(false);
@@ -101,6 +130,14 @@ export function AppSidebar() {
     ? meliSubNav.filter((item) => {
       if (item.href === ROUTES.app.automacoesMeli) return featureVisibility.shopeeAutomations;
       if (item.href === ROUTES.app.templatesMeli) return featureVisibility.templates;
+      return true;
+    })
+    : [];
+
+  const visibleAmazonSubNav = featureVisibility.amazon
+    ? amazonSubNav.filter((item) => {
+      if (item.href === ROUTES.app.automacoesamazon) return featureVisibility.shopeeAutomations;
+      if (item.href === ROUTES.app.templatesAmazon) return featureVisibility.templates;
       return true;
     })
     : [];
@@ -153,7 +190,7 @@ export function AppSidebar() {
           <SidebarGroupLabel>Marketplaces</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              <Collapsible asChild defaultOpen={isShopeeActive} className="group/collapsible">
+              <Collapsible asChild open={isShopeeOpen} onOpenChange={setIsShopeeOpen} className="group/collapsible">
                 <SidebarMenuItem>
                   <CollapsibleTrigger asChild>
                     <SidebarMenuButton tooltip="Shopee" isActive={isShopeeActive}>
@@ -180,7 +217,7 @@ export function AppSidebar() {
               </Collapsible>
 
               {featureVisibility.mercadoLivre && (
-              <Collapsible asChild defaultOpen={isMeliActive} className="group/collapsible">
+              <Collapsible asChild open={isMeliOpen} onOpenChange={setIsMeliOpen} className="group/collapsible">
                 <SidebarMenuItem>
                   <CollapsibleTrigger asChild>
                     <SidebarMenuButton tooltip="Mercado Livre" isActive={isMeliActive}>
@@ -192,6 +229,34 @@ export function AppSidebar() {
                   <CollapsibleContent>
                     <SidebarMenuSub>
                       {visibleMeliSubNav.map((item) => (
+                        <SidebarMenuSubItem key={item.href}>
+                          <SidebarMenuSubButton asChild isActive={location.pathname === item.href}>
+                            <Link to={item.href} onClick={closeMobileSidebar}>
+                              <item.icon className="h-4 w-4" />
+                              <span>{item.title}</span>
+                            </Link>
+                          </SidebarMenuSubButton>
+                        </SidebarMenuSubItem>
+                      ))}
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
+              )}
+
+              {featureVisibility.amazon && (
+              <Collapsible asChild open={isAmazonOpen} onOpenChange={setIsAmazonOpen} className="group/collapsible">
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton tooltip="Amazon" isActive={isAmazonActive}>
+                      <Package className="h-4 w-4" />
+                      <span>Amazon</span>
+                      <ChevronRight className="ml-auto h-4 w-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      {visibleAmazonSubNav.map((item) => (
                         <SidebarMenuSubItem key={item.href}>
                           <SidebarMenuSubButton asChild isActive={location.pathname === item.href}>
                             <Link to={item.href} onClick={closeMobileSidebar}>
@@ -238,10 +303,10 @@ export function AppSidebar() {
 
               {featureVisibility.routes && (
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas Automáticas">
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.routes)} tooltip="Rotas automáticas">
                   <Link to={ROUTES.app.routes} onClick={closeMobileSidebar}>
                     <Route className="h-4 w-4" />
-                    <span>Rotas Automáticas</span>
+                    <span>Rotas automáticas</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -326,6 +391,5 @@ export function AppSidebar() {
     </Sidebar>
   );
 }
-
 
 

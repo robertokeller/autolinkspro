@@ -8,12 +8,18 @@ export function AuthPageGuard() {
   const { user, isAdmin, isLoading } = useAuth();
   const { state: maintenance, isLoading: maintenanceLoading } = useMaintenanceMode();
 
-  if (isLoading || maintenanceLoading) {
+  if (isLoading) {
     return <RoutePendingState label="Validando sessão..." />;
   }
 
+  // Do not block public auth pages while anonymous users type.
+  // Maintenance state only matters after authentication succeeds.
   if (!user) {
     return <Outlet />;
+  }
+
+  if (maintenanceLoading) {
+    return <RoutePendingState label="Verificando status da plataforma..." />;
   }
 
   if (isAdmin) {

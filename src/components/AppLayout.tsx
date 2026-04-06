@@ -23,8 +23,8 @@ export function AppLayout() {
   const location = useLocation();
   const pageName = APP_ROUTE_TITLES[location.pathname] || "Pagina";
   const viewport = useViewportProfile();
-  const compactHeader = viewport.isTiny || viewport.isMobile;
-  const showMobileBottomNav = viewport.isMobile;
+  const compactHeader = viewport.isTiny || viewport.isMobileLike;
+  const showMobileBottomNav = viewport.isMobileLike;
 
   useEffect(() => {
     document.body.classList.add("app-shell-active");

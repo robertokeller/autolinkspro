@@ -16,6 +16,10 @@ type ViewportProfile = {
   isMobile: boolean;
   isTablet: boolean;
   isDesktop: boolean;
+  isPortraitPhone: boolean;
+  isPortraitTablet: boolean;
+  isMobileLike: boolean;
+  aspectRatio: number;
   isAndroid: boolean;
   isIOS: boolean;
   physicalWidth: number;
@@ -36,6 +40,10 @@ export function useViewportProfile() {
         isMobile: false,
         isTablet: false,
         isDesktop: true,
+        isPortraitPhone: false,
+        isPortraitTablet: false,
+        isMobileLike: false,
+        aspectRatio: 1200 / 900,
         isAndroid: false,
         isIOS: false,
         physicalWidth: 1200,

@@ -1,7 +1,11 @@
 import { backend } from "@/integrations/backend/client";
-import { LOCAL_DB_UPDATED_EVENT } from "@/integrations/backend/local-core";
+import { broadcastLocalDbChange } from "@/integrations/backend/local-core";
 
-export async function appendAdminAudit(action: string, details: Record<string, unknown>) {
+export async function appendAdminAudit(
+  action: string,
+  details: Record<string, unknown>,
+  options?: { status?: "success" | "error" | "warning"; error?: string },
+) {
   const { data } = await backend.auth.getSession();
   const actorId = data.session?.user?.id;
   if (!actorId) return;
@@ -10,13 +14,15 @@ export async function appendAdminAudit(action: string, details: Record<string, u
     user_id: actorId,
     action,
     target_user_id: null,
-    details,
+    details: options?.error
+      ? { ...details, _status: options.status ?? "error", _error: options.error }
+      : options?.status && options.status !== "success"
+        ? { ...details, _status: options.status }
+        : details,
   });
 }
 
-export function triggerGlobalResyncPulse(source: string) {
-  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
-  window.dispatchEvent(new CustomEvent(LOCAL_DB_UPDATED_EVENT, {
-    detail: { at: new Date().toISOString(), source },
-  }));
+/** Fires LOCAL_DB_UPDATED_EVENT in this tab AND broadcasts to all other tabs via BroadcastChannel. */
+export function triggerGlobalResyncPulse(_source: string) {
+  broadcastLocalDbChange();
 }

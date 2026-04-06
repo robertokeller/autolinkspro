@@ -9,6 +9,60 @@ const ENCRYPTED_COLUMNS: Record<string, Set<string>> = {
   api_credentials: new Set(["secret_key"]),
 };
 
+// Table-specific enum constraints validated before hitting the DB for clean error messages
+const TABLE_ENUM_CONSTRAINTS: Record<string, Record<string, readonly string[]>> = {
+  templates: {
+    scope:    ["shopee", "meli", "amazon"],
+    category: ["oferta", "cupom", "geral"],
+  },
+};
+
+// Per-table fields that must be present (non-empty) on INSERT
+const TABLE_REQUIRED_INSERT_FIELDS: Record<string, readonly string[]> = {
+  templates: ["name", "content"],
+};
+
+// Per-table string field max-length limits
+const TABLE_FIELD_MAX_LENGTHS: Record<string, Record<string, number>> = {
+  templates: { name: 100, content: 4000 },
+};
+
+function validateRowEnums(table: string, row: Record<string, unknown>): string | null {
+  const constraints = TABLE_ENUM_CONSTRAINTS[table];
+  if (!constraints) return null;
+  for (const [col, allowed] of Object.entries(constraints)) {
+    if (!Object.prototype.hasOwnProperty.call(row, col)) continue;
+    const val = row[col];
+    if (val === null || val === undefined) continue;
+    if (!allowed.includes(String(val))) {
+      return `Valor inválido para ${col}: "${val}". Permitidos: ${allowed.join(", ")}`;
+    }
+  }
+  return null;
+}
+
+function validateRowFields(
+  table: string,
+  row: Record<string, unknown>,
+  isInsert: boolean,
+): string | null {
+  // Required fields on INSERT
+  if (isInsert) {
+    for (const field of (TABLE_REQUIRED_INSERT_FIELDS[table] ?? [])) {
+      if (!String(row[field] ?? "").trim()) return `${field} é obrigatório`;
+    }
+  }
+  // Max-length for all present string fields
+  const maxLengths = TABLE_FIELD_MAX_LENGTHS[table] ?? {};
+  for (const [col, maxLen] of Object.entries(maxLengths)) {
+    if (!Object.prototype.hasOwnProperty.call(row, col)) continue;
+    const str = String(row[col] ?? "");
+    if (str.trim().length === 0) return `${col} não pode ser vazio`;
+    if (str.length > maxLen) return `${col}: máximo ${maxLen} caracteres`;
+  }
+  return null;
+}
+
 function encryptRow(table: string, row: Record<string, unknown>): void {
   const cols = ENCRYPTED_COLUMNS[table];
   if (!cols) return;
@@ -33,6 +87,7 @@ restRouter.use(requireAuth);
 const MAX_SELECT_LIMIT = 500;
 const MAX_MUTATION_ROWS = 200;
 const MAX_FILTERS = 50;
+const ALLOWED_OPS = new Set(["select", "insert", "update", "delete", "upsert"]);
 
 // ─── Allowed tables and their ownership rules ─────────────────────────────────
 // Tables with direct user_id column
@@ -41,6 +96,7 @@ const USER_OWNED = new Set([
   "scheduled_posts", "link_hub_pages", "shopee_automations",
   "meli_sessions", "api_credentials", "whatsapp_sessions",
   "telegram_sessions", "history_entries", "user_notifications",
+  "amazon_affiliate_tags",
 ]);
 
 // Tables scoped via parent (no direct user_id)
@@ -75,7 +131,7 @@ const NON_ADMIN_WRITE_DENIED_COLUMNS: Record<string, Set<string>> = {
   profiles: new Set(["plan_id", "plan_expires_at"]),
 };
 
-// Parent table ownership lookup for PARENT_SCOPED INSERT/UPSERT validation
+// Parent table ownership lookup for PARENT_SCOPED INSERT/UPSERT válidation
 const PARENT_SCOPED_PARENT: Record<string, { key: string; table: string }> = {
   master_group_links:          { key: "master_group_id", table: "master_groups" },
   route_destinations:          { key: "route_id",        table: "routes" },
@@ -220,6 +276,10 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     ? options
     : {};
 
+  if (!ALLOWED_OPS.has(String(op || "").trim())) {
+    res.status(400).json({ data: null, count: null, error: { message: "Operação inválida" } }); return;
+  }
+
   if (normalizedFilters.length > MAX_FILTERS) {
     res.status(400).json({ data: null, count: null, error: { message: `Quantidade maxima de filtros excedida (${MAX_FILTERS})` } }); return;
   }
@@ -237,7 +297,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       const whereFilters: Filter[] = [...normalizedFilters];
 
       // Inject user scoping
-      if (USER_OWNED.has(table)) {
+      if (USER_OWNED.has(table) && !effectiveAdmin) {
         whereFilters.push({ type: "eq", col: "user_id", val: userId });
       } else if (PARENT_SCOPED[table] && !effectiveAdmin) {
         // handled below as raw SQL
@@ -299,39 +359,54 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
         res.status(400).json({ data: null, count: null, error: { message: `Limite maximo de ${MAX_MUTATION_ROWS} registros por insert` } }); return;
       }
       const inserted: unknown[] = [];
-      for (const row of rows as Record<string, unknown>[]) {
-        if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("Payload de insert invalido");
-        if (!row.id) row.id = uuid();
-        // Always force user_id from JWT — never trust client-supplied value
-        if (USER_OWNED.has(table)) row.user_id = userId;
-        // Scope self-owned tables (profiles) to current user for non-admins
-        if (table === "profiles" && !effectiveAdmin) row.user_id = userId;
-        // Strip admin-only columns to prevent privilege escalation via self-service
-        if (!effectiveAdmin && NON_ADMIN_WRITE_DENIED_COLUMNS[table]) {
-          for (const col of NON_ADMIN_WRITE_DENIED_COLUMNS[table]) delete row[col];
-        }
-        // For PARENT_SCOPED tables, verify that the parent record belongs to this user
-        if (PARENT_SCOPED_PARENT[table] && !effectiveAdmin) {
-          const { key, table: parentTbl } = PARENT_SCOPED_PARENT[table];
-          const parentId = row[key];
-          if (!parentId) throw new Error("Parent ID obrigatório");
-          const owned = await client.query(`SELECT id FROM "${parentTbl}" WHERE id = $1 AND user_id = $2`, [parentId, userId]);
-          if ((owned.rowCount ?? 0) === 0) throw new Error("Acesso negado");
-        }
-        if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
-          const owned = await ensureOwnedActiveGroup(client, userId, row.group_id);
-          if (table === "master_group_links") {
-            await ensureMasterGroupPlatformConsistency(client, row.master_group_id, owned.platform);
+      const transactionalBatch = rows.length > 1;
+      try {
+        if (transactionalBatch) await client.query("BEGIN");
+
+        for (const row of rows as Record<string, unknown>[]) {
+          if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("Payload de insert inválido");
+          if (!row.id) row.id = uuid();
+          // Always force user_id from JWT — never trust client-supplied value
+          if (USER_OWNED.has(table)) row.user_id = userId;
+          // Scope self-owned tables (profiles) to current user for non-admins
+          if (table === "profiles" && !effectiveAdmin) row.user_id = userId;
+          // Strip admin-only columns to prevent privilege escalation via self-service
+          if (!effectiveAdmin && NON_ADMIN_WRITE_DENIED_COLUMNS[table]) {
+            for (const col of NON_ADMIN_WRITE_DENIED_COLUMNS[table]) delete row[col];
           }
+          // For PARENT_SCOPED tables, verify that the parent record belongs to this user
+          if (PARENT_SCOPED_PARENT[table] && !effectiveAdmin) {
+            const { key, table: parentTbl } = PARENT_SCOPED_PARENT[table];
+            const parentId = row[key];
+            if (!parentId) throw new Error("Parent ID obrigatório");
+            const owned = await client.query(`SELECT id FROM "${parentTbl}" WHERE id = $1 AND user_id = $2`, [parentId, userId]);
+            if ((owned.rowCount ?? 0) === 0) throw new Error("Acesso negado");
+          }
+          if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
+            const owned = await ensureOwnedActiveGroup(client, userId, row.group_id);
+            if (table === "master_group_links") {
+              await ensureMasterGroupPlatformConsistency(client, row.master_group_id, owned.platform);
+            }
+          }
+
+          const enumErr = validateRowEnums(table, row);
+          if (enumErr) throw new Error(enumErr);
+          const fieldErr = validateRowFields(table, row, true);
+          if (fieldErr) throw new Error(fieldErr);
+
+          encryptRow(table, row);
+          const keys = Object.keys(row);
+          const cols = keys.map(safeIdent).join(", ");
+          const phs = keys.map((_, i) => `$${i + 1}`).join(", ");
+          const vals = keys.map((k) => pgValue(row[k]));
+          const result = await client.query(`INSERT INTO "${table}" (${cols}) VALUES (${phs}) RETURNING *`, vals);
+          inserted.push(...result.rows);
         }
 
-        encryptRow(table, row);
-        const keys = Object.keys(row);
-        const cols = keys.map(safeIdent).join(", ");
-        const phs = keys.map((_, i) => `$${i + 1}`).join(", ");
-        const vals = keys.map((k) => pgValue(row[k]));
-        const result = await client.query(`INSERT INTO "${table}" (${cols}) VALUES (${phs}) RETURNING *`, vals);
-        inserted.push(...result.rows);
+        if (transactionalBatch) await client.query("COMMIT");
+      } catch (error) {
+        if (transactionalBatch) await client.query("ROLLBACK");
+        throw error;
       }
       decryptRows(table, inserted as Record<string, unknown>[]);
       const ret = Array.isArray(data) ? inserted : (inserted[0] ?? null);
@@ -340,13 +415,21 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
 
     // ── UPDATE ─────────────────────────────────────────────────────────────────
     if (op === "update") {
-      const updateData = data as Record<string, unknown>;      if (updateData && typeof updateData === "object" && !Array.isArray(updateData)) encryptRow(table, updateData);      if (!updateData || typeof updateData !== "object" || Array.isArray(updateData)) {
-        res.status(400).json({ data: null, count: null, error: { message: "Payload de update invalido" } }); return;
+      const updateData = data as Record<string, unknown>;
+      if (updateData && typeof updateData === "object" && !Array.isArray(updateData)) encryptRow(table, updateData);
+      if (!updateData || typeof updateData !== "object" || Array.isArray(updateData)) {
+        res.status(400).json({ data: null, count: null, error: { message: "Payload de update inválido" } }); return;
       }
       // Strip admin-only columns to prevent privilege escalation via self-service
       if (!effectiveAdmin && NON_ADMIN_WRITE_DENIED_COLUMNS[table]) {
         for (const col of NON_ADMIN_WRITE_DENIED_COLUMNS[table]) delete updateData[col];
       }
+      // Prevent ownership transfer: user_id must never change on user-owned records
+      if (USER_OWNED.has(table) && !effectiveAdmin) delete updateData.user_id;
+      const updateEnumErr = validateRowEnums(table, updateData);
+      if (updateEnumErr) { res.status(400).json({ data: null, count: null, error: { message: updateEnumErr } }); return; }
+      const updateFieldErr = validateRowFields(table, updateData, false);
+      if (updateFieldErr) { res.status(400).json({ data: null, count: null, error: { message: updateFieldErr } }); return; }
       if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
         if (Object.prototype.hasOwnProperty.call(updateData, "group_id")) {
           try {
@@ -421,54 +504,69 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       const onConflict = String(normalizedOptions.onConflict ?? "id");
       const ignoreDupes = normalizedOptions.ignoreDuplicates === true;
       const upserted: unknown[] = [];
+      const transactionalBatch = rows.length > 1;
+      try {
+        if (transactionalBatch) await client.query("BEGIN");
 
-      for (const row of rows as Record<string, unknown>[]) {
-        if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("Payload de upsert invalido");
-        if (!row.id) row.id = uuid();
-        // Always force user_id from JWT — never trust client-supplied value
-        if (USER_OWNED.has(table)) row.user_id = userId;
-        // Scope self-owned tables (profiles) to current user for non-admins
-        if (table === "profiles" && !effectiveAdmin) row.user_id = userId;
-        // Strip admin-only columns to prevent privilege escalation via self-service
-        if (!effectiveAdmin && NON_ADMIN_WRITE_DENIED_COLUMNS[table]) {
-          for (const col of NON_ADMIN_WRITE_DENIED_COLUMNS[table]) delete row[col];
-        }
-        // For PARENT_SCOPED tables, verify that the parent record belongs to this user
-        if (PARENT_SCOPED_PARENT[table] && !effectiveAdmin) {
-          const { key, table: parentTbl } = PARENT_SCOPED_PARENT[table];
-          const parentId = row[key];
-          if (!parentId) throw new Error("Parent ID obrigatório");
-          const owned = await client.query(`SELECT id FROM "${parentTbl}" WHERE id = $1 AND user_id = $2`, [parentId, userId]);
-          if ((owned.rowCount ?? 0) === 0) throw new Error("Acesso negado");
-        }
-        if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
-          const owned = await ensureOwnedActiveGroup(client, userId, row.group_id);
-          if (table === "master_group_links") {
-            await ensureMasterGroupPlatformConsistency(client, row.master_group_id, owned.platform);
+        for (const row of rows as Record<string, unknown>[]) {
+          if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("Payload de upsert inválido");
+          if (!row.id) row.id = uuid();
+          // Always force user_id from JWT — never trust client-supplied value
+          if (USER_OWNED.has(table)) row.user_id = userId;
+          // Scope self-owned tables (profiles) to current user for non-admins
+          if (table === "profiles" && !effectiveAdmin) row.user_id = userId;
+          // Strip admin-only columns to prevent privilege escalation via self-service
+          if (!effectiveAdmin && NON_ADMIN_WRITE_DENIED_COLUMNS[table]) {
+            for (const col of NON_ADMIN_WRITE_DENIED_COLUMNS[table]) delete row[col];
           }
-        }
+          // For PARENT_SCOPED tables, verify that the parent record belongs to this user
+          if (PARENT_SCOPED_PARENT[table] && !effectiveAdmin) {
+            const { key, table: parentTbl } = PARENT_SCOPED_PARENT[table];
+            const parentId = row[key];
+            if (!parentId) throw new Error("Parent ID obrigatório");
+            const owned = await client.query(`SELECT id FROM "${parentTbl}" WHERE id = $1 AND user_id = $2`, [parentId, userId]);
+            if ((owned.rowCount ?? 0) === 0) throw new Error("Acesso negado");
+          }
+          if (!effectiveAdmin && (table === "master_group_links" || table === "route_destinations" || table === "scheduled_post_destinations")) {
+            const owned = await ensureOwnedActiveGroup(client, userId, row.group_id);
+            if (table === "master_group_links") {
+              await ensureMasterGroupPlatformConsistency(client, row.master_group_id, owned.platform);
+            }
+          }
 
-        const keys = Object.keys(row);
-        const cols = keys.map(safeIdent).join(", ");
-        const phs = keys.map((_, i) => `$${i + 1}`).join(", ");
-        const vals = keys.map((k) => pgValue(row[k]));
+          const upsertEnumErr = validateRowEnums(table, row);
+          if (upsertEnumErr) throw new Error(upsertEnumErr);
+          const upsertFieldErr = validateRowFields(table, row, true);
+          if (upsertFieldErr) throw new Error(upsertFieldErr);
 
-        const conflictCols = onConflict.split(",").map((c) => safeIdent(c.trim())).join(", ");
-        let onConflictClause: string;
-        if (ignoreDupes) {
-          onConflictClause = `ON CONFLICT (${conflictCols}) DO NOTHING`;
-        } else {
-          const updateCols = keys.filter((k) => !onConflict.split(",").map((c) => c.trim()).includes(k));
-          if (updateCols.length === 0) {
+          encryptRow(table, row);
+          const keys = Object.keys(row);
+          const cols = keys.map(safeIdent).join(", ");
+          const phs = keys.map((_, i) => `$${i + 1}`).join(", ");
+          const vals = keys.map((k) => pgValue(row[k]));
+
+          const conflictCols = onConflict.split(",").map((c) => safeIdent(c.trim())).join(", ");
+          let onConflictClause: string;
+          if (ignoreDupes) {
             onConflictClause = `ON CONFLICT (${conflictCols}) DO NOTHING`;
           } else {
-            const updateExpr = updateCols.map((k) => `${safeIdent(k)} = EXCLUDED.${safeIdent(k)}`).join(", ");
-            onConflictClause = `ON CONFLICT (${conflictCols}) DO UPDATE SET ${updateExpr}`;
+            const updateCols = keys.filter((k) => !onConflict.split(",").map((c) => c.trim()).includes(k));
+            if (updateCols.length === 0) {
+              onConflictClause = `ON CONFLICT (${conflictCols}) DO NOTHING`;
+            } else {
+              const updateExpr = updateCols.map((k) => `${safeIdent(k)} = EXCLUDED.${safeIdent(k)}`).join(", ");
+              onConflictClause = `ON CONFLICT (${conflictCols}) DO UPDATE SET ${updateExpr}`;
+            }
           }
+
+          const result = await client.query(`INSERT INTO "${table}" (${cols}) VALUES (${phs}) ${onConflictClause} RETURNING *`, vals);
+          upserted.push(...result.rows);
         }
-        encryptRow(table, row);
-        const result = await client.query(`INSERT INTO "${table}" (${cols}) VALUES (${phs}) ${onConflictClause} RETURNING *`, vals);
-        upserted.push(...result.rows);
+
+        if (transactionalBatch) await client.query("COMMIT");
+      } catch (error) {
+        if (transactionalBatch) await client.query("ROLLBACK");
+        throw error;
       }
       decryptRows(table, upserted as Record<string, unknown>[]);
       const ret = Array.isArray(data) ? upserted : (upserted[0] ?? null);
@@ -484,4 +582,3 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
     client.release();
   }
 });
-

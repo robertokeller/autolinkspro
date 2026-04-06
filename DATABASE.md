@@ -46,7 +46,7 @@ Este projeto usa **Supabase PostgreSQL** como banco unico para local e producao.
 
 ## Seed users (dev)
 
-- Admin: `robertokellercontato@gmail.com` / `abacate1`
-- User: `aliancaslovely@gmail.com` / `abacate1`
+- Admin: `robertokellercontato@gmail.com` / `SEED_ADMIN_PASSWORD`
+- User: `aliancaslovely@gmail.com` / `SEED_USER_PASSWORD`
 
 O seed e idempotente e roda via `npm run seed:dev`.

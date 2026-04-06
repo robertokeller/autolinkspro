@@ -20,7 +20,17 @@ function normalizeTemplateCategory(value: unknown): TemplateCategory {
 }
 
 function normalizeTemplateScope(value: unknown): TemplateScope {
-  return String(value || "").trim().toLowerCase() === "meli" ? "meli" : "shopee";
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "meli") return "meli";
+  if (normalized === "amazon") return "amazon";
+  return "shopee";
+}
+
+function isScopeConstraintViolation(error: unknown): boolean {
+  const message = String((error as { message?: unknown } | null)?.message || "").toLowerCase();
+  if (!message) return false;
+  return message.includes("templates_scope_check")
+    || (message.includes("scope") && message.includes("check"));
 }
 
 function scopeTag(scope: TemplateScope): string {
@@ -36,12 +46,14 @@ function normalizeTags(value: unknown): string[] {
 
 function extractScopeFromRow(row: Tables<"templates">): TemplateScope {
   const source = row as unknown as Record<string, unknown>;
+  const tags = normalizeTags(source.tags);
+  if (tags.some((tag) => tag.toLowerCase() === scopeTag("amazon"))) {
+    return "amazon";
+  }
   const explicitScope = String(source.scope || "").trim();
   if (explicitScope) {
     return normalizeTemplateScope(explicitScope);
   }
-
-  const tags = normalizeTags(source.tags);
   return tags.some((tag) => tag.toLowerCase() === scopeTag("meli"))
     ? "meli"
     : "shopee";
@@ -88,10 +100,10 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       const { data, error } = await backend
         .from("templates")
         .select("*")
-        .eq("scope", scope)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return (data || [])
+      const rows = Array.isArray(data) ? (data as Tables<"templates">[]) : [];
+      return rows
         .map(mapRow)
         .filter((item) => item.scope === scope);
     },
@@ -121,23 +133,40 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       scope,
     };
 
-    const { data, error } = await backend
+    let { data, error } = await backend
       .from("templates")
       .insert(payload)
       .select()
       .single();
 
+    // Backward compatibility for environments where DB constraint still rejects scope='amazon'.
+    if (error && scope !== "shopee" && isScopeConstraintViolation(error)) {
+      ({ data, error } = await backend
+        .from("templates")
+        .insert({
+          ...payload,
+          scope: "shopee",
+        })
+        .select()
+        .single());
+    }
+
     if (error) {
-      toast.error("Erro ao criar template");
+      toast.error(error.message || "Erro ao criar template");
       return null;
     }
 
-    const next = mapRow(data);
-    if (next.scope === scope) {
-      updateTemplatesCache((prev) => [next, ...prev]);
-    }
+    const next = mapRow(data as Tables<"templates">);
+    
+    // Update cache with the newly created template
+    updateTemplatesCache((prev) => [next, ...prev]);
+    
+    // Force refetch to ensure consistency with server data
+    // Use setTimeout to let the optimistic update render first
+    setTimeout(() => {
+      qc.invalidateQueries({ queryKey: templatesQueryKey });
+    }, 0);
 
-    qc.invalidateQueries({ queryKey: templatesQueryKey });
     toast.success("Template criado!");
     return next;
   }, [qc, scope, templatesQueryKey, updateTemplatesCache, user]);
@@ -171,18 +200,32 @@ export function useTemplates(scope: TemplateScope = "shopee") {
         : item
     )));
 
-    const { error } = await backend
+    let { error } = await backend
       .from("templates")
       .update(sanitizedUpdates)
       .eq("id", id);
 
+    if (error && scope !== "shopee" && isScopeConstraintViolation(error)) {
+      ({ error } = await backend
+        .from("templates")
+        .update({
+          ...sanitizedUpdates,
+          scope: "shopee",
+        })
+        .eq("id", id));
+    }
+
     if (error) {
       updateTemplatesCache(() => previousTemplates);
-      toast.error("Erro ao atualizar template");
+      toast.error(error.message || "Erro ao atualizar template");
       return;
     }
 
-    qc.invalidateQueries({ queryKey: templatesQueryKey });
+    // Force refetch to ensure consistency with server data
+    setTimeout(() => {
+      qc.invalidateQueries({ queryKey: templatesQueryKey });
+    }, 0);
+
     toast.success("Template atualizado");
   }, [qc, scope, templates, templatesQueryKey, updateTemplatesCache, user]);
 
@@ -202,19 +245,23 @@ export function useTemplates(scope: TemplateScope = "shopee") {
 
     if (error) {
       updateTemplatesCache(() => previousTemplates);
-      toast.error("Erro ao remover template");
+      toast.error(error.message || "Erro ao remover template");
       return;
     }
 
-    qc.invalidateQueries({ queryKey: templatesQueryKey });
+    // Force refetch to ensure consistency with server data
+    setTimeout(() => {
+      qc.invalidateQueries({ queryKey: templatesQueryKey });
+    }, 0);
+
     toast.success("Template removido");
   }, [qc, templates, templatesQueryKey, updateTemplatesCache, user]);
 
   const setDefaultTemplate = useCallback(async (id: string) => {
     if (!user) return;
 
-    const scopedIds = templates.map((item) => item.id);
-    if (scopedIds.length === 0) return;
+    const scopeTemplateIds = templates.map((template) => template.id);
+    if (scopeTemplateIds.length === 0) return;
 
     const previousTemplates = templates;
     const current = templates.find((item) => item.id === id);
@@ -228,11 +275,11 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     const clearResult = await backend
       .from("templates")
       .update({ is_default: false })
-      .in("id", scopedIds);
+      .in("id", scopeTemplateIds);
 
     if (clearResult.error) {
       updateTemplatesCache(() => previousTemplates);
-      toast.error("Erro ao definir template padrao");
+      toast.error(clearResult.error.message || "Erro ao definir template padrao");
       return;
     }
 
@@ -244,7 +291,7 @@ export function useTemplates(scope: TemplateScope = "shopee") {
 
       if (setResult.error) {
         updateTemplatesCache(() => previousTemplates);
-        toast.error("Erro ao definir template padrao");
+        toast.error(setResult.error.message || "Erro ao definir template padrao");
         return;
       }
       toast.success("Template definido como padrao *");
@@ -252,14 +299,17 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       toast.success("Template padrao removido");
     }
 
-    qc.invalidateQueries({ queryKey: templatesQueryKey });
-  }, [qc, templates, templatesQueryKey, updateTemplatesCache, user]);
+    // Force refetch to ensure consistency with server data
+    setTimeout(() => {
+      qc.invalidateQueries({ queryKey: templatesQueryKey });
+    }, 0);
+  }, [qc, scope, templates, templatesQueryKey, updateTemplatesCache, user]);
 
   const duplicateTemplate = useCallback(async (id: string) => {
     const template = templates.find((item) => item.id === id);
     if (!template || !user) return;
 
-    await createTemplate(`Copia de ${template.name}`, template.content, template.category);
+    await createTemplate(`Cópia de ${template.name}`, template.content, template.category);
   }, [createTemplate, templates, user]);
 
   return {

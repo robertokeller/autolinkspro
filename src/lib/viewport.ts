@@ -26,6 +26,10 @@ export type ResponsiveViewportState = ViewportMetrics &
     isMobile: boolean;
     isTablet: boolean;
     isDesktop: boolean;
+    isPortraitPhone: boolean;
+    isPortraitTablet: boolean;
+    isMobileLike: boolean;
+    aspectRatio: number;
     physicalWidth: number;
     physicalHeight: number;
   };
@@ -83,6 +87,7 @@ export function computeResponsiveViewportState(): ResponsiveViewportState {
   const { isAndroid, isIOS } = detectPlatform();
   const isTouch = detectTouchDevice();
   const { width, height, dpr } = metrics;
+  const aspectRatio = width / height;
 
   const isTiny = width < TINY_BREAKPOINT;
   const narrowMobile = width < MOBILE_BREAKPOINT;
@@ -92,6 +97,9 @@ export function computeResponsiveViewportState(): ResponsiveViewportState {
   const isMobile = narrowMobile;
   const isTablet = !isMobile && (touchTablet || nonTouchTablet);
   const isDesktop = !isMobile && !isTablet;
+  const isPortraitPhone = isTouch && metrics.orientation === "portrait" && width <= 540 && aspectRatio <= 0.72;
+  const isPortraitTablet = isTouch && isTablet && metrics.orientation === "portrait";
+  const isMobileLike = isMobile || isPortraitTablet;
   const profile: ScreenProfile = isTiny ? "tiny" : isMobile ? "mobile" : isTablet ? "tablet" : "desktop";
 
   return {
@@ -102,6 +110,10 @@ export function computeResponsiveViewportState(): ResponsiveViewportState {
     isMobile,
     isTablet,
     isDesktop,
+    isPortraitPhone,
+    isPortraitTablet,
+    isMobileLike,
+    aspectRatio,
     isAndroid,
     isIOS,
     physicalWidth: Math.round(width * dpr),

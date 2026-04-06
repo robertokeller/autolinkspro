@@ -74,7 +74,7 @@ export default function LinkHub() {
 
   const handleSave = async () => {
     if (form.destinationMode === "group" && form.groupIds.length === 0) {
-      toast.error("Escolha pelo menos um grupo individual"); return;
+      toast.error("Escolha pelo menos um grupo"); return;
     }
     if (form.destinationMode === "master" && form.masterGroupIds.length === 0) {
       toast.error("Escolha pelo menos um grupo mestre"); return;
@@ -138,7 +138,7 @@ export default function LinkHub() {
   if (isLoading) {
     return (
       <div className="ds-page">
-        <PageHeader title="Link Hub" description="Crie páginas com os links dos seus grupos pra compartilhar" />
+        <PageHeader title="Link Hub" description="Crie páginas com os links dos seus grupos para compartilhar" />
         <div className="space-y-3">{Array.from({ length: 2 }).map((_, i) => (
           <Card key={i} className="glass"><CardContent className="py-4"><Skeleton className="h-12 w-full" /></CardContent></Card>
         ))}</div>
@@ -148,7 +148,7 @@ export default function LinkHub() {
 
   return (
     <div className="ds-page">
-      <PageHeader title="Link Hub" description="Crie páginas com os links dos seus grupos pra compartilhar">
+      <PageHeader title="Link Hub" description="Crie páginas com os links dos seus grupos para compartilhar">
         <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1.5" />Nova página</Button>
       </PageHeader>
 
@@ -173,7 +173,7 @@ export default function LinkHub() {
                     <p className="text-sm font-semibold truncate">{page.title}</p>
                     <p className="text-xs text-muted-foreground truncate mt-0.5">/hub/{page.slug}</p>
                   </div>
-                  <Badge variant={page.isActive ? "secondary" : "outline"} className={cn("text-2xs shrink-0", page.isActive ? "bg-success/10 text-success" : "")}>
+                  <Badge variant={page.isActive ? "success" : "outline"} className="text-2xs shrink-0">
                     {page.isActive ? "Ativa" : "Inativa"}
                   </Badge>
                 </div>

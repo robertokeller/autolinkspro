@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { useUserNotifications, type UserNotificationItem } from "@/hooks/useUserNotifications";
+import { useViewportProfile } from "@/hooks/useViewportProfile";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -124,6 +125,7 @@ function NotificationCard({
 }
 
 export function NotificationBell() {
+  const viewport = useViewportProfile();
   const [openCenter, setOpenCenter] = useState(false);
   const [popupOpen, setPopupOpen] = useState(false);
   const [popupItem, setPopupItem] = useState<UserNotificationItem | null>(null);
@@ -192,9 +194,8 @@ export function NotificationBell() {
 
   return (
     <>
-      {/* ── Bell trigger ───────────────────────────────────────── */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+
+        {viewport.isMobileLike ? (
           <Button
             variant="outline"
             size="icon"
@@ -203,6 +204,7 @@ export function NotificationBell() {
               unreadCount > 0 && "border-primary/50 shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]",
             )}
             aria-label={unreadCount > 0 ? `${unreadCount} notificações não lidas` : "Notificações"}
+            onClick={() => setOpenCenter(true)}
           >
             {unreadCount > 0 ? (
               <BellRing className="h-4 w-4 animate-wiggle text-primary" />
@@ -215,69 +217,93 @@ export function NotificationBell() {
               </span>
             )}
           </Button>
-        </DropdownMenuTrigger>
-
-        <DropdownMenuContent align="end" sideOffset={8} className="w-[min(calc(100vw-1rem),380px)] p-0">
-          {/* Header */}
-          <div className="flex items-center justify-between border-b px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Bell className="h-4 w-4 text-muted-foreground" />
-              <p className="text-sm font-semibold">Notificações</p>
-              {unreadCount > 0 && (
-                <Badge variant="destructive" className="h-5 px-1.5 text-2xs">
-                  {unreadCount} nova{unreadCount !== 1 ? "s" : ""}
-                </Badge>
-              )}
-            </div>
-            {unreadCount > 0 && (
-              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={markAllRead} disabled={isBusy}>
-                <CheckCheck className="mr-1 h-3.5 w-3.5" />
-                Ler tudo
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                className={cn(
+                  "touch-target relative h-10 w-10 rounded-lg transition-all sm:h-9 sm:w-9",
+                  unreadCount > 0 && "border-primary/50 shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]",
+                )}
+                aria-label={unreadCount > 0 ? `${unreadCount} notificações não lidas` : "Notificações"}
+              >
+                {unreadCount > 0 ? (
+                  <BellRing className="h-4 w-4 animate-wiggle text-primary" />
+                ) : (
+                  <Bell className="h-4 w-4" />
+                )}
+                {unreadCount > 0 && (
+                  <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-2xs font-bold text-destructive-foreground shadow">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                )}
               </Button>
-            )}
-          </div>
+            </DropdownMenuTrigger>
 
-          {/* Unread alert banner */}
-          {unreadCount > 0 && (
-            <div className="flex items-start gap-2.5 border-b bg-primary/5 px-4 py-2.5">
-              <BellRing className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-              <p className="text-xs text-muted-foreground">
-                Você tem <span className="font-semibold text-foreground">{unreadCount}</span> notificação{unreadCount !== 1 ? "ões" : ""} não lida{unreadCount !== 1 ? "s" : ""}. Clique para marcar como lida.
-              </p>
-            </div>
-          )}
+            <DropdownMenuContent align="end" sideOffset={8} className="w-[min(calc(100vw-1rem),380px)] p-0">
+              {/* Header */}
+              <div className="flex items-center justify-between border-b px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Bell className="h-4 w-4 text-muted-foreground" />
+                  <p className="text-sm font-semibold">Notificações</p>
+                  {unreadCount > 0 && (
+                    <Badge variant="destructive" className="h-5 px-1.5 text-2xs">
+                      {unreadCount} nova{unreadCount !== 1 ? "s" : ""}
+                    </Badge>
+                  )}
+                </div>
+                {unreadCount > 0 && (
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={markAllRead} disabled={isBusy}>
+                    <CheckCheck className="mr-1 h-3.5 w-3.5" />
+                    Ler tudo
+                  </Button>
+                )}
+              </div>
 
-          {/* Notification list */}
-          <ScrollArea className="max-h-[340px]">
-            <div className="space-y-1.5 p-2.5">
-              {previewItems.length === 0 && (
-                <div className="flex flex-col items-center gap-2 py-8 text-center">
-                  <Bell className="h-8 w-8 text-muted-foreground/30" />
-                  <p className="text-sm font-medium text-muted-foreground">Tudo em dia!</p>
-                  <p className="text-xs text-muted-foreground">Nenhuma notificação no momento.</p>
+              {/* Unread alert banner */}
+              {unreadCount > 0 && (
+                <div className="flex items-start gap-2.5 border-b bg-primary/5 px-4 py-2.5">
+                  <BellRing className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                  <p className="text-xs text-muted-foreground">
+                    Você tem <span className="font-semibold text-foreground">{unreadCount}</span> notificação{unreadCount !== 1 ? "ões" : ""} não lida{unreadCount !== 1 ? "s" : ""}. Clique para marcar como lida.
+                  </p>
                 </div>
               )}
-              {previewItems.map((item) => (
-                <NotificationCard
-                  key={item.id}
-                  item={item}
-                  onMarkRead={(id) => void markAsRead(id)}
-                  onDismiss={(id) => void dismiss(id)}
-                  isBusy={isBusy}
-                  compact
-                />
-              ))}
-            </div>
-          </ScrollArea>
 
-          {/* Footer */}
-          <div className="border-t px-3 py-2">
-            <Button variant="ghost" size="sm" className="w-full text-xs" onClick={() => setOpenCenter(true)}>
-              Ver histórico completo
-            </Button>
-          </div>
-        </DropdownMenuContent>
-      </DropdownMenu>
+              {/* Notification list */}
+              <ScrollArea className="max-h-[340px]">
+                <div className="space-y-1.5 p-2.5">
+                  {previewItems.length === 0 && (
+                    <div className="flex flex-col items-center gap-2 py-8 text-center">
+                      <Bell className="h-8 w-8 text-muted-foreground/30" />
+                      <p className="text-sm font-medium text-muted-foreground">Tudo em dia!</p>
+                      <p className="text-xs text-muted-foreground">Nenhuma notificação no momento.</p>
+                    </div>
+                  )}
+                  {previewItems.map((item) => (
+                    <NotificationCard
+                      key={item.id}
+                      item={item}
+                      onMarkRead={(id) => void markAsRead(id)}
+                      onDismiss={(id) => void dismiss(id)}
+                      isBusy={isBusy}
+                      compact
+                    />
+                  ))}
+                </div>
+              </ScrollArea>
+
+              {/* Footer */}
+              <div className="border-t px-3 py-2">
+                <Button variant="ghost" size="sm" className="w-full text-xs" onClick={() => setOpenCenter(true)}>
+                  Ver histórico completo
+                </Button>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
       {/* ── Central de Notificações (dialog) ──────────────────── */}
       <Dialog open={openCenter} onOpenChange={setOpenCenter}>

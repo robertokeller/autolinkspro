@@ -82,6 +82,7 @@ export default function AdminWhatsApp() {
     disconnectSession,
     deleteSession,
     refresh,
+    refreshSession,
     isCreating,
     isConnecting,
     isDisconnecting,
@@ -149,9 +150,9 @@ export default function AdminWhatsApp() {
     if (!showQrDialog || !session) return;
     const shouldPoll = session.status === "connecting" || session.status === "qr_code";
     if (!shouldPoll) return;
-    const interval = window.setInterval(() => refresh({ silent: true }), 1500);
+    const interval = window.setInterval(() => refreshSession(session.id, { silent: true }), 1500);
     return () => window.clearInterval(interval);
-  }, [showQrDialog, session, refresh]);
+  }, [showQrDialog, session, refreshSession]);
 
   // ── Handlers: connection ────────────────────────────────────────────────────
   const handleCreateAndConnect = useCallback(async () => {
@@ -159,18 +160,18 @@ export default function AdminWhatsApp() {
       const id = await createSession();
       setShowQrDialog(true);
       await connectSession(id);
-      refresh({ silent: true });
+      refreshSession(id, { silent: true });
     } catch { /* toast handled */ }
-  }, [createSession, connectSession, refresh]);
+  }, [createSession, connectSession, refreshSession]);
 
   const handleConnect = useCallback(async () => {
     if (!session) return;
     setShowQrDialog(true);
     try {
       await connectSession(session.id);
-      refresh({ silent: true });
+      refreshSession(session.id, { silent: true });
     } catch { /* toast handled */ }
-  }, [session, connectSession, refresh]);
+  }, [session, connectSession, refreshSession]);
 
   const handleDisconnect = useCallback(async () => {
     if (!session) return;
@@ -748,7 +749,7 @@ export default function AdminWhatsApp() {
                             {b.filter_plan && b.filter_plan.length > 0 && (
                               <div className="flex flex-wrap gap-1">
                                 {b.filter_plan.map((pid) => (
-                                  <Badge key={pid} variant="outline" className="h-4 px-1.5 text-[10px]">
+                                  <Badge key={pid} variant="outline" className="h-4 px-1.5 text-2xs">
                                     {pid.replace("plan-", "")}
                                   </Badge>
                                 ))}

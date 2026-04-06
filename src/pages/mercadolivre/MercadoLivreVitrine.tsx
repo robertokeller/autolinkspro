@@ -300,7 +300,7 @@ export default function MercadoLivreVitrine() {
       await navigator.clipboard.writeText(link);
       toast.success("Link afiliado copiado.");
     } catch {
-      toast.error("Não foi possivel copiar o link.");
+      toast.error("Não foi possível copiar o link.");
     }
   };
 
@@ -317,7 +317,7 @@ export default function MercadoLivreVitrine() {
         },
       });
     } catch (syncError) {
-      const message = syncError instanceof Error ? syncError.message : "Não foi possivel atualizar a vitrine ML.";
+      const message = syncError instanceof Error ? syncError.message : "Não foi possível atualizar a vitrine ML.";
       toast.error(message);
     } finally {
       await refetch();
@@ -330,7 +330,7 @@ export default function MercadoLivreVitrine() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1380px] space-y-5 pb-[calc(var(--safe-area-bottom)+0.5rem)] sm:space-y-6">
+    <div className="mx-auto w-full max-w-7xl space-y-5 pb-[calc(var(--safe-area-bottom)+0.5rem)] sm:space-y-6">
       <PageHeader
         title="Vitrine de ofertas"
         description="Produtos em destaque com links de afiliado"
@@ -380,7 +380,7 @@ export default function MercadoLivreVitrine() {
         {error && (
           <Card>
             <CardContent className="pt-6 text-sm text-destructive">
-              {error instanceof Error ? error.message : "Não foi possivel carregar a vitrine ML."}
+              {error instanceof Error ? error.message : "Não foi possível carregar a vitrine ML."}
             </CardContent>
           </Card>
         )}
@@ -389,12 +389,12 @@ export default function MercadoLivreVitrine() {
           <EmptyState
             icon={ShoppingCart}
             title="Sem produtos na vitrine"
-            description="Aguarde o proximo sync ou clique em Atualizar para tentar novamente."
+            description="Aguarde o próximo sync ou clique em Atualizar para tentar novamente."
           />
         )}
 
         {!error && payload.items.length > 0 && (
-          <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2 sm:gap-4 xl:grid-cols-3 2xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
             {payload.items.map((item) => {
               const converting = convertingProductId === item.id;
               const scheduling = schedulingProductId === item.id;
@@ -480,7 +480,7 @@ export default function MercadoLivreVitrine() {
                         <Button asChild size="sm" variant="outline" className="h-10 flex-1 text-xs sm:h-9 sm:flex-none">
                           <a href={item.productUrl} target="_blank" rel="noreferrer">
                             <ExternalLink className="mr-1 h-3.5 w-3.5" />
-                            Anuncio
+                            Anúncio
                           </a>
                         </Button>
 
@@ -509,7 +509,7 @@ export default function MercadoLivreVitrine() {
 
         {!error && payload.total > 0 && (
           <div className="flex flex-col gap-2 rounded-lg border bg-card px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
-            <span className="text-muted-foreground">Pagina {page} de {totalPages}</span>
+            <span className="text-muted-foreground">Página {page} de {totalPages}</span>
             <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
               <Button
                 size="sm"
@@ -525,7 +525,7 @@ export default function MercadoLivreVitrine() {
                 disabled={!payload.hasMore}
                 onClick={() => setPage((prev) => prev + 1)}
               >
-                Proxima
+                Próxima
               </Button>
             </div>
           </div>
@@ -537,7 +537,7 @@ export default function MercadoLivreVitrine() {
           <DialogHeader>
             <DialogTitle>Link convertido com sucesso</DialogTitle>
             <DialogDescription>
-              O link de afiliado foi gerado usando o conversor padrao. Voce pode copiar, abrir ou criar um agendamento agora.
+              O link de afiliado foi gerado usando o conversor padrão. Você pode copiar, abrir ou criar um agendamento agora.
             </DialogDescription>
           </DialogHeader>
 

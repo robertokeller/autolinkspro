@@ -31,11 +31,12 @@ import {
   type FeatureAccessMode,
 } from "@/lib/admin-control-plane";
 import { appendAdminAudit, triggerGlobalResyncPulse } from "@/lib/admin-shared";
-import { getPlanFeatureList, plans as staticPlans } from "@/lib/plans";
+import { getPlanFeatureList } from "@/lib/plans";
 
 const FEATURE_OPTIONS: Array<{ id: AppFeature; label: string }> = [
   { id: "telegramConnections", label: "Conexões Telegram" },
   { id: "mercadoLivre", label: "Mercado Livre" },
+  { id: "amazon", label: "Amazon" },
   { id: "shopeeAutomations", label: "Automações Shopee" },
   { id: "templates", label: "Templates" },
   { id: "routes", label: "Rotas" },
@@ -226,7 +227,7 @@ export default function AdminAccess() {
     const syncedPlans = state.plans.map((plan) => {
       const boundLevel = safeLevelById.get(plan.accessLevelId) || safeLevels[0];
       const effectiveAccessLevelId = boundLevel.id;
-      const baseLimits = staticPlans.find((item) => item.id === plan.id)?.limits || plan.limits;
+      const baseLimits = plan.baseLimits || plan.limits;
       const limits = applyAccessLevelLimits(baseLimits, boundLevel.limitOverrides);
       const features = getPlanFeatureList({
         id: plan.id,
@@ -251,19 +252,24 @@ export default function AdminAccess() {
       return acc + Object.values(level.featureRules || {}).filter((rule) => rule.mode === "enabled").length;
     }, 0);
 
-    saveState({
-      ...state,
-      accessLevels: safeLevels.map((level) => ({
-        ...level,
-        permissions: permissionsFromRules(level.featureRules),
-      })),
-      plans: syncedPlans.map((plan) => ({
-        ...plan,
-        accessLevelId: safeLevels.some((level) => level.id === plan.accessLevelId)
-          ? plan.accessLevelId
-          : fallbackLevelId,
-      })),
-    });
+    try {
+      await saveState({
+        ...state,
+        accessLevels: safeLevels.map((level) => ({
+          ...level,
+          permissions: permissionsFromRules(level.featureRules),
+        })),
+        plans: syncedPlans.map((plan) => ({
+          ...plan,
+          accessLevelId: safeLevels.some((level) => level.id === plan.accessLevelId)
+            ? plan.accessLevelId
+            : fallbackLevelId,
+        })),
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Nao foi possivel salvar niveis de acesso");
+      return;
+    }
 
     triggerGlobalResyncPulse("admin-access-save");
     setActiveLevelId(null);

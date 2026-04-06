@@ -25,6 +25,7 @@ import { WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
 import { Checkbox } from "@/components/ui/checkbox";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
+import { triggerGlobalResyncPulse } from "@/lib/admin-shared";
 import { backend } from "@/integrations/backend/client";
 import { formatBRT } from "@/lib/timezone";
 import { toast } from "sonner";
@@ -313,7 +314,7 @@ export default function AdminUsers() {
   const handleSaveEdit = async () => {
     if (!editUser) return;
     if (!editEmail.trim()) {
-      toast.error("Coloca um e-mail válido");
+      toast.error("Forneça um e-mail válido");
       return;
     }
 
@@ -327,7 +328,7 @@ export default function AdminUsers() {
 
   const handleCreateUser = async () => {
     if (!createEmail || !createPassword) {
-      toast.error("Coloca e-mail e senha");
+      toast.error("Forneça e-mail e senha");
       return;
     }
     const createPasswordError = getPasswordPolicyError(createPassword.trim());
@@ -422,6 +423,7 @@ export default function AdminUsers() {
       toast.success(`Plano de ${extendPlanTarget.email} renovado com sucesso`);
       setExtendPlanTarget(null);
       await loadData();
+      triggerGlobalResyncPulse("admin-users-extend-plan");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Não deu pra renovar o plano");
     } finally {
@@ -432,11 +434,11 @@ export default function AdminUsers() {
   const handleSaveBillingNote = async () => {
     if (!billingNoteUser || savingBillingNote) return;
     if (!billingNoteReason.trim()) {
-      toast.error("Coloca o motivo");
+      toast.error("Forneça o motivo");
       return;
     }
     if ((billingNoteType === "refund" || billingNoteType === "credit") && Number(billingNoteAmount) <= 0) {
-      toast.error("Coloca um valor maior que zero");
+      toast.error("Forneça um valor maior que zero");
       return;
     }
     setSavingBillingNote(true);
@@ -549,6 +551,7 @@ export default function AdminUsers() {
       toast.success(`Dados de ${planManagerUser.email} atualizados`);
       setPlanManagerUser(null);
       await loadData();
+      triggerGlobalResyncPulse("admin-users-plan-change");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Não deu pra salvar");
     } finally {
@@ -697,6 +700,7 @@ export default function AdminUsers() {
       setShowBulkPlanDialog(false);
       setSelectedUsers(new Set());
       await loadData();
+      triggerGlobalResyncPulse("admin-users-bulk-plan");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Não deu pra atribuir plano em massa");
     } finally {
@@ -982,7 +986,7 @@ export default function AdminUsers() {
                     </div>
                     {/* Usage pills or admin note */}
                     {user.role === "admin" ? (
-                      <p className="text-[11px] text-muted-foreground/60">Conta administrativa — sem limites de plano</p>
+                      <p className="text-xs text-muted-foreground/60">Conta administrativa — sem limites de plano</p>
                     ) : (
                       <div className="flex flex-wrap gap-1 pt-0.5">
                         {[
@@ -992,18 +996,18 @@ export default function AdminUsers() {
                           { k: "WA", v: fmt(usage?.waSessionsTotal || 0, lim?.whatsappSessions ?? -1) },
                           { k: "TG", v: fmt(usage?.tgSessionsTotal || 0, lim?.telegramSessions ?? -1) },
                         ].map(({ k, v }) => (
-                          <span key={k} className="inline-flex items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          <span key={k} className="inline-flex items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-2xs text-muted-foreground">
                             {k} <span className="font-medium text-foreground">{v}</span>
                           </span>
                         ))}
                         {(usage?.errors24h ?? 0) > 0 && (
-                          <span className="inline-flex items-center rounded-md bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+                          <span className="inline-flex items-center rounded-md bg-destructive/10 px-1.5 py-0.5 text-2xs font-medium text-destructive">
                             {usage?.errors24h} erros
                           </span>
                         )}
                       </div>
                     )}
-                    <p className="text-[11px] text-muted-foreground/50">
+                    <p className="text-xs text-muted-foreground/50">
                       Desde {formatBRT(new Date(user.created_at), "dd/MM/yyyy")}
                     </p>
                   </div>
@@ -1269,7 +1273,7 @@ export default function AdminUsers() {
           <AlertDialogHeader>
             <AlertDialogTitle>Apagar Usuário?</AlertDialogTitle>
             <AlertDialogDescription>
-              Isso apaga a conta de <strong>{deleteTarget?.email}</strong> de vez. Não dá pra desfazer.
+              Isso apaga a conta de <strong>{deleteTarget?.email}</strong> de vez. Não é possível desfazer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -2004,12 +2008,12 @@ export default function AdminUsers() {
                     <div key={log.id} className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2.5 text-xs">
                       <div className="flex items-center justify-between gap-2 mb-1">
                         <span className="font-medium text-foreground">{log.action}</span>
-                        <span className="text-[11px] text-muted-foreground tabular-nums">
+                        <span className="text-xs text-muted-foreground tabular-nums">
                           {new Date(log.createdAt).toLocaleString("pt-BR")}
                         </span>
                       </div>
                       <p className="text-muted-foreground">{log.summary}</p>
-                      <p className="text-[11px] text-muted-foreground/60 mt-0.5">por {log.actorName}</p>
+                      <p className="text-xs text-muted-foreground/60 mt-0.5">por {log.actorName}</p>
                     </div>
                   ))}
                 </div>

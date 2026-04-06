@@ -18,6 +18,11 @@ const LOAD_CRITICAL_PER_CPU = Number.parseFloat(process.env.OPS_LOAD_CRITICAL_PE
 const OPS_CONTROL_TOKEN = String(process.env.OPS_CONTROL_TOKEN || process.env.WEBHOOK_SECRET || "").trim();
 const SERVICE_HEALTH_SECRET = String(process.env.WEBHOOK_SECRET || process.env.OPS_CONTROL_TOKEN || "").trim();
 const NODE_ENV = String(process.env.NODE_ENV || "development").toLowerCase();
+// Restrict CORS to explicit origin list. Accepts comma-separated origins (same format as the API service).
+const CORS_ORIGIN_RAW = String(process.env.CORS_ORIGIN || "").trim();
+const ALLOWED_ORIGINS = CORS_ORIGIN_RAW
+  ? CORS_ORIGIN_RAW.split(",").map((o) => o.trim()).filter(Boolean)
+  : [];
 const allowInsecureFlag = String(process.env.ALLOW_INSECURE_NO_TOKEN || "").toLowerCase() === "true";
 const ALLOW_INSECURE_NO_TOKEN = allowInsecureFlag || (NODE_ENV !== "production" && !OPS_CONTROL_TOKEN);
 const OPS_RUNTIME_MODE = String(process.env.OPS_RUNTIME_MODE || "local").trim().toLowerCase();
@@ -284,10 +289,24 @@ function readSystemSnapshot() {
   };
 }
 
-function sendJson(res, statusCode, payload) {
+function resolveAllowedOrigin(req) {
+  if (ALLOWED_ORIGINS.length === 0) return null;
+  const origin = String(req.headers["origin"] || "").trim();
+  if (!origin) return null;
+  return ALLOWED_ORIGINS.includes(origin) ? origin : null;
+}
+
+function sendJson(res, req, statusCode, payload) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const allowedOrigin = resolveAllowedOrigin(req);
+  if (allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+    res.setHeader("Vary", "Origin");
+  } else if (ALLOWED_ORIGINS.length === 0) {
+    // No origin whitelist configured — allow all (dev/local mode).
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   // Frontend local RPC sends x-autolinks-user-id; include it to satisfy browser preflight.
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-ops-token,x-webhook-secret,x-autolinks-user-id");
@@ -864,7 +883,7 @@ async function controlAllServices(action) {
 
 const server = createServer(async (req, res) => {
   if (!req.url || !req.method) {
-    sendJson(res, 400, { ok: false, error: "Requisicao invalida" });
+    sendJson(res, req, 400, { ok: false, error: "Requisicao invalida" });
     return;
   }
 
@@ -872,19 +891,19 @@ const server = createServer(async (req, res) => {
   const rlResult = checkRateLimit(req);
   if (rlResult.blocked) {
     res.setHeader("Retry-After", String(rlResult.retryAfterSec));
-    sendJson(res, 429, { ok: false, error: "Too Many Requests" });
+    sendJson(res, req, 429, { ok: false, error: "Too Many Requests" });
     return;
   }
 
   // Reject oversized bodies (POST/PUT/PATCH) before they are read.
   const contentLength = Number(req.headers["content-length"] || 0);
   if (contentLength > 50_000) {
-    sendJson(res, 413, { ok: false, error: "Payload Too Large" });
+    sendJson(res, req, 413, { ok: false, error: "Payload Too Large" });
     return;
   }
 
   if (req.method === "OPTIONS") {
-    sendJson(res, 204, {});
+    sendJson(res, req, 204, {});
     return;
   }
 
@@ -893,7 +912,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/health" && req.method === "GET") {
     // F11: require the same token as all other /api routes.
     if (!isAuthorized(req)) {
-      sendJson(res, 401, { ok: false, error: "Token invalido ou ausente (x-ops-token)" });
+      sendJson(res, req, 401, { ok: false, error: "Token invalido ou ausente (x-ops-token)" });
       return;
     }
     try {
@@ -902,7 +921,7 @@ const server = createServer(async (req, res) => {
         await pm2Jlist();
       }
       const system = readSystemSnapshot();
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         online: true,
         service: "ops-control",
         checkedAt: nowIso(),
@@ -911,7 +930,7 @@ const server = createServer(async (req, res) => {
       });
     } catch (error) {
       const system = readSystemSnapshot();
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         online: false,
         service: "ops-control",
         checkedAt: nowIso(),
@@ -923,7 +942,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (!isAuthorized(req)) {
-    sendJson(res, 401, {
+    sendJson(res, req, 401, {
       ok: false,
       error: ALLOW_INSECURE_NO_TOKEN
         ? "Nao autorizado"
@@ -936,7 +955,7 @@ const server = createServer(async (req, res) => {
     try {
       const services = await listServices();
       const system = readSystemSnapshot();
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         online: true,
         service: "ops-control",
         checkedAt: nowIso(),
@@ -945,7 +964,7 @@ const server = createServer(async (req, res) => {
       });
     } catch (error) {
       const system = readSystemSnapshot();
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         online: false,
         service: "ops-control",
         checkedAt: nowIso(),
@@ -959,13 +978,13 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === "/api/config/ports" && req.method === "GET") {
     try {
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         ok: true,
         checkedAt: nowIso(),
         ports: getEffectivePortsSnapshot(),
       });
     } catch (error) {
-      sendJson(res, 500, {
+      sendJson(res, req, 500, {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -979,11 +998,11 @@ const server = createServer(async (req, res) => {
       const service = String(body.service || body.id || "").trim().toLowerCase();
       const portRaw = body.port;
       if (!service || !LOCAL_SERVICE_CONFIG[service]) {
-        sendJson(res, 400, { ok: false, error: "Servico invalido" });
+        sendJson(res, req, 400, { ok: false, error: "Servico invalido" });
         return;
       }
       if (!isValidPort(portRaw)) {
-        sendJson(res, 400, { ok: false, error: "Porta invalida" });
+        sendJson(res, req, 400, { ok: false, error: "Porta invalida" });
         return;
       }
 
@@ -992,7 +1011,7 @@ const server = createServer(async (req, res) => {
       next[service] = Number(portRaw);
       savePortOverrides(next);
 
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         ok: true,
         checkedAt: nowIso(),
         service,
@@ -1000,7 +1019,7 @@ const server = createServer(async (req, res) => {
         ports: getEffectivePortsSnapshot(),
       });
     } catch (error) {
-      sendJson(res, 500, {
+      sendJson(res, req, 500, {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1012,7 +1031,7 @@ const server = createServer(async (req, res) => {
     try {
       const services = await listServices();
       const system = readSystemSnapshot();
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         online: true,
         service: "ops-control",
         checkedAt: nowIso(),
@@ -1021,7 +1040,7 @@ const server = createServer(async (req, res) => {
       });
     } catch (error) {
       const system = readSystemSnapshot();
-      sendJson(res, 200, {
+      sendJson(res, req, 200, {
         online: false,
         service: "ops-control",
         checkedAt: nowIso(),
@@ -1042,21 +1061,21 @@ const server = createServer(async (req, res) => {
       if (service === "all") {
         const result = await controlAllServices(action);
         if (!result.ok) {
-          sendJson(res, 400, result);
+          sendJson(res, req, 400, result);
           return;
         }
-        sendJson(res, 200, result);
+        sendJson(res, req, 200, result);
         return;
       }
 
       const result = await controlService(service, action);
       if (!result.ok) {
-        sendJson(res, 400, result);
+        sendJson(res, req, 400, result);
         return;
       }
-      sendJson(res, 200, result);
+      sendJson(res, req, 200, result);
     } catch (error) {
-      sendJson(res, 500, {
+      sendJson(res, req, 500, {
         ok: false,
         service,
         action,
@@ -1066,7 +1085,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  sendJson(res, 404, { ok: false, error: "Rota nao encontrada" });
+  sendJson(res, req, 404, { ok: false, error: "Rota nao encontrada" });
 });
 
 async function detectExistingOpsControl(port) {

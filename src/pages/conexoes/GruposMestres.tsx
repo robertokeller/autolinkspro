@@ -265,7 +265,7 @@ export default function GruposMestresPage() {
               <Input
                 value={form.name}
                 onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-                placeholder="Ex: Ofertas VIP WhatsApp"
+                placeholder="Ex: Ofertas VIP"
               />
             </div>
 

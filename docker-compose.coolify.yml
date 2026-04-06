@@ -1,8 +1,17 @@
+# Log driver resolves at deploy time via DOCKER_LOG_DRIVER env var.
+# Default: json-file with rotation (logs stay on host, max ~50MB per service).
+# Recommended for production: set DOCKER_LOG_DRIVER=loki and LOKI_URL to stream
+# logs to a Grafana/Loki instance. This takes logs out of reach of an attacker
+# who might try to delete local json files to cover their tracks.
+#   DOCKER_LOG_DRIVER=loki
+#   LOKI_URL=https://loki.yourhost.com
+#   DOCKER_LOG_LOKI_LABELS=compose_service={{.Name}}
+
 x-logging: &default-logging
-  driver: json-file
+  driver: ${DOCKER_LOG_DRIVER:-json-file}
   options:
-    max-size: "10m"
-    max-file: "3"
+    max-size: "20m"
+    max-file: "5"
 
 services:
   web:
@@ -258,8 +267,12 @@ services:
       RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
       EMAIL_VERIFY_TOKEN_TTL_MINUTES: ${EMAIL_VERIFY_TOKEN_TTL_MINUTES:-1440}
       PASSWORD_RESET_TOKEN_TTL_MINUTES: ${PASSWORD_RESET_TOKEN_TTL_MINUTES:-30}
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-suporte@autolinks.pro}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL is required}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      # DB_POOL_MAX: max pg connections per API container.
+      # Single container (Docker) → 10 is safe. Raise only if Postgres max_connections allows.
+      # Formula: DB_POOL_MAX + ~15 (Postgres internals) ≤ max_connections.
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
       WHATSAPP_MICROSERVICE_URL: http://whatsapp:3111
       TELEGRAM_MICROSERVICE_URL: http://telegram:3112
       SHOPEE_MICROSERVICE_URL: http://shopee:3113
@@ -322,6 +335,9 @@ services:
     environment:
       BACKUP_SCHEDULE: ${SESSIONS_BACKUP_SCHEDULE:-0 4 * * *}
       BACKUP_KEEP_DAYS: ${SESSIONS_BACKUP_KEEP_DAYS:-7}
+      # Defina BACKUP_ENCRYPTION_KEY para cifrar os backups com AES-256-CBC.
+      # Se vazio, os backups são gerados sem cifra (não recomendado em produção).
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
     volumes:
       - wa_sessions:/data/wa-sessions:ro
       - tg_sessions:/data/tg-sessions:ro

@@ -6,8 +6,10 @@ const IS_PRODUCTION = NODE_ENV === "production";
 
 const DISPATCH_INTERVAL_SECONDS = Number.parseInt(process.env.DISPATCH_INTERVAL_SECONDS || "45", 10);
 const SHOPEE_INTERVAL_SECONDS = Number.parseInt(process.env.SHOPEE_INTERVAL_SECONDS || "60", 10);
+const AMAZON_AUTOMATION_INTERVAL_SECONDS = Number.parseInt(process.env.AMAZON_AUTOMATION_INTERVAL_SECONDS || String(SHOPEE_INTERVAL_SECONDS), 10);
 const CHANNEL_EVENTS_INTERVAL_SECONDS = Number.parseInt(process.env.CHANNEL_EVENTS_INTERVAL_SECONDS || "15", 10);
 const MELI_VITRINE_INTERVAL_SECONDS = Number.parseInt(process.env.MELI_VITRINE_INTERVAL_SECONDS || "7200", 10);
+const AMAZON_VITRINE_INTERVAL_SECONDS = Number.parseInt(process.env.AMAZON_VITRINE_INTERVAL_SECONDS || "21600", 10);
 const DISPATCH_LIMIT = Number.parseInt(process.env.DISPATCH_LIMIT || "100", 10);
 const DISPATCH_SOURCE = String(process.env.DISPATCH_SOURCE || "node-scheduler").trim();
 const RPC_BASE_URL = String(process.env.SCHEDULER_RPC_BASE_URL || "").trim().replace(/\/$/, "");
@@ -22,8 +24,11 @@ const LIMIT_SCALE_CRITICAL = Number.parseFloat(process.env.SCHEDULER_LIMIT_SCALE
 
 let runningDispatch = false;
 let runningShopee = false;
+let runningAmazonAutomation = false;
 let runningChannelEvents = false;
 let runningMeliVitrine = false;
+let runningAmazonVitrine = false;
+let runningPurge = false;
 
 function log(message) {
 	console.log(`[scheduler] ${message}`);
@@ -138,7 +143,9 @@ async function runDispatchCycle() {
 		const sent = Number(payload?.sent || 0);
 		const processed = Number(payload?.processed || 0);
 		const failed = Number(payload?.failed || 0);
-		log(`dispatch cycle ok: processed=${processed} sent=${sent} failed=${failed} pressure=${pressure.level} limit=${effectiveLimit}`);
+		if (processed > 0 || sent > 0 || failed > 0) {
+			log(`dispatch cycle ok: processed=${processed} sent=${sent} failed=${failed} pressure=${pressure.level} limit=${effectiveLimit}`);
+		}
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		log(`dispatch cycle error: ${reason}`);
@@ -169,7 +176,9 @@ async function runShopeeCycle() {
 		const sent = Number(payload?.sent || 0);
 		const skipped = Number(payload?.skipped || 0);
 		const failed = Number(payload?.failed || 0);
-		log(`shopee cycle ok: active=${active} processed=${processed} sent=${sent} skipped=${skipped} failed=${failed} pressure=${pressure.level}`);
+		if (active > 0 || processed > 0 || sent > 0 || failed > 0) {
+			log(`shopee cycle ok: active=${active} processed=${processed} sent=${sent} skipped=${skipped} failed=${failed} pressure=${pressure.level}`);
+		}
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		log(`shopee cycle error: ${reason}`);
@@ -209,14 +218,51 @@ async function runChannelEventsCycle() {
     const orphanRuntimeRemovedWa = Number(orphanCleanup?.runtime?.removed?.whatsapp || 0);
     const orphanRuntimeRemovedTg = Number(orphanCleanup?.runtime?.removed?.telegram || 0);
 
-    log(
-      `channel events cycle ok: scope=${scope} wa_sessions=${waSessions} wa_events=${waEvents} wa_fallback=${waFallbackAdded} tg_sessions=${tgSessions} tg_events=${tgEvents} tg_fallback=${tgFallbackAdded} failed=${failed} orphan_groups_deleted=${orphanGroupsDeleted} orphan_runtime_removed_wa=${orphanRuntimeRemovedWa} orphan_runtime_removed_tg=${orphanRuntimeRemovedTg} pressure=${pressure.level}`,
-    );
+    const hasChannelActivity = waEvents > 0 || tgEvents > 0 || failed > 0
+      || orphanGroupsDeleted > 0 || orphanRuntimeRemovedWa > 0 || orphanRuntimeRemovedTg > 0;
+    if (hasChannelActivity) {
+      log(
+        `channel events cycle ok: scope=${scope} wa_sessions=${waSessions} wa_events=${waEvents} wa_fallback=${waFallbackAdded} tg_sessions=${tgSessions} tg_events=${tgEvents} tg_fallback=${tgFallbackAdded} failed=${failed} orphan_groups_deleted=${orphanGroupsDeleted} orphan_runtime_removed_wa=${orphanRuntimeRemovedWa} orphan_runtime_removed_tg=${orphanRuntimeRemovedTg} pressure=${pressure.level}`,
+      );
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     log(`channel events cycle error: ${reason}`);
   } finally {
     runningChannelEvents = false;
+  }
+}
+
+async function runAmazonAutomationCycle() {
+  if (runningAmazonAutomation) return;
+  runningAmazonAutomation = true;
+
+  try {
+    const pressure = readPressure();
+    if (pressure.level === "critical") {
+      log(`amazon automation cycle skipped due to host pressure critical (mem=${pressure.usedMemPercent}% load/cpu=${pressure.loadPerCpu})`);
+      return;
+    }
+
+    const result = await invokeFunction("amazon-automation-run", {
+      source: DISPATCH_SOURCE,
+      pressure: pressure.level,
+    });
+    const payload = unwrapRpcData(result);
+
+    const active = Number(payload?.active || 0);
+    const processed = Number(payload?.processed || 0);
+    const sent = Number(payload?.sent || 0);
+    const skipped = Number(payload?.skipped || 0);
+    const failed = Number(payload?.failed || 0);
+    if (active > 0 || processed > 0 || sent > 0 || failed > 0) {
+      log(`amazon automation cycle ok: active=${active} processed=${processed} sent=${sent} skipped=${skipped} failed=${failed} pressure=${pressure.level}`);
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`amazon automation cycle error: ${reason}`);
+  } finally {
+    runningAmazonAutomation = false;
   }
 }
 
@@ -251,31 +297,93 @@ async function runMeliVitrineCycle() {
   }
 }
 
+async function runAmazonVitrineCycle() {
+  if (runningAmazonVitrine) return;
+  runningAmazonVitrine = true;
+
+  try {
+    const pressure = readPressure();
+    if (pressure.level === "critical") {
+      log(`amazon vitrine cycle skipped due to host pressure critical (mem=${pressure.usedMemPercent}% load/cpu=${pressure.loadPerCpu})`);
+      return;
+    }
+
+    const result = await invokeFunction("amazon-vitrine-sync", {
+      source: DISPATCH_SOURCE,
+      onlyIfStale: true,
+    });
+    const payload = unwrapRpcData(result);
+    const skipped = payload?.skipped === true;
+    const added = Number(payload?.addedCount || 0);
+    const updated = Number(payload?.updatedCount || 0);
+    const removed = Number(payload?.removedCount || 0);
+    const fetched = Number(payload?.fetchedCards || 0);
+
+    log(`amazon vitrine cycle ok: skipped=${skipped} fetched=${fetched} added=${added} updated=${updated} removed=${removed} pressure=${pressure.level}`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`amazon vitrine cycle error: ${reason}`);
+  } finally {
+    runningAmazonVitrine = false;
+  }
+}
+
+const PURGE_INTERVAL_SECONDS = Number.parseInt(process.env.PURGE_INTERVAL_SECONDS || "86400", 10); // 24h default
+const PURGE_HISTORY_DAYS = Number.parseInt(process.env.PURGE_HISTORY_DAYS || "90", 10);
+
+async function runPurgeCycle() {
+  if (runningPurge) return;
+  runningPurge = true;
+
+  try {
+    const result = await invokeFunction("purge-history-entries", {
+      source: DISPATCH_SOURCE,
+      maxAgeDays: PURGE_HISTORY_DAYS,
+      batchSize: 5000,
+    });
+    const payload = unwrapRpcData(result);
+    const deletedTotal = Number(payload?.deletedTotal || 0);
+    const batchCount   = Number(payload?.batchCount || 0);
+    const durationMs   = Number(payload?.durationMs || 0);
+    log(`purge cycle ok: deletedTotal=${deletedTotal} batches=${batchCount} durationMs=${durationMs} maxAgeDays=${PURGE_HISTORY_DAYS}`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`purge cycle error: ${reason}`);
+  } finally {
+    runningPurge = false;
+  }
+}
+
+function scheduleRecurringTask(intervalSeconds, minIntervalSeconds, runner) {
+  const safeIntervalMs = Math.max(minIntervalSeconds, intervalSeconds) * 1000;
+  return setInterval(() => {
+    void runner();
+  }, safeIntervalMs);
+}
+
 function startRemoteWorker() {
   log(
-    `remote mode started (dispatch=${DISPATCH_INTERVAL_SECONDS}s shopee=${SHOPEE_INTERVAL_SECONDS}s channels=${CHANNEL_EVENTS_INTERVAL_SECONDS}s meli_vitrine=${MELI_VITRINE_INTERVAL_SECONDS}s timeout=${REQUEST_TIMEOUT_MS}ms)`,
+    `remote mode started (dispatch=${DISPATCH_INTERVAL_SECONDS}s shopee=${SHOPEE_INTERVAL_SECONDS}s amazon_auto=${AMAZON_AUTOMATION_INTERVAL_SECONDS}s channels=${CHANNEL_EVENTS_INTERVAL_SECONDS}s meli_vitrine=${MELI_VITRINE_INTERVAL_SECONDS}s amazon_vitrine=${AMAZON_VITRINE_INTERVAL_SECONDS}s purge=${PURGE_INTERVAL_SECONDS}s timeout=${REQUEST_TIMEOUT_MS}ms)`,
   );
 
   void runDispatchCycle();
   void runShopeeCycle();
+  void runAmazonAutomationCycle();
   void runChannelEventsCycle();
   void runMeliVitrineCycle();
+  void runAmazonVitrineCycle();
 
-	setInterval(() => {
-		void runDispatchCycle();
-	}, Math.max(5, DISPATCH_INTERVAL_SECONDS) * 1000);
-
-  setInterval(() => {
-    void runShopeeCycle();
-  }, Math.max(5, SHOPEE_INTERVAL_SECONDS) * 1000);
-
-  setInterval(() => {
-    void runChannelEventsCycle();
-  }, Math.max(5, CHANNEL_EVENTS_INTERVAL_SECONDS) * 1000);
-
-  setInterval(() => {
-    void runMeliVitrineCycle();
-  }, Math.max(60, MELI_VITRINE_INTERVAL_SECONDS) * 1000);
+  scheduleRecurringTask(DISPATCH_INTERVAL_SECONDS, 5, runDispatchCycle);
+  scheduleRecurringTask(SHOPEE_INTERVAL_SECONDS, 5, runShopeeCycle);
+  scheduleRecurringTask(AMAZON_AUTOMATION_INTERVAL_SECONDS, 5, runAmazonAutomationCycle);
+  scheduleRecurringTask(CHANNEL_EVENTS_INTERVAL_SECONDS, 5, runChannelEventsCycle);
+  scheduleRecurringTask(MELI_VITRINE_INTERVAL_SECONDS, 60, runMeliVitrineCycle);
+  scheduleRecurringTask(AMAZON_VITRINE_INTERVAL_SECONDS, 60, runAmazonVitrineCycle);
+  // Purge runs once per day (default); first run is deferred 60s so the API warms up first.
+  setTimeout(() => {
+    void runPurgeCycle();
+    scheduleRecurringTask(PURGE_INTERVAL_SECONDS, 3600, runPurgeCycle);
+  }, 60_000);
 }
 
 function startLocalFallback() {

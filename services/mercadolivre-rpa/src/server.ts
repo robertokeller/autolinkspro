@@ -30,6 +30,7 @@ const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
 
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 app.use(cors({
   origin: (origin, callback) => {
     // Allow non-browser requests (curl, server-to-server).

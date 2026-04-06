@@ -18,12 +18,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Route, Plus, ArrowRight, Play, Pause, Trash2, MoreVertical, Pencil,
-  AlertTriangle, Info, Layers, Users,
+  AlertTriangle, Info, Layers, Users, Clock,
   LinkIcon, FileText, Filter, Copy, RefreshCw, PlayCircle, PauseCircle,
 } from "lucide-react";
 import { useRotas } from "@/hooks/useRotas";
 import { useGrupos } from "@/hooks/useGrupos";
-import { useTemplateModule } from "@/contexts/TemplateModuleContext";
+import { useTemplates } from "@/hooks/useTemplates";
 import { useSessoes } from "@/hooks/useSessoes";
 import { useMercadoLivreSessions } from "@/hooks/useMercadoLivreSessions";
 import { useServiceHealth } from "@/hooks/useServiceHealth";
@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { buildRoutePayload, emptyNewRoute, type NewRouteForm } from "@/pages/routes/route-form";
 import { ChannelPlatformIcon } from "@/components/icons/ChannelPlatformIcon";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
+import { GroupSelect } from "@/components/selectors/GroupSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
 
 type UnifiedSession = {
@@ -44,6 +45,55 @@ type UnifiedSession = {
   platform: "whatsapp" | "telegram";
   status: string;
 };
+
+type SessionConnectionState = "online" | "pending" | "offline";
+
+const PENDING_SESSION_STATES = new Set([
+  "connecting",
+  "warning",
+  "awaiting_code",
+  "awaiting_password",
+  "qr_code",
+  "pairing_code",
+]);
+
+function getSessionConnectionState(status: string | undefined): SessionConnectionState {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "online") return "online";
+  if (PENDING_SESSION_STATES.has(normalized)) return "pending";
+  return "offline";
+}
+
+function parseClockToMinutes(value: string, fallback: number): number {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) return fallback;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return fallback;
+  return (hh * 60) + mm;
+}
+
+function isInsideQuietHours(start: string, end: string, now = new Date()): boolean {
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const startMinutes = parseClockToMinutes(start, 22 * 60);
+  const endMinutes = parseClockToMinutes(end, 8 * 60);
+
+  if (startMinutes === endMinutes) return false;
+  if (startMinutes < endMinutes) return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+}
+
+function getChannelOnline(
+  platform: "whatsapp" | "telegram" | undefined,
+  whatsappOnline: boolean | null,
+  telegramOnline: boolean | null,
+): boolean | null {
+  if (platform === "whatsapp") return whatsappOnline;
+  if (platform === "telegram") return telegramOnline;
+  return null;
+}
 
 export default function RoutesPage() {
   const {
@@ -57,7 +107,8 @@ export default function RoutesPage() {
     duplicateRoute,
   } = useRotas();
   const { syncedGroups: rawGroups, masterGroups: rawMasterGroups, syncGroups, syncing: syncingGroups } = useGrupos();
-  const { templates: rawTemplates } = useTemplateModule();
+  const { templates: rawShopeeTemplates } = useTemplates("shopee");
+  const { templates: rawAmazonTemplates } = useTemplates("amazon");
   const { allSessions: rawAllSessions, refreshSessions } = useSessoes();
   const { sessions: rawMeliSessions } = useMercadoLivreSessions({ enableAutoMonitor: false });
   const { data: channelHealth, refetch: refetchChannelHealth } = useQuery({
@@ -67,7 +118,8 @@ export default function RoutesPage() {
   });
   const groups = rawGroups as Group[];
   const masterGroups = rawMasterGroups as MasterGroup[];
-  const templates = rawTemplates as Template[];
+  const shopeeTemplates = rawShopeeTemplates as Template[];
+  const amazonTemplates = rawAmazonTemplates as Template[];
   const allSessions = rawAllSessions as UnifiedSession[];
   const meliSessions = rawMeliSessions as MeliSession[];
   const { health: shopeeHealth, refresh: refreshShopeeHealth } = useServiceHealth("shopee");
@@ -87,8 +139,8 @@ export default function RoutesPage() {
 
   const totalSteps = 3;
   const stepDescriptions: Record<number, string> = {
-    1: "Dê um nome, escolha a sessão e o grupo que vai ser monitorado.",
-    2: "Escolha pra onde as ofertas vão ser enviadas.",
+    1: "Dê um nome, escolha a sessão e o grupo que será monitorado.",
+    2: "Escolha para onde as ofertas serão enviadas.",
     3: "Ajuste a conversão de links, templates e filtros.",
   };
   const connectedSessions = allSessions.filter((s) => s.status === "online");
@@ -102,8 +154,8 @@ export default function RoutesPage() {
     [allSessions],
   );
   const templatesById = useMemo<Map<string, Template>>(
-    () => new Map(templates.map((template) => [template.id, template])),
-    [templates],
+    () => new Map([...shopeeTemplates, ...amazonTemplates].map((template) => [template.id, template])),
+    [shopeeTemplates, amazonTemplates],
   );
   const meliSessionsById = useMemo<Map<string, MeliSession>>(
     () => new Map(meliSessions.map((session) => [session.id, session])),
@@ -143,7 +195,9 @@ export default function RoutesPage() {
 
   // Step validation — when editing an existing route, allow offline sessions so the user
   // can update keywords, templates, etc. without requiring a live connection.
-  const canGoStep2 = !!nr.name.trim() && !!nr.sourceSessionId && (isEditing || sourceSessionConnected) && !!nr.sourceGroupId;
+  // When creating a new route, if a session was selected and options are available, allow advancing
+  // (the warning will inform user that capture won't happen until connection is restored).
+  const canGoStep2 = !!nr.name.trim() && !!nr.sourceSessionId && (isEditing || sourceSessionConnected || sourceGroups.length > 0) && !!nr.sourceGroupId;
   const canGoStep3 = !!nr.destSessionId && (isEditing || destSessionConnected) && (
     nr.destinationType === "master"
       ? nr.masterGroupIds.length > 0
@@ -156,7 +210,7 @@ export default function RoutesPage() {
     try {
       const hasConnectedSession = allSessions.some((session) => session.status === "online");
       if (!hasConnectedSession) {
-        toast.error("Nenhuma sessão conectada pra atualizar as rotas.");
+        toast.error("Nenhuma sessão conectada para atualizar as rotas.");
         return;
       }
 
@@ -220,12 +274,12 @@ export default function RoutesPage() {
       if (blockers.length > 0) {
         const uniqueBlockers = Array.from(new Set(blockers));
         const preview = uniqueBlockers.slice(0, 3).join(" | ");
-        const rest = uniqueBlockers.length > 3 ? ` | +${uniqueBlockers.length - 3} pendencias` : "";
-        toast.error(`Atualizacao nao concluida. ${preview}${rest}`);
+        const rest = uniqueBlockers.length > 3 ? ` | +${uniqueBlockers.length - 3} pendências` : "";
+        toast.error(`Atualização não concluída. ${preview}${rest}`);
         return;
       }
 
-      refreshSessions();
+      await refreshSessions({ silent: true });
       await syncGroups();
       const refreshedRoutes = await refreshAllRoutes();
       if (!refreshedRoutes) return;
@@ -254,14 +308,14 @@ export default function RoutesPage() {
       const unknownServices = serviceStatuses.filter((service) => service.online === null).map((service) => service.label);
 
       const parts: string[] = [];
-      if (okServices.length > 0) parts.push(`Servicos OK: ${okServices.join(", ")}`);
-      if (offlineServices.length > 0) parts.push(`Indisponiveis: ${offlineServices.join(", ")}`);
+      if (okServices.length > 0) parts.push(`Serviços OK: ${okServices.join(", ")}`);
+      if (offlineServices.length > 0) parts.push(`Indisponíveis: ${offlineServices.join(", ")}`);
       if (unknownServices.length > 0) parts.push(`Sem resposta: ${unknownServices.join(", ")}`);
 
       if (offlineServices.length === 0 && unknownServices.length === 0) {
-        toast.success(`Atualizacao concluida. ${parts.join(" | ")}`);
+        toast.success(`Atualização concluída. ${parts.join(" | ")}`);
       } else {
-        toast.warning(`Atualizacao concluida com alertas. ${parts.join(" | ")}`);
+        toast.warning(`Atualização concluída com alertas. ${parts.join(" | ")}`);
       }
     } catch {
       toast.error("Não deu pra atualizar");
@@ -340,20 +394,18 @@ export default function RoutesPage() {
       masterGroupIds: selectedMasterGroupIds,
       autoConvertShopee: route.rules.autoConvertShopee,
       autoConvertMercadoLivre: route.rules.autoConvertMercadoLivre ?? false,
+      autoConvertAmazon: route.rules.autoConvertAmazon ?? false,
       templateId: route.rules.templateId || "",
+      amazonTemplateId: route.rules.amazonTemplateId || "",
       positiveKeywords: route.rules.positiveKeywords.join(", "),
       negativeKeywords: route.rules.negativeKeywords.join(", "),
+      quietHoursEnabled: route.rules.quietHoursEnabled === true,
+      quietHoursStart: route.rules.quietHoursStart || "22:00",
+      quietHoursEnd: route.rules.quietHoursEnd || "08:00",
     });
     setEditingRouteId(route.id);
     setStep(1);
     setShowNew(true);
-  };
-
-  const statusConfig: Record<string, { label: string; class: string }> = {
-    active: { label: "Ativa", class: "bg-success/10 text-success border-success/20" },
-    paused: { label: "Pausada", class: "bg-warning/10 text-warning border-warning/20" },
-    inactive: { label: "Inativa", class: "bg-muted/50 text-muted-foreground border-muted-foreground/20" },
-    error: { label: "Erro", class: "bg-destructive/10 text-destructive border-destructive/20" },
   };
 
   const summarizeNames = (names: string[], max = 2) => {
@@ -373,20 +425,20 @@ export default function RoutesPage() {
     void (async () => {
       const paused = await toggleRoute(routeId, currentStatus);
       if (!paused) return;
-      await toggleRoute(routeId, "paused");
-      toast.success("Rota atualizada");
+      const resumed = await toggleRoute(routeId, "paused");
+      if (resumed) toast.success("Rota atualizada");
     })();
   };
 
   return (
     <>
       <div className="mb-[var(--ds-page-gap)] rounded-xl border border-border/60 bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
-        <PageHeader title="Rotas automaticas" description="Monte rotas pra copiar ofertas de um grupo e enviar pra outros no automatico">
-          <div className="flex flex-wrap items-center justify-end gap-2">
+        <PageHeader title="Rotas automáticas" description="Crie rotas para capturar ofertas de um grupo e enviar para outros automaticamente.">
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
             <Button
               size="sm"
               variant="outline"
-              className="gap-1.5"
+              className="gap-1.5 max-sm:h-10 max-sm:flex-1"
               disabled={isSyncing || syncingGroups}
               onClick={() => { void handleFullSync(); }}
             >
@@ -396,14 +448,14 @@ export default function RoutesPage() {
             <Button
               size="sm"
               variant="outline"
-              className="gap-1.5"
+              className="gap-1.5 max-sm:h-10 max-sm:flex-1"
               disabled={routes.length === 0}
               onClick={() => { void setAllRoutesStatus(allPaused ? "active" : "paused"); }}
             >
               {allPaused ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
               {allPaused ? "Retomar Rotas" : "Pausar Rotas"}
             </Button>
-            <Button size="sm" onClick={openNewRoute} className="gap-1.5">
+            <Button size="sm" onClick={openNewRoute} className="gap-1.5 max-sm:h-10 max-sm:w-full">
               <Plus className="h-4 w-4" />
               Nova rota
             </Button>
@@ -425,33 +477,74 @@ export default function RoutesPage() {
                 ? masterTargets.map((group) => group.name)
                 : route.destinationGroupIds.map((id) => groupsById.get(id)?.name).filter((name): name is string => Boolean(name));
               const destinationPreview = summarizeNames(destinationNames);
-              const status = statusConfig[route.status] || statusConfig.paused;
               const session = route.rules.sessionId ? sessionsById.get(route.rules.sessionId) : undefined;
               const isActive = route.status === "active";
               const sourceSession = source ? sessionsById.get(source.sessionId) : undefined;
               const template = route.rules.templateId
                 ? templatesById.get(route.rules.templateId)
                 : null;
+              const amazonTemplate = route.rules.amazonTemplateId
+                ? templatesById.get(route.rules.amazonTemplateId)
+                : null;
               const hasShopeeConversion = route.rules.autoConvertShopee;
               const hasMeliConversion = route.rules.autoConvertMercadoLivre;
+              const hasAmazonConversion = route.rules.autoConvertAmazon;
+              const hasQuietHours = route.rules.quietHoursEnabled === true;
+              const quietHoursStart = route.rules.quietHoursStart || "22:00";
+              const quietHoursEnd = route.rules.quietHoursEnd || "08:00";
+              const sourceConn = getSessionConnectionState(sourceSession?.status);
+              const destinationConn = getSessionConnectionState(session?.status);
+              const sourceChannelOnline = getChannelOnline(sourceSession?.platform, whatsappOnline, telegramOnline);
+              const destinationChannelOnline = getChannelOnline(session?.platform, whatsappOnline, telegramOnline);
+              const quietHoursBlocking = hasQuietHours && isInsideQuietHours(quietHoursStart, quietHoursEnd);
+
+              const runtimeBlockers: string[] = [];
+              if (!isActive) runtimeBlockers.push("Rota pausada");
+              if (!sourceSession) runtimeBlockers.push("Sessão de captura não encontrada");
+              if (!session) runtimeBlockers.push("Sessão de envio não encontrada");
+              if (sourceConn === "offline") runtimeBlockers.push("Captura offline");
+              if (destinationConn === "offline") runtimeBlockers.push("Envio offline");
+              if (sourceConn === "pending") runtimeBlockers.push("Captura conectando");
+              if (destinationConn === "pending") runtimeBlockers.push("Envio conectando");
+              if (sourceChannelOnline === false) runtimeBlockers.push("Canal de captura indisponível");
+              if (destinationChannelOnline === false) runtimeBlockers.push("Canal de envio indisponível");
+              if (hasShopeeConversion && shopeeOnline === false) runtimeBlockers.push("Serviço Shopee offline");
+              if (hasMeliConversion && meliOnline === false) runtimeBlockers.push("Serviço Mercado Livre offline");
+              if (quietHoursBlocking) runtimeBlockers.push(`Fora da janela de envio (${quietHoursStart}–${quietHoursEnd})`);
+
+              const runtimeSummary = runtimeBlockers.length > 0
+                ? runtimeBlockers[0]
+                : "";
+              const destinationCountLabel = masterTargets.length > 0
+                ? `${masterTargets.length} grupo(s) mestre`
+                : `${route.destinationGroupIds.length} grupo(s)`;
+              
+              const conversionBadges = [];
+              if (hasShopeeConversion) conversionBadges.push("Shopee");
+              if (hasMeliConversion) conversionBadges.push("Mercado Livre");
+              if (hasAmazonConversion) conversionBadges.push("Amazon");
+
+              const filtersSummary =
+                route.rules.positiveKeywords.length > 0 || route.rules.negativeKeywords.length > 0
+                  ? `Filtros: +${route.rules.positiveKeywords.length} / -${route.rules.negativeKeywords.length}`
+                  : null;
 
               return (
                 <Card
                   key={route.id}
                   className={cn(
-                    "glass overflow-hidden border-border/60 transition-all hover:border-primary/20 hover:shadow-md",
+                    "glass overflow-hidden border-border/60 transition-all hover:border-primary/20",
                     isActive && "ring-1 ring-success/20"
                   )}
                 >
                   {/* Status bar */}
                   <div className={cn("h-0.5 w-full", isActive ? "bg-success" : route.status === "error" ? "bg-destructive" : "bg-muted-foreground/20")} />
-                  <CardContent className="px-3 py-2.5 space-y-1.5">
+                  <CardContent className="px-4 py-3 space-y-2.5">
 
-                    {/* -- Row 1: name + status + health + msgs + actions -- */}
-                    <div className="flex items-start gap-2 min-[420px]:items-center">
-                      <div className="min-w-0 flex-1 flex items-center gap-1.5 overflow-hidden flex-wrap">
+                    {/* Header: Name + Health + Actions */}
+                    <div className="flex flex-wrap items-center justify-between gap-1">
+                      <div className="min-w-0 flex-1 flex items-center gap-2 overflow-hidden">
                         <p className="text-sm font-semibold tracking-tight truncate">{route.name}</p>
-                        <Badge variant="outline" className={cn("text-xs shrink-0", status.class)}>{status.label}</Badge>
                         <RouteHealthBadge
                           route={route}
                           groupsById={groupsById}
@@ -465,19 +558,23 @@ export default function RoutesPage() {
                           meliOnline={meliOnline}
                         />
                       </div>
-                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{route.messagesForwarded} msgs</span>
-                      <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-muted/35 p-0.5">
-                        <Button size="icon" variant="ghost" className="h-6 w-6" title="Reiniciar rota ativa" onClick={() => handleRefreshRoute(route.id, route.status)}>
-                          <RefreshCw className="h-3 w-3" />
+                      
+                      {/* Actions */}
+                      <div className="flex shrink-0 items-center justify-end">
+                        <div className="flex items-center justify-center mr-1 px-1.5 py-0.5 bg-muted/40 rounded text-2xs font-medium text-muted-foreground">
+                           <span className="tabular-nums text-foreground mr-1">{route.messagesForwarded}</span> enviadas
+                        </div>
+                        <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" title="Reiniciar rota ativa" onClick={() => handleRefreshRoute(route.id, route.status)}>
+                          <RefreshCw className="h-3.5 w-3.5" />
                         </Button>
-                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => toggleRoute(route.id, route.status)}>
-                          {isActive ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3 text-success" />}
+                        <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => toggleRoute(route.id, route.status)}>
+                          {isActive ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 text-success" />}
                         </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button size="icon" variant="ghost" className="h-6 w-6"><MoreVertical className="h-3 w-3" /></Button>
+                            <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground"><MoreVertical className="h-3.5 w-3.5" /></Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                          <DropdownMenuContent align="end" className="w-[min(calc(100vw-1rem),18rem)]">
                             <DropdownMenuItem onClick={() => handleEditRoute(route)}>
                               <Pencil className="mr-2 h-3.5 w-3.5" />Editar Rota
                             </DropdownMenuItem>
@@ -499,51 +596,49 @@ export default function RoutesPage() {
                       </div>
                     </div>
 
-                    {/* -- Row 2: flow -- */}
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
-                      {sourceSession && <ChannelPlatformIcon platform={sourceSession.platform} className="h-3 w-3 shrink-0" />}
-                      <span className="font-medium text-foreground truncate max-w-[130px]">{source?.name || "—"}</span>
-                      {sourceSession?.label.split(" - ")[1] && (
-                        <span className="hidden sm:inline shrink-0 truncate max-w-[90px]">· {sourceSession.label.split(" - ")[1]}</span>
-                      )}
-                      <ArrowRight className="h-3 w-3 shrink-0 text-primary" />
-                      {session && <ChannelPlatformIcon platform={session.platform} className="h-3 w-3 shrink-0" />}
-                      {masterTargets.length > 0 && !session && <Layers className="h-3 w-3 shrink-0" />}
-                      <span className="font-medium text-foreground truncate max-w-[130px]">{destinationPreview}</span>
-                      {session?.label.split(" - ")[1] && (
-                        <span className="hidden sm:inline shrink-0 truncate max-w-[90px]">· {session.label.split(" - ")[1]}</span>
+                    {/* Flow & Info Container */}
+                    <div className="flex flex-col gap-2">
+                      {/* Source -> Destination */}
+                      <div className="flex items-center gap-1.5 text-[13px] text-muted-foreground flex-wrap">
+                        {sourceSession && <ChannelPlatformIcon platform={sourceSession.platform} className="h-3.5 w-3.5 shrink-0" />}
+                        <span className="truncate font-medium text-foreground/90 max-w-[40vw] sm:max-w-none">{source?.name || "—"}</span>
+                        <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground/50 mx-0.5" />
+                        {session && <ChannelPlatformIcon platform={session.platform} className="h-3.5 w-3.5 shrink-0" />}
+                        {masterTargets.length > 0 && !session && <Layers className="h-3.5 w-3.5 shrink-0" />}
+                        <span className="truncate font-medium text-foreground/90 max-w-[40vw] sm:max-w-none">{destinationPreview}</span>
+                        <span className="text-muted-foreground/70 shrink-0 text-xs">({destinationCountLabel})</span>
+                      </div>
+
+                      {/* Badges Flow */}
+                      {(conversionBadges.length > 0 || hasQuietHours || filtersSummary) && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {conversionBadges.map((name, i) => (
+                            <Badge key={i} variant="secondary" className="px-1.5 py-0 text-2xs bg-primary/5 hover:bg-primary/10 text-primary border-primary/20 font-medium">
+                              {name}
+                            </Badge>
+                          ))}
+                          
+                          {hasQuietHours && (
+                            <Badge variant="outline" className="gap-1 px-1.5 py-0 text-2xs text-muted-foreground font-normal border-border/50">
+                              <Clock className="h-2.5 w-2.5" />{quietHoursStart}–{quietHoursEnd}
+                            </Badge>
+                          )}
+                          {filtersSummary && (
+                            <Badge variant="outline" className="gap-1 px-1.5 py-0 text-2xs text-muted-foreground font-normal border-border/50">
+                              <Filter className="h-2.5 w-2.5" />{filtersSummary}
+                            </Badge>
+                          )}
+                        </div>
                       )}
                     </div>
 
-                    {/* -- Row 3: configured features only -- */}
-                    {(hasShopeeConversion || hasMeliConversion || route.rules.positiveKeywords.length > 0 || route.rules.negativeKeywords.length > 0) && (
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {hasShopeeConversion && (
-                          <Badge variant="outline" className="gap-0.5 text-2xs px-1.5 py-0">
-                            <LinkIcon className="h-2 w-2" />Shopee
-                          </Badge>
-                        )}
-                        {template && hasShopeeConversion && (
-                          <Badge variant="outline" className="gap-0.5 text-2xs px-1.5 py-0">
-                            <FileText className="h-2 w-2" />{template.name}
-                          </Badge>
-                        )}
-                        {hasMeliConversion && (
-                          <Badge variant="outline" className="gap-0.5 text-2xs px-1.5 py-0">
-                            <LinkIcon className="h-2 w-2" />
-                            Mercado Livre
-                          </Badge>
-                        )}
-                        {route.rules.positiveKeywords.length > 0 && (
-                          <Badge variant="outline" className="gap-0.5 text-2xs px-1.5 py-0 text-success">
-                            <Filter className="h-2 w-2" />+{route.rules.positiveKeywords.length}
-                          </Badge>
-                        )}
-                        {route.rules.negativeKeywords.length > 0 && (
-                          <Badge variant="outline" className="gap-0.5 text-2xs px-1.5 py-0 text-destructive">
-                            <Filter className="h-2 w-2" />-{route.rules.negativeKeywords.length}
-                          </Badge>
-                        )}
+                    {/* Blockers */}
+                    {runtimeBlockers.length > 0 && (
+                      <div className="pt-2 mt-1 border-t border-border/40">
+                        <p className="flex items-center gap-1.5 text-xs font-medium text-warning truncate">
+                          <AlertTriangle className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{runtimeSummary}</span>
+                        </p>
                       </div>
                     )}
 
@@ -577,8 +672,8 @@ export default function RoutesPage() {
 
       {/* Create Route Wizard */}
       <Dialog open={showNew} onOpenChange={(o) => { if (!o) closeNew(); }}>
-        <DialogContent className="w-[min(calc(100vw-1rem),42rem)] max-w-none max-h-[92dvh] overflow-hidden p-0">
-          <div className="flex max-h-[92dvh] flex-col">
+        <DialogContent className="w-[min(calc(100vw-0.75rem),42rem)] max-w-none max-h-[94dvh] overflow-hidden p-0">
+          <div className="flex max-h-[94dvh] flex-col">
             <div className="space-y-4 border-b px-4 pt-4 pb-3 sm:px-6 sm:pt-6 sm:pb-5">
               <DialogHeader className="space-y-1.5">
                 <DialogTitle>{isEditing ? "Editar" : "Nova"} Rota - Passo {step} de {totalSteps}</DialogTitle>
@@ -593,7 +688,7 @@ export default function RoutesPage() {
               </div>
             </div>
 
-            <div className="overflow-y-auto px-5 py-4 max-h-[calc(92dvh-210px)] sm:px-6 sm:py-5">
+            <div className="max-h-[calc(94dvh-210px)] overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
               {/* STEP 1: Source Session + Source Group */}
               {step === 1 && (
                 <div className="space-y-5">
@@ -626,31 +721,33 @@ export default function RoutesPage() {
                 )}
               </div>
 
-              {nr.sourceSessionId && (sourceSessionConnected || isEditing) && (
+              {nr.sourceSessionId && (
                 <div className="space-y-2">
                   <Label>Grupo de Origem (monitorado)</Label>
-                  {!sourceSessionConnected && (
+                  {!sourceSessionConnected && !isEditing && (
                     <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
                       Sessão offline — mostrando grupos do último estado. A rota não vai capturar mensagens enquanto a sessão estiver desconectada.
+                    </p>
+                  )}
+                  {!sourceSessionConnected && isEditing && (
+                    <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
+                      Sessão offline — você pode continuar editando. A rota não vai capturar mensagens enquanto a sessão estiver desconectada.
                     </p>
                   )}
                   {sourceGroups.length === 0 ? (
                     <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">Nenhum grupo sincronizado pra essa sessão. Sincronize os grupos primeiro.</p>
                   ) : (
                     <>
-                      <Select value={nr.sourceGroupId} onValueChange={(v) => setNr({ ...nr, sourceGroupId: v })}>
-                        <SelectTrigger><SelectValue placeholder="Escolha o grupo de origem..." /></SelectTrigger>
-                        <SelectContent>
-                          {sourceGroups.map((g) => (
-                            <SelectItem key={g.id} value={g.id}>
-                              <span className="flex items-center gap-2">
-                                {g.name}
-                                <Badge variant="outline" className="text-2xs">{g.memberCount} membros</Badge>
-                              </span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <GroupSelect
+                        value={nr.sourceGroupId}
+                        onValueChange={(v) => setNr({ ...nr, sourceGroupId: v })}
+                        groups={sourceGroups.map((g) => ({
+                          id: g.id,
+                          name: g.name,
+                          memberCount: g.memberCount,
+                        }))}
+                        placeholder="Escolha o grupo de origem..."
+                      />
                       <p className="text-xs text-muted-foreground">As mensagens que chegarem nesse grupo vão ser processadas pela rota.</p>
                     </>
                   )}
@@ -688,7 +785,7 @@ export default function RoutesPage() {
                 <>
                   <div className="space-y-2">
                     <Label>Tipo de Destino</Label>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 min-[430px]:grid-cols-2">
                       <button
                         className={cn(
                           "flex flex-col items-center gap-2 p-4 rounded-xl border transition-all",
@@ -744,7 +841,7 @@ export default function RoutesPage() {
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      <Label>Grupos de Destino</Label>
+                      <Label>Grupos de destino</Label>
                       {destGroups.length === 0 ? (
                         <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">
                           Nenhum grupo disponível pra sessão {destSession?.label}. Sincronize os grupos primeiro.
@@ -811,7 +908,7 @@ export default function RoutesPage() {
                             <SelectItem value="original">
                               <span className="flex items-center gap-2">Manter mensagem original</span>
                             </SelectItem>
-                            {templates.map((t) => (
+                            {shopeeTemplates.map((t) => (
                               <SelectItem key={t.id} value={t.id}>
                                 <span className="flex items-center gap-2">Template {t.name}</span>
                               </SelectItem>
@@ -852,6 +949,55 @@ export default function RoutesPage() {
                     <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
                       Nenhuma sessão Mercado Livre no momento. Conecte uma sessão pra usar a conversão.
                     </p>
+                  )}
+
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div className="flex items-center gap-2 pr-3">
+                      <LinkIcon className="h-4 w-4 text-primary" />
+                      <div>
+                        <Label className="text-sm">Conversão Amazon</Label>
+                        <p className="text-xs text-muted-foreground">Os links da Amazon vão ser convertidos pro seu link de afiliado.</p>
+                      </div>
+                    </div>
+                    <Switch
+                      checked={nr.autoConvertAmazon}
+                      onCheckedChange={(checked) => {
+                        setNr((prev) => ({
+                          ...prev,
+                          autoConvertAmazon: checked,
+                          amazonTemplateId: checked ? prev.amazonTemplateId : "",
+                        }));
+                      }}
+                    />
+                  </div>
+
+                  {nr.autoConvertAmazon && (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label className="text-xs">Template Amazon</Label>
+                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão da Amazon.</p>
+                        <Select value={nr.amazonTemplateId || "original"} onValueChange={(v) => setNr({ ...nr, amazonTemplateId: v })}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="original">
+                              <span className="flex items-center gap-2">Manter mensagem original</span>
+                            </SelectItem>
+                            {amazonTemplates.map((t) => (
+                              <SelectItem key={t.id} value={t.id}>
+                                <span className="flex items-center gap-2">Template {t.name}</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
+                        <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                        <p className="text-xs text-muted-foreground">
+                          Se marcar "Manter mensagem original", só o link da Amazon vai ser convertido pra afiliado.
+                        </p>
+                      </div>
+                    </div>
                   )}
 
                 </CardContent>
@@ -901,26 +1047,70 @@ export default function RoutesPage() {
                   </div>
                 </CardContent>
               </Card>
+
+              <Card className="glass">
+                <CardContent className="p-4 space-y-4">
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div className="pr-3">
+                      <Label className="text-sm">Editar horários de envio</Label>
+                      <p className="text-xs text-muted-foreground">Segura os disparos fora da janela permitida e envia no próximo horário liberado.</p>
+                    </div>
+                    <Switch
+                      checked={nr.quietHoursEnabled}
+                      onCheckedChange={(checked) => {
+                        setNr((prev) => ({
+                          ...prev,
+                          quietHoursEnabled: checked,
+                        }));
+                      }}
+                    />
+                  </div>
+
+                  {nr.quietHoursEnabled && (
+                    <div className="space-y-3 rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Não disparar mensagens automáticas entre os horários abaixo.</p>
+                      <div className="grid gap-3 min-[430px]:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Início do bloqueio</Label>
+                          <Input
+                            type="time"
+                            value={nr.quietHoursStart}
+                            onChange={(e) => setNr((prev) => ({ ...prev, quietHoursStart: e.target.value || "22:00" }))}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Fim do bloqueio</Label>
+                          <Input
+                            type="time"
+                            value={nr.quietHoursEnd}
+                            onChange={(e) => setNr((prev) => ({ ...prev, quietHoursEnd: e.target.value || "08:00" }))}
+                          />
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground">Exemplo: 22:00 até 08:00 segura a fila durante a madrugada e retoma pela manhã.</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
                 </div>
               )}
             </div>
 
             {/* Footer */}
-            <DialogFooter className="border-t bg-card px-5 py-3 sm:px-6 sm:py-4">
-              {step > 1 ? (
-                <Button variant="ghost" onClick={() => setStep(step - 1)}>Voltar</Button>
-              ) : (
-                <Button variant="ghost" onClick={closeNew}>Cancelar</Button>
-              )}
-              <div className="flex-1" />
+            <DialogFooter className="border-t bg-card px-4 py-3 sm:px-6 sm:py-4">
               {step < totalSteps ? (
-                <Button onClick={() => setStep(step + 1)} disabled={step === 1 ? !canGoStep2 : !canGoStep3}>
+                <Button className="max-sm:w-full" onClick={() => setStep(step + 1)} disabled={step === 1 ? !canGoStep2 : !canGoStep3}>
                   Próximo
                 </Button>
               ) : (
-                <Button onClick={handleCreateRoute} disabled={!canCreate}>
+                <Button className="max-sm:w-full" onClick={handleCreateRoute} disabled={!canCreate}>
                   {isEditing ? "Salvar" : "Criar Rota"}
                 </Button>
+              )}
+              {step > 1 ? (
+                <Button className="max-sm:w-full" variant="ghost" onClick={() => setStep(step - 1)}>Voltar</Button>
+              ) : (
+                <Button className="max-sm:w-full" variant="ghost" onClick={closeNew}>Cancelar</Button>
               )}
             </DialogFooter>
           </div>

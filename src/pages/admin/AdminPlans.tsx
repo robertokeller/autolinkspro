@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { useAdminControlPlane } from "@/hooks/useAdminControlPlane";
 import { applyAccessLevelLimits, type ManagedPlan } from "@/lib/admin-control-plane";
 import { appendAdminAudit, triggerGlobalResyncPulse } from "@/lib/admin-shared";
-import { getPlanFeatureList, plans as staticPlans } from "@/lib/plans";
+import { getPlanFeatureList, plans as staticPlans, type PlanLimits } from "@/lib/plans";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,6 +60,7 @@ function clonePlans(plans: ManagedPlan[]) {
   return plans.map((plan) => ({
     ...plan,
     limits: { ...plan.limits },
+    baseLimits: plan.baseLimits ? { ...plan.baseLimits } : undefined,
     homeFeatureHighlights: [...(plan.homeFeatureHighlights || [])],
   }));
 }
@@ -112,8 +113,19 @@ export default function AdminPlans() {
   };
 
   const getBaseLimitsForPlan = (plan: ManagedPlan) => {
-    const staticPlan = staticPlans.find((item) => item.id === plan.id);
-    return staticPlan?.limits || plan.limits;
+    return plan.baseLimits || plan.limits;
+  };
+
+  const updateBaseLimits = (planId: string, key: keyof PlanLimits, value: string | boolean) => {
+    setDraftPlans((prev) => prev.map((plan) => {
+      if (plan.id !== planId) return plan;
+      const current = plan.baseLimits || plan.limits;
+      const newBaseLimits = {
+        ...current,
+        [key]: typeof value === "boolean" ? value : (Number(value) || 0),
+      };
+      return { ...plan, baseLimits: newBaseLimits };
+    }));
   };
 
   const applyAccessLevelToPlan = (plan: ManagedPlan, accessLevelId: string): ManagedPlan => {
@@ -138,6 +150,7 @@ export default function AdminPlans() {
       ...plan,
       accessLevelId,
       limits,
+      baseLimits: getBaseLimitsForPlan(plan),
       homeFeatureHighlights: resourceItems,
     };
   };
@@ -165,17 +178,17 @@ export default function AdminPlans() {
   const createPlan = () => {
     const name = newPlan.name.trim();
     if (!name) {
-      toast.error("Coloca o nome do plano");
+      toast.error("Forneça o nome do plano");
       return;
     }
 
     if (!Number.isFinite(newPlan.price) || newPlan.price < 0) {
-      toast.error("Coloca um preço válido");
+      toast.error("Forneça um preço válido");
       return;
     }
 
     if (!Number.isFinite(newPlan.periodDays) || newPlan.periodDays < 1) {
-      toast.error("Coloca a duração em dias (mínimo 1)");
+      toast.error("Forneça a duração em dias (mínimo 1)");
       return;
     }
 
@@ -263,20 +276,25 @@ export default function AdminPlans() {
       return applyAccessLevelToPlan(normalized, normalized.accessLevelId);
     });
 
-    saveState({
-      ...state,
-      plans: syncedPlans.map((plan, index) => ({
-        ...plan,
-        homeTitle: plan.name,
-        accountTitle: plan.name,
-        // Preserve admin-written descriptions; fall back only when empty.
-        homeDescription: plan.homeDescription?.trim() || "O que vem no plano.",
-        accountDescription: plan.accountDescription?.trim() || plan.homeDescription?.trim() || "O que vem no plano.",
-        homeCtaText: plan.price === 0 ? "Começar grátis" : `Assinar ${plan.name}`,
-        sortOrder: index,
-      })),
-      defaultSignupPlanId: draftDefaultSignupPlanId,
-    });
+    try {
+      await saveState({
+        ...state,
+        plans: syncedPlans.map((plan, index) => ({
+          ...plan,
+          homeTitle: plan.name,
+          accountTitle: plan.name,
+          // Preserve admin-written descriptions; fall back only when empty.
+          homeDescription: plan.homeDescription?.trim() || "O que vem no plano.",
+          accountDescription: plan.accountDescription?.trim() || plan.homeDescription?.trim() || "O que vem no plano.",
+          homeCtaText: plan.price === 0 ? "Começar grátis" : `Assinar ${plan.name}`,
+          sortOrder: index,
+        })),
+        defaultSignupPlanId: draftDefaultSignupPlanId,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Nao foi possivel salvar planos");
+      return;
+    }
 
     triggerGlobalResyncPulse("admin-plans-save");
     setActivePlanId(null);
@@ -618,6 +636,118 @@ export default function AdminPlans() {
                       }))}
                     />
                   </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="admin-card-title">Limites Base do Plano</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Capacidade bruta antes dos caps do nível de acesso. Use <strong>-1</strong> para ilimitado · <strong>0</strong> bloqueia.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sessões</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      {(
+                        [
+                          { key: "whatsappSessions", label: "WhatsApp" },
+                          { key: "telegramSessions", label: "Telegram" },
+                          { key: "meliSessions", label: "Mercado Livre" },
+                        ] as const
+                      ).map(({ key, label }) => (
+                        <div key={key} className="space-y-1">
+                          <Label className="text-xs">{label}</Label>
+                          <Input
+                            type="number"
+                            className="h-8"
+                            value={String((activePlan.baseLimits || activePlan.limits)[key] ?? 0)}
+                            onChange={(e) => updateBaseLimits(activePlan.id, key, e.target.value)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Contadores</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      {(
+                        [
+                          { key: "routes", label: "Rotas" },
+                          { key: "automations", label: "Automações" },
+                          { key: "schedules", label: "Agendamentos" },
+                          { key: "templates", label: "Templates" },
+                          { key: "masterGroups", label: "Master Groups" },
+                          { key: "meliAutomations", label: "Auto. ML" },
+                        ] as const
+                      ).map(({ key, label }) => (
+                        <div key={key} className="space-y-1">
+                          <Label className="text-xs">{label}</Label>
+                          <Input
+                            type="number"
+                            className="h-8"
+                            value={String((activePlan.baseLimits || activePlan.limits)[key] ?? 0)}
+                            onChange={(e) => updateBaseLimits(activePlan.id, key, e.target.value)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Grupos de destino</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      {(
+                        [
+                          { key: "groups", label: "Total Cadastro" },
+                          { key: "groupsPerAutomation", label: "Cota Automações" },
+                          { key: "groupsPerRoute", label: "Cota Rotas" },
+                        ] as const
+                      ).map(({ key, label }) => (
+                        <div key={key} className="space-y-1">
+                          <Label className="text-xs">{label}</Label>
+                          <Input
+                            type="number"
+                            className="h-8"
+                            value={String((activePlan.baseLimits || activePlan.limits)[key] ?? 0)}
+                            onChange={(e) => updateBaseLimits(activePlan.id, key, e.target.value)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-4 pt-1">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={Boolean((activePlan.baseLimits || activePlan.limits).bulkSend)}
+                        onCheckedChange={(checked) => updateBaseLimits(activePlan.id, "bulkSend", checked)}
+                      />
+                      <Label className="text-xs">Envio em massa (bulkSend)</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={Boolean((activePlan.baseLimits || activePlan.limits).linkHub)}
+                        onCheckedChange={(checked) => updateBaseLimits(activePlan.id, "linkHub", checked)}
+                      />
+                      <Label className="text-xs">Link Hub</Label>
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const accessLevel = state.accessLevels.find((level) => level.id === activePlan.accessLevelId);
+                    if (!accessLevel) return null;
+                    const ov = accessLevel.limitOverrides;
+                    const fmt = (n: number | null) => (n == null ? "—" : n === -1 ? "∞" : String(n));
+                    return (
+                      <div className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                        <span className="font-medium">Caps do nível "{accessLevel.name}":</span>{" "}
+                        WA: {fmt(ov.whatsappSessions)} · TG: {fmt(ov.telegramSessions)} · Auto: {fmt(ov.automations)} · Rotas: {fmt(ov.routes)} · Agend: {fmt(ov.schedules)} · G.auto: {fmt(ov.groupsPerAutomation)} · G.rota: {fmt(ov.groupsPerRoute)}
+                      </div>
+                    );
+                  })()}
                 </CardContent>
               </Card>
             </div>

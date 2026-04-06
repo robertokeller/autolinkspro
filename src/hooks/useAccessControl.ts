@@ -5,6 +5,7 @@ import { backend } from "@/integrations/backend/client";
 import { subscribeLocalDbChanges } from "@/integrations/backend/local-core";
 import { subscribeAdminControlPlane } from "@/lib/admin-control-plane";
 import { getFeatureAccessPolicyByPlan, isFeatureEnabledByPlan, resolvePlan, type AppFeature } from "@/lib/access-control";
+import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
 
 const PROFILE_PLAN_TIMEOUT_MS = 5000;
 
@@ -48,8 +49,8 @@ export function useAccessControl() {
     enabled: !!user,
   });
 
-  const planId = data?.plan_id || "plan-starter";
-  const plan = resolvePlan(planId);
+  const planId = normalizePlanId(data?.plan_id);
+  const plan = planId ? resolvePlan(planId) : null;
   const planExpiresAt = typeof data?.plan_expires_at === "string" && data.plan_expires_at.trim()
     ? data.plan_expires_at
     : null;
@@ -73,6 +74,7 @@ export function useAccessControl() {
 
   const canAccess = (feature: AppFeature) => {
     if (isAdmin) return true;
+    if (!planId) return false;
     if (isPlanExpired) return false;
     return isFeatureEnabledByPlan(feature, planId);
   };
@@ -84,6 +86,15 @@ export function useAccessControl() {
         blockedMessage: "",
         hasCapacity: true,
         enabled: true,
+      };
+    }
+
+    if (!planId) {
+      return {
+        mode: "blocked" as const,
+        blockedMessage: PLAN_SYNC_ERROR_MESSAGE,
+        hasCapacity: false,
+        enabled: false,
       };
     }
 
@@ -105,6 +116,7 @@ export function useAccessControl() {
 
   const canSeeFeature = (feature: AppFeature) => {
     if (isAdmin) return true;
+    if (!planId) return false;
     return getFeaturePolicy(feature).mode !== "hidden";
   };
 

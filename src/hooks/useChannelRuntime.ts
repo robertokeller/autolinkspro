@@ -34,20 +34,64 @@ export function useChannelRuntime(options: UseChannelRuntimeOptions = {}) {
   useEffect(() => {
     if (isLoading || !userId || !enabled) return;
 
-    const runPolling = () => {
-      if (document.visibilityState !== "visible") return;
-      void pollAllChannelEvents()
-        .catch(() => undefined)
-        .finally(() => {
+    let cancelled = false;
+    let pollingInFlight = false;
+
+    const runPolling = async () => {
+      if (cancelled || document.visibilityState !== "visible" || pollingInFlight) return;
+
+      pollingInFlight = true;
+      try {
+        await pollAllChannelEvents();
+      } catch {
+        // Best-effort channel polling.
+      } finally {
+        pollingInFlight = false;
+        if (!cancelled) {
           qc.invalidateQueries({ queryKey: ["groups"] });
-        });
+        }
+      }
     };
 
-    runPolling();
-    const interval = window.setInterval(runPolling, 7_500);
+    const startPolling = () => {
+      void runPolling();
+      const interval = window.setInterval(() => {
+        void runPolling();
+      }, 7_500);
+
+      return () => {
+        window.clearInterval(interval);
+      };
+    };
+
+    if (typeof navigator?.locks?.request !== "function") {
+      const cleanup = startPolling();
+      return () => {
+        cancelled = true;
+        cleanup();
+      };
+    }
+
+    void navigator.locks.request(
+      `autolinks:channel-runtime:leader:${userId}`,
+      async () => {
+        if (cancelled) return;
+
+        const cleanup = startPolling();
+        await new Promise<void>((resolve) => {
+          const guard = window.setInterval(() => {
+            if (cancelled) {
+              window.clearInterval(guard);
+              cleanup();
+              resolve();
+            }
+          }, 500);
+        });
+      },
+    );
 
     return () => {
-      window.clearInterval(interval);
+      cancelled = true;
     };
   }, [enabled, isLoading, userId, qc]);
 

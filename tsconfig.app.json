@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "types": ["vitest/globals"],
     "target": "ES2020",
     "useDefineForClassFields": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
@@ -27,11 +26,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"],
-  "exclude": [
-    "src/integrations/backend/_local-core-legacy.ts",
-    "src/integrations/backend/local-functions.ts",
-    "src/integrations/backend/local-auth.test.ts",
-    "src/integrations/backend/local-sync.test.ts"
-  ]
+  "include": ["src"]
 }

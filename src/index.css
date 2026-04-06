@@ -8,6 +8,7 @@
   :root {
     --viewport-width: 100vw;
     --viewport-height: 100vh;
+    --viewport-aspect-ratio: 1;
     --vh-unit: 1vh;
     --app-font-scale: 1;
     --app-space-scale: 1;
@@ -294,6 +295,21 @@
   --ds-stack-gap: 1rem;
 }
 
+:root[data-mobile-like="true"] {
+  --ds-page-gap: 1rem;
+  --ds-stack-gap: 1rem;
+}
+
+:root[data-portrait-tablet="true"] {
+  --ds-page-gap: 1.125rem;
+  --ds-stack-gap: 1.125rem;
+}
+
+:root[data-portrait-phone="true"] {
+  --ds-page-gap: 0.9rem;
+  --ds-stack-gap: 0.9rem;
+}
+
 :root[data-screen-profile="tablet"] {
   --ds-page-gap: 1.25rem;
   --ds-stack-gap: 1.25rem;
@@ -302,6 +318,19 @@
 :root[data-screen-profile="tiny"] .ds-card-grid,
 :root[data-screen-profile="mobile"] .ds-card-grid {
   gap: 0.75rem;
+}
+
+:root[data-mobile-like="true"] .touch-target {
+  min-height: max(var(--touch-target-size), 44px);
+  min-width: max(var(--touch-target-size), 44px);
+}
+
+:root[data-portrait-phone="true"] .ds-card-grid {
+  gap: 0.625rem;
+}
+
+:root[data-mobile-like="true"] .ds-page {
+  padding-bottom: max(var(--safe-area-bottom), 0px);
 }
 
 @media (max-width: 767px) {

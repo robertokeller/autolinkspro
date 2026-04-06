@@ -160,6 +160,7 @@ type TableMap = {
     email: string;
     plan_id: string;
     plan_expires_at: string | null;
+    phone: string;
     notification_prefs: Json;
   }>;
   system_announcements: TableDef<{

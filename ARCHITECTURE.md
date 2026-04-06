@@ -28,7 +28,6 @@ System architecture reference.
 
 - `src/integrations/backend/client.ts`: fachada HTTP usada por toda a app (dev + produção).
 - `src/integrations/backend/local-core.ts`: helpers para admin config, sobrescreve cache via backend.
-- `src/integrations/backend/_local-core-legacy.ts`: banco in-memory usado **exclusivamente em testes Vitest**.
 - `services/api/src/index.ts`: servidor Express, auth JWT, REST, RPC.
 - `supabase/migrations/*.sql`: schema + políticas de segurança (RLS/policies), versionadas.
 
@@ -36,7 +35,6 @@ System architecture reference.
 
 | Modo | Backend | Banco |
 | --- | --- | --- |
-| `npm run test` | In-memory (legado, sem HTTP) | Nenhum (mock) |
 | `npm run dev` | API HTTP (`localhost:3116`) | Supabase PostgreSQL remoto |
 | Produção (Coolify) | API HTTP (domínio configurado) | Mesmo Supabase PostgreSQL remoto |
 

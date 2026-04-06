@@ -53,7 +53,7 @@ async function ensureDistExists() {
   try {
     await access(path.join(distDir, "index.html"));
   } catch {
-    throw new Error("Build nao encontrado. Rode `npm run build` antes de iniciar o servidor.");
+    throw new Error("Build não encontrado. Rode `npm run build` antes de iniciar o servidor.");
   }
 }
 

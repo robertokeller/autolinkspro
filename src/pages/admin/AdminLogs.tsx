@@ -321,7 +321,7 @@ export default function AdminLogs() {
 
       toast.success(`Diagnóstico exportado (${fileName})`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Nao foi possivel exportar o diagnostico");
+      toast.error(error instanceof Error ? error.message : "Não foi possível exportar o diagnóstico");
     } finally {
       setExporting(false);
     }

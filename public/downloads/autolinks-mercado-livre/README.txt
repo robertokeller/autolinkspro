@@ -1,26 +1,20 @@
 AutoLinks - Mercado Livre
 
-Como instalar (Chrome):
-1) Extraia este zip.
-2) Abra chrome://extensions.
-3) Ative o Modo do desenvolvedor.
-4) Clique em Carregar sem compactacao.
-5) Selecione a pasta autolinks-mercado-livre.
+INSTALAÇÃO (Chrome):
+1) Extraia este zip em uma pasta do seu computador.
+2) Abra chrome://extensions na barra de endereço.
+3) Ative o "Modo do desenvolvedor" no canto superior direito.
+4) Clique em "Carregar extensão sem compactação".
+5) Selecione a pasta "autolinks-mercado-livre" que você extraiu.
 
-Como usar:
-1) Clique no icone da extensao.
-2) Faca login na extensao com seu e-mail e senha do Auto Links.
-3) Abra uma aba do Mercado Livre e faca login nela.
-4) Volte para a extensao e clique em Capturar e enviar cookies.
+COMO USAR:
+1) Clique no ícone da extensão (canto superior direito do Chrome).
+2) Faça login com seu e-mail e senha do AutoLinks.
+3) Abra o Mercado Livre em outra aba e faça login na sua conta.
+4) Volte para a extensão e clique em "Capturar e enviar cookies".
+5) Pronto! Seus dados estão salvos no AutoLinks.
 
-Observacao:
-- A extensao conecta automaticamente na API do Auto Links.
-- Se aparecer "Failed to fetch", verifique internet, VPN/proxy e tente novamente.
-- A extensao captura apenas cookies de dominios Mercado Livre.
-
-Sistema de icones:
-- Fonte oficial: icons/icon-source.png (preferencial)
-- Fallback legado: icons/icon-source.svg
-- Manifest usa: icons/icon-16.png, icons/icon-32.png, icons/icon-48.png, icons/icon-128.png
-- Variacoes monocromaticas: icons/icon-mono-16.png, icons/icon-mono-32.png, icons/icon-mono-48.png, icons/icon-mono-128.png
-- Para regenerar os PNGs: npm run ext:icons:build
+OBSERVAÇÕES IMPORTANTES:
+- A extensão captura apenas cookies de domínios do Mercado Livre.
+- Verifique sua conexão com a internet.
+- Se receber erro "Failed to fetch", desabilite VPN/proxy ou tente novamente.

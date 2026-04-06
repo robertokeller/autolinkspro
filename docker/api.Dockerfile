@@ -18,6 +18,7 @@ ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=3116
 
+USER node
 EXPOSE 3116
 
 CMD ["node", "dist/index.js"]

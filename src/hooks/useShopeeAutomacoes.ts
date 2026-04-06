@@ -5,6 +5,7 @@ import { logHistorico } from "@/lib/log-historico";
 import { toast } from "sonner";
 import type { Tables } from "@/integrations/backend/types";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
+import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
 import {
   mergeAutomationOfferSourceConfig,
   mergeAutomationKeywordFilters,
@@ -12,6 +13,7 @@ import {
   readAutomationOfferSourceConfig,
   readAutomationKeywordFilters,
 } from "@/lib/automation-keywords";
+import { mergeAutomationSessionConfig, readAutomationSessionId } from "@/lib/automation-session";
 
 export type ShopeeAutomationRow = Tables<"shopee_automations">;
 
@@ -35,11 +37,19 @@ export interface CreateAutomationInput {
   vitrineTabs?: string[];
 }
 
+function isShopeeAutomationRow(row: ShopeeAutomationRow): boolean {
+  const config = row.config && typeof row.config === "object" && !Array.isArray(row.config)
+    ? row.config as Record<string, unknown>
+    : null;
+  const marketplace = String(config?.marketplace || "").trim().toLowerCase();
+  return marketplace !== "meli" && marketplace !== "amazon";
+}
+
 export function useShopeeAutomacoes() {
   const { user, isAdmin } = useAuth();
   const qc = useQueryClient();
 
-  const { data: automations = [], isLoading } = useQuery<ShopeeAutomationRow[]>({
+  const automationQuery = useQuery<ShopeeAutomationRow[]>({
     queryKey: ["shopee_automations", user?.id],
     queryFn: async () => {
       const { data, error } = await backend
@@ -47,10 +57,13 @@ export function useShopeeAutomacoes() {
         .select("*")
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data ?? [];
+      const rows = (data ?? []) as ShopeeAutomationRow[];
+      return rows.filter((row) => isShopeeAutomationRow(row));
     },
     enabled: !!user,
   });
+  const automations: ShopeeAutomationRow[] = automationQuery.data ?? [];
+  const { isLoading } = automationQuery;
 
   const createMutation = useMutation({
     mutationFn: async (input: CreateAutomationInput) => {
@@ -60,10 +73,16 @@ export function useShopeeAutomacoes() {
         const { data: profile, error: profileError } = await backend
           .from("profiles")
           .select("plan_id")
+          .eq("user_id", user.id)
           .maybeSingle();
         if (profileError) throw profileError;
 
-        const limits = resolveEffectiveLimitsByPlanId(profile?.plan_id || "plan-starter");
+        const planId = normalizePlanId(profile?.plan_id);
+        if (!planId) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
+
+        const limits = resolveEffectiveLimitsByPlanId(planId);
+        if (!limits) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
+
         const maxAutomations = limits?.automations ?? 0;
         if (maxAutomations !== -1 && automations.length >= maxAutomations) {
           throw new Error("Limite de automações Shopee atingido para o seu nível de acesso.");
@@ -91,6 +110,7 @@ export function useShopeeAutomacoes() {
         offerSourceMode: input.offerSourceMode,
         vitrineTabs: input.vitrineTabs,
       });
+      config = mergeAutomationSessionConfig(config, input.sessionId);
       const { error } = await backend.from("shopee_automations").insert({
         name: input.name,
         interval_minutes: input.intervalMinutes,
@@ -102,7 +122,7 @@ export function useShopeeAutomacoes() {
         destination_group_ids: input.destinationGroupIds || [],
         master_group_ids: input.masterGroupIds || [],
         template_id: input.templateId || null,
-        session_id: input.sessionId || null,
+        session_id: null,
         active_hours_start: input.activeHoursStart || "08:00",
         active_hours_end: input.activeHoursEnd || "20:00",
         config,
@@ -120,14 +140,22 @@ export function useShopeeAutomacoes() {
   const updateMutation = useMutation({
     mutationFn: async ({ id, ...input }: Partial<CreateAutomationInput> & { id: string }) => {
       if (!user) throw new Error("Not authenticated");
+      const currentAutomation = automations.find((item) => item.id === id);
 
       if (!isAdmin && input.destinationGroupIds !== undefined) {
         const { data: profile, error: profileError } = await backend
           .from("profiles")
           .select("plan_id")
+          .eq("user_id", user.id)
           .maybeSingle();
         if (profileError) throw profileError;
-        const limits = resolveEffectiveLimitsByPlanId(profile?.plan_id || "plan-starter");
+
+        const planId = normalizePlanId(profile?.plan_id);
+        if (!planId) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
+
+        const limits = resolveEffectiveLimitsByPlanId(planId);
+        if (!limits) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
+
         const maxGroupSlots = limits?.groupsPerAutomation ?? 0;
         if (maxGroupSlots !== -1) {
           const slotsUsedByOthers = automations
@@ -152,16 +180,16 @@ export function useShopeeAutomacoes() {
       if (input.destinationGroupIds !== undefined) updates.destination_group_ids = input.destinationGroupIds;
       if (input.masterGroupIds !== undefined) updates.master_group_ids = input.masterGroupIds;
       if (input.templateId !== undefined) updates.template_id = input.templateId || null;
-      if (input.sessionId !== undefined) updates.session_id = input.sessionId || null;
+      if (input.sessionId !== undefined) updates.session_id = null;
       if (input.activeHoursStart !== undefined) updates.active_hours_start = input.activeHoursStart;
       if (input.activeHoursEnd !== undefined) updates.active_hours_end = input.activeHoursEnd;
       if (
-        input.positiveKeywords !== undefined
+        input.sessionId !== undefined
+        || input.positiveKeywords !== undefined
         || input.negativeKeywords !== undefined
         || input.offerSourceMode !== undefined
         || input.vitrineTabs !== undefined
       ) {
-        const currentAutomation = automations.find((item) => item.id === id);
         const currentFilters = readAutomationKeywordFilters(currentAutomation?.config);
         const currentSource = readAutomationOfferSourceConfig(currentAutomation?.config);
         const positiveKeywords = input.positiveKeywords !== undefined
@@ -176,8 +204,12 @@ export function useShopeeAutomacoes() {
         const vitrineTabs = input.vitrineTabs !== undefined
           ? input.vitrineTabs
           : currentSource.vitrineTabs;
+        const effectiveSessionId = input.sessionId !== undefined
+          ? input.sessionId
+          : readAutomationSessionId(currentAutomation?.config, currentAutomation?.session_id);
         let config = mergeAutomationKeywordFilters(currentAutomation?.config, { positiveKeywords, negativeKeywords });
         config = mergeAutomationOfferSourceConfig(config, { offerSourceMode, vitrineTabs });
+        config = mergeAutomationSessionConfig(config, effectiveSessionId);
         updates.config = config;
       }
 
@@ -235,7 +267,7 @@ export function useShopeeAutomacoes() {
     const filters = readAutomationKeywordFilters(auto.config);
     const sourceConfig = readAutomationOfferSourceConfig(auto.config);
     await createMutation.mutateAsync({
-      name: `Copia de ${auto.name}`,
+      name: `Cópia de ${auto.name}`,
       intervalMinutes: auto.interval_minutes,
       minDiscount: auto.min_discount,
       minCommission: auto.min_commission,
@@ -245,7 +277,7 @@ export function useShopeeAutomacoes() {
       destinationGroupIds: (auto.destination_group_ids || []) as string[],
       masterGroupIds: (auto.master_group_ids as string[]) || [],
       templateId: auto.template_id || undefined,
-      sessionId: auto.session_id || undefined,
+      sessionId: readAutomationSessionId(auto.config, auto.session_id) || undefined,
       activeHoursStart: auto.active_hours_start,
       activeHoursEnd: auto.active_hours_end,
       positiveKeywords: filters.positiveKeywords,
@@ -255,12 +287,16 @@ export function useShopeeAutomacoes() {
     });
   };
 
+  const automationIds = automations.map((item) => item.id);
+
   const pauseAllMutation = useMutation({
     mutationFn: async () => {
       if (!user) throw new Error("Not authenticated");
+      if (automationIds.length === 0) return;
       const { error } = await backend
         .from("shopee_automations")
         .update({ is_active: false })
+        .in("id", automationIds)
         .eq("is_active", true);
       if (error) throw error;
     },
@@ -277,9 +313,11 @@ export function useShopeeAutomacoes() {
   const resumeAllMutation = useMutation({
     mutationFn: async () => {
       if (!user) throw new Error("Not authenticated");
+      if (automationIds.length === 0) return;
       const { error } = await backend
         .from("shopee_automations")
         .update({ is_active: true })
+        .in("id", automationIds)
         .eq("is_active", false);
       if (error) throw error;
     },

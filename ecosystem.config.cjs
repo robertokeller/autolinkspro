@@ -6,10 +6,20 @@ const baseApp = {
   exp_backoff_restart_delay: 100,
   min_uptime: "10s",
   time: true,
+  // Log to files so that logs survive container restarts and are not lost
+  // if an attacker deletes the PM2 daemon log. Use pm2-logrotate module to
+  // rotate these files periodically (pm2 install pm2-logrotate).
+  out_file: "./logs/pm2-out.log",
+  error_file: "./logs/pm2-error.log",
+  merge_logs: true,
+  log_date_format: "YYYY-MM-DD HH:mm:ss Z",
   env: {
     NODE_ENV: "production",
-    WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || "autolinks-local-webhook-secret",
-    OPS_CONTROL_TOKEN: process.env.OPS_CONTROL_TOKEN || process.env.WEBHOOK_SECRET || "autolinks-local-webhook-secret",
+    // Do NOT provide fallback secrets here: if WEBHOOK_SECRET or OPS_CONTROL_TOKEN
+    // are missing from the environment, the services fail fast at startup via
+    // ensureRequiredEnvVars() rather than silently running with a weak default.
+    WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || "",
+    OPS_CONTROL_TOKEN: process.env.OPS_CONTROL_TOKEN || process.env.WEBHOOK_SECRET || "",
   },
 };
 
@@ -76,7 +86,43 @@ function shouldEnableDispatchScheduler() {
   return hasRemoteBase;
 }
 
+// ─── DB connection budget ─────────────────────────────────────────────────────
+// Each PM2 cluster worker gets its own pg.Pool.
+// Total DB connections = DB_POOL_MAX * API_INSTANCES (≤ Postgres max_connections).
+// DB_MAX_TOTAL_CONN: the connection budget reserved for the API cluster (default 40).
+// If API_INSTANCES is set explicitly, divide evenly; otherwise derive from CPU count
+// capped by the DB budget so we never exceed the Postgres connection limit.
+// Example: 16-core machine, DB_MAX_TOTAL_CONN=40, pool=5 → safeMaxInstances=8
+//   → 8 × 5 = 40 API connections + ~15 internal = 55 (fits Supabase free tier: 60).
+const os = require("os");
+const apiInstances = Number(process.env.API_INSTANCES) || 0;
+const dbTotalBudget = Number(process.env.DB_MAX_TOTAL_CONN || 40);
+const dbPoolMaxPerWorker = process.env.DB_POOL_MAX
+  ? Number(process.env.DB_POOL_MAX)
+  : apiInstances > 0
+    ? Math.max(2, Math.floor(dbTotalBudget / apiInstances))
+    : 5;
+// When API_INSTANCES is not set, cap workers so total pool ≤ DB_MAX_TOTAL_CONN.
+// This prevents connection exhaustion on high-core-count machines.
+const safeMaxInstances = apiInstances > 0
+  ? apiInstances
+  : Math.max(1, Math.min(os.cpus().length, Math.floor(dbTotalBudget / Math.max(dbPoolMaxPerWorker, 1))));
+
 const apps = [
+  {
+    ...baseApp,
+    name: "autolinks-api",
+    // Point directly at the compiled entry so PM2 cluster mode can fork Node workers.
+    // On Windows (local dev), fall back to fork mode with a single instance because
+    // cluster mode requires PM2 to own the process, not cmd.exe.
+    ...(isWindows
+      ? npmRunConfig("svc:api:start")
+      : { script: "services/api/dist/index.js" }),
+    exec_mode: isWindows ? "fork" : "cluster",
+    instances: isWindows ? 1 : safeMaxInstances,
+    env: { ...baseApp.env, PORT: "3116", DB_POOL_MAX: String(dbPoolMaxPerWorker) },
+    restart_delay: 5000,
+  },
   {
     ...baseApp,
     name: "autolinks-web",

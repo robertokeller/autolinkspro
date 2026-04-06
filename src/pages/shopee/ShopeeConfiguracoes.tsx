@@ -86,11 +86,11 @@ export default function ShopeeConfiguracoes() {
 
   const handleSave = async () => {
     if (!form.appId.trim()) {
-      toast.error("Coloque o App ID");
+      toast.error("Cole o App ID");
       return;
     }
     if (!form.secret.trim()) {
-      toast.error(isConfigured ? "Coloque o Secret Key pra atualizar" : "Coloque o Secret Key");
+      toast.error(isConfigured ? "Cole a Secret Key para atualizar" : "Cole a Secret Key");
       return;
     }
     setSaving(true);
@@ -106,7 +106,7 @@ export default function ShopeeConfiguracoes() {
       }
     } catch (err) {
       console.error("Erro ao salvar credenciais:", err);
-      const message = err instanceof Error ? err.message : "Não deu pra salvar as credenciais";
+      const message = err instanceof Error ? err.message : "Não foi possível salvar as credenciais";
       toast.error(message);
     } finally {
       setSaving(false);
@@ -127,7 +127,7 @@ export default function ShopeeConfiguracoes() {
         toast.error("Credenciais inválidas — confira os dados");
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Não deu pra testar a conexão");
+      toast.error(error instanceof Error ? error.message : "Não foi possível testar a conexão");
     }
   };
 
@@ -256,7 +256,7 @@ export default function ShopeeConfiguracoes() {
                     <div>
                       <CardTitle className="text-base">Como conseguir suas credenciais</CardTitle>
                       <CardDescription className="text-xs">
-                        Passo a passo pra pedir acesso à API
+                        Passo a passo para pedir acesso à API
                       </CardDescription>
                     </div>
                   </div>

@@ -1,6 +1,6 @@
 import { backend } from "@/integrations/backend/client";
 
-export type RuntimeService = "whatsapp" | "telegram" | "shopee" | "meli" | "ops";
+export type RuntimeService = "whatsapp" | "telegram" | "shopee" | "meli" | "amazon" | "ops";
 
 export const SERVICE_RUNTIME_ERROR_EVENT = "autolinks:service-runtime-error";
 
@@ -31,6 +31,11 @@ const SERVICE_RPC_NAMES: Record<string, RuntimeService> = {
   "meli-convert-links": "meli",
   "meli-product-snapshot": "meli",
   "meli-automation-run": "meli",
+  "amazon-automation-run": "amazon",
+  "amazon-vitrine-list": "amazon",
+  "amazon-vitrine-sync": "amazon",
+  "amazon-convert-link": "amazon",
+  "amazon-product-snapshot": "amazon",
   "poll-channel-events": "whatsapp",
   "ops-service-health": "ops",
   "ops-service-control": "ops",
@@ -56,6 +61,43 @@ function toFriendlyRpcError(message: string): string {
   return sanitizeServiceMessage(message);
 }
 
+function shouldEmitRuntimeServiceError(
+  name: string,
+  message: string,
+  options?: { body?: Record<string, unknown>; headers?: Record<string, string> },
+): boolean {
+  const normalized = String(message || "").toLowerCase();
+  if (!normalized) return false;
+
+  // API-wide overload/rate-limit/offline errors are transient infra conditions;
+  // broadcasting them as per-service runtime faults creates refetch feedback loops.
+  if (
+    normalized.includes("api_overloaded")
+    || normalized.includes("temporariamente sobrecarregado")
+    || normalized.includes("serviço api offline")
+    || normalized.includes("servico api offline")
+    || normalized.includes("servidor indisponível (timeout)")
+    || normalized.includes("servidor indisponivel (timeout)")
+    || normalized.includes("http 429")
+    || normalized.includes("http 503")
+    || normalized.includes("too many requests")
+    || normalized.includes("limite de chamadas")
+    || normalized.includes("muitas tentativas")
+  ) {
+    return false;
+  }
+
+  const action = String(options?.body?.action || "").toLowerCase();
+  if (
+    (name === "whatsapp-connect" || name === "telegram-connect")
+    && (action === "poll_events" || action === "poll_events_all" || action === "health")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function emitRuntimeServiceError(name: string, message: string) {
   const service = inferRuntimeService(name);
   if (!service) return;
@@ -79,7 +121,9 @@ export async function invokeBackendRpc<T = Record<string, unknown>>(
 
   if (error) {
     const message = error.message || `Falha ao chamar função ${name}`;
-    emitRuntimeServiceError(name, message);
+    if (shouldEmitRuntimeServiceError(name, message, options)) {
+      emitRuntimeServiceError(name, message);
+    }
     throw new Error(toFriendlyRpcError(message));
   }
 
@@ -90,7 +134,9 @@ export async function invokeBackendRpc<T = Record<string, unknown>>(
       raw !== null && typeof raw === "object" && "message" in (raw as object)
         ? String((raw as { message: unknown }).message)
         : String(raw);
-    emitRuntimeServiceError(name, message);
+    if (shouldEmitRuntimeServiceError(name, message, options)) {
+      emitRuntimeServiceError(name, message);
+    }
     throw new Error(toFriendlyRpcError(message));
   }
 

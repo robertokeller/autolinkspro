@@ -1,18 +1,6 @@
-// AutoLinks self-hosted API client — mirrors the @supabase/supabase-js surface
+// AutoLinks self-hosted API client ? mirrors the @supabase/supabase-js surface
 // so all existing hooks and pages work without modification.
-
-// ─── Test-mode shim ─────────────────────────────────────────────────────────
-// ONLY under Vitest (MODE === "test") do we bypass HTTP and use the in-memory
-// database. In development AND production the real API is always used.
-import {
-  authApi as _legacyAuth,
-  LocalQueryBuilder as _LegacyQB,
-  resetLocalDb as _legacyReset,
-  storageBucket as _legacyStorageBucket,
-} from "./_local-core-legacy";
-import { invokeLocalFunction as _legacyInvoke } from "./local-functions";
-
-const _IS_TEST: boolean = (import.meta.env as Record<string, unknown>)?.MODE === "test";
+// Development and production always use the real API + PostgreSQL backend.
 
 function isLoopbackHost(host: string): boolean {
   const normalized = String(host || "").toLowerCase();
@@ -39,15 +27,66 @@ function isDevReachableHost(host: string): boolean {
 }
 
 const SESSION_COOKIE_HELP = "Login nao persistiu sessao (cookie bloqueado). Em local, abra o app no mesmo host da API (localhost/127.0.0.1/IP). Em producao, verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL.";
+const API_OVERLOAD_MESSAGE = "Servidor temporariamente sobrecarregado. Aguarde alguns segundos e tente novamente.";
+
+let apiOverloadUntilMs = 0;
+
+function parseRetryAfterMs(raw: string | null | undefined, fallbackMs: number): number {
+  const value = String(raw || "").trim();
+  if (!value) return fallbackMs;
+
+  const asSeconds = Number(value);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return Math.max(0, Math.trunc(asSeconds * 1000));
+  }
+
+  const asDate = Date.parse(value);
+  if (Number.isFinite(asDate)) {
+    return Math.max(0, asDate - Date.now());
+  }
+
+  return fallbackMs;
+}
+
+function makeOverloadError(nowMs: number): Error {
+  const retryAfterSec = Math.max(Math.ceil((apiOverloadUntilMs - nowMs) / 1000), 1);
+  const error = new Error(`${API_OVERLOAD_MESSAGE} (aguarde ${retryAfterSec}s)`) as Error & {
+    code?: string;
+    retryAfterSec?: number;
+  };
+  error.code = "api_overloaded";
+  error.retryAfterSec = retryAfterSec;
+  return error;
+}
 
 function resolveApiUrl(rawUrl: string): string {
   const trimmed = String(rawUrl || "").trim().replace(/\/+$/, "");
-  if (!trimmed) return "";
   if (typeof window === "undefined") return trimmed;
+
+  const pageHost = window.location.hostname;
+  const allowRemoteApiInLocalDev = String(import.meta.env.VITE_ALLOW_REMOTE_API_IN_LOCAL_DEV || "").trim() === "1";
+  const localApiPort = String(import.meta.env.VITE_LOCAL_API_PORT || "3116").trim() || "3116";
+
+  // In local/LAN dev, prefer the local API by default so frontend calls do not
+  // accidentally hit a stale remote backend.
+  if (isDevReachableHost(pageHost) && !allowRemoteApiInLocalDev) {
+    if (!trimmed) {
+      return `http://${pageHost}:${localApiPort}`;
+    }
+    try {
+      const parsedCandidate = new URL(trimmed, window.location.origin);
+      if (!isDevReachableHost(parsedCandidate.hostname)) {
+        return `http://${pageHost}:${localApiPort}`;
+      }
+    } catch {
+      return `http://${pageHost}:${localApiPort}`;
+    }
+  }
+
+  if (!trimmed) return "";
 
   try {
     const parsed = new URL(trimmed, window.location.origin);
-    const pageHost = window.location.hostname;
 
     // Keep API host aligned with the current page host in local/LAN dev to
     // avoid SameSite cookie drops caused by mixed hosts (localhost/127/LAN IP).
@@ -64,7 +103,6 @@ function resolveApiUrl(rawUrl: string): string {
 const API_URL: string = resolveApiUrl((import.meta.env.VITE_API_URL as string | undefined) ?? "");
 // O backend local (in-memory/local-core) fica disponível apenas em testes.
 // Em desenvolvimento e produção, sempre usar API + PostgreSQL.
-const _USE_LOCAL_BACKEND = _IS_TEST;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface User {
@@ -121,6 +159,11 @@ function setRuntimeSession(session: Session | null) {
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 async function apiFetch(path: string, options: RequestInit = {}, timeoutMs = 15_000) {
+  const now = Date.now();
+  if (apiOverloadUntilMs > now) {
+    throw makeOverloadError(now);
+  }
+
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), timeoutMs);
@@ -132,10 +175,20 @@ async function apiFetch(path: string, options: RequestInit = {}, timeoutMs = 15_
       signal: controller.signal,
     });
     clearTimeout(tid);
+
+    if (res.status === 429 || res.status === 503) {
+      const fallbackMs = res.status === 503 ? 10_000 : 5_000;
+      const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"), fallbackMs);
+      apiOverloadUntilMs = Math.max(apiOverloadUntilMs, Date.now() + retryAfterMs);
+      throw makeOverloadError(Date.now());
+    }
+
     const text = await res.text();
     if (!text || !text.trim()) {
       // Empty body with error status (e.g. proxy 500/502 when API is down) — treat as offline.
-      if (!res.ok) throw new Error("Serviço API offline — verifique se está rodando");
+      if (!res.ok) {
+        throw new Error("Serviço API offline — verifique se está rodando");
+      }
       // Empty body with success status (e.g. 204 No Content) — treat as success with no payload.
       return {};
     }
@@ -148,6 +201,7 @@ async function apiFetch(path: string, options: RequestInit = {}, timeoutMs = 15_
     clearTimeout(tid);
     // Invalid JSON from a live server — rethrow as-is (server is up, don't mark offline).
     if (e instanceof Error && e.message.startsWith("Resposta inválida")) throw e;
+    if (e instanceof Error && ((e as Error & { code?: string }).code === "api_overloaded" || e.message.includes(API_OVERLOAD_MESSAGE))) throw e;
     const msg = e instanceof Error && e.name === "AbortError" ? "Servidor indisponível (timeout)" : "Serviço API offline — verifique se está rodando";
     throw new Error(msg);
   }
@@ -322,6 +376,25 @@ const auth = {
   },
 
   async getSession() {
+    // Proactive silent refresh: if the current session expires within 5 minutes,
+    // renew it before it lapses so long-lived tabs never unexpectedly log out.
+    const current = getRuntimeSession();
+    if (current?.expires_at) {
+      const secsUntilExpiry = current.expires_at - Math.floor(Date.now() / 1000);
+      if (secsUntilExpiry > 0 && secsUntilExpiry < 300) {
+        try {
+          const refreshed = await apiFetch("/auth/refresh", { method: "POST", body: "{}" });
+          if (!refreshed.error && refreshed.data?.session) {
+            const newSession = refreshed.data.session as Session;
+            setRuntimeSession(newSession);
+            return { data: { session: newSession }, error: null };
+          }
+        } catch {
+          // Ignore refresh error — fall through to regular session check
+        }
+      }
+    }
+
     try {
       const res = await apiFetch("/auth/session", { method: "GET" });
       if (res.error || !res.data?.session) {
@@ -333,6 +406,20 @@ const auth = {
       return { data: { session }, error: null };
     } catch {
       return { data: { session: getRuntimeSession() }, error: null };
+    }
+  },
+
+  async refresh() {
+    try {
+      const res = await apiFetch("/auth/refresh", { method: "POST", body: "{}" });
+      if (!res.error && res.data?.session) {
+        const session = res.data.session as Session;
+        setRuntimeSession(session);
+        return { data: { session }, error: null };
+      }
+      return { data: { session: null }, error: res.error ?? null };
+    } catch {
+      return { data: { session: null }, error: { message: "Falha ao renovar sessão" } };
     }
   },
 
@@ -370,13 +457,6 @@ const auth = {
       if (passwordRecoveryPending) {
         try { callback("PASSWORD_RECOVERY", cached); } catch { /* ignore */ }
       }
-
-      void auth.getSession().then(({ data: { session: serverSession } }) => {
-        try { callback("INITIAL_SESSION", serverSession); } catch { /* ignore */ }
-        if (passwordRecoveryPending) {
-          try { callback("PASSWORD_RECOVERY", serverSession); } catch { /* ignore */ }
-        }
-      }).catch(() => undefined);
     }, 0);
 
     return {
@@ -561,30 +641,24 @@ function createInMemoryStorageBucket(bucket: string): StorageBucket {
 
 const storage = {
   from(bucket: string): StorageBucket {
-    if (_USE_LOCAL_BACKEND) {
-      return _legacyStorageBucket(bucket) as unknown as StorageBucket;
-    }
     return createInMemoryStorageBucket(bucket);
   },
 };
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 export const backend = {
-  auth: _USE_LOCAL_BACKEND ? (_legacyAuth as unknown as typeof auth) : auth,
+  auth,
   from<T = unknown>(table: string) {
-    if (_USE_LOCAL_BACKEND) return new _LegacyQB<T>(table) as unknown as QueryBuilder<T>;
     return new QueryBuilder<T>(table);
   },
   channel(name: string) { return makeChannel(name); },
-  functions: _USE_LOCAL_BACKEND
-    ? { invoke: _legacyInvoke as (name: string, opts?: { body?: Record<string, unknown> }) => Promise<{ data: unknown; error: unknown }> }
-    : functions,
+  functions,
   storage,
   removeChannel(_ch: unknown) { /* no-op */ },
   removeAllChannels() { /* no-op */ },
 };
 
-/** Resets the local in-memory database between tests. No-op outside test mode. */
+/** Legacy local in-memory backend removed — kept as harmless no-op for callers. */
 export function __resetLocalDatabase() {
-  if (_USE_LOCAL_BACKEND) _legacyReset();
+  // no-op
 }

@@ -28,6 +28,7 @@ export function RouteGuard({ requireAdmin = false, allowAdmin = false }: RouteGu
     ROUTES.app.connectionsRoot,
     ROUTES.app.routes,
     ROUTES.app.shopeeRoot,
+    ROUTES.app.amazonRoot,
     ROUTES.app.shopeeConversor,
     ROUTES.app.mercadolivreRoot,
     ROUTES.app.vitrineMl,

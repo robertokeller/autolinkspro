@@ -14,17 +14,20 @@
 import pg from "pg";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { loadProjectEnv } from "./load-env.mjs";
+
+loadProjectEnv();
 
 const { Pool } = pg;
 
 const MIGRATIONS_DIR = path.resolve("supabase", "migrations");
 const MIGRATIONS_TABLE = "public.schema_migrations";
 
-const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
+const DATABASE_URL = String(process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL || "").trim();
 const USE_SSL = String(process.env.DB_SSL || "true").toLowerCase() !== "false";
 
 if (!DATABASE_URL) {
-  console.error("[migrate] DATABASE_URL is required.");
+  console.error("[migrate] DATABASE_URL (or MIGRATION_DATABASE_URL) is required. Load it via .env or .env.local.");
   process.exit(1);
 }
 
@@ -33,6 +36,15 @@ const pool = new Pool({
   ssl: USE_SSL ? { rejectUnauthorized: false } : false,
   connectionTimeoutMillis: 8000,
 });
+
+function shouldSkipDueToSharedSchemaPermissions(error) {
+  const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+  const schema = typeof error === "object" && error && "schema" in error ? String(error.schema || "") : "";
+  const message = error instanceof Error ? error.message : String(error);
+  const permissionDenied = code === "42501" || /permission denied/i.test(message);
+  const referencesPublic = schema.toLowerCase() === "public" || /schema\s+public/i.test(message);
+  return permissionDenied && referencesPublic;
+}
 
 async function ensureMigrationsTable(client) {
   const columnsRes = await client.query(
@@ -143,8 +155,16 @@ try {
     console.log(`[migrate] Done. applied=${appliedCount} skipped=${skippedCount} total=${files.length}`);
   }
 } catch (err) {
-  console.error("[migrate] ERROR:", err instanceof Error ? err.message : err);
-  process.exitCode = 1;
+  if (shouldSkipDueToSharedSchemaPermissions(err)) {
+    console.warn(
+      "[migrate] WARNING: sem permissao para escrever no schema public. " +
+      "Pulando migracoes locais e mantendo o schema remoto compartilhado.",
+    );
+    process.exitCode = 0;
+  } else {
+    console.error("[migrate] ERROR:", err instanceof Error ? err.message : err);
+    process.exitCode = 1;
+  }
 } finally {
   client.release();
   await pool.end();

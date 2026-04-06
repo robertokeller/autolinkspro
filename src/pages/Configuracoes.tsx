@@ -34,6 +34,7 @@ import { TelegramIcon, WhatsAppIcon } from "@/components/icons/ChannelPlatformIc
 import { defaultAdminControlPlaneState } from "@/lib/admin-control-plane";
 import { getFeatureAccessPolicyByPlan, resolveEffectiveLimitsByPlanId, resolveEffectiveOperationalLimitsByPlanId } from "@/lib/access-control";
 import { useAdminControlPlane } from "@/hooks/useAdminControlPlane";
+import { useAccessControl } from "@/hooks/useAccessControl";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/components/ThemeProvider";
 import { backend } from "@/integrations/backend/client";
@@ -75,9 +76,9 @@ function parsePeriodToMs(period: string): number | null {
 export default function SettingsPage() {
   const { user } = useAuth();
   const { state: adminControlPlane } = useAdminControlPlane();
+  const { planId, planExpiresAt, isPlanExpired } = useAccessControl();
   const { theme, setTheme } = useTheme();
   const [profile, setProfile] = useState({ name: "", email: "", phone: "" });
-  const [planId, setPlanId] = useState("plan-starter");
   const [usageCounts, setUsageCounts] = useState({
     wa: 0,
     tg: 0,
@@ -88,7 +89,6 @@ export default function SettingsPage() {
     schedules: 0,
     templates: 0,
   });
-  const [planExpiresAt, setPlanExpiresAt] = useState<string | null>(null);
   const [plansModalOpen, setPlansModalOpen] = useState(false);
   const [plansBillingPeriod, setPlansBillingPeriod] = useState<"monthly" | "annual">("monthly");
   const [prorationDialog, setProrationDialog] = useState<ProrationState | null>(null);
@@ -103,7 +103,7 @@ export default function SettingsPage() {
 
     setLoading(true);
     const [profileRes, wa, tg, waGroups, tgGroups, rt, au, sch, tp] = await Promise.all([
-      backend.from("profiles").select("name, email, plan_id, plan_expires_at, phone").eq("user_id", user.id).maybeSingle(),
+      backend.from("profiles").select("name, email, phone").eq("user_id", user.id).maybeSingle(),
       backend.from("whatsapp_sessions").select("id", { count: "exact", head: true }).eq("user_id", user.id),
       backend.from("telegram_sessions").select("id", { count: "exact", head: true }).eq("user_id", user.id),
       backend.from("groups").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("platform", "whatsapp").is("deleted_at", null),
@@ -123,10 +123,6 @@ export default function SettingsPage() {
         email: profileEmail || fallbackEmail,
         phone: String(profileRes.data.phone || ""),
       });
-      setPlanId(String(profileRes.data.plan_id || "plan-starter"));
-      setPlanExpiresAt(typeof profileRes.data.plan_expires_at === "string" && profileRes.data.plan_expires_at.trim()
-        ? profileRes.data.plan_expires_at
-        : null);
     }
 
     setUsageCounts({
@@ -172,7 +168,6 @@ export default function SettingsPage() {
     .sort((a, b) => a.price - b.price);
   const nowMs = Date.now();
   const planExpiryMs = planExpiresAt ? Date.parse(planExpiresAt) : NaN;
-  const isPlanExpired = Number.isFinite(planExpiryMs) && planExpiryMs < nowMs;
   const msToExpiry = Number.isFinite(planExpiryMs) ? planExpiryMs - nowMs : Number.NaN;
   const isPlanExpiringSoon = !isPlanExpired && Number.isFinite(msToExpiry) && msToExpiry <= 24 * 60 * 60 * 1000;
   const planFeatureItems = Array.isArray(currentPlan.homeFeatureHighlights)
@@ -294,7 +289,7 @@ export default function SettingsPage() {
       .map((item) => `${item.label} (${item.used}/${item.max})`);
 
     if (exceeded.length > 0) {
-      toast.error(`Não dá pra trocar: você passa do limite em ${exceeded.join(", ")}.`);
+      toast.error(`Não conseguimos alterar: você passa do limite em ${exceeded.join(", ")}.`);
       return;
     }
 

@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { backend } from "@/integrations/backend/client";
-import { invokeWhatsAppAction, syncChannelGroups } from "@/lib/channel-central";
+import { invokeTelegramAction, invokeWhatsAppAction, syncChannelGroups } from "@/lib/channel-central";
 import { useAuth } from "@/contexts/AuthContext";
 import type { Group, MasterGroup, DistributionMode } from "@/lib/types";
 import type { Tables } from "@/integrations/backend/types";
@@ -102,6 +102,24 @@ function hasValidGroupSession(row: GroupRow, validSessionIds: ValidSessionIdsByP
   if (row.platform === "whatsapp") return validSessionIds.whatsapp.has(sessionId);
   if (row.platform === "telegram") return validSessionIds.telegram.has(sessionId);
   return false;
+}
+
+function extractOnlineRuntimeSessionIds(payload: unknown): Set<string> {
+  if (!payload || typeof payload !== "object") return new Set<string>();
+
+  const rawSessions = (payload as Record<string, unknown>).sessions;
+  const sessions = Array.isArray(rawSessions) ? rawSessions : [];
+  const ids = new Set<string>();
+
+  for (const item of sessions) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const sessionId = String(row.sessionId ?? row.id ?? "").trim();
+    const status = String(row.status ?? "").trim().toLowerCase();
+    if (sessionId && status === "online") ids.add(sessionId);
+  }
+
+  return ids;
 }
 
 function mapMasterGroupRow(
@@ -234,24 +252,43 @@ export function useGrupos() {
 
     setSyncing(true);
     try {
-      const [waResult, tgResult] = await Promise.all([
+      const [waResult, tgResult, waHealthResult, tgHealthResult] = await Promise.allSettled([
         backend
           .from("whatsapp_sessions")
-          .select("id, name")
-          .eq("user_id", user.id)
-          .eq("status", "online"),
+          .select("id, name, status")
+          .eq("user_id", user.id),
         backend
           .from("telegram_sessions")
-          .select("id, name")
-          .eq("user_id", user.id)
-          .eq("status", "online"),
+          .select("id, name, status")
+          .eq("user_id", user.id),
+        invokeWhatsAppAction<Record<string, unknown>>("health"),
+        invokeTelegramAction<Record<string, unknown>>("health"),
       ]);
 
-      if (waResult.error) throw waResult.error;
-      if (tgResult.error) throw tgResult.error;
+      if (waResult.status !== "fulfilled") throw waResult.reason;
+      if (tgResult.status !== "fulfilled") throw tgResult.reason;
+      if (waResult.value.error) throw waResult.value.error;
+      if (tgResult.value.error) throw tgResult.value.error;
 
-      const onlineWaSessions = waResult.data || [];
-      const onlineTgSessions = tgResult.data || [];
+      const onlineWaIdsFromRuntime = waHealthResult.status === "fulfilled"
+        ? extractOnlineRuntimeSessionIds(waHealthResult.value)
+        : null;
+      const onlineTgIdsFromRuntime = tgHealthResult.status === "fulfilled"
+        ? extractOnlineRuntimeSessionIds(tgHealthResult.value)
+        : null;
+
+      const onlineWaSessions = (waResult.value.data || []).filter((session) => {
+        const sessionId = String(session.id || "").trim();
+        if (!sessionId) return false;
+        if (onlineWaIdsFromRuntime) return onlineWaIdsFromRuntime.has(sessionId);
+        return String(session.status || "").trim().toLowerCase() === "online";
+      });
+      const onlineTgSessions = (tgResult.value.data || []).filter((session) => {
+        const sessionId = String(session.id || "").trim();
+        if (!sessionId) return false;
+        if (onlineTgIdsFromRuntime) return onlineTgIdsFromRuntime.has(sessionId);
+        return String(session.status || "").trim().toLowerCase() === "online";
+      });
 
       if (onlineWaSessions.length === 0 && onlineTgSessions.length === 0) {
         toast.error("Nenhuma sessão online para sincronizar grupos.");
@@ -553,4 +590,3 @@ export function useGrupos() {
     refreshGroups,
   };
 }
-

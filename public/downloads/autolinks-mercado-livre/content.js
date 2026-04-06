@@ -47,16 +47,45 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     return;
   }
 
-  // Fast ping: do not depend on page bridge listener.
+  // Ping: return quick tab info and, when on the target page, also relay to the
+  // page bridge to obtain the bridgeToken (needed for PUSH_COOKIES auth).
   if (request.type === "AUTOLINKS_PING") {
     const path = String(window.location.pathname || "");
+    const isTargetPath = path.includes("/meli/configuracoes");
+
+    if (isTargetPath) {
+      // Relay to page bridge to collect the bridgeToken.
+      (async () => {
+        const requestId = `ping_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        postToPage({
+          source: "autolinks-extension",
+          type: "AUTOLINKS_PING",
+          requestId,
+          payload: request.payload || {}
+        });
+        const bridgeResult = await waitForBridgeResponse(requestId, 3000);
+        sendResponse({
+          ok: true,
+          message: "Content script ativo.",
+          payload: {
+            href: window.location.href,
+            path,
+            isTargetPath: true,
+            isAuthPath: false,
+            bridgeToken: bridgeResult?.payload?.bridgeToken || null
+          }
+        });
+      })();
+      return true;
+    }
+
     sendResponse({
       ok: true,
       message: "Content script ativo.",
       payload: {
         href: window.location.href,
         path,
-        isTargetPath: path.includes("/mercadolivre/configuracoes"),
+        isTargetPath: false,
         isAuthPath: path.includes("/auth/")
       }
     });

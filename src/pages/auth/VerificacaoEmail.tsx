@@ -18,7 +18,7 @@ function resolveContent(status: string) {
   }
   return {
     title: "Falha na confirmacao",
-    description: "Nao foi possivel confirmar o e-mail agora. Tente novamente mais tarde.",
+    description: "Não foi possível confirmar o e-mail agora. Tente novamente mais tarde.",
   };
 }
 

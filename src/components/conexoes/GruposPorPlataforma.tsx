@@ -86,7 +86,7 @@ export function GruposPorPlataforma({
       onRefresh();
       toast.success("Grupos atualizados");
     } catch {
-      toast.error("Não deu pra sincronizar os grupos dessa sessão");
+      toast.error("Não foi possível sincronizar os grupos dessa sessão");
     } finally {
       setSyncingSessionId(null);
     }
@@ -94,7 +94,7 @@ export function GruposPorPlataforma({
 
   const handleSyncAllOnline = async () => {
     if (onlineSessions.length === 0) {
-      toast.error(`Nenhuma conta ${platformLabel} online pra sincronizar.`);
+      toast.error(`Nenhuma conta ${platformLabel} online para sincronizar.`);
       return;
     }
 
@@ -219,7 +219,7 @@ export function GruposPorPlataforma({
             <EmptyState
               icon={Users}
               title={`Nenhum grupo ${platformLabel}`}
-              description={`Clique em "Sincronizar grupos" pra puxar os grupos das contas online.`}
+              description={`Clique em "Sincronizar grupos" para puxar os grupos das contas online.`}
               actionLabel="Sincronizar grupos"
               onAction={handleSyncAllOnline}
             />

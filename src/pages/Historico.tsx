@@ -307,7 +307,6 @@ export default function HistoryPage() {
                 <SelectItem value="all">Todas as conexões</SelectItem>
                 <SelectItem value="whatsapp">WhatsApp</SelectItem>
                 <SelectItem value="telegram">Telegram</SelectItem>
-                <SelectItem value="other">Sistema</SelectItem>
               </SelectContent>
             </Select>
             <Select value={timeRange} onValueChange={setTimeRange}>
@@ -431,4 +430,3 @@ export default function HistoryPage() {
     </div>
   );
 }
-

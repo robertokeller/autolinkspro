@@ -1,4 +1,4 @@
-/**
+﻿/**
  * seed-users.mjs - Upsert operational users in Supabase PostgreSQL.
  *
  * Usage:
@@ -10,14 +10,17 @@
  * Optional:
  *   DB_SSL=true|false (default true)
  *
- * Users seeded:
- *   admin : robertokellercontato@gmail.com / abacate1 (role=admin, plan=admin)
- *   normal: aliancaslovely@gmail.com / abacate1 (role=user,  plan=plan-starter)
+ * Users seeded (passwords via env):
+ *   admin : SEED_ADMIN_PASSWORD (fallback: SEED_DEFAULT_PASSWORD)
+ *   normal: SEED_USER_PASSWORD  (fallback: SEED_DEFAULT_PASSWORD)
  */
 
 import pg from "pg";
 import bcrypt from "bcryptjs";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { loadProjectEnv } from "./load-env.mjs";
+
+loadProjectEnv();
 
 const { Pool } = pg;
 
@@ -25,7 +28,7 @@ const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 const USE_SSL = String(process.env.DB_SSL || "true").toLowerCase() !== "false";
 
 if (!DATABASE_URL) {
-  console.error("[seed] DATABASE_URL is required.");
+  console.error("[seed] DATABASE_URL is required. Load it via .env or .env.local.");
   process.exit(1);
 }
 
@@ -35,18 +38,25 @@ const pool = new Pool({
   connectionTimeoutMillis: 8000,
 });
 
+const GENERATED_SEED_PASSWORD = randomBytes(18).toString("hex");
+const SEED_DEFAULT_PASSWORD = String(process.env.SEED_DEFAULT_PASSWORD || GENERATED_SEED_PASSWORD).trim();
+
+if (!String(process.env.SEED_DEFAULT_PASSWORD || "").trim()) {
+  console.warn("[seed] SEED_DEFAULT_PASSWORD not provided. Using a generated one for this run.");
+}
+
 const USERS = [
   {
-    email: "robertokellercontato@gmail.com",
-    password: "abacate1",
-    name: "Roberto Keller",
+    email: String(process.env.SEED_ADMIN_EMAIL || "admin@localhost.local"),
+    password: String(process.env.SEED_ADMIN_PASSWORD || SEED_DEFAULT_PASSWORD).trim(),
+    name: "Admin",
     role: "admin",
     plan: "admin",
   },
   {
-    email: "aliancaslovely@gmail.com",
-    password: "abacate1",
-    name: "Aliancas Lovely",
+    email: String(process.env.SEED_USER_EMAIL || "user@localhost.local"),
+    password: String(process.env.SEED_USER_PASSWORD || SEED_DEFAULT_PASSWORD).trim(),
+    name: "User",
     role: "user",
     plan: "plan-starter",
   },

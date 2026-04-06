@@ -304,7 +304,7 @@ export function SessoesTelegram({
             <AlertTriangle className="h-8 w-8 text-warning" />
           </div>
           <div className="text-center">
-            <p className="font-semibold">Não deu pra conectar</p>
+            <p className="font-semibold">Não foi possível conectar</p>
             <p className="mt-1 text-sm text-muted-foreground">
               Confira se o número está certo e tente de novo.
             </p>
@@ -353,7 +353,7 @@ export function SessoesTelegram({
             <div className="text-center">
               <p className="font-semibold">Verificação em duas etapas</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Sua conta tem 2FA. Coloque a senha pra concluir.
+                Sua conta tem 2FA. Coloque a senha para concluir.
               </p>
             </div>
             <div className="space-y-2">
@@ -647,7 +647,7 @@ export function SessoesTelegram({
                   {authSession?.status === "online"
                     ? `${authSession.name} está pronta.`
                     : authSession?.status === "awaiting_password"
-                      ? "Coloque a senha do 2FA pra concluir."
+                      ? "Coloque a senha do 2FA para concluir."
                       : "Cole o código que chegou por SMS ou pelo app do Telegram."}
                 </DialogDescription>
               </DialogHeader>
@@ -754,7 +754,7 @@ export function SessoesTelegram({
           <DialogHeader>
             <DialogTitle>Editar sessão</DialogTitle>
             <DialogDescription>
-              Só dá pra mudar o nome. O resto fica do jeito que está pra não perder a conexão.
+              Só dá para mudar o nome. O resto fica do jeito que está para não perder a conexão.
             </DialogDescription>
           </DialogHeader>
 

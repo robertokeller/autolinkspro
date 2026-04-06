@@ -48,7 +48,7 @@ export function TimePickerField({
           <span className="truncate">{value || placeholder}</span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[220px] p-3">
+      <PopoverContent align="start" className="w-[min(17rem,calc(100vw-1rem))] p-3 sm:w-[220px]">
         <div className="space-y-3">
           <Input
             type="time"
@@ -63,7 +63,7 @@ export function TimePickerField({
               const next = normalizeTime(raw);
               onChange(next);
             }}
-            className="h-10"
+            className="h-11 sm:h-10"
           />
           <div className="flex items-center gap-1.5 justify-between">
             <Button
@@ -74,7 +74,7 @@ export function TimePickerField({
                 onChange(currentTimeLabel());
                 setOpen(false);
               }}
-              className="h-8 text-xs"
+              className="h-9 text-xs sm:h-8"
             >
               Agora
             </Button>
@@ -87,7 +87,7 @@ export function TimePickerField({
                   onChange("");
                   setOpen(false);
                 }}
-                className="h-8 text-xs"
+                className="h-9 text-xs sm:h-8"
               >
                 Limpar
               </Button>

@@ -19,6 +19,7 @@ const rawCorsOrigin = process.env.CORS_ORIGIN ?? "";
 const corsOriginList = rawCorsOrigin.split(",").map((s) => s.trim()).filter(Boolean);
 
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 app.use(cors({
   origin: (origin, callback) => {
     // Allow server-to-server / non-browser requests (no Origin header).
@@ -44,7 +45,7 @@ app.use((_req, res, next) => {
   next();
 });
 
-// ââ€â‚¬ââ€â‚¬ââ€â‚¬ Rate limiting (in-memory, per IP) ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+// Rate limiting (in-memory, per IP)
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_REQUESTS = 300;
 const RATE_LIMIT_WINDOW_MS = 60_000;

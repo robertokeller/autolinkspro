@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useCallback } from "react";
 import { logHistorico } from "@/lib/log-historico";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
+import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
 
 const ROUTE_DESTINATIONS_TABLE_WARNING = "Não foi possível carregar os destinos das rotas. As rotas foram exibidas sem os grupos vinculados.";
 const ROUTE_COUNTERS_HISTORY_WARNING = "Não foi possível carregar o histórico de envios das rotas. O contador pode ficar desatualizado temporariamente.";
@@ -16,21 +17,39 @@ type RouteDestRow = Tables<"route_destinations">;
 
 interface RulesJson {
   masterGroupId?: string | null;
-   masterGroupIds?: string[];
+  masterGroupIds?: string[];
   autoConvertShopee?: boolean;
   autoConvertMercadoLivre?: boolean;
+  autoConvertAmazon?: boolean;
   resolvePartnerLinks?: boolean;
   requirePartnerLink?: boolean;
   partnerMarketplaces?: string[];
   filterWords?: string[]; negativeKeywords?: string[]; positiveKeywords?: string[];
   templateId?: string | null; groupType?: string;
+  amazonTemplateId?: string | null;
   sessionId?: string | null;
   messagesForwarded?: number;
+  quietHoursEnabled?: boolean;
+  quietHoursStart?: string | null;
+  quietHoursEnd?: string | null;
 }
 
 function parseRules(raw: Json): RulesJson {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as unknown as RulesJson;
   return {};
+}
+
+function normalizeClockTime(value: unknown, fallback: string): string {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!match) return fallback;
+
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) return fallback;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return fallback;
+
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
 function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
@@ -40,9 +59,11 @@ function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
   const messagesForwarded = Number.isFinite(messagesForwardedRaw) && messagesForwardedRaw >= 0
     ? Math.floor(messagesForwardedRaw)
     : 0;
-   const normalizedMasterGroupIds = Array.isArray(rules.masterGroupIds)
-     ? rules.masterGroupIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
-     : (rules.masterGroupId ? [rules.masterGroupId] : []);
+  const normalizedMasterGroupIds = Array.isArray(rules.masterGroupIds)
+    ? rules.masterGroupIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+    : (rules.masterGroupId ? [rules.masterGroupId] : []);
+  const quietHoursStart = normalizeClockTime(rules.quietHoursStart, "22:00");
+  const quietHoursEnd = normalizeClockTime(rules.quietHoursEnd, "08:00");
   return {
     id: row.id, name: row.name, sourceGroupId: row.source_group_id || "",
     destinationGroupIds: dests.map((d) => d.group_id),
@@ -51,16 +72,21 @@ function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
     rules: {
       autoConvertShopee: rules.autoConvertShopee ?? false,
       autoConvertMercadoLivre: rules.autoConvertMercadoLivre ?? false,
+      autoConvertAmazon: rules.autoConvertAmazon ?? false,
       resolvePartnerLinks: rules.resolvePartnerLinks ?? true,
       requirePartnerLink: rules.requirePartnerLink ?? true,
       partnerMarketplaces: Array.isArray(rules.partnerMarketplaces) && rules.partnerMarketplaces.length > 0
         ? rules.partnerMarketplaces
-        : ["shopee", "mercadolivre"],
+        : ["shopee", "mercadolivre", "amazon"],
       filterWords: rules.filterWords || [], negativeKeywords: rules.negativeKeywords || [],
       positiveKeywords: rules.positiveKeywords || [], templateId: rules.templateId || null,
+      amazonTemplateId: rules.amazonTemplateId || null,
       groupType: "ofertas" as const,
       sessionId: rules.sessionId || null,
       masterGroupIds: normalizedMasterGroupIds,
+      quietHoursEnabled: rules.quietHoursEnabled === true,
+      quietHoursStart,
+      quietHoursEnd,
     },
     messagesForwarded, createdAt: row.created_at,
   };
@@ -140,13 +166,25 @@ export function useRotas() {
       const { data: profile, error: profileError } = await backend
         .from("profiles")
         .select("plan_id")
+        .eq("user_id", user.id)
         .maybeSingle();
       if (profileError) {
         toast.error("Não foi possível validar o limite de rotas");
         return null;
       }
 
-      const limits = resolveEffectiveLimitsByPlanId(profile?.plan_id || "plan-starter");
+      const planId = normalizePlanId(profile?.plan_id);
+      if (!planId) {
+        toast.error(PLAN_SYNC_ERROR_MESSAGE);
+        return null;
+      }
+
+      const limits = resolveEffectiveLimitsByPlanId(planId);
+      if (!limits) {
+        toast.error(PLAN_SYNC_ERROR_MESSAGE);
+        return null;
+      }
+
       const maxRoutes = limits?.routes ?? 0;
       if (maxRoutes !== -1 && routes.length >= maxRoutes) {
         toast.error("Limite de rotas atingido para o seu nível de acesso.");
@@ -313,20 +351,35 @@ export function useRotas() {
       const { data: profile, error: profileError } = await backend
         .from("profiles")
         .select("plan_id")
+        .eq("user_id", user.id)
         .maybeSingle();
-      if (!profileError) {
-        const limits = resolveEffectiveLimitsByPlanId(profile?.plan_id || "plan-starter");
-        const maxGroupSlots = limits?.groupsPerRoute ?? 0;
-        if (maxGroupSlots !== -1) {
-          const slotsUsedByOthers = routes
-            .filter((r) => r.id !== id)
-            .reduce((sum, r) => sum + r.destinationGroupIds.length, 0);
-          if (slotsUsedByOthers + route.destinationGroupIds.length > maxGroupSlots) {
-            toast.error(
-              `Limite de grupos atingido. Seu plano permite ${maxGroupSlots} grupo(s) no total entre todas as rotas. As outras rotas já usam ${slotsUsedByOthers}.`,
-            );
-            return null;
-          }
+      if (profileError) {
+        toast.error("Não foi possível validar o limite de rotas");
+        return null;
+      }
+
+      const planId = normalizePlanId(profile?.plan_id);
+      if (!planId) {
+        toast.error(PLAN_SYNC_ERROR_MESSAGE);
+        return null;
+      }
+
+      const limits = resolveEffectiveLimitsByPlanId(planId);
+      if (!limits) {
+        toast.error(PLAN_SYNC_ERROR_MESSAGE);
+        return null;
+      }
+
+      const maxGroupSlots = limits?.groupsPerRoute ?? 0;
+      if (maxGroupSlots !== -1) {
+        const slotsUsedByOthers = routes
+          .filter((r) => r.id !== id)
+          .reduce((sum, r) => sum + r.destinationGroupIds.length, 0);
+        if (slotsUsedByOthers + route.destinationGroupIds.length > maxGroupSlots) {
+          toast.error(
+            `Limite de grupos atingido. Seu plano permite ${maxGroupSlots} grupo(s) no total entre todas as rotas. As outras rotas já usam ${slotsUsedByOthers}.`,
+          );
+          return null;
         }
       }
     }
@@ -374,10 +427,15 @@ export function useRotas() {
         .delete()
         .eq("route_id", id);
 
+      // Use upsert with ignoreDuplicates so that if clearDestinations partially failed
+      // (leaving some old rows), the restore still succeeds without unique-constraint errors.
       const restoreDestinations = previousDestinationGroupIds.length > 0
         ? await backend
           .from("route_destinations")
-          .insert(previousDestinationGroupIds.map((groupId) => ({ route_id: id, group_id: groupId })))
+          .upsert(
+            previousDestinationGroupIds.map((groupId) => ({ route_id: id, group_id: groupId })),
+            { onConflict: "route_id,group_id", ignoreDuplicates: true },
+          )
         : { error: null as unknown as { message?: string } | null };
 
       if (restoreRoute.error || clearDestinations.error || restoreDestinations.error) {
@@ -406,9 +464,14 @@ export function useRotas() {
     const toDelete = previousDestinationGroupIds.filter((gid) => !nextSet.has(gid));
 
     if (toInsert.length > 0) {
+      // Use upsert with ignoreDuplicates to be resilient against race conditions where
+      // a concurrent operation may have already inserted the same (route_id, group_id) pair.
       const insertDestinations = await backend
         .from("route_destinations")
-        .insert(toInsert.map((gid) => ({ route_id: id, group_id: gid })));
+        .upsert(
+          toInsert.map((gid) => ({ route_id: id, group_id: gid })),
+          { onConflict: "route_id,group_id", ignoreDuplicates: true },
+        );
 
       if (insertDestinations.error) {
         const rollbackOk = await rollbackRouteAndDestinations();
@@ -448,7 +511,7 @@ export function useRotas() {
     const route = routes.find((r) => r.id === id);
     if (!route) return;
     await createRoute({
-      name: `Copia de ${route.name}`,
+      name: `Cópia de ${route.name}`,
       sourceGroupId: route.sourceGroupId,
       destinationGroupIds: [...route.destinationGroupIds],
       masterGroupIds: route.rules.masterGroupIds || (route.masterGroupId ? [route.masterGroupId] : []),

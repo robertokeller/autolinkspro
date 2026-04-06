@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { backend } from "@/integrations/backend/client";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,48 @@ const loginSchema = z.object({
   password: z.string().min(6, "Mínimo 6 caracteres").max(128),
 });
 
+const LOGIN_DRAFT_STORAGE_KEY = "autolinks:login-draft";
+
+type LoginDraft = {
+  identifier: string;
+};
+
+function loadLoginDraft(): LoginDraft {
+  if (typeof window === "undefined") {
+    return { identifier: "" };
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(LOGIN_DRAFT_STORAGE_KEY);
+    if (!raw) return { identifier: "" };
+    const parsed = JSON.parse(raw) as Partial<LoginDraft>;
+    return {
+      identifier: typeof parsed.identifier === "string" ? parsed.identifier : "",
+    };
+  } catch {
+    return { identifier: "" };
+  }
+}
+
+function persistLoginDraft(identifier: string) {
+  if (typeof window === "undefined") return;
+
+  if (!identifier) {
+    window.sessionStorage.removeItem(LOGIN_DRAFT_STORAGE_KEY);
+    return;
+  }
+
+  window.sessionStorage.setItem(
+    LOGIN_DRAFT_STORAGE_KEY,
+    JSON.stringify({ identifier }),
+  );
+}
+
+function clearLoginDraft() {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(LOGIN_DRAFT_STORAGE_KEY);
+}
+
 function isApiUnavailableMessage(message: string): boolean {
   const lower = String(message || "").toLowerCase();
   return (
@@ -33,11 +75,15 @@ function isApiUnavailableMessage(message: string): boolean {
 
 export default function Login() {
   const navigate = useNavigate();
-  const [identifier, setIdentifier] = useState("");
+  const [identifier, setIdentifier] = useState(() => loadLoginDraft().identifier);
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState("");
+
+  useEffect(() => {
+    persistLoginDraft(identifier);
+  }, [identifier]);
 
   const handleResendVerification = async () => {
     if (!pendingVerificationEmail) return;
@@ -61,7 +107,6 @@ export default function Login() {
     }
 
     const rawIdentifier = parsed.data.identifier;
-    // If it looks like a phone number, send it sanitized; otherwise send as email
     const emailValue = looksLikePhone(rawIdentifier) ? sanitizePhone(rawIdentifier) : rawIdentifier;
 
     setLoading(true);
@@ -103,6 +148,7 @@ export default function Login() {
         return;
       }
 
+      clearLoginDraft();
       navigate(ROUTES.app.dashboard);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Algo deu errado ao tentar entrar";
@@ -121,7 +167,7 @@ export default function Login() {
             <Input
               id="identifier"
               type="text"
-              placeholder="seu@email.com ou +55 11 91234-5678"
+              placeholder="Insira seus dados..."
               value={identifier}
               onChange={(event) => setIdentifier(event.target.value)}
               required

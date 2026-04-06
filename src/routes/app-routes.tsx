@@ -90,6 +90,47 @@ export function ProtectedAppRoutes() {
             </FeatureRouteGuard>
           )}
         />
+        <Route path={ROUTES.app.amazonRoot} element={<Navigate to={ROUTES.app.vitrineAmazon} replace />} />
+        <Route
+          path={ROUTES.app.vitrineAmazon}
+          element={(
+            <FeatureRouteGuard feature="amazon">
+              <Pages.AmazonVitrine />
+            </FeatureRouteGuard>
+          )}
+        />
+        <Route
+          path={ROUTES.app.conversorAmazon}
+          element={<Navigate to={ROUTES.app.shopeeConversor} replace />}
+        />
+        <Route
+          path={ROUTES.app.automacoesamazon}
+          element={(
+            <FeatureRouteGuard feature="amazon">
+              <FeatureRouteGuard feature="shopeeAutomations">
+                <Pages.AmazonAutomacoes />
+              </FeatureRouteGuard>
+            </FeatureRouteGuard>
+          )}
+        />
+        <Route
+          path={ROUTES.app.templatesAmazon}
+          element={(
+            <FeatureRouteGuard feature="amazon">
+              <FeatureRouteGuard feature="templates">
+                <Pages.TemplatesAmazon />
+              </FeatureRouteGuard>
+            </FeatureRouteGuard>
+          )}
+        />
+        <Route
+          path={ROUTES.app.amazonConfiguracoes}
+          element={(
+            <FeatureRouteGuard feature="amazon">
+              <Pages.AmazonConfiguracoes />
+            </FeatureRouteGuard>
+          )}
+        />
         <Route
           path={ROUTES.app.schedules}
           element={(

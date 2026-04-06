@@ -63,6 +63,7 @@ interface Props {
   onUpdateName: (sessionId: string, name: string) => Promise<void>;
   onDeleteSession: (sessionId: string) => Promise<void>;
   onRefresh: (options?: { silent?: boolean }) => void;
+  onRefreshSession: (sessionId: string, options?: { silent?: boolean }) => void;
 }
 
 type SessionFlowStep = "form" | "auth";
@@ -82,6 +83,7 @@ export function SessoesWhatsApp({
   onUpdateName,
   onDeleteSession,
   onRefresh,
+  onRefreshSession,
 }: Props) {
   const [isSessionFlowOpen, setIsSessionFlowOpen] = useState(false);
   const [sessionFlowStep, setSessionFlowStep] = useState<SessionFlowStep>("form");
@@ -142,9 +144,9 @@ export function SessoesWhatsApp({
 
     if (!shouldPoll) return;
 
-    const interval = window.setInterval(() => onRefresh({ silent: true }), 1500);
+    const interval = window.setInterval(() => onRefreshSession(authSession.id, { silent: true }), 1500);
     return () => window.clearInterval(interval);
-  }, [isSessionFlowOpen, sessionFlowStep, authSession, onRefresh]);
+  }, [isSessionFlowOpen, sessionFlowStep, authSession, onRefreshSession]);
 
   const resetSessionFlow = () => {
     setSessionFlowStep("form");
@@ -166,7 +168,7 @@ export function SessoesWhatsApp({
       await onConnect(session.id).catch(() => undefined);
     }
 
-    onRefresh({ silent: true });
+    onRefreshSession(session.id, { silent: true });
   };
 
   const handleCreateSession = async () => {
@@ -182,7 +184,7 @@ export function SessoesWhatsApp({
       setSessionFlowStep("auth");
 
       await onConnect(createdId);
-      onRefresh({ silent: true });
+      onRefreshSession(createdId, { silent: true });
     } catch {
       // handled by mutation toast
     }
@@ -192,7 +194,7 @@ export function SessoesWhatsApp({
     if (!authSessionId) return;
     try {
       await onConnect(authSessionId);
-      onRefresh({ silent: true });
+      onRefreshSession(authSessionId, { silent: true });
     } catch {
       // handled by mutation toast
     }
@@ -276,7 +278,7 @@ export function SessoesWhatsApp({
           </div>
           <div className="text-center">
             <p className="font-semibold">
-              Não deu pra gerar o QR Code
+              Não foi possível gerar o QR Code
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
               O serviço WhatsApp parece estar fora do ar.
@@ -577,7 +579,7 @@ export function SessoesWhatsApp({
                 <DialogDescription>
                   {authSession?.status === "online"
                     ? `${authSession.name} está pronta.`
-                    : "Use o WhatsApp no celular pra ler o código."}
+                    : "Use o WhatsApp no celular para ler o código."}
                 </DialogDescription>
               </DialogHeader>
 
@@ -641,7 +643,7 @@ export function SessoesWhatsApp({
           <DialogHeader>
             <DialogTitle>Editar sessão</DialogTitle>
             <DialogDescription>
-              Só dá pra mudar o nome. O resto fica do jeito que está pra não perder a conexão.
+              Só dá para mudar o nome. O resto fica do jeito que está para não perder a conexão.
             </DialogDescription>
           </DialogHeader>
 

@@ -7,6 +7,12 @@ const MERCADO_LIVRE_URLS = [
 ];
 
 const AUTH_HINT_COOKIE_NAMES = ["ssid", "nsa_rotok", "orguseridp", "orgnickp"];
+const TRUSTED_MESSAGE_SOURCE = "autolinks-popup";
+const MAX_CAPTURED_COOKIES = 200;
+const MAX_COOKIE_NAME_LENGTH = 128;
+const MAX_COOKIE_VALUE_LENGTH = 8192;
+const MAX_COOKIE_DOMAIN_LENGTH = 255;
+const MAX_COOKIE_PATH_LENGTH = 512;
 
 function looksLikeMercadoLivreDomain(domain) {
   const host = String(domain || "").toLowerCase();
@@ -38,6 +44,13 @@ async function hasMercadoLivreTabOpen() {
   });
 }
 
+function isTrustedExtensionSender(sender) {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+  const senderUrl = String(sender.url || "");
+  if (!senderUrl) return true;
+  return senderUrl.startsWith(`chrome-extension://${chrome.runtime.id}/`);
+}
+
 async function collectMercadoLivreCookies() {
   const all = [];
   for (const url of MERCADO_LIVRE_URLS) {
@@ -48,23 +61,36 @@ async function collectMercadoLivreCookies() {
   const filtered = all
     .filter((cookie) => cookie && cookie.name && cookie.value)
     .filter((cookie) => looksLikeMercadoLivreDomain(cookie.domain))
+    .filter((cookie) => String(cookie.name || "").length <= MAX_COOKIE_NAME_LENGTH)
+    .filter((cookie) => String(cookie.value || "").length <= MAX_COOKIE_VALUE_LENGTH)
+    .filter((cookie) => String(cookie.domain || "").length <= MAX_COOKIE_DOMAIN_LENGTH)
+    .filter((cookie) => String(cookie.path || "/").length <= MAX_COOKIE_PATH_LENGTH)
     .map((cookie) => ({
-      name: cookie.name,
-      value: cookie.value,
-      domain: cookie.domain,
-      path: cookie.path || "/",
+      name: String(cookie.name),
+      value: String(cookie.value),
+      domain: String(cookie.domain),
+      path: String(cookie.path || "/"),
       httpOnly: !!cookie.httpOnly,
       secure: !!cookie.secure,
       expires: typeof cookie.expirationDate === "number" ? cookie.expirationDate : undefined,
       sameSite: cookie.sameSite || undefined
     }));
 
-  return dedupeCookies(filtered);
+  return dedupeCookies(filtered).slice(0, MAX_CAPTURED_COOKIES);
 }
 
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (!request || request.type !== "GET_ML_COOKIES") {
     return;
+  }
+
+  if (!isTrustedExtensionSender(sender) || request.source !== TRUSTED_MESSAGE_SOURCE) {
+    sendResponse({
+      ok: false,
+      code: "UNTRUSTED_REQUEST",
+      message: "Origem da requisicao nao autorizada.",
+    });
+    return true;
   }
 
   (async () => {

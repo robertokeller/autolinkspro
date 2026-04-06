@@ -28,7 +28,7 @@ const MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS = Math.max(
 const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 const MELI_BASE_URL = "https://www.mercadolivre.com.br";
 const DEFAULT_TAB_KEY: MeliVitrineTabKey = "destaques";
-const PAUSED_AD_MARKERS = ["anuncio pausado", "publicacao pausada"];
+const PAUSED_AD_MARKERS = ["anuncio pausado", "publicação pausada"];
 const BLOCKED_HTML_MARKERS = [
   "captcha",
   "verifique que voce e humano",
@@ -661,7 +661,10 @@ async function extractSnapshotFromLivePage(canonicalUrl: string): Promise<MeliPr
       parseStringifiedNumber(aggregateRating?.reviewCount),
       parseStringifiedNumber(parseReviewsCount($(".ui-pdp-review__amount").first().text())),
       parseStringifiedNumber($("[data-testid='reviews-amount']").first().text()),
-      extractRegexNumber(html, /"count":([0-9]+)/i),
+      extractRegexNumber(html, /"rating_count":([0-9]+)/i),
+      extractRegexNumber(html, /"reviews_count":([0-9]+)/i),
+      extractRegexNumber(html, /"reviewCount":"?([0-9.]+)"?/i),
+      extractRegexNumber(html, /"ratingCount":"?([0-9.]+)"?/i),
     ),
   };
 }
@@ -669,7 +672,7 @@ async function extractSnapshotFromLivePage(canonicalUrl: string): Promise<MeliPr
 export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProductSnapshot> {
   const canonicalUrl = canonicalizeProductUrl(rawUrl);
   if (!canonicalUrl) {
-    throw new Error("URL do produto invalida para extracao.");
+    throw new Error("URL do produto inválida para extracao.");
   }
 
   const fromVitrine = await findSnapshotInVitrine(canonicalUrl).catch(() => null);
@@ -710,7 +713,7 @@ export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProduc
     return merged;
   }
 
-  throw new Error("Nao foi possivel extrair dados do produto.");
+  throw new Error("Não foi possivel extrair dados do produto.");
 }
 
 function shuffleArray<T>(input: T[]): T[] {
@@ -776,7 +779,7 @@ async function fetchHtml(url: string, options: { expectCards?: boolean } = {}): 
 
       const hasCards = html.includes("poly-card");
       if (expectCards && !hasCards && isBlockedHtml(html)) {
-        throw new Error("pagina bloqueada por anti-bot/captcha");
+        throw new Error("página bloqueada por anti-bot/captcha");
       }
 
       return html;
@@ -1089,7 +1092,7 @@ async function syncMeliVitrineInternal(input: {
           });
           fetchedCards += extracted.length;
           if (extracted.length === 0) {
-            extractionWarnings.push(`[${tab.key}] sem cards validos em ${sourceUrl}`);
+            extractionWarnings.push(`[${tab.key}] sem cards válidos em ${sourceUrl}`);
             continue;
           }
 
@@ -1104,7 +1107,7 @@ async function syncMeliVitrineInternal(input: {
 
       const products = shuffleArray([...mergedByUrl.values()]);
       if (products.length === 0) {
-        extractionWarnings.push(`[${tab.key}] nenhuma oferta valida apos processar ${tab.sourceUrls.length} fonte(s)`);
+        extractionWarnings.push(`[${tab.key}] nenhuma oferta válida após processar ${tab.sourceUrls.length} fonte(s)`);
         continue;
       }
       extractedByTab.set(tab, products);
@@ -1116,7 +1119,7 @@ async function syncMeliVitrineInternal(input: {
         .filter(Boolean)
         .slice(0, 5)
         .join(" | ");
-      throw new Error(details ? `Nenhum produto valido encontrado. ${details}` : "Nenhum produto valido encontrado.");
+      throw new Error(details ? `Nenhum produto válido encontrado. ${details}` : "Nenhum produto válido encontrado.");
     }
 
     const syncWarningMessage = extractionWarnings.length > 0

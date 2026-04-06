@@ -2,13 +2,19 @@ import { useCallback, useMemo } from "react";
 import { useTelegramSessions } from "./useTelegramSessions";
 import { useWhatsAppSessions } from "./useWhatsAppSessions";
 
+interface RefreshSessionsOptions {
+  silent?: boolean;
+}
+
 export function useSessoes() {
   const { sessions: waSessions, isLoading: waLoading, refresh: refreshWa } = useWhatsAppSessions();
   const { sessions: tgSessions, isLoading: tgLoading, refresh: refreshTg } = useTelegramSessions();
 
-  const refreshSessions = useCallback(() => {
-    refreshWa();
-    refreshTg();
+  const refreshSessions = useCallback(async (options?: RefreshSessionsOptions) => {
+    await Promise.all([
+      refreshWa(options),
+      refreshTg(options),
+    ]);
   }, [refreshWa, refreshTg]);
 
   const allSessions = useMemo(

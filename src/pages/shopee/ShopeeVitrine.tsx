@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Loader2, ShoppingBag, RefreshCw, TrendingUp, DollarSign, Award, BadgePercent, Star } from "lucide-react";
+import { Loader2, ShoppingBag, RefreshCw, TrendingUp, DollarSign, Award, BadgePercent, ThumbsUp } from "lucide-react";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { ShopeeCredentialsBanner } from "@/components/ShopeeCredentialsBanner";
 import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
@@ -23,11 +23,11 @@ interface TabConfig {
 }
 
 const TABS: TabConfig[] = [
-  { key: "sales", label: "Mais Vendidos", icon: TrendingUp, listType: 0, sortType: "sales" },
-  { key: "commission", label: "Maior Comissão", icon: DollarSign, listType: 0, sortType: "commission" },
-  { key: "discount", label: "Maior Desconto", icon: BadgePercent, listType: 0, sortType: "discount" },
-  { key: "rating", label: "Melhor Avaliação", icon: Star, listType: 0, sortType: "rating" },
-  { key: "top", label: "Top Performance", icon: Award, listType: 2, sortType: "sales" },
+  { key: "sales", label: "Mais vendidos", icon: TrendingUp, listType: 0, sortType: "sales" },
+  { key: "commission", label: "Maior comissão", icon: DollarSign, listType: 0, sortType: "commission" },
+  { key: "discount", label: "Maior desconto", icon: BadgePercent, listType: 0, sortType: "discount" },
+  { key: "rating", label: "Melhor avaliação", icon: ThumbsUp, listType: 0, sortType: "rating" },
+  { key: "top", label: "Melhor desempenho", icon: Award, listType: 2, sortType: "sales" },
 ];
 
 type TabKey = TabConfig["key"];
@@ -145,7 +145,7 @@ export default function ShopeeVitrine() {
         };
       });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Não deu pra carregar a vitrine");
+      toast.error(error instanceof Error ? error.message : "Não foi possível carregar a vitrine");
       setTabs((prev) => ({
         ...prev,
         [tabKey]: { ...prev[tabKey], loading: false, loadingMore: false, fetched: true },
@@ -248,7 +248,7 @@ export default function ShopeeVitrine() {
           )}
 
           {!state.loading && state.fetched && state.products.length === 0 && (
-            <EmptyState icon={ShoppingBag} title="Nenhum produto" description="Nenhum produto encontrado. Tenta atualizar." />
+            <EmptyState icon={ShoppingBag} title="Nenhum produto" description="Nenhum produto encontrado. Tente atualizar." />
           )}
         </>
       )}

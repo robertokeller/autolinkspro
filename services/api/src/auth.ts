@@ -6,6 +6,7 @@ import { v4 as uuid } from "uuid";
 import { queryOne, execute } from "./db.js";
 import { getPasswordPolicyError } from "./password-policy.js";
 import { isEmailDeliveryConfigured, sendEmail } from "./mailer.js";
+import { getDisposableEmailError } from "./disposable-email.js";
 
 const SECRET = (() => {
   const s = process.env.JWT_SECRET;
@@ -38,13 +39,18 @@ const AUTH_COOKIE_MAX_AGE_SECONDS = (() => {
 })();
 
 function resolveCookieSameSite(): "Strict" | "Lax" | "None" {
-  const raw = String(process.env.AUTH_COOKIE_SAMESITE || "lax").trim().toLowerCase();
+  const raw = String(process.env.AUTH_COOKIE_SAMESITE || "strict").trim().toLowerCase();
   if (raw === "strict") return "Strict";
   if (raw === "none") return "None";
   return "Lax";
 }
 
 const AUTH_COOKIE_SAME_SITE = resolveCookieSameSite();
+const BCRYPT_COST = (() => {
+  const parsed = Number(process.env.BCRYPT_COST ?? "12");
+  if (!Number.isFinite(parsed)) return 12;
+  return Math.max(10, Math.min(14, Math.trunc(parsed)));
+})();
 
 // Cookie Domain — set to ".seudominio.com" in production so the cookie is
 // shared between the frontend domain and api.seudominio.com (API).
@@ -52,7 +58,7 @@ const AUTH_COOKIE_SAME_SITE = resolveCookieSameSite();
 const APP_PUBLIC_URL = resolvePublicUrl(process.env.APP_PUBLIC_URL || "");
 const API_PUBLIC_URL = resolvePublicUrl(process.env.API_PUBLIC_URL || "");
 const AUTH_COOKIE_DOMAIN = normalizeCookieDomain(process.env.AUTH_COOKIE_DOMAIN || "", API_PUBLIC_URL);
-const EMAIL_VERIFY_ROUTE = "/auth/verificacao-email";
+const EMAIL_VERIFY_ROUTE = "/auth/verificação-email";
 const PASSWORD_RESET_ROUTE = "/auth/resetar-senha";
 const VERIFY_TOKEN_TTL_MINUTES = normalizeMinutes(process.env.EMAIL_VERIFY_TOKEN_TTL_MINUTES, 24 * 60);
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = normalizeMinutes(process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES, 30);
@@ -159,6 +165,30 @@ function getApiPublicUrl(req: Request) {
 
 function getAppPublicUrl() {
   return APP_PUBLIC_URL;
+}
+
+function getTrustedBrowserOrigins() {
+  const values = new Set<string>();
+  const addValue = (rawValue: string) => {
+    const value = resolvePublicUrl(rawValue);
+    if (!value) return;
+    try {
+      values.add(new URL(value).origin);
+    } catch {
+      // ignore invalid origin
+    }
+  };
+
+  addValue(APP_PUBLIC_URL);
+  addValue(API_PUBLIC_URL);
+  for (const rawEntry of String(process.env.CORS_ORIGIN || "").split(",")) {
+    addValue(rawEntry);
+  }
+  if (!IS_PRODUCTION) {
+    values.add("http://localhost:5173");
+    values.add("http://127.0.0.1:5173");
+  }
+  return values;
 }
 
 function buildAppUrl(pathname: string, params?: Record<string, string>) {
@@ -369,7 +399,7 @@ if (!SERVICE_TOKEN) {
 
 // Pre-computed dummy hash for timing-safe "user not found" path in signin — prevents email enumeration.
 // bcrypt.hashSync runs once at startup (~80–120ms total cost).
-const SIGNIN_DUMMY_HASH = bcrypt.hashSync("__autolinks_dummy_no_real_credential__", 10);
+const SIGNIN_DUMMY_HASH = bcrypt.hashSync("__autolinks_dummy_no_real_credential__", BCRYPT_COST);
 
 // ─── JWT helpers ─────────────────────────────────────────────────────────────
 export interface TokenPayload {
@@ -439,8 +469,10 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
           next(); return;
         }
       }
-    } catch {
-      // DB unavailable — fail open to avoid locking out all users during restarts
+    } catch (error) {
+      // DB unavailable — fail closed for revoked-token safety.
+      console.warn("[auth] token revocation check failed; denying token for safety", error);
+      next(); return;
     }
     req.currentUser = payload;
   } else if (payload) {
@@ -456,6 +488,62 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     res.status(401).json({ data: null, error: { message: "Não autenticado" } }); return;
   }
   next();
+}
+
+function extractRequestOrigin(req: Request) {
+  const origin = String(req.headers.origin || "").trim();
+  if (origin) return origin;
+
+  const referer = String(req.headers.referer || "").trim();
+  if (!referer) return "";
+  try {
+    return new URL(referer).origin;
+  } catch {
+    return "";
+  }
+}
+
+function isTrustedLocalDevOrigin(origin: string) {
+  if (IS_PRODUCTION) return false;
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(String(origin || "").trim());
+}
+
+export function requireTrustedOriginForSessionWrite(req: Request, res: Response, next: NextFunction) {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    next();
+    return;
+  }
+
+  const authHeader = String(req.headers.authorization || "").trim();
+  if (/^Bearer\s+/i.test(authHeader)) {
+    next();
+    return;
+  }
+
+  const cookieMap = parseCookies(req.headers.cookie);
+  if (!cookieMap[AUTH_COOKIE_NAME]) {
+    next();
+    return;
+  }
+
+  const requestOrigin = extractRequestOrigin(req);
+  const trustedOrigins = getTrustedBrowserOrigins();
+  if (requestOrigin && (trustedOrigins.has(requestOrigin) || isTrustedLocalDevOrigin(requestOrigin))) {
+    next();
+    return;
+  }
+
+  const rid = (req as { rid?: string }).rid ?? "-";
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: "api",
+    event: "csrf_blocked",
+    path: req.path,
+    ip: req.ip ?? "-",
+    rid,
+    hasOrigin: Boolean(requestOrigin),
+  }));
+  res.status(403).json({ data: null, error: { message: "Origem da requisição não autorizada" } });
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
@@ -625,7 +713,7 @@ authRouter.post("/signup", async (req, res) => {
   }
   try {
     if (!isEmailDeliveryConfigured()) {
-      res.status(503).json({ data: { user: null, session: null }, error: { message: "Servico de e-mail indisponivel. Tente novamente mais tarde." } }); return;
+      res.status(503).json({ data: { user: null, session: null }, error: { message: "Servico de e-mail indisponível. Tente novamente mais tarde." } }); return;
     }
 
     const { email, password, options } = req.body as { email: string; password: string; options?: { data?: { name?: string; phone?: string } } };
@@ -635,11 +723,19 @@ authRouter.post("/signup", async (req, res) => {
     const passwordPolicyError = getPasswordPolicyError(password);
     if (passwordPolicyError) { res.json({ data: { user: null, session: null }, error: { message: passwordPolicyError } }); return; }
     const normalizedEmail = email.toLowerCase().trim();
+    const disposableEmailError = getDisposableEmailError(normalizedEmail);
+    if (disposableEmailError) {
+      res.status(400).json({ data: { user: null, session: null }, error: { message: disposableEmailError } }); return;
+    }
 
     const exists = await queryOne("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
-    if (exists) { res.json({ data: { user: null, session: null }, error: { message: "Email já cadastrado" } }); return; }
+    if (exists) {
+      // Do NOT reveal that the email is already registered — prevents account enumeration.
+      // If the user forgets they registered, they should use "forgot password" flow.
+      res.json({ data: { user: null, session: null, verification_email_sent: false }, error: null }); return;
+    }
 
-    const hash = await bcrypt.hash(password, 10);
+    const hash = await bcrypt.hash(password, BCRYPT_COST);
     const name = options?.data?.name ?? email.split("@")[0];
     const metadata = { name, account_status: "active", status_updated_at: new Date().toISOString() } as Record<string, unknown>;
     const id = uuid();
@@ -675,7 +771,7 @@ authRouter.post("/signup", async (req, res) => {
 authRouter.post("/resend-verification", async (req, res) => {
   try {
     if (!isEmailDeliveryConfigured()) {
-      res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponivel no momento." } }); return;
+      res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponível no momento." } }); return;
     }
 
     const { email } = req.body as { email?: string };
@@ -708,7 +804,7 @@ authRouter.post("/resend-verification", async (req, res) => {
 authRouter.post("/forgot-password", async (req, res) => {
   try {
     if (!isEmailDeliveryConfigured()) {
-      res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponivel no momento." } }); return;
+      res.status(503).json({ data: { sent: false }, error: { message: "Servico de e-mail indisponível no momento." } }); return;
     }
 
     const { email, options } = req.body as { email?: string; options?: { redirectTo?: string } };
@@ -745,7 +841,7 @@ authRouter.post("/reset-password", async (req, res) => {
     const rawToken = String(token || "").trim();
     const nextPassword = String(password || "");
     if (!rawToken || !nextPassword) {
-      res.status(400).json({ data: { user: null, session: null }, error: { message: "Token e nova senha sao obrigatorios" } }); return;
+      res.status(400).json({ data: { user: null, session: null }, error: { message: "Token e nova senha sao obrigatórios" } }); return;
     }
 
     const passwordPolicyError = getPasswordPolicyError(nextPassword);
@@ -758,7 +854,7 @@ authRouter.post("/reset-password", async (req, res) => {
       res.status(400).json({ data: { user: null, session: null }, error: { message: "Link inválido ou expirado" } }); return;
     }
 
-    const hash = await bcrypt.hash(nextPassword, 10);
+    const hash = await bcrypt.hash(nextPassword, BCRYPT_COST);
     await execute(
       `UPDATE users
           SET password_hash = $1,
@@ -879,7 +975,7 @@ authRouter.post("/signin", async (req, res) => {
 
 // POST /auth/signout
 authRouter.post("/signout", async (req, res) => {
-  // Invalidate all existing tokens for this user so that concurrent sessions
+  // Inválidate all existing tokens for this user so that concurrent sessions
   // and any stolen tokens are immediately rejected by authMiddleware.
   const userId = req.currentUser?.sub;
   if (userId && userId !== "service") {
@@ -918,6 +1014,24 @@ authRouter.get("/session", requireAuth, async (req, res) => {
   }
 });
 
+// POST /auth/refresh — silently re-issue a fresh JWT + cookie before the current one expires.
+// Called proactively by the client when the session is within 5 minutes of expiry.
+// Requires a still-valid (non-expired, non-revoked) cookie — no password needed.
+authRouter.post("/refresh", requireAuth, async (req, res) => {
+  try {
+    const user = await getUserWithRole(req.currentUser!.sub);
+    if (!user) {
+      res.status(401).json({ data: { session: null }, error: { message: "Usuário não encontrado" } });
+      return;
+    }
+    const session = issueSessionForCookie(res, user);
+    res.json({ data: { session }, error: null });
+  } catch (e) {
+    console.error("[auth] refresh error:", e);
+    res.status(500).json({ data: { session: null }, error: { message: "Erro interno" } });
+  }
+});
+
 // POST /auth/update-user
 authRouter.post("/update-user", requireAuth, async (req, res) => {
   try {
@@ -939,8 +1053,8 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
       if (!userRow) { res.json({ data: { user: null }, error: { message: "Usuário não encontrado" } }); return; }
       const currentValid = await bcrypt.compare(current_password, userRow.password_hash);
       if (!currentValid) { res.json({ data: { user: null }, error: { message: "Senha atual incorreta" } }); return; }
-      const hash = await bcrypt.hash(password, 10);
-      // Update password and immediately invalidate all existing tokens (including stolen ones)
+      const hash = await bcrypt.hash(password, BCRYPT_COST);
+      // Update password and immediately inválidate all existing tokens (including stolen ones)
       await execute("UPDATE users SET password_hash = $1, token_invalidated_before = NOW(), updated_at = NOW() WHERE id = $2", [hash, userId]);
     }
 

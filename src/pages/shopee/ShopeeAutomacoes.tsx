@@ -30,6 +30,7 @@ import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown"
 import { useAuth } from "@/contexts/AuthContext";
 import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
+import { readAutomationSessionId } from "@/lib/automation-session";
 import {
   AUTOMATION_VITRINE_TAB_OPTIONS,
   keywordsToCsv,
@@ -97,7 +98,7 @@ function automationToForm(a: ShopeeAutomationRow): FormState {
     minPrice: Number(a.min_price) > 0 ? String(a.min_price) : "",
     maxPrice: Number(a.max_price) < 9999 ? String(a.max_price) : "",
     categories: (a.categories || []) as string[],
-    sessionId: a.session_id || "",
+    sessionId: readAutomationSessionId(a.config, a.session_id),
     destinationGroupIds: (a.destination_group_ids || []) as string[],
     masterGroupIds: (a.master_group_ids || []) as string[],
     templateId: a.template_id || "",
@@ -192,9 +193,9 @@ export default function ShopeeAutomacoes() {
   };
 
   const handleSubmit = async () => {
-    if (!form.name.trim()) { toast.error("Dê um nome pra automação"); return; }
+    if (!form.name.trim()) { toast.error("Dê um nome para a automação"); return; }
     if (!form.sessionId) { toast.error("Escolha a sessão de envio"); return; }
-    if (!form.templateId) { toast.error("Escolha um template de mensagem"); return; }
+    if (!form.templateId) { toast.error("Escolha um modelo de mensagem"); return; }
     if (form.destinationGroupIds.length === 0 && form.masterGroupIds.length === 0) {
       toast.error("Escolha pelo menos um grupo de destino"); return;
     }
@@ -279,7 +280,7 @@ export default function ShopeeAutomacoes() {
 
   return (
     <div className="ds-page">
-      <PageHeader title="Piloto automático" description="Envie ofertas da Shopee automaticamente pros seus grupos">
+      <PageHeader title="Piloto automático" description="Seus grupos recebem automaticamente as ofertas da Shopee">
         <div className="flex w-full flex-wrap items-center justify-center gap-2.5">
           <Button
             size="sm"
@@ -320,7 +321,7 @@ export default function ShopeeAutomacoes() {
       ) : automations.length > 0 ? (
         <div className="space-y-4">
           {automations.map((auto) => {
-            const sessionLabel = getSessionLabel(auto.session_id);
+            const sessionLabel = getSessionLabel(readAutomationSessionId(auto.config, auto.session_id));
             const templateLabel = getTemplateLabel(auto.template_id);
             const activeStart = auto.active_hours_start || "08:00";
             const activeEnd = auto.active_hours_end || "20:00";
@@ -336,15 +337,15 @@ export default function ShopeeAutomacoes() {
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium leading-snug min-[420px]:text-base">{auto.name}</p>
                       <p className="mt-1 text-xs text-muted-foreground leading-relaxed min-[420px]:text-sm">
-                        Janela {activeStart}-{activeEnd} - A cada {auto.interval_minutes}min
-                        {auto.min_discount > 0 && ` - >=${auto.min_discount}% OFF`}
-                        {auto.min_commission > 0 && ` - Comissão >=${auto.min_commission}%`}
-                        {Number(auto.min_price) > 0 && ` - >=R$${auto.min_price}`}
-                        {Number(auto.max_price) < 9999 && ` - <=R$${auto.max_price}`}
+                        Janela horária {activeStart}-{activeEnd} • A cada {auto.interval_minutes} minutos
+                        {auto.min_discount > 0 && ` • ${auto.min_discount}% desconto mín.`}
+                        {auto.min_commission > 0 && ` • ${auto.min_commission}% comissão mín.`}
+                        {Number(auto.min_price) > 0 && ` • Mín. R$${auto.min_price}`}
+                        {Number(auto.max_price) < 9999 && ` • Máx. R$${auto.max_price}`}
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <Badge variant="secondary" className={`text-xs ${auto.is_active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
+                      <Badge variant={auto.is_active ? "success" : "secondary"} className="text-xs">
                         {auto.is_active ? "Ativa" : "Pausada"}
                       </Badge>
                       <Button size="icon" variant="ghost" className="h-9 w-9 sm:h-8 sm:w-8" onClick={() => openEdit(auto)}>
@@ -390,7 +391,7 @@ export default function ShopeeAutomacoes() {
                         );
                       })}
                     {sessionLabel && <Badge variant="secondary" className="text-xs">Sessão: {sessionLabel}</Badge>}
-                    {templateLabel && <Badge variant="secondary" className="text-xs">Template: {templateLabel}</Badge>}
+                    {templateLabel && <Badge variant="secondary" className="text-xs">Modelo: {templateLabel}</Badge>}
                     {groupCount > 0 && <Badge variant="secondary" className="text-xs">Grupos: {groupCount} grupo(s)</Badge>}
                     {keywordFilters.positiveKeywords.length > 0 && (
                       <Badge variant="secondary" className="text-xs">
@@ -419,19 +420,19 @@ export default function ShopeeAutomacoes() {
           })}
         </div>
       ) : (
-        <EmptyState icon={Bot} title="Nenhuma automação ainda" description="Crie automações pra enviar ofertas da Shopee sem precisar fazer nada." actionLabel="Criar automação" onAction={openCreate} />
+        <EmptyState icon={Bot} title="Nenhuma automação ainda" description="Crie automações para enviar ofertas da Shopee sem precisar fazer nada." actionLabel="Criar automação" onAction={openCreate} />
       )}
 
       {/* Delete confirmation */}
       <AlertDialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apagar automação?</AlertDialogTitle>
+            <AlertDialogTitle>Deseja deletar esta automação?</AlertDialogTitle>
             <AlertDialogDescription>A automação <strong>{automations.find((a) => a.id === deleteId)?.name}</strong> vai ser apagada e não tem como desfazer.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteId) deleteAutomation(deleteId); setDeleteId(null); }}>Apagar</AlertDialogAction>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (deleteId) deleteAutomation(deleteId); setDeleteId(null); }}>Deletar</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -448,7 +449,7 @@ export default function ShopeeAutomacoes() {
             <div className="space-y-2">
               <Label>Nome *</Label>
               <Input
-                placeholder="Ex: Eletronicos Flash"
+                placeholder="Ex: Eletrônicos Flash"
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
@@ -457,7 +458,7 @@ export default function ShopeeAutomacoes() {
             <div className="grid gap-4 md:grid-cols-2">
               {/* 2. Horário de funcionamento */}
               <div className="space-y-2 rounded-lg border bg-muted/20 p-4">
-                <Label>Horário que funciona (fuso do sistema)</Label>
+                <Label>Janela horária de funcionamento (fuso do servidor)</Label>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <span className="text-xs text-muted-foreground">Início</span>
@@ -494,7 +495,7 @@ export default function ShopeeAutomacoes() {
                     />
                   </div>
                 </div>
-                <span className="text-xs text-muted-foreground">Use formato 24h: HH:mm</span>
+                <span className="text-xs text-muted-foreground">Formato 24h: HH:mm (por exemplo: 09:30)</span>
               </div>
 
               {/* 3. Intervalo */}
@@ -506,28 +507,28 @@ export default function ShopeeAutomacoes() {
                   value={form.intervalMinutes}
                   onChange={(e) => setForm({ ...form, intervalMinutes: e.target.value })}
                 />
-                <span className="text-xs text-muted-foreground">Uma oferta vai ser enviada a cada {form.intervalMinutes || "30"} minutos</span>
+                <span className="text-xs text-muted-foreground">Uma nova oferta será enviada a cada {form.intervalMinutes || "30"} minutos</span>
               </div>
             </div>
 
             {/* 4. Filtros opcionais */}
             <div className="space-y-2">
-              <Label>Filtros de oferta <span className="text-muted-foreground font-normal">(não precisa preencher)</span></Label>
+              <Label>Filtros de oferta <span className="text-muted-foreground font-normal">(opcional)</span></Label>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Desconto min (%)</span>
+                  <span className="text-xs text-muted-foreground">Desconto mínimo (%)</span>
                   <Input type="number" placeholder="Ex: 40" value={form.minDiscount} onChange={(e) => setForm({ ...form, minDiscount: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Comissão mín. (%)</span>
+                  <span className="text-xs text-muted-foreground">Comissão mínima (%)</span>
                   <Input type="number" placeholder="Ex: 6" value={form.minCommission} onChange={(e) => setForm({ ...form, minCommission: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Preço mín. (R$)</span>
+                  <span className="text-xs text-muted-foreground">Preço mínimo (R$)</span>
                   <Input type="number" placeholder="Ex: 10" value={form.minPrice} onChange={(e) => setForm({ ...form, minPrice: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Preço máx. (R$)</span>
+                  <span className="text-xs text-muted-foreground">Preço máximo (R$)</span>
                   <Input type="number" placeholder="Ex: 500" value={form.maxPrice} onChange={(e) => setForm({ ...form, maxPrice: e.target.value })} />
                 </div>
               </div>
@@ -554,15 +555,15 @@ export default function ShopeeAutomacoes() {
               </Select>
               <p className="text-xs text-muted-foreground">
                 {form.offerSourceMode === "vitrine"
-                  ? "Escolha as categorias da vitrine para capturar ofertas."
-                  : "Use as categorias tradicionais da pesquisa de ofertas."}
+                  ? "Selecione as categorias da vitrine para capturar ofertas."
+                  : "Use as categorias tradicionais da pesquisa de ofertas para filtrar."}
               </p>
             </div>
 
             {/* 6. Categorias da origem selecionada */}
             {form.offerSourceMode === "vitrine" ? (
               <div className="space-y-2">
-                <Label>Categorias da vitrine</Label>
+                <Label>Categorias da vitrine *</Label>
                 <MultiOptionDropdown
                   value={form.vitrineTabs}
                   onChange={(ids) => setForm((prev) => ({ ...prev, vitrineTabs: ids }))}
@@ -578,7 +579,7 @@ export default function ShopeeAutomacoes() {
               </div>
             ) : (
               <div className="space-y-2">
-                <Label>Categorias</Label>
+                <Label>Categorias *</Label>
                 <CategoryMultiSelect
                   value={form.categories}
                   onChange={(categoryIds) => setForm({ ...form, categories: categoryIds })}
@@ -594,7 +595,7 @@ export default function ShopeeAutomacoes() {
                 <div className="space-y-2 rounded-md border bg-muted/20 p-3">
                   <Label className="text-xs flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full bg-success inline-block" />
-                    Palavras positivas
+                    Palavras-chave positivas
                   </Label>
                   <Textarea
                     rows={2}
@@ -603,13 +604,13 @@ export default function ShopeeAutomacoes() {
                     onChange={(e) => setForm({ ...form, positiveKeywords: e.target.value })}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Separe por vírgula. A automação só envia se a oferta tiver pelo menos uma dessas palavras.
+                    Separadas por vírgula. A automação envia apenas se a oferta contiver pelo menos uma palavra.
                   </p>
                 </div>
                 <div className="space-y-2 rounded-md border bg-muted/20 p-3">
                   <Label className="text-xs flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full bg-destructive inline-block" />
-                    Palavras negativas
+                    Palavras-chave negativas
                   </Label>
                   <Textarea
                     rows={2}
@@ -618,7 +619,7 @@ export default function ShopeeAutomacoes() {
                     onChange={(e) => setForm({ ...form, negativeKeywords: e.target.value })}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Separe por vírgula. Se a oferta tiver qualquer uma dessas palavras, ela é descartada.
+                    Separadas por vírgula. A automação descarta ofertas que contenham qualquer uma dessas palavras.
                   </p>
                 </div>
               </div>
@@ -658,7 +659,7 @@ export default function ShopeeAutomacoes() {
 
                 {filteredMasterGroups.length > 0 && (
                   <div className="space-y-2">
-                    <Label>Grupos mestre</Label>
+                    <Label>Grupos-mestres</Label>
                     <MultiOptionDropdown
                       value={form.masterGroupIds}
                       onChange={(ids) => setForm((prev) => ({ ...prev, masterGroupIds: ids }))}
@@ -667,24 +668,24 @@ export default function ShopeeAutomacoes() {
                         label: masterGroup.name,
                         meta: `${masterGroup.groupIds.length} grupos`,
                       }))}
-                      placeholder="Escolher grupos mestres"
-                      selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
-                      emptyMessage="Nenhum grupo mestre nessa sessão"
-                      title="Grupos mestre"
+                      placeholder="Escolha os grupos-mestres"
+                      selectedLabel={(count) => `${count} grupo(s)-mestre(s)`}
+                      emptyMessage="Nenhum grupo-mestre nessa sessão"
+                      title="Grupos-mestres"
                     />
                   </div>
                 )}
               </>
             )}
 
-            {/* 10. Template (obrigatório) */}
+            {/* 10. Modelo de mensagem (obrigatório) */}
             <div className="space-y-2">
-              <Label>Template *</Label>
+              <Label>Modelo de mensagem *</Label>
               <Select value={form.templateId} onValueChange={(v) => setForm({ ...form, templateId: v })}>
-                <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Escolha um modelo de mensagem..." /></SelectTrigger>
                 <SelectContent>
                   {templates.length === 0 && (
-                    <SelectItem value="_none" disabled>Nenhum template criado</SelectItem>
+                    <SelectItem value="_none" disabled>Nenhum modelo de mensagem criado</SelectItem>
                   )}
                   {templates.map((t) => (
                     <SelectItem key={t.id} value={t.id}>{t.name}{t.isDefault ? " *" : ""}</SelectItem>

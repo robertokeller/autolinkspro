@@ -1,7 +1,8 @@
 import process from "node:process";
+import { randomBytes } from "node:crypto";
 
 const apiBaseUrl = process.env.SCHEDULER_RPC_BASE_URL || "http://127.0.0.1:3116";
-const schedulerToken = process.env.SCHEDULER_RPC_TOKEN || process.env.SERVICE_TOKEN || "dev-service-token-local-only";
+const schedulerToken = process.env.SCHEDULER_RPC_TOKEN || process.env.SERVICE_TOKEN || randomBytes(24).toString("hex");
 
 process.env.NODE_ENV = process.env.NODE_ENV || "development";
 process.env.SCHEDULER_MODE = "remote";

@@ -21,7 +21,7 @@ import {
   RefreshCw,
   Send,
   ShieldAlert,
-  Sparkles,
+  Wand2,
   Timer,
   Trash2,
   TrendingUp,
@@ -81,13 +81,13 @@ const SUPPORTED_TRIGGER_TYPES: AutomationTriggerType[] = ["plan_expiring", "plan
 
 function broadcastStatusBadge(status: string) {
   switch (status) {
-    case "sent":       return <Badge variant="success"     className="gap-1.5 text-[11px] font-medium"><CheckCircle2 className="h-3 w-3" />Enviado</Badge>;
-    case "partial":    return <Badge variant="warning"     className="gap-1.5 text-[11px] font-medium"><AlertTriangle className="h-3 w-3" />Parcial</Badge>;
-    case "failed":     return <Badge variant="destructive" className="gap-1.5 text-[11px] font-medium"><XCircle className="h-3 w-3" />Falhou</Badge>;
-    case "processing": return <Badge variant="secondary"   className="gap-1.5 text-[11px] font-medium"><Loader2 className="h-3 w-3 animate-spin" />Enviando</Badge>;
-    case "scheduled":  return <Badge variant="secondary"   className="gap-1.5 text-[11px] font-medium"><Calendar className="h-3 w-3" />Agendado</Badge>;
-    case "cancelled":  return <Badge variant="secondary"   className="gap-1.5 text-[11px] font-medium"><Ban className="h-3 w-3" />Cancelado</Badge>;
-    default:           return <Badge variant="secondary" className="text-[11px] font-medium">{status}</Badge>;
+    case "sent":       return <Badge variant="success"     className="gap-1.5 text-xs font-medium"><CheckCircle2 className="h-3 w-3" />Enviado</Badge>;
+    case "partial":    return <Badge variant="warning"     className="gap-1.5 text-xs font-medium"><AlertTriangle className="h-3 w-3" />Parcial</Badge>;
+    case "failed":     return <Badge variant="destructive" className="gap-1.5 text-xs font-medium"><XCircle className="h-3 w-3" />Falhou</Badge>;
+    case "processing": return <Badge variant="secondary"   className="gap-1.5 text-xs font-medium"><Loader2 className="h-3 w-3 animate-spin" />Enviando</Badge>;
+    case "scheduled":  return <Badge variant="secondary"   className="gap-1.5 text-xs font-medium"><Calendar className="h-3 w-3" />Agendado</Badge>;
+    case "cancelled":  return <Badge variant="secondary"   className="gap-1.5 text-xs font-medium"><Ban className="h-3 w-3" />Cancelado</Badge>;
+    default:           return <Badge variant="secondary" className="text-xs font-medium">{status}</Badge>;
   }
 }
 
@@ -309,13 +309,13 @@ function AutomationDialog({ open, onClose, initial, onSave, isSaving, onPreview,
                     </div>
                     <div>
                       <p className="text-xs font-semibold leading-tight">{tm.label}</p>
-                      <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">{tm.description}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground leading-snug">{tm.description}</p>
                     </div>
                   </button>
                 );
               })}
             </div>
-            <p className="text-[11px] text-muted-foreground">Cron / Periódico estará disponível em breve.</p>
+            <p className="text-xs text-muted-foreground">Cron / Periódico estará disponível em breve.</p>
           </div>
 
           {/* Config fields */}
@@ -366,7 +366,7 @@ function AutomationDialog({ open, onClose, initial, onSave, isSaving, onPreview,
               rows={5}
               className="resize-none text-sm"
             />
-            <p className="text-[11px] text-muted-foreground">Suporta *negrito*, _itálico_ e emojis para WhatsApp.</p>
+            <p className="text-xs text-muted-foreground">Suporta *negrito*, _itálico_ e emojis para WhatsApp.</p>
           </div>
 
           {/* Preview */}
@@ -574,15 +574,15 @@ function AutomationCard({
 
           {/* Metadata pills */}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span className={`inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium ${meta.color}`}>
+            <span className={`inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium ${meta.color}`}>
               <MetaIcon className="h-3 w-3" />
               {meta.label}
             </span>
-            <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               {configLabel()}
             </span>
             {auto.filter_plan.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                 <Filter className="h-3 w-3" />{auto.filter_plan.length} plano(s)
               </span>
             )}
@@ -592,7 +592,7 @@ function AutomationCard({
           <p className="mt-2 text-xs text-muted-foreground line-clamp-2 leading-relaxed">{auto.message_template}</p>
 
           {/* Stats row */}
-          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span className="flex items-center gap-1">
               <Zap className="h-3 w-3" />{auto.run_count} execuções
             </span>
@@ -798,7 +798,7 @@ export default function AdminMensagens() {
         <Card className="overflow-hidden border-l-2 border-l-primary">
           <CardContent className="flex items-start justify-between pt-4 pb-3 px-4">
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Disparos</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Disparos</p>
               <p className="mt-1 text-2xl font-bold tabular-nums">{broadcasts.filter((b) => b.status === "sent" || b.status === "partial").length}</p>
             </div>
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/8">
@@ -809,7 +809,7 @@ export default function AdminMensagens() {
         <Card className="overflow-hidden border-l-2 border-l-amber-500">
           <CardContent className="flex items-start justify-between pt-4 pb-3 px-4">
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Agendados</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Agendados</p>
               <p className="mt-1 text-2xl font-bold tabular-nums">{broadcasts.filter((b) => b.status === "scheduled").length}</p>
             </div>
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/8">
@@ -820,7 +820,7 @@ export default function AdminMensagens() {
         <Card className="overflow-hidden border-l-2 border-l-emerald-500">
           <CardContent className="flex items-start justify-between pt-4 pb-3 px-4">
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Automações</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Automações</p>
               <p className="mt-1 text-2xl font-bold tabular-nums">{activeCount}</p>
             </div>
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/8">
@@ -831,7 +831,7 @@ export default function AdminMensagens() {
         <Card className="overflow-hidden border-l-2 border-l-blue-500">
           <CardContent className="flex items-start justify-between pt-4 pb-3 px-4">
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Total regras</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Total regras</p>
               <p className="mt-1 text-2xl font-bold tabular-nums">{automations.length}</p>
             </div>
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/8">
@@ -869,7 +869,7 @@ export default function AdminMensagens() {
             <span className="hidden sm:inline">Automações</span>
             <span className="sm:hidden">Automações</span>
             {activeCount > 0 && (
-              <span className="ml-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-emerald-500/20 px-1 text-[10px] font-bold text-emerald-600">
+              <span className="ml-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-emerald-500/20 px-1 text-2xs font-bold text-emerald-600">
                 {activeCount}
               </span>
             )}
@@ -878,7 +878,7 @@ export default function AdminMensagens() {
             <Clock className="h-3.5 w-3.5" />
             Histórico
             {broadcasts.length > 0 && (
-              <span className="ml-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary/15 px-1 text-[10px] font-medium text-primary">
+              <span className="ml-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary/15 px-1 text-2xs font-medium text-primary">
                 {broadcasts.length}
               </span>
             )}
@@ -1120,8 +1120,8 @@ export default function AdminMensagens() {
                       cnt > 0 ? "bg-muted/30" : "border-dashed opacity-35"
                     }`}>
                       <TIcon className={`h-3.5 w-3.5 ${tm.color}`} />
-                      <p className="text-[11px] font-semibold leading-tight text-foreground">{tm.label}</p>
-                      <p className="text-[11px] text-muted-foreground">{activeCnt}/{cnt} ativa(s)</p>
+                      <p className="text-xs font-semibold leading-tight text-foreground">{tm.label}</p>
+                      <p className="text-xs text-muted-foreground">{activeCnt}/{cnt} ativa(s)</p>
                     </div>
                   );
                 })}
@@ -1146,8 +1146,8 @@ export default function AdminMensagens() {
           {/* Automation trigger guide */}
           <div className="rounded-xl border border-dashed bg-muted/20 p-4">
             <div className="mb-3 flex items-center gap-2">
-              <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Como funcionam as automações</span>
+              <Wand2 className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Como funcionam as automações</span>
             </div>
             <div className="grid grid-cols-1 gap-2.5 text-xs text-muted-foreground sm:grid-cols-2">
               <div className="flex gap-2.5">

@@ -22,6 +22,9 @@ npm install
 
 Crie `.env` a partir de `.env.example` antes de iniciar os servicos.
 
+- Os scripts Node de bootstrap local carregam automaticamente `.env` e `.env.local`.
+- Prioridade: variáveis já exportadas no shell > `.env.local` > `.env`.
+
 ## Preview em tempo real
 
 ```bash
@@ -67,14 +70,15 @@ npm run preview:ready -- --host 127.0.0.1 --port 5173
 npm run dev
 ```
 
-- `npm run dev` inicia o frontend + `Ops Control` em paralelo.
-- Com isso, o botao `Ligar todos` no dashboard admin consegue acionar os microservicos locais.
+- `npm run dev` agora sobe o stack local completo e espera os serviços ficarem saudáveis antes de abrir a aplicação.
+- Esse fluxo usa o mesmo orquestrador do `preview:ready`: Supabase remoto + API + microserviços + scheduler + frontend local.
+- Se você quiser o comportamento antigo apenas para debug, use `npm run dev:legacy`.
 - Se quiser apenas o frontend, use `npm run dev:web`.
 
 Credenciais seed (dev/local):
 
-- Admin: `robertokellercontato@gmail.com` / `abacate1`
-- User: `aliancaslovely@gmail.com` / `abacate1`
+- Admin: `robertokellercontato@gmail.com` / `SEED_ADMIN_PASSWORD`
+- User: `aliancaslovely@gmail.com` / `SEED_USER_PASSWORD`
 
 ## Integracoes reais (Baileys + Telegram + Shopee API)
 
@@ -149,11 +153,10 @@ curl http://127.0.0.1:3113/health
 - Agendamentos (`dispatch-messages`) agora enviam de fato via conectores reais e registram falhas no historico.
 - Automacoes Shopee (`shopee-automation-run`) executam busca real na API Shopee, aplicam template e disparam para grupos da sessao configurada.
 
-## Build e testes
+## Build
 
 ```bash
 npm run build
-npm run test
 ```
 
 ## Deploy com Coolify (Hostinger)
@@ -209,7 +212,8 @@ npm run pm2:bootstrap
 
 ## Scripts principais
 
-- `npm run dev`: frontend + Ops Control em paralelo (fluxo recomendado para desenvolvimento)
+- `npm run dev`: sobe stack local completa e só abre o app quando API e serviços essenciais estiverem prontos
+- `npm run dev:legacy`: fluxo antigo de desenvolvimento (frontend + Ops Control/API em paralelo, sem readiness completa)
 - `npm run dev:web`: apenas frontend (sem Ops Control)
 - `npm run preview`: sobe stack local completa (Supabase + API + WhatsApp + Telegram + Shopee + Mercado Livre + preview)
 - `npm run preview:local`: sobe stack completa e preview local em `127.0.0.1:5173` (fallback sequencial: `5174`, `5175`, ...)
@@ -217,7 +221,6 @@ npm run pm2:bootstrap
 - `npm run preview:live`: sobe stack completa e preview na rede local (`0.0.0.0`)
 - `npm run preview:dist`: preview do build de producao
 - `npm run lint`: analise estatica
-- `npm run test`: testes automatizados
 - `npm run deploy:preflight`: valida estrutura minima para deploy no Coolify (antes de subir para GitHub)
 - `npm run scheduler:start`: scheduler 24/7 (modo remoto quando `SCHEDULER_RPC_BASE_URL` estiver configurado)
 - `npm run guardian:start`: monitor 24/7 de saude dos servicos
@@ -225,12 +228,12 @@ npm run pm2:bootstrap
 - `npm run svc:shopee:start`: sobe servico Shopee (porta `3113`)
 - `npm run svc:ops:start`: sobe servico Ops Control (porta `3115`)
 
-## Credenciais de teste locais
+## Credenciais locais
 
-- email admin: `admin@autolinks.local`
-- senha admin: `Mudar@1234!`
-- email cliente: `cliente@autolinks.local`
-- senha cliente: `Mudar@1234!`
+- email admin: `robertokellercontato@gmail.com`
+- senha admin: definida por `SEED_ADMIN_PASSWORD` (ou fallback `SEED_DEFAULT_PASSWORD`)
+- email cliente: `aliancaslovely@gmail.com`
+- senha cliente: definida por `SEED_USER_PASSWORD` (ou fallback `SEED_DEFAULT_PASSWORD`)
 
 ## Estrutura de alto nivel
 

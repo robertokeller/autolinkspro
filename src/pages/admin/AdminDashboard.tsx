@@ -514,9 +514,6 @@ export default function AdminDashboard() {
         if (!options?.silent) toast.success(allSuccessMessage);
       }
 
-      if (error instanceof Error) {
-        console.warn("[admin-dashboard] fallback de controle em massa acionado:", error.message);
-      }
       if (options?.throwOnFailure && error instanceof Error) {
         throw error;
       }
@@ -766,6 +763,9 @@ export default function AdminDashboard() {
   const revenueMetrics = useMemo(() => {
     const planMap = new Map(controlPlane.plans.map((p) => [p.id, p]));
     const activeRegular = allObsUsers.filter((u) => u.account_status === "active" && u.role !== "admin");
+    const now = Date.now();
+    const days7ms = 7 * 24 * 60 * 60 * 1000;
+    const days30ms = 30 * 24 * 60 * 60 * 1000;
 
     let mrr = 0;
     let paidCount = 0;
@@ -786,12 +786,25 @@ export default function AdminDashboard() {
       else freeTierCount++;
     }
 
+    const allRegular = allObsUsers.filter((u) => u.role !== "admin");
+    const newUsers7d = allRegular.filter((u) => now - Date.parse(u.created_at) <= days7ms).length;
+    const newUsers30d = allRegular.filter((u) => now - Date.parse(u.created_at) <= days30ms).length;
+    const inactiveCount = allRegular.filter((u) => u.account_status === "inactive").length;
+    const blockedCount = allRegular.filter((u) => u.account_status === "blocked").length;
+    const archivedCount = allRegular.filter((u) => u.account_status === "archived").length;
+
     return {
       mrr,
       arr: mrr * 12,
       paidCount,
       freeTierCount,
       totalActive: activeRegular.length,
+      totalUsers: allRegular.length,
+      newUsers7d,
+      newUsers30d,
+      inactiveCount,
+      blockedCount,
+      archivedCount,
       byPlan: Object.values(byPlan).sort((a, b) => b.revenue - a.revenue),
     };
   }, [allObsUsers, controlPlane.plans]);
@@ -1151,7 +1164,7 @@ export default function AdminDashboard() {
           <TabsTrigger value="services" className="gap-1.5">
             <Server className="h-3.5 w-3.5" />
             Serviços
-            <Badge variant={onlineCount === totalCount ? "default" : "secondary"} className="ml-1 px-1.5 py-0 text-[10px]">
+            <Badge variant={onlineCount === totalCount ? "default" : "secondary"} className="ml-1 px-1.5 py-0 text-2xs">
               {onlineCount}/{totalCount}
             </Badge>
           </TabsTrigger>
@@ -1167,7 +1180,7 @@ export default function AdminDashboard() {
             <AlertTriangle className="h-3.5 w-3.5" />
             Alertas
             {anomalies.length > 0 && (
-              <Badge variant="destructive" className="ml-1 px-1.5 py-0 text-[10px]">{anomalies.length}</Badge>
+              <Badge variant="destructive" className="ml-1 px-1.5 py-0 text-2xs">{anomalies.length}</Badge>
             )}
           </TabsTrigger>
           <TabsTrigger value="business" className="gap-1.5">
@@ -1178,7 +1191,7 @@ export default function AdminDashboard() {
             <Wifi className="h-3.5 w-3.5" />
             Sessões
             {sessionHealth.rows.filter((r) => r.hasIssue).length > 0 && (
-              <Badge variant="destructive" className="ml-1 px-1.5 py-0 text-[10px]">
+              <Badge variant="destructive" className="ml-1 px-1.5 py-0 text-2xs">
                 {sessionHealth.rows.filter((r) => r.hasIssue).length}
               </Badge>
             )}
@@ -1200,7 +1213,7 @@ export default function AdminDashboard() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <CardTitle className="text-sm font-semibold truncate">{service.label}</CardTitle>
-                      <code className="text-[10px] font-mono text-muted-foreground/70 bg-muted/50 rounded-sm px-1 py-px leading-relaxed">:{meta?.port ?? "?"}</code>
+                      <code className="text-2xs font-mono text-muted-foreground/70 bg-muted/50 rounded-sm px-1 py-px leading-relaxed">:{meta?.port ?? "?"}</code>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -1324,7 +1337,7 @@ export default function AdminDashboard() {
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
             <CardTitle className="admin-card-title">Uso por Usuário (Top 8)</CardTitle>
-            <Badge variant="outline" className="text-[10px]">{topUserUsage.length} usuários</Badge>
+            <Badge variant="outline" className="text-2xs">{topUserUsage.length} usuários</Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-2.5">
@@ -1335,17 +1348,17 @@ export default function AdminDashboard() {
             <div key={row.user_id} className="rounded-xl border border-border/70 px-3 py-2.5 text-xs transition-colors hover:bg-muted/30">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-2xs font-bold text-primary">
                     {String(row.name || "?").charAt(0).toUpperCase()}
                   </div>
                   <div>
                     <p className="truncate font-medium">{row.name}</p>
-                    <p className="truncate text-[11px] text-muted-foreground">{row.email}</p>
+                    <p className="truncate text-xs text-muted-foreground">{row.email}</p>
                   </div>
                 </div>
-                <Badge variant={row.account_status === "active" ? "default" : "secondary"} className="text-[10px]">{row.account_status}</Badge>
+                <Badge variant={row.account_status === "active" ? "default" : "secondary"} className="text-2xs">{row.account_status}</Badge>
               </div>
-              <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
+              <div className="mt-1.5 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
                 <span>Rotas: <strong className="text-foreground">{row.usage.routesTotal}</strong></span>
                 <span>Automações: <strong className="text-foreground">{row.usage.automationsTotal}</strong></span>
                 <span>Grupos: <strong className="text-foreground">{row.usage.groupsTotal}</strong></span>
@@ -1364,7 +1377,7 @@ export default function AdminDashboard() {
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
             <CardTitle className="admin-card-title">Alertas do Sistema</CardTitle>
-            <Badge variant={anomalies.length > 0 ? "destructive" : "default"} className="text-[10px]">
+            <Badge variant={anomalies.length > 0 ? "destructive" : "default"} className="text-2xs">
               {anomalies.length > 0 ? `${anomalies.length} alerta${anomalies.length > 1 ? "s" : ""}` : "Tudo limpo"}
             </Badge>
           </div>
@@ -1433,6 +1446,45 @@ export default function AdminDashboard() {
               </div>
               <p className="text-xl font-bold">{revenueMetrics.freeTierCount}</p>
               <p className="text-2xs text-muted-foreground">usuários sem plano pago ativo</p>
+            </div>
+          </div>
+
+          <div className="ds-card-grid grid-cols-2 sm:grid-cols-4">
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
+                <span className="text-2xs uppercase tracking-wider">Novos (7d)</span>
+              </div>
+              <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">{revenueMetrics.newUsers7d}</p>
+              <p className="text-2xs text-muted-foreground">cadastros na última semana</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <TrendingUp className="h-3.5 w-3.5 text-blue-500" />
+                <span className="text-2xs uppercase tracking-wider">Novos (30d)</span>
+              </div>
+              <p className="text-xl font-bold">{revenueMetrics.newUsers30d}</p>
+              <p className="text-2xs text-muted-foreground">cadastros no último mês</p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                <span className="text-2xs uppercase tracking-wider">Inativos</span>
+              </div>
+              <p className="text-xl font-bold text-amber-600 dark:text-amber-400">{revenueMetrics.inactiveCount}</p>
+              <p className="text-2xs text-muted-foreground">
+                {revenueMetrics.blockedCount > 0 ? `+ ${revenueMetrics.blockedCount} bloqueados` : "usuários sem acesso"}
+              </p>
+            </div>
+            <div className="admin-card p-4 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-2xs uppercase tracking-wider">Total Cadastros</span>
+              </div>
+              <p className="text-xl font-bold">{revenueMetrics.totalUsers}</p>
+              <p className="text-2xs text-muted-foreground">
+                {revenueMetrics.archivedCount > 0 ? `${revenueMetrics.archivedCount} arquivados` : "todos os usuários"}
+              </p>
             </div>
           </div>
 
@@ -1517,7 +1569,7 @@ export default function AdminDashboard() {
             <CardHeader className="pb-2 border-b border-border/30">
               <div className="flex items-center justify-between">
                 <CardTitle className="admin-card-title">Saúde das Sessões por Usuário</CardTitle>
-                <Badge variant="outline" className="text-[10px]">{sessionHealth.rows.length} usuários</Badge>
+                <Badge variant="outline" className="text-2xs">{sessionHealth.rows.length} usuários</Badge>
               </div>
             </CardHeader>
             <CardContent className="divide-y pt-0">
@@ -1529,14 +1581,14 @@ export default function AdminDashboard() {
               )}
               {sessionHealth.rows.map((row) => (
                 <div key={row.user_id} className={`flex items-center gap-3 py-2.5 px-1 ${row.hasIssue ? "bg-destructive/5" : ""}`}>
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-2xs font-bold text-primary">
                     {String(row.name || "?").charAt(0).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium truncate">{row.name}</p>
-                    <p className="text-[11px] text-muted-foreground truncate">{row.email}</p>
+                    <p className="text-xs text-muted-foreground truncate">{row.email}</p>
                   </div>
-                  <div className="flex items-center gap-3 shrink-0 text-[11px]">
+                  <div className="flex items-center gap-3 shrink-0 text-xs">
                     {row.waTotal > 0 && (
                       <div className="flex items-center gap-1">
                         {row.waOnline > 0
@@ -1559,7 +1611,7 @@ export default function AdminDashboard() {
                     )}
                   </div>
                   {row.hasIssue && (
-                    <Badge variant="destructive" className="text-[10px] px-1.5 py-0 shrink-0">Offline</Badge>
+                    <Badge variant="destructive" className="text-2xs px-1.5 py-0 shrink-0">Offline</Badge>
                   )}
                 </div>
               ))}

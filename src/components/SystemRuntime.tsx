@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/contexts/AuthContext";
 import { useChannelRuntime } from "@/hooks/useChannelRuntime";
@@ -17,6 +17,7 @@ export function SystemRuntime() {
   const { user, isLoading } = useAuth();
   const queryClient = useQueryClient();
   const [runtimeEnabled, setRuntimeEnabled] = useState(() => loadSystemRuntimeControlState().enabled);
+  const runtimeErrorInvalidateUntilRef = useRef(0);
   const userId = user?.id;
   const { dispatchMessages } = useDispatchMessages();
 
@@ -31,7 +32,14 @@ export function SystemRuntime() {
   }, []);
 
   useEffect(() => {
+    const RUNTIME_ERROR_INVALIDATE_COOLDOWN_MS = 15_000;
+
     const onServiceRuntimeError = () => {
+      if (!runtimeEnabled || !userId) return;
+      const now = Date.now();
+      if (now < runtimeErrorInvalidateUntilRef.current) return;
+      runtimeErrorInvalidateUntilRef.current = now + RUNTIME_ERROR_INVALIDATE_COOLDOWN_MS;
+
       queryClient.invalidateQueries({ queryKey: ["channel-health"] });
       queryClient.invalidateQueries({ queryKey: ["service-health"] });
     };
@@ -40,7 +48,7 @@ export function SystemRuntime() {
     return () => {
       window.removeEventListener(SERVICE_RUNTIME_ERROR_EVENT, onServiceRuntimeError);
     };
-  }, [queryClient]);
+  }, [queryClient, runtimeEnabled, userId]);
 
   useEffect(() => {
     // Invalidate only the queries that are actually affected by DB/control-plane changes.

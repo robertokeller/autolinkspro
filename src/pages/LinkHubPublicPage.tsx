@@ -147,14 +147,7 @@ export default function LinkHubPublicPage() {
   }
 
   return (
-    <div
-      className="min-h-screen selection:bg-white/10"
-      style={{
-        background: "#08080c",
-        color: "#f0f0f5",
-        fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
-      }}
-    >
+    <div className="min-h-screen bg-zinc-950 font-sans text-zinc-100 selection:bg-white/10">
       {/* Noise grain overlay */}
       <div
         className="fixed inset-0 pointer-events-none opacity-[0.025] mix-blend-overlay"
@@ -398,7 +391,7 @@ export default function LinkHubPublicPage() {
                     <p className="text-xs font-bold" style={{ color: "rgba(255,255,255,0.8)" }}>{item.name}</p>
                     <div className="flex gap-0.5 mt-0.5">
                       {[...Array(5)].map((_, index) => (
-                        <Star key={index} className="h-2.5 w-2.5 fill-current" style={{ color: "#facc15" }} />
+                        <Star key={index} className="h-2.5 w-2.5 fill-current text-yellow-400" />
                       ))}
                     </div>
                   </div>

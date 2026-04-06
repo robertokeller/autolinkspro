@@ -50,11 +50,8 @@ import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import type { Template, TemplateCategory } from "@/lib/types";
 import { ROUTES } from "@/lib/routes";
 import { templateRequestsImageAttachment } from "@/lib/template-placeholders";
-import {
-  applyMeliTemplatePlaceholders,
-  buildMeliTemplatePlaceholderData,
-  type MeliTemplateProductInput,
-} from "@/lib/meli-template-placeholders";
+import type { MeliTemplateProductInput } from "@/lib/meli-template-placeholders";
+import { MELI_TEMPLATE_MODULE } from "@/lib/marketplace-template-modules";
 import { formatMessageForPlatform, renderRichTextPreviewHtml, renderTemplatePreviewHtml } from "@/lib/rich-text";
 
 const DEFAULT_TEMPLATE_FORM = {
@@ -63,34 +60,9 @@ const DEFAULT_TEMPLATE_FORM = {
   category: "oferta" as TemplateCategory,
 };
 
-const DEFAULT_TEMPLATE_CONTENT = "**{titulo}**\nDe R$ {preco_original} por R$ {preco}\n{parcelamento}\nNota: {avaliacao} ({avaliacoes})\nLoja: {vendedor}\n{link}";
-
-const PLACEHOLDER_LEGEND: Array<{ key: string; description: string }> = [
-  { key: "{titulo}", description: "Titulo do produto" },
-  { key: "{preco}", description: "Preco atual do produto" },
-  { key: "{preco_original}", description: "Preco anterior do produto (quando houver)" },
-  { key: "{link}", description: "Link de afiliado convertido" },
-  { key: "{imagem}", description: "Imagem do produto (envio como anexo)" },
-  { key: "{avaliacao}", description: "Nota media (quando disponivel)" },
-  { key: "{avaliacoes}", description: "Quantidade de avaliacoes (quando disponivel)" },
-  { key: "{parcelamento}", description: "Condicoes de parcelamento (quando disponivel)" },
-  { key: "{vendedor}", description: "Nome da loja/vendedor (quando disponivel)" },
-];
-
-const PREVIEW_SAMPLE = buildMeliTemplatePlaceholderData(
-  {
-    title: "Smartwatch Ultra Pro Bluetooth",
-    productUrl: "https://www.mercadolivre.com.br/exemplo/p/MLB123456",
-    imageUrl: "",
-    price: 149.9,
-    oldPrice: 249.9,
-    installmentsText: "10x de R$14,99 sem juros",
-    seller: "Loja Oficial Brasil",
-    rating: 4.8,
-    reviewsCount: 2311,
-  },
-  "https://autolinks.pro/exemplo",
-);
+const DEFAULT_TEMPLATE_CONTENT = MELI_TEMPLATE_MODULE.defaultTemplateContent;
+const PLACEHOLDER_LEGEND = MELI_TEMPLATE_MODULE.placeholderLegend;
+const PREVIEW_SAMPLE = MELI_TEMPLATE_MODULE.previewSample;
 
 type MeliScheduleProductInput = {
   title?: string;
@@ -189,7 +161,12 @@ export default function TemplatesMeli() {
   const [scheduleTemplateId, setScheduleTemplateId] = useState("");
 
   const generatedOfferPreviewHtml = useMemo(
-    () => (generatedOffer ? renderRichTextPreviewHtml(generatedOffer.message) : ""),
+    () => {
+      if (!generatedOffer) return "";
+      // Use renderRichTextPreviewHtml to display the final substituted message with proper formatting
+      const html = renderRichTextPreviewHtml(generatedOffer.message);
+      return html;
+    },
     [generatedOffer],
   );
 
@@ -257,7 +234,7 @@ export default function TemplatesMeli() {
 
     const parsed = templateSchema.safeParse(payload);
     if (!parsed.success) {
-      toast.error(parsed.error.issues[0]?.message || "Dados invalidos");
+      toast.error(parsed.error.issues[0]?.message || "Dados inválidos");
       return;
     }
 
@@ -281,11 +258,11 @@ export default function TemplatesMeli() {
       return;
     }
     if (!isLikelyMeliUrl(link)) {
-      toast.error("Use um link valido do Mercado Livre.");
+      toast.error("Use um link válido do Mercado Livre.");
       return;
     }
     if (!hasActiveMeliSession) {
-      toast.error("Conecte uma sessao Mercado Livre ativa para converter.");
+      toast.error("Conecte uma sessão Mercado Livre ativa para converter.");
       return;
     }
 
@@ -332,7 +309,7 @@ export default function TemplatesMeli() {
           },
         });
       } catch {
-        toast.warning("Link convertido, mas alguns dados do produto nao puderam ser carregados.");
+        toast.warning("Link convertido, mas alguns dados do produto não puderam ser carregados.");
       }
 
       const originalLink = firstNonEmptyString(productSnapshot?.productUrl, snapshotTargetUrl);
@@ -354,8 +331,8 @@ export default function TemplatesMeli() {
         reviewsCount: Number.isFinite(Number(productSnapshot?.reviewsCount)) ? Number(productSnapshot?.reviewsCount) : null,
       };
 
-      const placeholderData = buildMeliTemplatePlaceholderData(productInput, affiliateLink);
-      const message = applyMeliTemplatePlaceholders(template.content, placeholderData);
+      const placeholderData = MELI_TEMPLATE_MODULE.buildPlaceholderData(productInput, affiliateLink);
+      const message = MELI_TEMPLATE_MODULE.applyPlaceholders(template.content, placeholderData);
 
       setConverterTemplateId(template.id);
       setGeneratedOffer({
@@ -382,7 +359,7 @@ export default function TemplatesMeli() {
         },
       });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Nao foi possivel converter o link.");
+      toast.error(error instanceof Error ? error.message : "Não foi possível converter o link.");
     } finally {
       setConverting(false);
     }
@@ -407,7 +384,7 @@ export default function TemplatesMeli() {
     <div className="ds-page pb-[calc(var(--safe-area-bottom)+0.25rem)]">
       <PageHeader
         title="Templates Meli"
-        description="Monte templates e gere mensagens com conversao de link Mercado Livre"
+        description="Monte templates e gere mensagens com conversão de link Mercado Livre"
       >
         <Button size="sm" onClick={openNew} className="w-full sm:w-auto">
           <Plus className="mr-1.5 h-4 w-4" />
@@ -431,10 +408,10 @@ export default function TemplatesMeli() {
             {activeSessions.length === 0 && !sessionsLoading && (
               <div className="space-y-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
                 <p className="text-foreground">
-                  Nenhuma sessao Mercado Livre ativa para conversao.
+                  Nenhuma sessão Mercado Livre ativa para conversão.
                 </p>
                 <Link to={ROUTES.app.mercadolivreConfiguracoes} className="font-medium text-primary underline-offset-2 hover:underline">
-                  Abrir configuracoes do Mercado Livre
+                  Abrir configurações do Mercado Livre
                 </Link>
               </div>
             )}
@@ -492,18 +469,47 @@ export default function TemplatesMeli() {
               </div>
             </div>
 
+            {/* Live template preview with sample data */}
+            {templates.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                  <Label className="text-xs text-muted-foreground">
+                    Preview do template selecionado
+                  </Label>
+                </div>
+                {(() => {
+                  const effectiveTemplateId = (
+                    converterTemplateId
+                    || templates.find((t) => t.isDefault)?.id
+                    || templates[0]?.id
+                  );
+                  const template = templates.find((t) => t.id === effectiveTemplateId);
+                  const templatePreviewHtml = template
+                    ? renderTemplatePreviewHtml(template.content, PREVIEW_SAMPLE)
+                    : "";
+                  return (
+                    <pre
+                      className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-background p-3 text-xs leading-relaxed text-muted-foreground"
+                      dangerouslySetInnerHTML={{ __html: templatePreviewHtml }}
+                    />
+                  );
+                })()}
+              </div>
+            )}
+
             {generatedOffer && (
               <div className="space-y-3">
                 <Separator />
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="space-y-0.5">
                     <Label className="text-xs text-muted-foreground">Mensagem gerada</Label>
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-xs text-muted-foreground">
                       Template: <span className="font-medium text-foreground">{generatedOffer.templateName}</span>
                     </p>
                     {!!generatedOffer.conversionTimeMs && (
-                      <p className="text-[11px] text-muted-foreground">
-                        Conversao: {generatedOffer.conversionTimeMs} ms
+                      <p className="text-xs text-muted-foreground">
+                        Conversão: {generatedOffer.conversionTimeMs} ms
                       </p>
                     )}
                   </div>
@@ -525,12 +531,12 @@ export default function TemplatesMeli() {
 
                 {generatedOffer.requestsImageAttachment && (
                   <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       <ImageIcon className="h-3.5 w-3.5" />
                       Placeholder de imagem detectado
                     </div>
                     <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                      O template usa {"{imagem}"}. A imagem sera enviada como anexo quando estiver disponivel no fluxo de origem.
+                      O template usa {"\{imagem\}"}. A imagem será enviada como anexo quando estiver disponível no fluxo de origem.
                     </div>
                   </div>
                 )}
@@ -576,8 +582,8 @@ export default function TemplatesMeli() {
                         </div>
 
                         {template.isDefault && (
-                          <Badge variant="secondary" className="shrink-0 bg-primary/12 text-[11px] text-primary">
-                            Padrao
+                          <Badge variant="secondary" className="shrink-0 bg-primary/12 text-xs text-primary">
+                            Padrão
                           </Badge>
                         )}
 
@@ -587,7 +593,7 @@ export default function TemplatesMeli() {
                             variant="ghost"
                             className={`h-9 w-9 sm:h-8 sm:w-8 ${template.isDefault ? "text-primary" : "text-muted-foreground"}`}
                             onClick={() => { void setDefaultTemplate(template.id); }}
-                            title={template.isDefault ? "Remover padrao" : "Definir como padrao"}
+                            title={template.isDefault ? "Remover padrão" : "Definir como padrão"}
                           >
                             <Star className={`h-3.5 w-3.5 ${template.isDefault ? "fill-primary" : ""}`} />
                           </Button>
@@ -638,24 +644,24 @@ export default function TemplatesMeli() {
       </div>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="max-h-[92dvh] w-[min(calc(100vw-1rem),72rem)] max-w-none overflow-hidden p-0">
-          <DialogHeader className="border-b px-6 py-4">
+        <DialogContent className="flex max-h-[92dvh] w-[min(calc(100vw-1rem),72rem)] max-w-none flex-col overflow-hidden p-0">
+          <DialogHeader className="shrink-0 border-b px-6 py-4">
             <DialogTitle>{editing ? "Editar template Meli" : "Novo template Meli"}</DialogTitle>
           </DialogHeader>
 
-          <div className="grid overflow-hidden md:grid-cols-2">
-            <div className="max-h-[72dvh] space-y-4 overflow-y-auto px-6 py-5">
+          <div className="min-h-0 flex-1 grid overflow-hidden md:grid-cols-2">
+            <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-5">
               <div className="space-y-2">
                 <Label>Nome</Label>
                 <Input
-                  placeholder="Ex: Oferta padrao Meli"
+                  placeholder="Ex: Oferta padrão Meli"
                   value={form.name}
                   onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
                 />
               </div>
 
               <div className="space-y-2">
-                <Label>Conteudo</Label>
+                <Label>Conteúdo</Label>
                 <div className="mb-1 flex items-center gap-1">
                   <button
                     type="button"
@@ -667,8 +673,8 @@ export default function TemplatesMeli() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => wrapSelection("__", "__", "italico")}
-                    title="Italico"
+                    onClick={() => wrapSelection("__", "__", "itálico")}
+                    title="Itálico"
                     className="flex h-7 w-7 items-center justify-center rounded border bg-background text-sm italic transition-colors hover:bg-secondary/60"
                   >
                     I
@@ -681,7 +687,7 @@ export default function TemplatesMeli() {
                   >
                     S
                   </button>
-                  <span className="ml-1 text-[11px] text-muted-foreground">
+                  <span className="ml-1 text-xs text-muted-foreground">
                     Selecione o texto e clique para formatar
                   </span>
                 </div>
@@ -724,7 +730,7 @@ export default function TemplatesMeli() {
               </div>
             </div>
 
-            <div className="flex max-h-[72dvh] flex-col space-y-3 overflow-hidden border-t bg-muted/20 px-6 py-5 md:border-l md:border-t-0">
+            <div className="flex min-h-0 flex-col space-y-3 overflow-hidden border-t bg-muted/20 px-6 py-5 md:border-l md:border-t-0">
               <div className="shrink-0">
                 <Label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <Eye className="h-3 w-3" />
@@ -743,7 +749,7 @@ export default function TemplatesMeli() {
             </div>
           </div>
 
-          <DialogFooter className="border-t px-6 py-4">
+          <DialogFooter className="shrink-0 border-t px-6 py-4">
             <Button variant="outline" onClick={() => setShowModal(false)}>
               Cancelar
             </Button>

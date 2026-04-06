@@ -162,7 +162,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       setImageAttachment(media);
     } catch {
       setImageAttachment(null);
-      toast.error("Não deu pra preparar a imagem pra esse agendamento");
+      toast.error("Não foi possível preparar a imagem para esse agendamento");
     } finally {
       setPreparingImageAttachment(false);
     }
@@ -238,7 +238,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
 
   const handleSchedule = async () => {
     if (!scheduleName.trim()) {
-      toast.error("Dê um nome pro agendamento");
+      toast.error("Dê um nome para o agendamento");
       return;
     }
     if (!messageContent.trim()) {
@@ -254,11 +254,11 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       return;
     }
     if (requiresImageAttachment && preparingImageAttachment) {
-      toast.error("Espera só um pouco, a imagem ainda tá sendo preparada");
+      toast.error("Aguarde, a imagem ainda está sendo preparada");
       return;
     }
     if (requiresImageAttachment && !imageAttachment) {
-      toast.error("Esse agendamento precisa de imagem e ela não tá disponível");
+      toast.error("Este agendamento precisa de imagem e ela não está disponível");
       return;
     }
 
@@ -300,7 +300,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       onOpenChange(false);
       resetForm();
     } catch {
-      toast.error(editingPost ? "Não deu pra atualizar o agendamento" : "Não deu pra criar o agendamento");
+      toast.error(editingPost ? "Não foi possível atualizar o agendamento" : "Não foi possível criar o agendamento");
     } finally {
       setSubmitting(false);
     }
@@ -358,7 +358,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
           <div className="space-y-2">
             <Label>Nome *</Label>
             <Input
-              placeholder="Ex: Oferta pra grupos VIP"
+              placeholder="Ex: Oferta para grupos VIP"
               value={scheduleName}
               onChange={(e) => setScheduleName(e.target.value)}
             />
@@ -385,7 +385,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
               className="min-h-[100px]"
             />
             <p className="text-xs text-muted-foreground">
-              Quando voce escolhe um template, o texto ja vem pronto. Pode editar a vontade.
+              Quando você escolhe um template, o texto já vem pronto. Você pode editar à vontade.
             </p>
           </div>
 
@@ -411,7 +411,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
             <Label className="text-xs">Grupos</Label>
             {!selectedSessionId ? (
               <p className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
-                Escolha a sessão primeiro pra ver os grupos.
+                Escolha a sessão primeiro para ver os grupos.
               </p>
             ) : (
               <MultiOptionDropdown
@@ -424,7 +424,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
                 }))}
                 placeholder="Escolher grupos"
                 selectedLabel={(count) => `${count} grupo(s)`}
-                emptyMessage="Nenhum grupo nessa sessão"
+                emptyMessage="Nenhum grupo nesta sessão"
                 title="Grupos"
               />
             )}
@@ -443,7 +443,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
                 }))}
                 placeholder="Escolher grupos mestres"
                 selectedLabel={(count) => `${count} grupo(s) mestre`}
-                emptyMessage="Nenhum grupo mestre nessa sessão"
+                emptyMessage="Nenhum grupo mestre nesta sessão"
                 title="Grupos mestres"
               />
             </div>

@@ -1,7 +1,7 @@
-ï»¿import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Copy, ExternalLink, CalendarDays, Star, ShoppingCart } from "lucide-react";
+import { Copy, ExternalLink, CalendarDays, ThumbsUp, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
 
 export interface ShopeeProduct {
@@ -40,7 +40,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
 
   const copyLink = () => {
     if (!product.affiliateLink) {
-      toast.error("Link nÃ£o disponÃ­vel");
+      toast.error("Link não disponível");
       return;
     }
     navigator.clipboard.writeText(product.affiliateLink);
@@ -60,7 +60,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
 
   const openAffiliateLink = () => {
     if (!product.affiliateLink) {
-      toast.error("Link nÃ£o disponÃ­vel pra esse produto");
+      toast.error("Link não disponível para esse produto");
       return;
     }
     window.open(product.affiliateLink, "_blank");
@@ -135,7 +135,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
           )}
           {rating > 0 && (
             <span className="flex items-center gap-0.5 text-xs text-muted-foreground shrink-0">
-              <Star className="h-3 w-3 text-warning fill-warning" />
+              <ThumbsUp className="h-3 w-3 text-warning fill-warning" />
               {rating.toFixed(1)}
             </span>
           )}

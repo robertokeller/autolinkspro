@@ -39,6 +39,10 @@ function toFriendlyRuntimeError(err: unknown, fallback: string): string {
   return msg || fallback;
 }
 
+interface RefreshOptions {
+  silent?: boolean;
+}
+
 /**
  * Hook for the admin system WhatsApp session.
  * Limited to a single session (the system/manager WhatsApp).
@@ -72,7 +76,7 @@ export function useAdminWhatsAppSession() {
   };
 
   const refreshMutation = useMutation({
-    mutationFn: async (options?: { silent?: boolean }) => {
+    mutationFn: async (options?: RefreshOptions) => {
       await invokeWhatsAppAction<Record<string, unknown>>("poll_events_all");
       await qc.invalidateQueries({ queryKey: ["admin-whatsapp-session"] });
       return { silent: options?.silent === true };
@@ -83,6 +87,21 @@ export function useAdminWhatsAppSession() {
     onError: (err, options) => {
       if (options?.silent) return;
       toast.error(toFriendlyRuntimeError(err, "Não foi possível atualizar o WhatsApp agora."));
+    },
+  });
+
+  const refreshSessionMutation = useMutation({
+    mutationFn: async ({ sessionId, silent }: RefreshOptions & { sessionId: string }) => {
+      await invokeWhatsAppAction<Record<string, unknown>>("poll_events", { sessionId });
+      await qc.invalidateQueries({ queryKey: ["admin-whatsapp-session"] });
+      return { silent: silent === true };
+    },
+    onSuccess: ({ silent }) => {
+      if (!silent) toast.success("Status da sessão atualizado.");
+    },
+    onError: (err, variables) => {
+      if (variables?.silent) return;
+      toast.error(toFriendlyRuntimeError(err, "Não foi possível atualizar essa sessão agora."));
     },
   });
 
@@ -172,11 +191,13 @@ export function useAdminWhatsAppSession() {
     connectSession: connectMutation.mutateAsync,
     disconnectSession: disconnectMutation.mutateAsync,
     deleteSession: deleteMutation.mutateAsync,
-    refresh: (options?: { silent?: boolean }) => void refreshMutation.mutateAsync(options),
+    refresh: (options?: RefreshOptions) => void refreshMutation.mutateAsync(options),
+    refreshSession: (sessionId: string, options?: RefreshOptions) =>
+      void refreshSessionMutation.mutateAsync({ sessionId, silent: options?.silent }),
     isCreating: createMutation.isPending,
     isConnecting: connectMutation.isPending,
     isDisconnecting: disconnectMutation.isPending,
     isDeleting: deleteMutation.isPending,
-    isRefreshing: refreshMutation.isPending,
+    isRefreshing: refreshMutation.isPending || refreshSessionMutation.isPending,
   };
 }

@@ -1,4 +1,5 @@
-﻿import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+﻿import { useMemo } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { backend } from "@/integrations/backend/client";
 import type { Tables } from "@/integrations/backend/types";
@@ -8,6 +9,7 @@ import { validatePhone } from "@/lib/phone-utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { normalizeSessionStatus } from "@/lib/session-status";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
+import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
 
 type TelegramSessionRow = Tables<"telegram_sessions">;
 type TelegramConnectAction = "send_code" | "verify_code" | "verify_password" | "disconnect" | "sync_groups";
@@ -36,14 +38,15 @@ interface RefreshOptions {
   silent?: boolean;
 }
 
-function mapRowToSession(row: TelegramSessionRow): TelegramSession {
+function mapRowToSession(row: TelegramSessionRow, runtimeStatus?: ReturnType<typeof normalizeSessionStatus>): TelegramSession {
+  const status = runtimeStatus ?? normalizeSessionStatus(row.status);
   return {
     id: row.id,
     name: row.name,
     phoneNumber: row.phone || "",
-    status: normalizeSessionStatus(row.status),
+    status,
     connectedAt: row.connected_at,
-    errorMessage: row.error_message?.trim() ? row.error_message : null,
+    errorMessage: status === "online" ? null : row.error_message?.trim() ? row.error_message : null,
   };
 }
 
@@ -66,7 +69,7 @@ export function useTelegramSessions() {
   const { user, isAdmin } = useAuth();
   const qc = useQueryClient();
 
-  const { data: sessions = [], isLoading, error } = useQuery({
+  const { data: sessionRows = [], isLoading, error } = useQuery({
     queryKey: ["telegram-sessions", user?.id],
     queryFn: async () => {
       const { data, error: queryError } = await backend
@@ -75,12 +78,39 @@ export function useTelegramSessions() {
         .order("created_at", { ascending: false });
 
       if (queryError) throw queryError;
-      return (data || []).map(mapRowToSession);
+      return data || [];
     },
     enabled: !!user,
     refetchInterval: () => (document.visibilityState === "visible" ? 5_000 : false),
     staleTime: 3_000,
   });
+
+  const { data: runtimeStatusBySession = new Map<string, ReturnType<typeof normalizeSessionStatus>>() } = useQuery({
+    queryKey: ["telegram-runtime-health", user?.id],
+    queryFn: async () => {
+      const payload = await invokeTelegramAction<Record<string, unknown>>("health");
+      const runtimeSessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+      const statusMap = new Map<string, ReturnType<typeof normalizeSessionStatus>>();
+
+      for (const item of runtimeSessions) {
+        if (!item || typeof item !== "object") continue;
+        const row = item as Record<string, unknown>;
+        const sessionId = String(row.sessionId ?? row.id ?? "").trim();
+        if (!sessionId) continue;
+        statusMap.set(sessionId, normalizeSessionStatus(String(row.status ?? "")));
+      }
+
+      return statusMap;
+    },
+    enabled: !!user,
+    refetchInterval: () => (document.visibilityState === "visible" ? 5_000 : false),
+    staleTime: 3_000,
+  });
+
+  const sessions = useMemo(
+    () => sessionRows.map((row) => mapRowToSession(row, runtimeStatusBySession.get(String(row.id)))),
+    [sessionRows, runtimeStatusBySession],
+  );
 
   const invalidateSessions = () => {
     qc.invalidateQueries({ queryKey: ["telegram-sessions"] });
@@ -109,8 +139,8 @@ export function useTelegramSessions() {
 
   // Polls the Telegram microservice for the latest events (status, groups, etc.) and then
   // invalidates sessions/groups queries so the UI reflects the runtime state.
-  const refresh = (options?: RefreshOptions) => {
-    void refreshMutation.mutateAsync(options);
+  const refresh = async (options?: RefreshOptions) => {
+    await refreshMutation.mutateAsync(options);
   };
 
   const createSessionMutation = useMutation({
@@ -125,7 +155,12 @@ export function useTelegramSessions() {
           .maybeSingle();
         if (profileError) throw profileError;
 
-        const limits = resolveEffectiveLimitsByPlanId(profile?.plan_id || "plan-starter");
+        const planId = normalizePlanId(profile?.plan_id);
+        if (!planId) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
+
+        const limits = resolveEffectiveLimitsByPlanId(planId);
+        if (!limits) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
+
         const maxSessions = limits?.telegramSessions ?? 0;
         if (maxSessions !== -1 && sessions.length >= maxSessions) {
           throw new Error("Limite de sessões Telegram atingido para o seu nível de acesso.");
@@ -341,4 +376,3 @@ export function useTelegramSessions() {
     refresh,
   };
 }
-

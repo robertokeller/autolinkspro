@@ -10,9 +10,9 @@ export function ShopeeCredentialsBanner() {
       <AlertCircle className="h-4 w-4" />
       <AlertTitle>Credenciais não configuradas</AlertTitle>
       <AlertDescription className="flex items-center justify-between gap-4">
-        <span>Você precisa configurar as credenciais da Shopee pra usar isso.</span>
+        <span>Você precisa configurar as credenciais da Shopee para usar isso.</span>
         <Button size="sm" variant="outline" asChild>
-          <Link to={ROUTES.app.shopeeConfiguracoes}>Ir pra Configurações</Link>
+          <Link to={ROUTES.app.shopeeConfiguracoes}>Ir para Configurações</Link>
         </Button>
       </AlertDescription>
     </Alert>

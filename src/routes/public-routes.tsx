@@ -1,4 +1,5 @@
 import { AuthPageGuard } from "@/components/AuthPageGuard";
+import { RouteGuard } from "@/components/RouteGuard";
 import { ROUTES } from "@/lib/routes";
 import { Pages } from "@/routes/lazy-pages";
 import { Navigate, Route } from "react-router-dom";
@@ -6,9 +7,6 @@ import { Navigate, Route } from "react-router-dom";
 export function PublicRoutes() {
   return (
     <>
-      <Route path={ROUTES.root} element={<Navigate to={ROUTES.home} replace />} />
-      <Route path={ROUTES.home} element={<Pages.Index />} />
-
       <Route element={<AuthPageGuard />}>
         <Route path={ROUTES.auth.login} element={<Pages.Login />} />
         <Route path={ROUTES.auth.cadastro} element={<Pages.Cadastro />} />
@@ -17,12 +15,17 @@ export function PublicRoutes() {
       </Route>
       <Route path={ROUTES.auth.verificacaoEmail} element={<Pages.VerificacaoEmail />} />
 
-      <Route path={ROUTES.maintenance} element={<Pages.Maintenance />} />
-      <Route path={ROUTES.termos} element={<Pages.TermosDeUso />} />
-      <Route path={ROUTES.privacidade} element={<Pages.PoliticaPrivacidade />} />
-
+      {/* These pages are intentionally open: anonymous end-users access them */}
       <Route path={ROUTES.hubPublic} element={<Pages.LinkHubPublicPage />} />
       <Route path={ROUTES.masterGroupPublic} element={<Pages.MasterGroupPublicPage />} />
+
+      <Route element={<RouteGuard allowAdmin />}>
+        <Route path={ROUTES.root} element={<Navigate to={ROUTES.home} replace />} />
+        <Route path={ROUTES.home} element={<Pages.Index />} />
+        <Route path={ROUTES.maintenance} element={<Pages.Maintenance />} />
+        <Route path={ROUTES.termos} element={<Pages.TermosDeUso />} />
+        <Route path={ROUTES.privacidade} element={<Pages.PoliticaPrivacidade />} />
+      </Route>
     </>
   );
 }

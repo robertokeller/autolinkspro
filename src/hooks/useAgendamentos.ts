@@ -7,8 +7,10 @@ import type { Tables, Json } from "@/integrations/backend/types";
 import { toast } from "sonner";
 import { logHistorico } from "@/lib/log-historico";
 import { resolveEffectiveOperationalLimitsByPlanId } from "@/lib/access-control";
+import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
 
 const SCHEDULE_DESTINATIONS_TABLE_WARNING = "Nao foi possivel carregar os destinos dos agendamentos. Os agendamentos foram exibidos sem os grupos vinculados.";
+const ROUTE_QUIET_HOURS_SCHEDULE_SOURCE = "route_quiet_hours";
 
 type PostRow = Tables<"scheduled_posts">;
 type PostDestRow = Tables<"scheduled_post_destinations">;
@@ -77,6 +79,11 @@ function parseMeta(raw: Json): PostMeta {
     return raw as unknown as PostMeta;
   }
   return {};
+}
+
+function isInternalRouteQuietHoursPost(row: PostRow): boolean {
+  const meta = parseMeta(row.metadata);
+  return String(meta.scheduleSource || "").trim().toLowerCase() === ROUTE_QUIET_HOURS_SCHEDULE_SOURCE;
 }
 
 function parseTemplateData(raw: unknown): Record<string, string> | null {
@@ -179,7 +186,8 @@ export function useAgendamentos() {
 
       if (postsRes.error) throw postsRes.error;
 
-      const postRows = (postsRes.data || []) as PostRow[];
+      const postRows = ((postsRes.data || []) as PostRow[])
+        .filter((row) => !isInternalRouteQuietHoursPost(row));
       if (postRows.length === 0) return [] as ScheduledPost[];
 
       const postIds = postRows.map((row) => row.id);
@@ -219,6 +227,7 @@ export function useAgendamentos() {
       const { data: profile, error: profileError } = await backend
         .from("profiles")
         .select("plan_id")
+        .eq("user_id", user.id)
         .maybeSingle();
 
       if (profileError) {
@@ -226,7 +235,18 @@ export function useAgendamentos() {
         return null;
       }
 
-      const limits = resolveEffectiveOperationalLimitsByPlanId(profile?.plan_id || "plan-starter");
+      const planId = normalizePlanId(profile?.plan_id);
+      if (!planId) {
+        toast.error(PLAN_SYNC_ERROR_MESSAGE);
+        return null;
+      }
+
+      const limits = resolveEffectiveOperationalLimitsByPlanId(planId);
+      if (!limits) {
+        toast.error(PLAN_SYNC_ERROR_MESSAGE);
+        return null;
+      }
+
       const maxSchedules = limits?.schedules ?? 0;
       if (maxSchedules !== -1 && posts.length >= maxSchedules) {
         toast.error("Limite de agendamentos atingido para o seu nivel de acesso.");

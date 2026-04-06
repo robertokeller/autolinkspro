@@ -1,51 +1,94 @@
-import express from "express";
+﻿import express from "express";
 import cors from "cors";
 import bcrypt from "bcryptjs";
+import { createHash } from "node:crypto";
 import { v4 as uuid } from "uuid";
 import { pool, execute, queryOne } from "./db.js";
-import { authMiddleware, authRouter } from "./auth.js";
+import { authMiddleware, authRouter, requireTrustedOriginForSessionWrite } from "./auth.js";
 import { restRouter } from "./rest.js";
 import { rpcRouter } from "./rpc.js";
+import { consumeRateLimit, cleanupMemoryRateLimits, cleanupDistributedRateLimits } from "./rate-limit-store.js";
 
 const app = express();
 app.set("trust proxy", 1); // trust first-hop proxy (Coolify/nginx) so req.ip reflects the real client IP
+app.disable("x-powered-by");
 const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = Number(process.env.PORT ?? 3116);
 const IS_PRODUCTION = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? (IS_PRODUCTION ? undefined : "*");
+const ENFORCE_RATE_LIMIT = String(process.env.ENFORCE_RATE_LIMIT || "true").trim().toLowerCase() !== "false";
+const BURST_SHED_ENABLED = String(process.env.BURST_SHED_ENABLED || (IS_PRODUCTION ? "true" : "false")).trim().toLowerCase() !== "false";
+const LOG_HASH_SALT = String(process.env.LOG_HASH_SALT || process.env.JWT_SECRET || "autolinks-log-salt").trim() || "autolinks-log-salt";
 const DEV_LOG_RPC_SUCCESS = String(process.env.DEV_LOG_RPC_SUCCESS || "").trim().toLowerCase() === "true";
 
-// â”€â”€â”€ In-memory rate limiters (per IP) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Auth endpoints: 20 req / 15 min  â€” brute-force guard
-// RPC endpoint:  200 req / 60 s    â€” DoS guard for authenticated calls
-//
-// Both stores are cleaned every 5 min to prevent unbounded memory growth.
-// Note: these are in-process only â€” reset on restart. Acceptable for a
-// single-instance deploy. Upgrade to Redis when running multiple API replicas.
+function envInt(name: string, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) {
+  const parsed = Number(process.env[name] ?? "");
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
 
-const _authRateStore = new Map<string, { count: number; resetAt: number }>();
-const AUTH_RATE_MAX = 20;
-const AUTH_RATE_WINDOW = 15 * 60_000;
+function hashUserIdForLogs(userId: string | undefined): string {
+  const value = String(userId || "").trim();
+  if (!value || value === "-") return "-";
+  return `u_${createHash("sha256").update(`${LOG_HASH_SALT}:${value}`).digest("hex").slice(0, 16)}`;
+}
 
-const _rpcRateStore = new Map<string, { count: number; resetAt: number }>();
-const RPC_RATE_MAX = 500;    // per IP per window â€” comfortably above admin dashboard burst patterns
-const RPC_RATE_WINDOW = 60_000; // 60 seconds
+function isLoopbackOrPrivateIp(rawIp: string | undefined): boolean {
+  const normalized = String(rawIp || "").trim().toLowerCase();
+  if (!normalized) return false;
 
-// â”€â”€â”€ User-level RPC rate limit (per userId) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  if (
+    normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "::ffff:127.0.0.1"
+    || normalized === "localhost"
+  ) {
+    return true;
+  }
+
+  const ipv4 = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+  const parts = ipv4.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+// ─── Rate limiters (DB-backed in production, in-memory in dev) ───────────────
+// In production, consumeRateLimit uses the runtime_rate_limits table so limits
+// survive restarts and are shared across PM2 cluster instances.
+// Auth endpoints: 20 req / 15 min  — brute-force guard
+// RPC endpoint:  500 req / 60 s    — DoS guard for authenticated calls
+
+const AUTH_RATE_MAX = envInt("AUTH_RATE_MAX", 20, 5, 200);
+const AUTH_RATE_WINDOW = envInt("AUTH_RATE_WINDOW_MS", 15 * 60_000, 30_000, 24 * 60 * 60_000);
+
+const RPC_RATE_MAX = envInt("RPC_RATE_MAX", 500, 20, 10_000);
+const RPC_RATE_WINDOW = envInt("RPC_RATE_WINDOW_MS", 60_000, 5_000, 24 * 60 * 60_000);
+
+const PUBLIC_RPC_FUNCTIONS = new Set(["link-hub-public", "master-group-invite"]);
+const PUBLIC_RPC_RATE_MAX = envInt("PUBLIC_RPC_RATE_MAX", 60, 10, 5_000);
+const PUBLIC_RPC_RATE_WINDOW = envInt("PUBLIC_RPC_RATE_WINDOW_MS", 60_000, 5_000, 24 * 60 * 60_000);
+
 // Independent of IP-based limits. Prevents a single authenticated user from
 // monopolising the API even when requests come from multiple IPs/devices.
-const _userRpcRateStore = new Map<string, { count: number; resetAt: number }>();
-const USER_RPC_RATE_MAX = 300;     // per user per window
-const USER_RPC_RATE_WINDOW = 60_000;
+const USER_RPC_RATE_MAX = envInt("USER_RPC_RATE_MAX", 300, 10, 10_000);
+const USER_RPC_RATE_WINDOW = envInt("USER_RPC_RATE_WINDOW_MS", 60_000, 5_000, 24 * 60 * 60_000);
 
-// â”€â”€â”€ Burst/spike detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Burst/spike detection ───────────────────────────────────────────────────
 // Tracks global request count in a 10-second sliding bucket. When the rate
 // exceeds the threshold, new requests from non-trusted sources are rejected
 // with 503 to shed load gracefully. Helps identify organic spikes vs attacks.
 const _burstBuckets: number[] = [];     // ring buffer of 10s bucket counts
 const BURST_BUCKET_MS = 10_000;
-const BURST_HISTORY_BUCKETS = 6;        // keep 60s of history (6 Ã— 10s)
-const BURST_THRESHOLD_PER_BUCKET = 200; // 200 req/10s = 1200 req/min â†’ alarm
+const BURST_HISTORY_BUCKETS = 6;        // keep 60s of history (6 × 10s)
+const BURST_THRESHOLD_PER_BUCKET = envInt("BURST_THRESHOLD_PER_BUCKET", 200, 20, 20_000);
 let _burstCurrentCount = 0;
 let _burstBucketStart = Date.now();
 
@@ -61,92 +104,120 @@ function recordBurstRequest(): boolean {
   return _burstCurrentCount > BURST_THRESHOLD_PER_BUCKET;
 }
 
-function authRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+async function authRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!ENFORCE_RATE_LIMIT) { next(); return; }
   const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
-  const now = Date.now();
-  const entry = _authRateStore.get(ip);
-  if (!entry || now > entry.resetAt) {
-    _authRateStore.set(ip, { count: 1, resetAt: now + AUTH_RATE_WINDOW });
-    next(); return;
+  try {
+    const result = await consumeRateLimit({
+      namespace: "auth",
+      scopeKey: ip,
+      max: AUTH_RATE_MAX,
+      windowMs: AUTH_RATE_WINDOW,
+    });
+    if (!result.allowed) {
+      const rid = (req as { rid?: string }).rid ?? "-";
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "rate_limited", ip, count: result.count, rid }));
+      res.setHeader("Retry-After", String(result.retryAfterSec));
+      res.status(429).json({ data: null, error: { message: "Muitas tentativas. Aguarde 15 minutos." } });
+      return;
+    }
+    next();
+  } catch {
+    // Rate limit store unavailable — fail open to avoid blocking legitimate traffic
+    next();
   }
-  entry.count += 1;
-  if (entry.count > AUTH_RATE_MAX) {
-    const rid = (req as { rid?: string }).rid ?? "-";
-    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "rate_limited", ip, count: entry.count, rid }));
-    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
-    res.setHeader("Retry-After", String(retryAfterSec));
-    res.status(429).json({ data: null, error: { message: "Muitas tentativas. Aguarde 15 minutos." } }); return;
-  }
-  next();
 }
 
-function rpcRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
-  // In local/dev, admin dashboards can burst while services are booting.
-  // Keep protection strict in production only.
-  if (!IS_PRODUCTION) {
-    next(); return;
+async function publicRpcRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!ENFORCE_RATE_LIMIT) { next(); return; }
+  const funcName = String((req.body as { name?: unknown } | undefined)?.name || "").trim();
+  if (!PUBLIC_RPC_FUNCTIONS.has(funcName)) { next(); return; }
+  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  try {
+    const result = await consumeRateLimit({
+      namespace: "public_rpc",
+      scopeKey: `${funcName}:${ip}`,
+      max: PUBLIC_RPC_RATE_MAX,
+      windowMs: PUBLIC_RPC_RATE_WINDOW,
+    });
+    if (!result.allowed) {
+      const rid = (req as { rid?: string }).rid ?? "-";
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "public_rpc_rate_limited", function: funcName, ip, rid, count: result.count }));
+      res.setHeader("Retry-After", String(result.retryAfterSec));
+      res.status(429).json({ data: null, error: { message: "Limite de consultas publicas excedido. Aguarde alguns segundos." } });
+      return;
+    }
+    next();
+  } catch {
+    next();
   }
+}
 
-  // â”€â”€ Burst/spike detection (global) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Shed load when the API is receiving an abnormal volume of requests.
-  // Logged as "burst_shed" so operators can distinguish organic spikes from attacks.
-  const isBurst = recordBurstRequest();
+async function rpcRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!ENFORCE_RATE_LIMIT) { next(); return; }
+  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  const bypassBurstShed = !IS_PRODUCTION && isLoopbackOrPrivateIp(ip);
+
+  // ── Burst/spike detection (global, in-memory — intentional) ──────────────────
+  // In-memory is fine here: burst detection is a per-instance safety valve,
+  // not a shared state mechanism. Each instance sheds load independently.
+  const isBurst = BURST_SHED_ENABLED && !bypassBurstShed && recordBurstRequest();
   if (isBurst) {
     const rid = (req as { rid?: string }).rid ?? "-";
-    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
     console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "burst_shed", ip, rid, bucket: _burstCurrentCount }));
     res.setHeader("Retry-After", "10");
     res.status(503).json({ data: null, error: { message: "Servidor sobrecarregado. Tente novamente em alguns segundos." } }); return;
   }
 
-  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
-  const now = Date.now();
-  const entry = _rpcRateStore.get(ip);
-  if (!entry || now > entry.resetAt) {
-    _rpcRateStore.set(ip, { count: 1, resetAt: now + RPC_RATE_WINDOW });
-    next(); return;
+  try {
+    const result = await consumeRateLimit({
+      namespace: "rpc",
+      scopeKey: ip,
+      max: RPC_RATE_MAX,
+      windowMs: RPC_RATE_WINDOW,
+    });
+    if (!result.allowed) {
+      const rid = (req as { rid?: string }).rid ?? "-";
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "rpc_rate_limited", ip, count: result.count, rid }));
+      res.setHeader("Retry-After", String(result.retryAfterSec));
+      res.status(429).json({ data: null, error: { message: "Limite de chamadas excedido. Aguarde 1 minuto." } }); return;
+    }
+    next();
+  } catch {
+    next();
   }
-  entry.count += 1;
-  if (entry.count > RPC_RATE_MAX) {
-    const rid = (req as { rid?: string }).rid ?? "-";
-    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "rpc_rate_limited", ip, count: entry.count, rid }));
-    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
-    res.setHeader("Retry-After", String(retryAfterSec));
-    res.status(429).json({ data: null, error: { message: "Limite de chamadas excedido. Aguarde 1 minuto." } }); return;
-  }
-  next();
 }
 
-// â”€â”€â”€ User-level RPC rate limiter (post-auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── User-level RPC rate limiter (post-auth) ─────────────────────────────────
 // Applied after authentication so we have the userId. Prevents a single user
 // from consuming disproportionate resources regardless of how many IPs they use.
-function userRpcRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!IS_PRODUCTION) { next(); return; }
+async function userRpcRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!ENFORCE_RATE_LIMIT) { next(); return; }
   const userId = (req as { currentUser?: { sub?: string } }).currentUser?.sub;
-  if (!userId) { next(); return; } // unauthenticated â€” handled by authMiddleware
-
-  const now = Date.now();
-  const entry = _userRpcRateStore.get(userId);
-  if (!entry || now > entry.resetAt) {
-    _userRpcRateStore.set(userId, { count: 1, resetAt: now + USER_RPC_RATE_WINDOW });
-    next(); return;
+  if (!userId) { next(); return; } // unauthenticated — handled by authMiddleware
+  try {
+    const result = await consumeRateLimit({
+      namespace: "user_rpc",
+      scopeKey: userId,
+      max: USER_RPC_RATE_MAX,
+      windowMs: USER_RPC_RATE_WINDOW,
+    });
+    if (!result.allowed) {
+      const rid = (req as { rid?: string }).rid ?? "-";
+      console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "user_rpc_rate_limited", userId: hashUserIdForLogs(userId), count: result.count, rid }));
+      res.setHeader("Retry-After", String(result.retryAfterSec));
+      res.status(429).json({ data: null, error: { message: "Limite de chamadas por usuário excedido. Aguarde 1 minuto." } }); return;
+    }
+    next();
+  } catch {
+    next();
   }
-  entry.count += 1;
-  if (entry.count > USER_RPC_RATE_MAX) {
-    const rid = (req as { rid?: string }).rid ?? "-";
-    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "user_rpc_rate_limited", userId, count: entry.count, rid }));
-    const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
-    res.setHeader("Retry-After", String(retryAfterSec));
-    res.status(429).json({ data: null, error: { message: "Limite de chamadas por usuÃ¡rio excedido. Aguarde 1 minuto." } }); return;
-  }
-  next();
 }
 
+// Periodic cleanup: memory stores (always) + DB expired rows (in production)
 setInterval(() => {
-  const now = Date.now();
-  for (const [ip, e] of _authRateStore) { if (now > e.resetAt) _authRateStore.delete(ip); }
-  for (const [ip, e] of _rpcRateStore)  { if (now > e.resetAt) _rpcRateStore.delete(ip);  }
-  for (const [uid, e] of _userRpcRateStore) { if (now > e.resetAt) _userRpcRateStore.delete(uid); }
+  cleanupMemoryRateLimits();
+  cleanupDistributedRateLimits().catch(() => { /* non-fatal */ });
 }, 5 * 60_000).unref();
 
 function ensureRequiredEnvVars() {
@@ -160,6 +231,7 @@ function ensureRequiredEnvVars() {
     "WEBHOOK_SECRET",
     "OPS_CONTROL_TOKEN",
     "CORS_ORIGIN",
+    "ADMIN_EMAIL",
     "ADMIN_PASSWORD",
     "RESEND_API_KEY",
     "RESEND_FROM",
@@ -170,6 +242,21 @@ function ensureRequiredEnvVars() {
   const missing = required.filter((key) => !String(process.env[key] ?? "").trim());
   if (missing.length > 0) {
     throw new Error(`[api] Missing required env vars: ${missing.join(", ")}`);
+  }
+
+  const weakEnv: string[] = [];
+  const jwtSecret = String(process.env.JWT_SECRET || "").trim();
+  const serviceToken = String(process.env.SERVICE_TOKEN || "").trim();
+  const webhookSecret = String(process.env.WEBHOOK_SECRET || "").trim();
+  const adminPassword = String(process.env.ADMIN_PASSWORD || "").trim();
+
+  if (jwtSecret.length < 32 || /^changeme|^dev-|local-only/i.test(jwtSecret)) weakEnv.push("JWT_SECRET");
+  if (serviceToken.length < 24 || /^dev-|local-only/i.test(serviceToken)) weakEnv.push("SERVICE_TOKEN");
+  if (webhookSecret.length < 24 || /^change-me$|^preview-|local-dev|autolinks-local/i.test(webhookSecret)) weakEnv.push("WEBHOOK_SECRET");
+  if (adminPassword.length < 12 || /^(abacate1|123456|admin|admin123)$/i.test(adminPassword)) weakEnv.push("ADMIN_PASSWORD");
+
+  if (weakEnv.length > 0) {
+    throw new Error(`[api] Weak production secrets detected for: ${weakEnv.join(", ")}. Rotate and use strong values before startup.`);
   }
 
   if (CORS_ORIGIN === "*") {
@@ -194,9 +281,31 @@ function normalizeCorsOriginEntry(rawValue: string): string {
   return trimmed.replace(/\/+$/, "");
 }
 
+function normalizeExtensionOrigin(value: string): string {
+  const trimmed = String(value || "").trim().toLowerCase().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (trimmed.startsWith("chrome-extension://") || trimmed.startsWith("moz-extension://")) {
+    return trimmed;
+  }
+  return "";
+}
+
+const allowedExtensionOrigins = new Set(
+  String(process.env.ALLOWED_EXTENSION_ORIGINS || "")
+    .split(",")
+    .map(normalizeExtensionOrigin)
+    .filter(Boolean),
+);
+
+if (IS_PRODUCTION && allowedExtensionOrigins.size === 0) {
+  console.warn("[api] ALLOWED_EXTENSION_ORIGINS is empty in production. Browser extension requests will be blocked by CORS.");
+}
+
 function isExtensionOrigin(origin: string): boolean {
-  const value = String(origin || "").trim().toLowerCase();
-  return value.startsWith("chrome-extension://") || value.startsWith("moz-extension://");
+  const normalized = normalizeExtensionOrigin(origin);
+  if (!normalized) return false;
+  if (!IS_PRODUCTION) return true;
+  return allowedExtensionOrigins.has(normalized);
 }
 
 const corsOriginList = CORS_ORIGIN === "*"
@@ -232,21 +341,24 @@ app.use(cors({
 // 1 MB is more than sufficient for any legitimate RPC payload.
 // 10 MB was excessive and creates a trivial DoS vector for authenticated users.
 app.use(express.json({ limit: "1mb" }));
-// â”€â”€â”€ Security headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Security headers ────────────────────────────────────────────────────────
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-XSS-Protection", "1; mode=block");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   if (IS_PRODUCTION) {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
   next();
 });
 
-// â”€â”€â”€ Request ID â”€â”€ generate per-request UUID, echo back in header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// This ID must be added to every log line so that API â†” microservice calls can
+// ─── Request ID ── generate per-request UUID, echo back in header ─────────
+// This ID must be added to every log line so that API ↔ microservice calls can
 // be correlated when tracing an incident across multiple service logs.
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
   const rid = (req.headers["x-request-id"] as string | undefined) ?? `api-${uuid()}`;
@@ -255,7 +367,7 @@ app.use((req: express.Request, res: express.Response, next: express.NextFunction
   next();
 });
 
-// â”€â”€â”€ HTTP access log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── HTTP access log ─────────────────────────────────────────────────────────
 // Logs every completed request: method, path, status, latency, userId, ip, rid.
 // Skip /health to avoid noise from orchestrator probes.
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -277,7 +389,7 @@ app.use((req: express.Request, res: express.Response, next: express.NextFunction
       path: req.path,
       status: res.statusCode,
       latencyMs,
-      userId,
+      userId: hashUserIdForLogs(userId),
       ip: req.ip ?? "-",
       rid,
     }));
@@ -287,29 +399,37 @@ app.use((req: express.Request, res: express.Response, next: express.NextFunction
 
 app.use(authMiddleware);
 
-// â”€â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Routes ──────────────────────────────────────────────────────────────────
 app.use("/auth/signin", authRateLimiter);
 app.use("/auth/signup", authRateLimiter);
 app.use("/auth/forgot-password", authRateLimiter);
 app.use("/auth/reset-password", authRateLimiter);
 app.use("/auth/resend-verification", authRateLimiter);
+app.use("/auth/signout", requireTrustedOriginForSessionWrite);
+app.use("/auth/refresh", requireTrustedOriginForSessionWrite);
+app.use("/auth/update-user", requireTrustedOriginForSessionWrite);
 app.use("/auth", authRouter);
+app.use("/api/rest", requireTrustedOriginForSessionWrite);
 app.use("/api/rest", restRouter);
+app.use("/functions/v1/rpc", publicRpcRateLimiter); // stricter limiter for explicit public RPC functions
 app.use("/functions/v1/rpc", rpcRateLimiter); // per-IP DoS guard before auth is checked
 app.use("/functions/v1/rpc", userRpcRateLimiter); // per-user fair-use guard (post-auth)
+app.use("/functions/v1/rpc", requireTrustedOriginForSessionWrite);
 app.use("/functions/v1", rpcRouter);
 
-// Health check â€” pings DB so container orchestrators get real liveness signal
+// Health check — pings DB so container orchestrators get real liveness signal.
+// Anonymous callers get only { ok } — no service name, version, or timestamp that
+// could be used to fingerprint or target this endpoint.
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
     res.json({ ok: true, service: "autolinks-api", timestamp: new Date().toISOString() });
   } catch {
-    res.status(503).json({ ok: false, service: "autolinks-api", timestamp: new Date().toISOString(), error: "DB unavailable" });
+    res.status(503).json({ ok: false, service: "autolinks-api" });
   }
 });
 
-// â”€â”€â”€ Global error handler (must be last middleware) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Global error handler (must be last middleware) ───────────────────────────
 // Catches errors thrown synchronously inside route handlers or passed via next(err).
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[api] Unhandled route error:", err?.message ?? err);
@@ -318,12 +438,16 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   }
 });
 
-// â”€â”€â”€ Start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Start ───────────────────────────────────────────────────────────────────
 async function seedAdminIfEmpty() {
-  const adminEmail = (process.env.ADMIN_EMAIL ?? "admin@autolinks.local").toLowerCase().trim();
+  const adminEmail = String(process.env.ADMIN_EMAIL ?? "").toLowerCase().trim();
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminPassword) {
-    console.warn("[api] ADMIN_PASSWORD not set â€” skipping admin seed (set it via env to create the first admin).");
+    console.warn("[api] ADMIN_PASSWORD not set — skipping admin seed (set ADMIN_EMAIL and ADMIN_PASSWORD in env to create the first admin).");
+    return;
+  }
+  if (!adminEmail) {
+    console.warn("[api] ADMIN_EMAIL not set — skipping admin seed (set ADMIN_EMAIL and ADMIN_PASSWORD in env to create the first admin).");
     return;
   }
 
@@ -331,28 +455,20 @@ async function seedAdminIfEmpty() {
   if (Number(existing?.count ?? 0) > 0) return;
 
   const id = uuid();
-  const hash = await bcrypt.hash(adminPassword, 10);
+  const hash = await bcrypt.hash(adminPassword, envInt("BCRYPT_COST", 12, 10, 14));
   const metadata = JSON.stringify({
     name: "Admin",
     account_status: "active",
     status_updated_at: new Date().toISOString(),
   });
-
-  await execute(
-    "INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4::jsonb,NOW())",
-    [id, adminEmail, hash, metadata],
-  );
+  await execute("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4::jsonb,NOW())", [id, adminEmail, hash, metadata]);
   await execute("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,'admin')", [uuid(), id]);
-  await execute(
-    "INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at) VALUES ($1,$2,'Admin',$3,'admin',NULL)",
-    [uuid(), id, adminEmail],
-  );
+  await execute("INSERT INTO profiles (id, user_id, name, email, plan_id, plan_expires_at) VALUES ($1,$2,'Admin',$3,'admin',NULL)", [uuid(), id, adminEmail]);
   console.log(`[api] Admin user seeded: ${adminEmail}`);
 }
 
 async function main() {
   ensureRequiredEnvVars();
-
   // Verify DB connection
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
@@ -377,7 +493,7 @@ async function main() {
       if (!text || !text.trim()) return { ok: false, reason: `empty_response_http_${res.status}` };
       try {
         const json = JSON.parse(text);
-        if (json && typeof json === "object" && (json as { service?: string }).service === "autolinks-api") {
+        if (json && typeof json === "object" && json.service === "autolinks-api") {
           return { ok: true };
         }
       } catch {
@@ -396,12 +512,12 @@ async function main() {
   const DEV_STANDBY_PROBE_MS = 5_000;
   const DEV_STANDBY_MISS_LIMIT = 2;
   const STANDBY_RECOVERY_ENABLED = !IS_PRODUCTION;
-
-  let standby: NodeJS.Timeout | null = null;
+  let standby: ReturnType<typeof setInterval> | null = null;
   let standbyProbeInFlight = false;
   let standbyMisses = 0;
   let shuttingDown = false;
-  let server!: ReturnType<typeof app.listen>;
+  // eslint-disable-next-line prefer-const
+  let server: ReturnType<typeof app.listen>;
 
   function clearStandby() {
     if (!standby) return;
@@ -421,43 +537,30 @@ async function main() {
   function startStandbyMonitor(owner: ReturnType<typeof app.listen>) {
     if (!STANDBY_RECOVERY_ENABLED) return;
     if (standby) return;
-
     console.warn(`[api] dev standby monitor enabled (probe=${DEV_STANDBY_PROBE_MS}ms miss_limit=${DEV_STANDBY_MISS_LIMIT}).`);
-
     standby = setInterval(() => {
       if (shuttingDown || standbyProbeInFlight) return;
       standbyProbeInFlight = true;
-
       void detectExistingApi(PORT)
         .then((probe) => {
           if (probe.ok) {
             standbyMisses = 0;
             return;
           }
-
           standbyMisses += 1;
           console.warn(`[api] standby probe failed (${standbyMisses}/${DEV_STANDBY_MISS_LIMIT}): ${probe.reason ?? "unknown"}`);
-
           if (standbyMisses < DEV_STANDBY_MISS_LIMIT) return;
-
           console.warn(`[api] existing autolinks-api is unavailable; attempting to reclaim port ${PORT}...`);
           clearStandby();
-          try {
-            owner.close();
-          } catch {
-            // ignore: owner may not be in listening state
-          }
+          try { owner.close(); } catch { /* ignore: owner may not be in listening state */ }
           startServer();
         })
         .catch((error) => {
           const reason = error instanceof Error ? error.message : String(error);
           console.warn(`[api] standby monitor probe error: ${reason}`);
         })
-        .finally(() => {
-          standbyProbeInFlight = false;
-        });
+        .finally(() => { standbyProbeInFlight = false; });
     }, DEV_STANDBY_PROBE_MS);
-
     standby.unref();
   }
 
@@ -469,7 +572,6 @@ async function main() {
           startStandbyMonitor(server);
           return;
         }
-
         console.error(`[api] port ${PORT} already in use and does not look like autolinks-api.`);
         console.error("[api] Close the process using the port, or run the API with a different PORT.");
         console.error("[api] Tip (PowerShell): Get-NetTCPConnection -LocalPort 3116 | Select LocalAddress,State,OwningProcess");
@@ -477,7 +579,6 @@ async function main() {
       });
       return;
     }
-
     console.error("[api] server error:", error);
     process.exit(1);
   }
@@ -490,25 +591,22 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     clearStandby();
-
     console.log(`[api] ${signal} received - shutting down gracefully...`);
-
     const finish = () => {
       pool.end()
         .then(() => { console.log("[api] Shutdown complete"); process.exit(0); })
         .catch(() => process.exit(1));
     };
-
     if (server && server.listening) {
       server.close(() => finish());
     } else {
       finish();
     }
-
     setTimeout(() => { console.error("[api] Forced exit after timeout"); process.exit(1); }, 15_000).unref();
   }
+
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT",  () => shutdown("SIGINT"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 
   // Log unhandled rejections instead of crashing silently
   process.on("unhandledRejection", (reason) => {

@@ -410,7 +410,7 @@ export default function Templates() {
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="space-y-0.5">
                     <Label className="text-xs text-muted-foreground">Oferta gerada</Label>
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-xs text-muted-foreground">
                       Template: <span className="font-medium text-foreground">{generatedOffer.templateName}</span>
                     </p>
                   </div>
@@ -432,7 +432,7 @@ export default function Templates() {
 
                 {generatedOffer.requestsImageAttachment && (
                   <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       <ImageIcon className="h-3.5 w-3.5" />
                       Prévia de mídia do placeholder {"{imagem}"}
                     </div>
@@ -499,7 +499,7 @@ export default function Templates() {
                         {template.isDefault && (
                           <Badge
                             variant="secondary"
-                            className="text-[11px] bg-primary/12 text-primary shrink-0"
+                            className="text-xs bg-primary/12 text-primary shrink-0"
                           >
                             Padrão
                           </Badge>
@@ -563,12 +563,12 @@ export default function Templates() {
 
       {/* ── Modal criar / editar ── */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="max-w-4xl max-h-[92dvh] overflow-hidden p-0">
-          <DialogHeader className="border-b px-6 py-4">
+        <DialogContent className="max-w-4xl max-h-[92dvh] overflow-hidden p-0 flex flex-col">
+          <DialogHeader className="border-b px-6 py-4 shrink-0">
             <DialogTitle>{editing ? "Editar template" : "Novo template"}</DialogTitle>
           </DialogHeader>
 
-          <div className="grid md:grid-cols-2 overflow-y-auto md:overflow-hidden">
+          <div className="grid md:grid-cols-2 flex-1 min-h-0 overflow-y-auto md:overflow-hidden">
             {/* ─ Esquerda: formulário ─ */}
             <div className="space-y-4 px-6 py-5 overflow-y-auto max-h-[50dvh] md:max-h-[72dvh]">
               <div className="space-y-2">
@@ -673,7 +673,7 @@ export default function Templates() {
             </div>
           </div>
 
-          <DialogFooter className="border-t px-6 py-4">
+          <DialogFooter className="border-t px-6 py-4 shrink-0">
             <Button variant="outline" onClick={() => setShowModal(false)}>
               Cancelar
             </Button>

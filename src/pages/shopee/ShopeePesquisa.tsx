@@ -125,7 +125,7 @@ export default function ShopeePesquisa() {
 
     try {
       const { data: { session } } = await backend.auth.getSession();
-      if (!session) { toast.error("Sessão expirada. Faça login de novo."); return; }
+      if (!session) { toast.error("Sessão expirada. Faça login novamente."); return; }
 
       const runCategoryQuery = (params: Record<string, unknown>) => invokeBackendRpc<{ results?: Record<string, { products?: ShopeeProduct[]; hasMore?: boolean; error?: string }> }>("shopee-batch", {
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -187,7 +187,7 @@ export default function ShopeePesquisa() {
       setPage(pageNum);
     } catch (error) {
       if (!controller.signal.aborted) {
-        toast.error(error instanceof Error ? error.message : "Não deu pra carregar essa categoria");
+        toast.error(error instanceof Error ? error.message : "Não conseguimos carregar essa categoria");
         if (!append) setProducts([]);
       }
     } finally {
@@ -211,7 +211,7 @@ export default function ShopeePesquisa() {
 
     try {
       const { data: { session } } = await backend.auth.getSession();
-      if (!session) { toast.error("Sessão expirada. Faça login de novo."); return; }
+      if (!session) { toast.error("Sessão expirada. Faça login novamente."); return; }
 
       const res = await invokeBackendRpc<{ results?: Record<string, { products?: ShopeeProduct[]; hasMore?: boolean; error?: string }> }>("shopee-batch", {
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -306,8 +306,8 @@ export default function ShopeePesquisa() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6">
-      <PageHeader title="Pesquisa de ofertas" description="Navegue por categorias ou busque pelo nome" />
+    <div className="ds-page space-y-6">
+      <PageHeader title="Pesquisa de ofertas" description="Navegue por categorias ou busque por nome de produto" />
       {!isConfigured && <ShopeeCredentialsBanner />}
 
       {isConfigured && (
@@ -315,7 +315,7 @@ export default function ShopeePesquisa() {
           {/* Search + Sort bar */}
           <div className="flex flex-col gap-2.5 sm:flex-row">
             <Input
-              placeholder="Buscar produtos..."
+              placeholder="Buscar pelo nome do produto..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -458,28 +458,28 @@ export default function ShopeePesquisa() {
                           </button>
 
                           {hasSubs && isExpanded && (
-                            <div className="ml-3 mt-0.5 mb-0.5 pl-2.5 border-l border-border space-y-0.5 animate-fade-in">
-                              {cat.subcategories.map((sub) => {
-                                const isSubActive = activeSubId === sub.id;
-                                return (
-                                  <button
-                                    key={sub.id}
-                                    onClick={() => handleSubClick(cat.id, sub.id)}
-                                    disabled={searching}
-                                    className={cn(
-                                      "w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs transition-all duration-150 text-left",
-                                      isSubActive
-                                        ? "bg-primary/15 text-primary font-semibold"
-                                        : "hover:bg-accent text-muted-foreground hover:text-foreground"
-                                    )}
-                                  >
-                                    <span className="w-1 h-1 rounded-full bg-current shrink-0 opacity-60" />
-                                    {sub.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
+                              <div className="ml-3 mt-0.5 mb-0.5 pl-2.5 border-l border-border space-y-0.5 animate-fade-in">
+                                {cat.subcategories.map((sub) => {
+                                  const isSubActive = activeSubId === sub.id;
+                                  return (
+                                    <button
+                                      key={sub.id}
+                                      onClick={() => handleSubClick(cat.id, sub.id)}
+                                      disabled={searching}
+                                      className={cn(
+                                        "w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs transition-all duration-150 text-left",
+                                        isSubActive
+                                          ? "bg-primary/15 text-primary font-semibold"
+                                          : "hover:bg-accent text-muted-foreground hover:text-foreground"
+                                      )}
+                                    >
+                                      <span className="w-1 h-1 rounded-full bg-current shrink-0 opacity-60" />
+                                      {sub.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                         </div>
                       );
                     })}
@@ -571,11 +571,11 @@ export default function ShopeePesquisa() {
 
               {/* Empty states */}
               {!searching && searched && filtered.length === 0 && (
-                <EmptyState icon={Search} title="Nada encontrado" description="Tente outra palavra-chave, categoria, ou mude os filtros." />
+                <EmptyState icon={Search} title="Nenhum resultado encontrado" description="Tente outra palavra-chave, mude a categoria ou ajuste os filtros." />
               )}
 
               {!searched && !searching && isConfigured && (
-                <EmptyState icon={Search} title="Explore ofertas" description="Escolha uma categoria ao lado ou busque pelo nome do produto." />
+                <EmptyState icon={Search} title="Comece a Explorar" description="Escolha uma categoria ao lado ou busque por nome de produto." />
               )}
             </div>
           </div>

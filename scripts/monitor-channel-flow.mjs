@@ -1,8 +1,13 @@
 import process from "node:process";
 
 const API_URL = process.env.MONITOR_API_URL || "http://127.0.0.1:3116";
-const MONITOR_EMAIL = process.env.MONITOR_EMAIL || "aliancaslovely@gmail.com";
-const MONITOR_PASSWORD = process.env.MONITOR_PASSWORD || "abacate1";
+const MONITOR_EMAIL = process.env.MONITOR_EMAIL || "user@localhost.local";
+const MONITOR_PASSWORD = process.env.MONITOR_PASSWORD || "";
+
+if (!MONITOR_PASSWORD) {
+  console.error("[monitor] MONITOR_PASSWORD is required. Set it via environment variable.");
+  process.exit(1);
+}
 
 function readArg(name, fallback = "") {
   const index = process.argv.findIndex((arg) => arg === `--${name}`);
@@ -22,21 +27,21 @@ function readBoolArg(name, fallback = false) {
 }
 
 const REASON_HINTS = {
-  missing_image_required: "A rota exige imagem, mas ela nao estava disponivel para envio.",
+  missing_image_required: "A rota exige imagem, mas ela não estava disponível para envio.",
   image_ingestion_failed: "A imagem foi detectada, mas falhou na captura/download.",
-  unsupported_media_type: "Tipo de midia nao suportado pela rota.",
-  destination_send_failed: "Falha no envio para o destino (verificar sessao/conector).",
-  destination_session_offline: "Sessao de destino offline ou sem identificador.",
-  destination_not_found: "Grupo de destino nao encontrado.",
-  no_active_routes: "Nao havia rota ativa para a origem da mensagem.",
+  unsupported_media_type: "Tipo de mídia não suportado pela rota.",
+  destination_send_failed: "Falha no envio para o destino (verificar sessão/conector).",
+  destination_session_offline: "Sessão de destino offline ou sem identificador.",
+  destination_not_found: "Grupo de destino não encontrado.",
+  no_active_routes: "Não havia rota ativa para a origem da mensagem.",
   no_destination_groups: "Rota sem grupos de destino configurados.",
-  no_destination_groups_for_session: "Rota sem destino para a sessao filtrada.",
+  no_destination_groups_for_session: "Rota sem destino para a sessão filtrada.",
   route_processing_error: "Erro interno no processamento da rota.",
-  partner_link_required: "A rota exige link parceiro e a mensagem nao tinha um valido.",
-  marketplace_not_enabled: "Marketplace do link nao esta habilitado na rota.",
-  missing_text_required: "A mensagem ficou sem texto valido apos processamento.",
+  partner_link_required: "A rota exige link parceiro e a mensagem não tinha um válido.",
+  marketplace_not_enabled: "Marketplace do link não esta habilitado na rota.",
+  missing_text_required: "A mensagem ficou sem texto válido após processamento.",
   negative_keyword: "Mensagem bloqueada por palavra-chave negativa.",
-  positive_keyword_missing: "Mensagem nao contem palavra-chave positiva exigida.",
+  positive_keyword_missing: "Mensagem não contem palavra-chave positiva exigida.",
 };
 
 function nowIso() {

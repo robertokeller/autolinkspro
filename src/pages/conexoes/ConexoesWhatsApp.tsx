@@ -34,6 +34,7 @@ export default function ConexoesWhatsApp() {
     isDeleting,
     isRefreshing,
     refresh,
+    refreshSession,
   } = useWhatsAppSessions();
   const { syncedGroups, isLoading: isLoadingGroups, refreshGroups } = useGrupos();
 
@@ -51,6 +52,10 @@ export default function ConexoesWhatsApp() {
     refresh(options);
     void refetchHealth();
   }, [refresh, refetchHealth]);
+
+  const handleRefreshSingleSession = useCallback((sessionId: string, options?: { silent?: boolean }) => {
+    refreshSession(sessionId, options);
+  }, [refreshSession]);
 
   return (
     <ConexoesCanalLayout
@@ -76,6 +81,7 @@ export default function ConexoesWhatsApp() {
           onUpdateName={async (sessionId, name) => { await renameSession({ sessionId, name }); }}
           onDeleteSession={deleteSession}
           onRefresh={handleRefreshSessions}
+          onRefreshSession={handleRefreshSingleSession}
         />
       }
       groupsContent={

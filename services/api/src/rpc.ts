@@ -4,17 +4,28 @@ import { v4 as uuid } from "uuid";
 import { pool, query, queryOne, execute, transaction } from "./db.js";
 import { requireAuth, signToken } from "./auth.js";
 import { getPasswordPolicyError } from "./password-policy.js";
-import { decryptCredential } from "./credential-cipher.js";
+import { decryptCredential, encryptCredential } from "./credential-cipher.js";
+import { consumeRateLimit } from "./rate-limit-store.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { appendFileSync } from "node:fs";
 import { getMeliProductSnapshot, listMeliVitrine, syncMeliVitrine } from "./meli-vitrine.js";
+import { getAmazonProductSnapshot, listAmazonVitrine, syncAmazonVitrine } from "./amazon-vitrine.js";
+import { getDisposableEmailError } from "./disposable-email.js";
 
 export const rpcRouter = Router();
+// Public RPC is enabled by default so link-hub and master-group pages work for
+// anonymous visitors. Set ALLOW_PUBLIC_RPC=false to disable in locked-down environments.
+const ALLOW_PUBLIC_RPC = String(process.env.ALLOW_PUBLIC_RPC || "true").trim().toLowerCase() !== "false";
 
 // â”€â”€ Public: link-hub pages (no authentication required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 rpcRouter.post("/rpc", async (req, res, next) => {
   if (String(req.body?.name ?? "") !== "link-hub-public") { next(); return; }
+  if (!ALLOW_PUBLIC_RPC) {
+    res.status(401).json({ data: null, error: { message: "Autenticação obrigatória" } });
+    return;
+  }
   const params = req.body ?? {};
   const slug = String(params.slug ?? "").trim();
   if (!slug) { res.json({ data: null, error: { message: "Slug obrigatório" } }); return; }
@@ -117,6 +128,10 @@ rpcRouter.post("/rpc", async (req, res, next) => {
 // Public: resolve and redirect master group invite (no authentication required)
 rpcRouter.post("/rpc", async (req, res, next) => {
   if (String(req.body?.name ?? "") !== "master-group-invite") { next(); return; }
+  if (!ALLOW_PUBLIC_RPC) {
+    res.status(401).json({ data: null, error: { message: "Autenticação obrigatória" } });
+    return;
+  }
 
   const params = req.body ?? {};
   const masterGroupId = String(params.masterGroupId ?? "").trim();
@@ -236,21 +251,13 @@ rpcRouter.use(requireAuth);
 
 const IS_PRODUCTION = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
 const USE_LOCAL_FALLBACK_URLS = !IS_PRODUCTION;
-const WHATSAPP_URL  = process.env.WHATSAPP_MICROSERVICE_URL
-  ?? process.env.VITE_WHATSAPP_MICROSERVICE_URL
-  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3111" : "");
-const TELEGRAM_URL  = process.env.TELEGRAM_MICROSERVICE_URL
-  ?? process.env.VITE_TELEGRAM_MICROSERVICE_URL
-  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3112" : "");
-const SHOPEE_URL    = process.env.SHOPEE_MICROSERVICE_URL
-  ?? process.env.VITE_SHOPEE_MICROSERVICE_URL
-  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3113" : "");
-const MELI_URL      = process.env.MELI_RPA_URL
-  ?? process.env.VITE_MELI_RPA_URL
-  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3114" : "");
-const OPS_URL       = process.env.OPS_CONTROL_URL
-  ?? process.env.VITE_OPS_CONTROL_URL
-  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3115" : "");
+// Never read VITE_* vars server-side: they are baked into the frontend JS bundle
+// at build time and may be exposed publicly. Use unprefixed env vars only.
+const WHATSAPP_URL  = process.env.WHATSAPP_MICROSERVICE_URL  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3111" : "");
+const TELEGRAM_URL  = process.env.TELEGRAM_MICROSERVICE_URL  ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3112" : "");
+const SHOPEE_URL    = process.env.SHOPEE_MICROSERVICE_URL    ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3113" : "");
+const MELI_URL      = process.env.MELI_RPA_URL               ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3114" : "");
+const OPS_URL       = process.env.OPS_CONTROL_URL            ?? (USE_LOCAL_FALLBACK_URLS ? "http://127.0.0.1:3115" : "");
 const OPS_TOKEN     = String(process.env.OPS_CONTROL_TOKEN ?? "").trim();
 const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET ?? "").trim();
 const PLAN_EXPIRY_ALLOWED = new Set(["account-plan","admin-users","link-hub-public","admin-announcements","user-notifications","admin-maintenance","admin-wa-broadcast","admin-message-automations"]);
@@ -265,6 +272,23 @@ const MELI_HEALTH_SESSION_RECHECK_MS = Math.max(
 const ROUTE_MEDIA_DEBUG_ENABLED = new Set(["1", "true", "yes", "on"]).has(
   String(process.env.ROUTE_MEDIA_DEBUG || "").trim().toLowerCase(),
 );
+const TELEGRAM_BACKFILL_BATCH_LIMIT = Math.max(
+  1,
+  Math.min(25, Number(process.env.TELEGRAM_BACKFILL_BATCH_LIMIT || "10") || 10),
+);
+const TELEGRAM_BACKFILL_WINDOW_HOURS = Math.max(
+  1,
+  Math.min(168, Number(process.env.TELEGRAM_BACKFILL_WINDOW_HOURS || "24") || 24),
+);
+const TELEGRAM_BACKFILL_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.TELEGRAM_BACKFILL_TIMEOUT_MS || "30000") || 30_000,
+);
+const BCRYPT_COST = (() => {
+  const parsed = Number(process.env.BCRYPT_COST ?? "12");
+  if (!Number.isFinite(parsed)) return 12;
+  return Math.max(10, Math.min(14, Math.trunc(parsed)));
+})();
 
 type RpcRatePolicy = {
   max: number;
@@ -313,14 +337,42 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
     windowMs: 60_000,
     message: "Muitas execucoes de piloto automatico Mercado Livre. Aguarde 1 minuto.",
   },
+  "amazon-automation-run": {
+    max: 6,
+    windowMs: 60_000,
+    message: "Muitas execucoes de piloto automatico Amazon. Aguarde 1 minuto.",
+  },
   "meli-vitrine-sync": {
     max: 6,
     windowMs: 60_000,
     message: "Muitas atualizacoes da vitrine ML. Aguarde 1 minuto.",
   },
+  "amazon-vitrine-sync": {
+    max: 6,
+    windowMs: 60_000,
+    message: "Muitas atualizacoes da vitrine Amazon. Aguarde 1 minuto.",
+  },
+  "amazon-convert-link": {
+    max: 40,
+    windowMs: 60_000,
+    message: "Limite de conversão Amazon atingido. Aguarde 1 minuto.",
+  },
+  "amazon-product-snapshot": {
+    max: 40,
+    windowMs: 60_000,
+    message: "Limite de consultas Amazon atingido. Aguarde 1 minuto.",
+  },
+  "amazon-convert-links": {
+    max: 12,
+    windowMs: 60_000,
+    message: "Limite de lote Amazon atingido. Aguarde 1 minuto.",
+  },
+  "marketplace-convert-link": {
+    max: 60,
+    windowMs: 60_000,
+    message: "Limite do conversor global atingido. Aguarde 1 minuto.",
+  },
 };
-
-const rpcFunctionRateStore = new Map<string, { count: number; resetAt: number }>();
 
 // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ok(res, data) { res.json({ data, error: null }); }
@@ -423,30 +475,148 @@ function isMercadoLivreProductUrlLike(raw: string): boolean {
   );
 }
 
-function consumeRpcFunctionRateLimit(scopeKey: string, funcName: string): { allowed: boolean; policy: RpcRatePolicy | null; retryAfterSec: number } {
-  const policy = RPC_RATE_BY_FUNCTION[funcName] ?? null;
-  if (!policy) return { allowed: true, policy: null, retryAfterSec: 0 };
-
-  const now = Date.now();
-  const key = `${scopeKey}:${funcName}`;
-  const entry = rpcFunctionRateStore.get(key);
-
-  if (!entry || now > entry.resetAt) {
-    rpcFunctionRateStore.set(key, { count: 1, resetAt: now + policy.windowMs });
-    return { allowed: true, policy, retryAfterSec: 0 };
-  }
-
-  entry.count += 1;
-  const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
-  return { allowed: entry.count <= policy.max, policy, retryAfterSec };
+function isAmazonProductUrlLike(raw: string): boolean {
+  const parsed = parseHttpUrl(raw);
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase();
+  return host === "amazon.com.br" || host.endsWith(".amazon.com.br");
 }
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of rpcFunctionRateStore) {
-    if (now > entry.resetAt) rpcFunctionRateStore.delete(key);
+type AffiliateMarketplace = "shopee" | "mercadolivre" | "amazon";
+
+function detectAffiliateMarketplace(raw: string): AffiliateMarketplace | null {
+  if (isAmazonProductUrlLike(raw)) return "amazon";
+  if (isMercadoLivreProductUrlLike(raw)) return "mercadolivre";
+  if (isShopeeProductUrlLike(raw)) return "shopee";
+  const routeMarketplace = detectRoutePartnerMarketplace(raw);
+  if (routeMarketplace === "shopee" || routeMarketplace === "mercadolivre") return routeMarketplace;
+  return null;
+}
+
+function extractAmazonAsin(url: string): string | null {
+  const parsed = parseHttpUrl(url);
+  if (!parsed) return null;
+  const match = parsed.pathname.match(/(?:\/dp\/|\/gp\/product\/)([A-Z0-9]{10})/i);
+  return match?.[1] || null;
+}
+
+function extractAmazonPreservedParams(url: string): Record<string, string> {
+  const parsed = parseHttpUrl(url);
+  if (!parsed) return {};
+  const params: Record<string, string> = {};
+  const allowedParams = new Set(["psc", "smid", "th"]);
+  for (const [key, value] of parsed.searchParams.entries()) {
+    if (allowedParams.has(key)) {
+      params[key] = String(value || "");
+    }
   }
-}, 5 * 60_000).unref();
+  return params;
+}
+
+function canonicalizeAmazonProductUrl(raw: string): string | null {
+  const source = String(raw || "").trim();
+  if (!source) return null;
+  const normalized = /^https?:\/\//i.test(source) ? source : `https://${source}`;
+  const parsed = parseHttpUrl(normalized);
+  if (!parsed) return null;
+  if (!isAmazonProductUrlLike(parsed.toString())) return null;
+
+  const asin = String(extractAmazonAsin(parsed.toString()) || "").trim().toUpperCase();
+  if (asin) {
+    parsed.pathname = `/dp/${asin}`;
+  }
+
+  parsed.search = "";
+  parsed.hash = "";
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  return parsed.toString();
+}
+
+function buildAmazonAffiliateLink(asin: string, preservedParams: Record<string, string>, userTag: string): string {
+  const base = `https://www.amazon.com.br/dp/${asin}`;
+  const queryParts: string[] = [];
+  for (const [key, value] of Object.entries(preservedParams)) {
+    if (value && value.trim()) {
+      queryParts.push(`${key}=${encodeURIComponent(value)}`);
+    }
+  }
+  queryParts.push(`tag=${encodeURIComponent(userTag)}`);
+  return `${base}?${queryParts.join("&")}`;
+}
+
+type AmazonAffiliateConversionResult = {
+  sourceUrl: string;
+  resolvedUrl: string;
+  affiliateLink: string;
+  asin: string;
+  userTag: string;
+};
+
+async function getAmazonAffiliateTagForUser(userId: string): Promise<string> {
+  const tagRow = await queryOne<{ affiliate_tag: string }>(
+    "SELECT affiliate_tag FROM amazon_affiliate_tags WHERE user_id = $1",
+    [userId],
+  );
+  return String(tagRow?.affiliate_tag || "").trim();
+}
+
+async function buildAmazonAffiliateConversionForUser(
+  userId: string,
+  rawUrl: string,
+): Promise<AmazonAffiliateConversionResult> {
+  const sourceUrl = String(rawUrl || "").trim();
+  if (!sourceUrl) {
+    throw new Error("URL Amazon obrigatoria");
+  }
+  if (sourceUrl.length > MAX_URL_LENGTH) {
+    throw new Error("URL Amazon excede o tamanho maximo permitido");
+  }
+  if (!isAmazonProductUrlLike(sourceUrl)) {
+    throw new Error("URL informada não parece ser da Amazon (deve ser amazon.com.br)");
+  }
+
+  const asin = String(extractAmazonAsin(sourceUrl) || "").trim().toUpperCase();
+  if (!asin) {
+    throw new Error("Não consegui extrair o ASIN da URL. Verifique se é um produto da Amazon.");
+  }
+
+  const userTag = await getAmazonAffiliateTagForUser(userId);
+  if (!userTag) {
+    throw new Error("Configure sua tag de afiliado em /amazon/configuracoes");
+  }
+
+  const preservedParams = extractAmazonPreservedParams(sourceUrl);
+  const affiliateLink = buildAmazonAffiliateLink(asin, preservedParams, userTag);
+  if (!affiliateLink.includes(`tag=${encodeURIComponent(userTag)}`)) {
+    throw new Error("Falha ao construir link de afiliado. Tente novamente.");
+  }
+
+  return {
+    sourceUrl,
+    resolvedUrl: sourceUrl,
+    affiliateLink,
+    asin,
+    userTag,
+  };
+}
+
+// Per-function rate limits are DB-backed (shared across PM2 cluster workers).
+// Falls back to fail-open if the rate-limit store is unavailable.
+async function consumeRpcFunctionRateLimit(scopeKey: string, funcName: string): Promise<{ allowed: boolean; policy: RpcRatePolicy | null; retryAfterSec: number }> {
+  const policy = RPC_RATE_BY_FUNCTION[funcName] ?? null;
+  if (!policy) return { allowed: true, policy: null, retryAfterSec: 0 };
+  try {
+    const result = await consumeRateLimit({
+      namespace: `rpc:${funcName}`,
+      scopeKey,
+      max: policy.max,
+      windowMs: policy.windowMs,
+    });
+    return { allowed: result.allowed, policy, retryAfterSec: result.retryAfterSec };
+  } catch {
+    return { allowed: true, policy, retryAfterSec: 0 };
+  }
+}
 
 function parseTimeToMinutes(value: unknown, fallbackMinutes: number): number {
   const raw = String(value || "").trim();
@@ -457,6 +627,23 @@ function parseTimeToMinutes(value: unknown, fallbackMinutes: number): number {
   const safeHours = Math.max(0, Math.min(23, hours));
   const safeMinutes = Math.max(0, Math.min(59, minutes));
   return safeHours * 60 + safeMinutes;
+}
+
+const ROUTE_QUIET_HOURS_DEFAULT_START = "22:00";
+const ROUTE_QUIET_HOURS_DEFAULT_END = "08:00";
+const ROUTE_QUIET_HOURS_SCHEDULE_SOURCE = "route_quiet_hours";
+
+function normalizeClockTimeForRules(value: unknown, fallback: string): string {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!match) return fallback;
+
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) return fallback;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return fallback;
+
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
 function nowMinutesInTimeZone(date = new Date()): number {
@@ -486,6 +673,34 @@ function inAutomationTimeWindow(startTime: unknown, endTime: unknown, date = new
   if (startMinutes === endMinutes) return true;
   if (startMinutes < endMinutes) return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
   return nowMinutes >= startMinutes || nowMinutes <= endMinutes;
+}
+
+function isInRouteQuietHoursWindow(startTime: unknown, endTime: unknown, date = new Date()): boolean {
+  const nowMinutes = nowMinutesInTimeZone(date);
+  const startMinutes = parseTimeToMinutes(startTime, 22 * 60);
+  const endMinutes = parseTimeToMinutes(endTime, 8 * 60);
+  if (startMinutes === endMinutes) return false;
+  if (startMinutes < endMinutes) return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+}
+
+function minutesUntilRouteQuietHoursEnd(startTime: unknown, endTime: unknown, date = new Date()): number {
+  if (!isInRouteQuietHoursWindow(startTime, endTime, date)) return 0;
+
+  const nowMinutes = nowMinutesInTimeZone(date);
+  const startMinutes = parseTimeToMinutes(startTime, 22 * 60);
+  const endMinutes = parseTimeToMinutes(endTime, 8 * 60);
+
+  let diff = 0;
+  if (startMinutes < endMinutes) {
+    diff = endMinutes - nowMinutes;
+  } else if (nowMinutes >= startMinutes) {
+    diff = (24 * 60 - nowMinutes) + endMinutes;
+  } else {
+    diff = endMinutes - nowMinutes;
+  }
+
+  return Math.max(1, diff);
 }
 
 function hasLetters(value: string): boolean {
@@ -558,6 +773,16 @@ function normalizeMeliAutomationVitrineTabs(value: unknown): string[] {
     out.push(normalized);
   }
   return out;
+}
+
+function readAutomationDeliverySessionId(row: { config?: unknown; session_id?: unknown } | null | undefined): string {
+  if (!row || typeof row !== "object") return "";
+  const config = row.config && typeof row.config === "object" && !Array.isArray(row.config)
+    ? row.config as Record<string, unknown>
+    : {};
+  const configSessionId = String(config.deliverySessionId || "").trim();
+  if (configSessionId) return configSessionId;
+  return String(row.session_id || "").trim();
 }
 
 function extractAutomationSearchKeywords(input: {
@@ -697,6 +922,174 @@ function applyPlaceholders(template: string, replacements: Record<string, string
   return output;
 }
 
+const PLACEHOLDER_IMAGE_LINE_REGEX = /^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim;
+const MELI_TEMPLATE_EMPTY_LINE_REGEX = /^[ \t]+$/gm;
+const MELI_TEMPLATE_BLANK_PRICE_LINE_REGEX = /^[ \t]*De R\$\s*por R\$\s*$/gim;
+const MELI_TEMPLATE_CURRENT_ONLY_PRICE_LINE_REGEX = /^[ \t]*De R\$\s*por R\$\s*([0-9]+(?:[.,][0-9]{2})?)\s*$/gim;
+const MELI_TEMPLATE_EMPTY_STORE_LINE_REGEX = /^[ \t]*Loja:\s*$/gim;
+const MELI_TEMPLATE_EMPTY_RATING_LINE_REGEX = /^[ \t]*Nota:\s*(?:\(\s*\))?\s*$/gim;
+const MELI_TEMPLATE_PARTIAL_RATING_LINE_REGEX = /^[ \t]*Nota:\s*([0-9]+(?:[.,][0-9])?)\s*\(\s*\)\s*$/gim;
+
+type TemplateScope = "shopee" | "meli" | "amazon";
+
+function stripStandaloneImagePlaceholderLines(templateContent: string): string {
+  return String(templateContent || "").replace(PLACEHOLDER_IMAGE_LINE_REGEX, "");
+}
+
+function applyMeliTemplatePlaceholdersServer(
+  templateContent: string,
+  placeholderData: Record<string, string>,
+): string {
+  const replaced = applyPlaceholders(stripStandaloneImagePlaceholderLines(templateContent), {
+    ...(placeholderData || {}),
+    "{imagem}": "",
+    "{{imagem}}": "",
+  });
+
+  return replaced
+    .replace(MELI_TEMPLATE_CURRENT_ONLY_PRICE_LINE_REGEX, "R$ $1")
+    .replace(MELI_TEMPLATE_BLANK_PRICE_LINE_REGEX, "")
+    .replace(MELI_TEMPLATE_EMPTY_STORE_LINE_REGEX, "")
+    .replace(MELI_TEMPLATE_EMPTY_RATING_LINE_REGEX, "")
+    .replace(MELI_TEMPLATE_PARTIAL_RATING_LINE_REGEX, "Nota: $1")
+    .replace(MELI_TEMPLATE_EMPTY_LINE_REGEX, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function applyAmazonTemplatePlaceholdersServer(
+  templateContent: string,
+  placeholderData: Record<string, string>,
+): string {
+  const source = placeholderData || {};
+  const readPlaceholder = (...keys: string[]): string => {
+    for (const key of keys) {
+      const value = String(source[key] || "").trim();
+      if (value) return value;
+    }
+    return "";
+  };
+  const title = readPlaceholder("{titulo}", "{título}");
+  const price = readPlaceholder("{preco}", "{preço}");
+  const oldPrice = readPlaceholder("{preco_original}", "{preço_original}");
+
+  const replaced = applyPlaceholders(stripStandaloneImagePlaceholderLines(templateContent), {
+    ...source,
+    "{titulo}": title,
+    "{título}": title,
+    "{preco}": price,
+    "{preço}": price,
+    "{preco_original}": oldPrice,
+    "{preço_original}": oldPrice,
+    "{imagem}": "",
+    "{{imagem}}": "",
+    "{selo}": "",
+    "{{selo}}": "",
+    "{asin}": "",
+    "{{asin}}": "",
+  });
+
+  return replaced
+    .replace(/^[ \t]*De R\$\s*por R\$\s*$/gim, "")
+    .replace(/^[ \t]*De R\$\s*por R\$\s*([0-9]+(?:[.,][0-9]{2})?)\s*$/gim, "R$ $1")
+    .replace(/^[ \t]*(?:Loja|Vendedor|Selo|ASIN|Parcelamento):\s*$/gim, "")
+    .replace(/^[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeTemplateScope(value: unknown): TemplateScope | null {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === "amazon") return "amazon";
+  if (raw === "meli" || raw === "mercadolivre") return "meli";
+  if (raw === "shopee") return "shopee";
+  return null;
+}
+
+function extractTemplateScopeFromTags(tags: unknown): TemplateScope | null {
+  if (!Array.isArray(tags)) return null;
+
+  for (const item of tags) {
+    const normalized = String(item || "").trim().toLowerCase();
+    if (!normalized.startsWith("scope:")) continue;
+    const parsed = normalizeTemplateScope(normalized.slice("scope:".length));
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+function inferTemplateScopeFromTemplateRow(row: Record<string, unknown> | null | undefined): TemplateScope {
+  if (!row) return "shopee";
+  const fromTags = extractTemplateScopeFromTags(row.tags);
+  if (fromTags) return fromTags;
+
+  const fromScope = normalizeTemplateScope(row.scope);
+  return fromScope || "shopee";
+}
+
+function inferTemplateScopeFromScheduleSource(value: unknown): TemplateScope | null {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return null;
+  if (raw.includes("amazon")) return "amazon";
+  if (raw.includes("meli") || raw.includes("mercado")) return "meli";
+  if (raw.includes("shopee")) return "shopee";
+  return null;
+}
+
+function applyScopedTemplatePlaceholders(
+  scope: TemplateScope,
+  templateContent: string,
+  placeholderData: Record<string, string>,
+): string {
+  if (scope === "amazon") {
+    return applyAmazonTemplatePlaceholdersServer(templateContent, placeholderData);
+  }
+  if (scope === "meli") {
+    return applyMeliTemplatePlaceholdersServer(templateContent, placeholderData);
+  }
+
+  return applyPlaceholders(stripStandaloneImagePlaceholderLines(templateContent), {
+    ...(placeholderData || {}),
+    "{imagem}": "",
+    "{{imagem}}": "",
+  });
+}
+
+async function resolveAutomationTemplateForScope(input: {
+  userId: string;
+  templateId: string;
+  scope: TemplateScope;
+}): Promise<{ id: string; name: string; content: string; is_default: boolean } | null> {
+  const rows = await query<{
+    id: string;
+    name: string;
+    content: string;
+    is_default: boolean;
+    scope: string | null;
+    tags: unknown;
+    created_at: string | null;
+  }>(
+    `SELECT id, name, content, is_default, scope, tags, created_at
+       FROM templates
+      WHERE user_id = $1
+        AND ($2::uuid IS NULL OR id = $2 OR is_default = TRUE)
+      ORDER BY CASE WHEN id = $2 THEN 0 WHEN is_default = TRUE THEN 1 ELSE 2 END,
+               created_at DESC
+      LIMIT 25`,
+    [input.userId, input.templateId || null],
+  );
+
+  const scopedRows = rows.filter((row) => inferTemplateScopeFromTemplateRow(row as unknown as Record<string, unknown>) === input.scope);
+  if (input.templateId) {
+    const exact = scopedRows.find((row) => String(row.id || "").trim() === input.templateId);
+    if (exact) return exact;
+  }
+
+  return scopedRows.find((row) => row.is_default === true) || scopedRows[0] || null;
+}
+
 function escapeTelegramHtml(raw: string): string {
   return raw
     .replace(/&/g, "&amp;")
@@ -758,8 +1151,80 @@ function buildAutomationProductKeywordText(product: Record<string, unknown>): st
 function buildRouteTemplatePlaceholderData(
   product: Record<string, unknown> | null,
   affiliateLink: string,
+  sourceText = "",
 ): Record<string, string> {
   const source = product && typeof product === "object" ? product : {};
+  const sourceMessage = String(sourceText || "");
+
+  const extractFirstUsefulTitle = (text: string): string => {
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !/^https?:\/\//i.test(line));
+
+    for (const line of lines) {
+      const cleaned = line
+        .replace(/[\*_~`]/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      if (cleaned.length >= 3) return cleaned;
+    }
+
+    return "";
+  };
+
+  const parseMoneyToNumber = (raw: string): number => {
+    const normalized = String(raw || "").replace(/\./g, "").replace(",", ".").trim();
+    const value = Number(normalized);
+    return Number.isFinite(value) ? value : Number.NaN;
+  };
+
+  const extractPriceFallback = (text: string): { sale: number; original: number } => {
+    const dePorMatch = text.match(/de\s*r\$\s*([0-9.,]+)\s*por\s*r\$\s*([0-9.,]+)/i);
+    if (dePorMatch?.[1] && dePorMatch?.[2]) {
+      const original = parseMoneyToNumber(dePorMatch[1]);
+      const sale = parseMoneyToNumber(dePorMatch[2]);
+      if (Number.isFinite(sale) || Number.isFinite(original)) {
+        return { sale, original };
+      }
+    }
+
+    const values = [...text.matchAll(/r\$\s*([0-9]+(?:[.,][0-9]{2})?)/gi)]
+      .map((match) => parseMoneyToNumber(match[1] || ""))
+      .filter((value) => Number.isFinite(value) && value > 0);
+
+    if (values.length === 0) return { sale: Number.NaN, original: Number.NaN };
+    if (values.length === 1) return { sale: values[0], original: values[0] };
+
+    const first = values[0];
+    const second = values[1];
+    if (first > second) return { sale: second, original: first };
+    return { sale: first, original: second };
+  };
+
+  const extractPercentFallback = (text: string): number => {
+    const matches = [...text.matchAll(/(\d{1,2})\s*%/g)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value) && value >= 0 && value <= 99);
+    return matches.length > 0 ? matches[0] : 0;
+  };
+
+  const extractRatingFallback = (text: string): number => {
+    const explicit = text.match(/nota\s*[:\-]?\s*([0-5](?:[.,][0-9])?)/i);
+    if (explicit?.[1]) {
+      const value = Number(explicit[1].replace(",", "."));
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+
+    const starred = text.match(/([0-5](?:[.,][0-9])?)\s*(?:⭐|estrel|rating)/i);
+    if (starred?.[1]) {
+      const value = Number(starred[1].replace(",", "."));
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+
+    return 0;
+  };
 
   const salePrice = toNumber(source.salePrice ?? source.price, Number.NaN);
   const originalPriceRaw = toNumber(
@@ -773,15 +1238,29 @@ function buildRouteTemplatePlaceholderData(
     ? originalPriceRaw
     : salePrice;
 
+  const parsedPriceFallback = extractPriceFallback(sourceMessage);
+  const fallbackSalePrice = parsedPriceFallback.sale;
+  const fallbackOriginalPrice = parsedPriceFallback.original;
+
+  const resolvedSalePrice = Number.isFinite(salePrice) && salePrice > 0
+    ? salePrice
+    : fallbackSalePrice;
+  const resolvedOriginalPrice = Number.isFinite(originalPrice) && originalPrice > 0
+    ? originalPrice
+    : (Number.isFinite(fallbackOriginalPrice) && fallbackOriginalPrice > 0
+      ? fallbackOriginalPrice
+      : resolvedSalePrice);
+
   const formatPrice = (value: number) => (Number.isFinite(value) && value > 0 ? value.toFixed(2) : "");
 
   const discountFromProduct = toNumber(source.discount ?? source.priceDiscountRate, 0);
-  const discountComputed = Number.isFinite(originalPrice) && Number.isFinite(salePrice) && originalPrice > salePrice
-    ? Math.round((1 - salePrice / originalPrice) * 100)
+  const discountComputed = Number.isFinite(resolvedOriginalPrice) && Number.isFinite(resolvedSalePrice) && resolvedOriginalPrice > resolvedSalePrice
+    ? Math.round((1 - resolvedSalePrice / resolvedOriginalPrice) * 100)
     : 0;
-  const discount = Math.max(0, discountFromProduct || discountComputed);
+  const discountFallback = extractPercentFallback(sourceMessage);
+  const discount = Math.max(0, discountFromProduct || discountComputed || discountFallback);
 
-  const title = String(source.title ?? source.productName ?? "").trim();
+  const title = String(source.title ?? source.productName ?? "").trim() || extractFirstUsefulTitle(sourceMessage);
   const link = String(
     affiliateLink
       || source.affiliateLink
@@ -790,12 +1269,15 @@ function buildRouteTemplatePlaceholderData(
       || source.productLink
       || "",
   ).trim();
-  const rating = toNumber(source.rating ?? source.ratingStar, 0);
+  const rating = toNumber(source.rating ?? source.ratingStar, 0) || extractRatingFallback(sourceMessage);
 
   return {
     "{titulo}": title,
-    "{preco}": formatPrice(salePrice),
-    "{preco_original}": formatPrice(originalPrice),
+    "{título}": title,
+    "{preco}": formatPrice(resolvedSalePrice),
+    "{preço}": formatPrice(resolvedSalePrice),
+    "{preco_original}": formatPrice(resolvedOriginalPrice),
+    "{preço_original}": formatPrice(resolvedOriginalPrice),
     "{desconto}": discount > 0 ? String(discount) : "",
     "{link}": link,
     "{imagem}": "",
@@ -834,10 +1316,7 @@ function normalizeMeliTemplateInstallments(value: unknown): string {
 }
 
 function buildMeliAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
-  const contentWithoutImageLine = String(templateContent || "")
-    .replace(/^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim, "");
-
-  return applyPlaceholders(contentWithoutImageLine, {
+  return applyMeliTemplatePlaceholdersServer(templateContent, {
     "{titulo}": String(product.title || "Produto Mercado Livre").trim(),
     "{preco}": formatMeliTemplatePrice(product.price),
     "{preco_original}": formatMeliTemplatePrice(product.oldPrice),
@@ -847,6 +1326,62 @@ function buildMeliAutomationMessage(templateContent: string, product: Record<str
     "{avaliacoes}": toNumber(product.reviewsCount, 0) > 0 ? String(Math.floor(toNumber(product.reviewsCount, 0))) : "",
     "{parcelamento}": normalizeMeliTemplateInstallments(product.installmentsText),
     "{vendedor}": String(product.seller || "").trim(),
+  });
+}
+
+function formatAmazonTemplatePrice(value: unknown): string {
+  const numeric = toNumber(value, 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "";
+  return numeric.toFixed(2).replace(".", ",");
+}
+
+function normalizeAmazonTemplateInstallments(value: unknown): string {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  const match = normalized.match(/(\d{1,2})x\s*R\$\s*([\d.]+(?:,\d{1,2})?)/i);
+  if (!match) return normalized.replace(/^ou\s+/i, "").trim();
+  const suffix = /sem juros/i.test(normalized) ? " sem juros" : "";
+  return `${match[1]}x de R$${match[2]}${suffix}`.trim();
+}
+
+function deriveAmazonAutomationDiscountText(product: Record<string, unknown>): string {
+  const explicit = String(product.discountText || "").trim();
+  if (explicit) return explicit;
+
+  const price = toNumber(product.price, 0);
+  const oldPrice = toNumber(product.oldPrice, 0);
+  if (oldPrice > price && price > 0) {
+    const percent = Math.round(((oldPrice - price) / oldPrice) * 100);
+    if (Number.isFinite(percent) && percent > 0) return `${percent}% off`;
+  }
+  return "";
+}
+
+function buildAmazonAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
+  const title = String(product.title || "Produto Amazon").trim();
+  const price = formatAmazonTemplatePrice(product.price);
+  const oldPrice = formatAmazonTemplatePrice(product.oldPrice);
+  const discount = deriveAmazonAutomationDiscountText(product);
+  const installments = normalizeAmazonTemplateInstallments(product.installmentsText);
+  const seller = String(product.seller || "").trim();
+  const link = String(affiliateLink || "").trim();
+
+  return applyAmazonTemplatePlaceholdersServer(templateContent, {
+    "{titulo}": title,
+    "{título}": title,
+    "{preco}": price,
+    "{preço}": price,
+    "{preco_original}": oldPrice,
+    "{preço_original}": oldPrice,
+    "{desconto}": discount,
+    "{parcelamento}": installments,
+    "{vendedor}": seller,
+    "{selo}": "",
+    "{asin}": "",
+    "{link}": link,
+    "{imagem}": "",
+    "{avaliacao}": toNumber(product.rating, 0) > 0 ? Number(toNumber(product.rating, 0)).toFixed(1) : "",
+    "{avaliacoes}": toNumber(product.reviewsCount, 0) > 0 ? String(Math.floor(toNumber(product.reviewsCount, 0))) : "",
   });
 }
 
@@ -1138,16 +1673,363 @@ function normalizeMeliSessionHealthStatus(rawStatus: unknown): string {
 
 function meliSessionHealthStatusMessage(status: string): string {
   const normalized = normalizeMeliSessionHealthStatus(status);
-  if (normalized === "expired") return "Sessao Mercado Livre expirada. Atualize os cookies.";
-  if (normalized === "error") return "Falha ao validar sessao Mercado Livre.";
-  if (normalized === "not_found") return "Sessao Mercado Livre nao encontrada.";
-  if (normalized === "no_affiliate") return "Sessao valida, mas sem acesso ao programa de afiliados.";
-  if (normalized === "untested") return "Sessao Mercado Livre ainda nao testada.";
+  if (normalized === "expired") return "Sessão Mercado Livre expirada. Atualize os cookies.";
+  if (normalized === "error") return "Falha ao validar sessão Mercado Livre.";
+  if (normalized === "not_found") return "Sessão Mercado Livre não encontrada.";
+  if (normalized === "no_affiliate") return "Sessão válida, mas sem acesso ao programa de afiliados.";
+  if (normalized === "untested") return "Sessão Mercado Livre ainda não testada.";
   return "";
 }
 
 function buildUserScopedHeaders(userId: string) {
   return { "x-autolinks-user-id": userId };
+}
+
+const MELI_SESSION_COOKIES_PROVIDER = "meli_session_cookies";
+const LEGACY_MELI_AUTO_NAME_REGEX = /^conta\s+[0-9a-f]{8}$/i;
+let meliSessionCookiesColumnAvailable: boolean | null = null;
+
+function isLegacyMeliAutoSessionName(raw: unknown): boolean {
+  return LEGACY_MELI_AUTO_NAME_REGEX.test(String(raw || "").trim());
+}
+
+function buildFriendlyMeliSessionName(sessionId: string, accountName: string): string {
+  const normalizedAccountName = String(accountName || "").trim();
+  if (normalizedAccountName) return `Conta ML - ${normalizedAccountName}`;
+
+  const shortId = String(sessionId || "").trim().slice(0, 4).toUpperCase();
+  return shortId ? `Conta principal ML (${shortId})` : "Conta principal ML";
+}
+
+function normalizeMeliCookiesPayload(raw: unknown): unknown | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed == null) return null;
+      if (typeof parsed !== "object" && !Array.isArray(parsed)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object") return raw;
+  return null;
+}
+
+function normalizeComparableMessage(raw: unknown): string {
+  return String(raw || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isMeliSessionFileMissingSignal(raw: unknown): boolean {
+  const normalized = normalizeComparableMessage(raw);
+  if (!normalized) return false;
+  if (normalized.includes("storagestate_meli_")) return true;
+  return (
+    (normalized.includes("sessao") && (normalized.includes("nao encontrada") || normalized.includes("nao encontrado")))
+    || (normalized.includes("arquivo de sessao") && normalized.includes("nao encontrado"))
+    || (normalized.includes("session") && normalized.includes("not found"))
+  );
+}
+
+function isMeliSessionNotFoundStatus(rawStatus: unknown): boolean {
+  return normalizeMeliSessionHealthStatus(rawStatus) === "not_found";
+}
+
+type RehydrateMeliSessionResult = {
+  restored: boolean;
+  reason?: string;
+};
+
+async function hasMeliSessionCookiesColumn(): Promise<boolean> {
+  if (meliSessionCookiesColumnAvailable != null) return meliSessionCookiesColumnAvailable;
+
+  try {
+    const row = await queryOne<{ has_column: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'meli_sessions'
+           AND column_name = 'cookies_json'
+       ) AS has_column`,
+      [],
+    );
+    meliSessionCookiesColumnAvailable = row?.has_column === true;
+  } catch {
+    // Metadata checks can fail transiently (permissions/pooler/network).
+    // Be optimistic so direct SELECT/UPDATE can still use cookies_json when available.
+    // If the column is truly absent, direct queries already downgrade the cache to false.
+    return true;
+  }
+
+  return meliSessionCookiesColumnAvailable;
+}
+
+async function maybeAlignMeliCookiesBackupOwner(userId: string, sessionId: string): Promise<void> {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) return;
+
+  await execute(
+    `UPDATE api_credentials
+        SET app_id = $1,
+            updated_at = NOW()
+      WHERE user_id = $2
+        AND provider = $3
+        AND COALESCE(app_id, '') <> $1`,
+    [normalizedSessionId, userId, MELI_SESSION_COOKIES_PROVIDER],
+  );
+}
+
+async function loadPersistedMeliCookiesPayload(userId: string, sessionId: string): Promise<unknown | null> {
+  const hasColumn = await hasMeliSessionCookiesColumn();
+  console.info(`[meli:load-cookies] user=${userId} session=${sessionId} hasColumn=${hasColumn}`);
+
+  if (hasColumn) {
+    try {
+      const row = await queryOne<{ cookies_json: unknown }>(
+        "SELECT cookies_json FROM meli_sessions WHERE id = $1 AND user_id = $2",
+        [sessionId, userId],
+      );
+      const payload = normalizeMeliCookiesPayload(row?.cookies_json);
+      if (payload) {
+        console.info(`[meli:load-cookies] found in cookies_json for session=${sessionId}`);
+        return payload;
+      }
+      console.info(`[meli:load-cookies] cookies_json is null/empty for session=${sessionId}, trying fallback row`);
+
+      // Compatibility fallback: if the requested row is missing cookies_json but
+      // another row for the same user still has it, reuse and self-heal.
+      const fallbackRow = await queryOne<{ id: string; cookies_json: unknown }>(
+        `SELECT id, cookies_json
+           FROM meli_sessions
+          WHERE user_id = $1
+            AND cookies_json IS NOT NULL
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC
+          LIMIT 1`,
+        [userId],
+      );
+      const fallbackPayload = normalizeMeliCookiesPayload(fallbackRow?.cookies_json);
+      if (fallbackPayload) {
+        const fallbackSessionId = String(fallbackRow?.id || "").trim();
+        console.info(`[meli:load-cookies] found fallback row=${fallbackSessionId} for user=${userId}`);
+        if (fallbackSessionId && fallbackSessionId !== sessionId) {
+          try {
+            await execute(
+              "UPDATE meli_sessions SET cookies_json = $1::jsonb, updated_at = NOW() WHERE id = $2 AND user_id = $3 AND cookies_json IS NULL",
+              [JSON.stringify(fallbackPayload), sessionId, userId],
+            );
+          } catch {
+            // Non-fatal: returning fallback payload is enough for rehydrate.
+          }
+        }
+        return fallbackPayload;
+      }
+      console.warn(`[meli:load-cookies] no fallback row with cookies_json for user=${userId}`);
+    } catch (error) {
+      const message = String(error || "").toLowerCase();
+      if (message.includes("cookies_json") && message.includes("does not exist")) {
+        meliSessionCookiesColumnAvailable = false;
+        console.warn(`[meli:load-cookies] cookies_json column does not exist, disabling for this process`);
+      } else {
+        console.warn(`[meli:load-cookies] cookies_json query error: ${String(error)}`);
+      }
+    }
+  }
+
+  console.info(`[meli:load-cookies] trying encrypted backup for user=${userId}`);
+  const backup = await queryOne<{ provider: string; app_id: string; secret_key: string }>(
+    `SELECT provider, app_id, secret_key
+       FROM api_credentials
+      WHERE user_id = $1
+        AND provider = $2
+      ORDER BY updated_at DESC NULLS LAST,
+               created_at DESC
+      LIMIT 1`,
+    [userId, MELI_SESSION_COOKIES_PROVIDER],
+  );
+  if (!backup) {
+    console.warn(`[meli:load-cookies] NO backup found in api_credentials for user=${userId} provider=${MELI_SESSION_COOKIES_PROVIDER}`);
+    return null;
+  }
+
+  console.info(`[meli:load-cookies] backup found, app_id=${backup.app_id}, secret_key length=${(backup.secret_key || "").length}`);
+  const backupProvider = String(backup.provider || "").trim();
+  const ownerSessionId = String(backup.app_id || "").trim();
+  if (backupProvider === MELI_SESSION_COOKIES_PROVIDER && ownerSessionId && ownerSessionId !== sessionId) {
+    // Backup is user-scoped (UNIQUE user_id+provider). If app_id drifts from the
+    // current canonical session id, reuse the same payload and heal pointer.
+    try {
+      await maybeAlignMeliCookiesBackupOwner(userId, sessionId);
+    } catch {
+      // Non-fatal: continue using decrypted payload below.
+    }
+  }
+
+  let decrypted: string;
+  try {
+    decrypted = backup.secret_key ? decryptCredential(backup.secret_key) : "";
+  } catch (decryptError) {
+    console.error(`[meli:load-cookies] decryptCredential FAILED for user=${userId}: ${String(decryptError)}`);
+    return null;
+  }
+
+  const payload = normalizeMeliCookiesPayload(decrypted);
+  if (!payload) {
+    console.warn(`[meli:load-cookies] decrypted backup could not be normalized for user=${userId}, decrypted length=${decrypted.length}, starts with=${decrypted.slice(0, 30)}`);
+    return null;
+  }
+  console.info(`[meli:load-cookies] loaded from encrypted backup for user=${userId}`);
+  return payload;
+}
+
+const _meliDiagLogPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "logs", "meli-persist-diag.log");
+function meliDiag(msg: string): void {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  try { appendFileSync(_meliDiagLogPath, line); } catch { /* best effort */ }
+  console.info(msg);
+}
+
+async function persistMeliSessionCookiesPayload(userId: string, sessionId: string, cookiesPayload: unknown): Promise<void> {
+  const serialized = JSON.stringify(cookiesPayload);
+  let persistedInSessionRow = false;
+  let persistedInEncryptedBackup = false;
+  let cookiesJsonWriteFailed = false;
+  let cookiesJsonWriteFailureReason = "";
+  let backupWriteFailed = false;
+  let backupWriteFailureReason = "";
+
+  meliDiag(`[meli:persist-cookies] starting for user=${userId} session=${sessionId} payloadLength=${serialized.length}`);
+
+  const hasCol = await hasMeliSessionCookiesColumn();
+  meliDiag(`[meli:persist-cookies] hasMeliSessionCookiesColumn=${hasCol} cache=${String(meliSessionCookiesColumnAvailable)}`);
+  if (hasCol) {
+    try {
+      const updated = await execute(
+        "UPDATE meli_sessions SET cookies_json = $1::jsonb, updated_at = NOW() WHERE id = $2 AND user_id = $3",
+        [serialized, sessionId, userId],
+      );
+      persistedInSessionRow = updated.rowCount > 0;
+      meliDiag(`[meli:persist-cookies] cookies_json UPDATE rowCount=${updated.rowCount}`);
+      if (persistedInSessionRow) {
+        // Self-heal the cache: if the column write succeeded, the column exists.
+        meliSessionCookiesColumnAvailable = true;
+      }
+      console.info(`[meli:persist-cookies] cookies_json UPDATE rowCount=${updated.rowCount} for session=${sessionId}`);
+    } catch (error) {
+      const message = String(error || "").toLowerCase();
+      if (message.includes("cookies_json") && message.includes("does not exist")) {
+        meliSessionCookiesColumnAvailable = false;
+        console.warn(`[meli:persist-cookies] cookies_json column does not exist, disabling for this process`);
+      } else {
+        // Do not abort the session save flow if the JSONB column write fails.
+        // The encrypted backup below is authoritative for rehydration fallback.
+        cookiesJsonWriteFailed = true;
+        cookiesJsonWriteFailureReason = String(error);
+        console.warn(`[meli:persist-cookies] cookies_json write FAILED: ${String(error)}`);
+      }
+    }
+  } else {
+    console.warn(`[meli:persist-cookies] skipping cookies_json (column unavailable cache)`);
+  }
+
+  // Keep a durable encrypted backup keyed by user+session to support rehydration
+  // even if cookies_json is unavailable or temporarily not writable.
+  try {
+    await execute(
+      `INSERT INTO api_credentials (id, user_id, provider, app_id, secret_key, region)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (user_id, provider) DO UPDATE
+       SET app_id = EXCLUDED.app_id,
+           secret_key = EXCLUDED.secret_key,
+           region = EXCLUDED.region,
+           updated_at = NOW()`,
+      [uuid(), userId, MELI_SESSION_COOKIES_PROVIDER, sessionId, encryptCredential(serialized), "internal"],
+    );
+    persistedInEncryptedBackup = true;
+    console.info(`[meli:persist-cookies] encrypted backup persisted for user=${userId}`);
+  } catch (error) {
+    backupWriteFailed = true;
+    backupWriteFailureReason = String(error);
+    console.error(`[meli:persist-cookies] encrypted backup write FAILED: ${String(error)}`);
+  }
+
+  if (!persistedInSessionRow && !persistedInEncryptedBackup) {
+    throw new Error("Nao foi possivel persistir cookies Mercado Livre em nenhuma camada de armazenamento.");
+  }
+
+  if (!persistedInSessionRow && (await hasMeliSessionCookiesColumn())) {
+    console.warn(`[meli:persist-cookies] cookies_json was not updated for user=${userId} session=${sessionId}; using encrypted backup.`);
+  }
+  if (cookiesJsonWriteFailed) {
+    console.warn(
+      `[meli:persist-cookies] cookies_json write failed for user=${userId} session=${sessionId}; backup persisted. reason=${cookiesJsonWriteFailureReason}`,
+    );
+  }
+  if (backupWriteFailed) {
+    console.warn(
+      `[meli:persist-cookies] encrypted backup write failed for user=${userId} session=${sessionId}; cookies_json persisted=${persistedInSessionRow}. reason=${backupWriteFailureReason}`,
+    );
+  }
+
+  // Round-trip verification: confirm cookies are loadable immediately after save.
+  try {
+    const verification = await loadPersistedMeliCookiesPayload(userId, sessionId);
+    if (!verification) {
+      console.error(`[meli:persist-cookies] ROUND-TRIP VERIFICATION FAILED: cookies were just persisted but loadPersistedMeliCookiesPayload returned null for user=${userId} session=${sessionId}. persistedInSessionRow=${persistedInSessionRow} persistedInEncryptedBackup=${persistedInEncryptedBackup}`);
+    } else {
+      console.info(`[meli:persist-cookies] round-trip verification OK for session=${sessionId}`);
+    }
+  } catch (verifyError) {
+    console.error(`[meli:persist-cookies] round-trip verification threw: ${String(verifyError)}`);
+  }
+}
+
+async function rehydrateMeliSessionFileFromDatabase(userId: string, sessionId: string): Promise<RehydrateMeliSessionResult> {
+  console.info(`[meli:rehydrate] starting for user=${userId} session=${sessionId}`);
+  if (!MELI_URL) {
+    return { restored: false, reason: "MeLi RPA não configurado." };
+  }
+
+  const row = await queryOne<{ id: string }>(
+    "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
+    [sessionId, userId],
+  );
+  if (!row) {
+    console.warn(`[meli:rehydrate] session row NOT FOUND in meli_sessions for user=${userId} session=${sessionId}`);
+    return { restored: false, reason: "Sessão não encontrada no banco." };
+  }
+
+  const cookiesPayload = await loadPersistedMeliCookiesPayload(userId, sessionId);
+  if (!cookiesPayload) {
+    console.error(`[meli:rehydrate] loadPersistedMeliCookiesPayload returned NULL for user=${userId} session=${sessionId} — both cookies_json and encrypted backup are empty/missing`);
+    return {
+      restored: false,
+      reason: "Cookies da sessão não foram encontrados no banco. Reimporte os cookies em Configurações ML.",
+    };
+  }
+  console.info(`[meli:rehydrate] cookies loaded, sending to RPA for user=${userId} session=${sessionId}`);
+
+  const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+  const restore = await proxyMicroservice(
+    MELI_URL,
+    "/api/meli/sessions",
+    "POST",
+    { sessionId: scopedSessionId, cookies: cookiesPayload },
+    buildUserScopedHeaders(userId),
+    45_000,
+  );
+
+  if (restore.error) {
+    return { restored: false, reason: restore.error.message };
+  }
+
+  return { restored: true };
 }
 
 type RouteForwardMedia = {
@@ -1176,6 +2058,17 @@ function summarizeRouteForwardMedia(media: RouteForwardMedia | null | undefined)
     mimeType: media.mimeType || "",
     fileName: media.fileName || "",
     base64Length: media.base64 ? media.base64.length : 0,
+  };
+}
+
+function historyRouteForwardMedia(media: RouteForwardMedia | null | undefined): Record<string, unknown> | undefined {
+  if (!media) return undefined;
+  return {
+    kind: media.kind,
+    sourcePlatform: media.sourcePlatform || undefined,
+    token: media.token || undefined,
+    mimeType: media.mimeType || undefined,
+    fileName: media.fileName || undefined,
   };
 }
 
@@ -1650,6 +2543,126 @@ async function resolveRouteForwardMediaForPlatform(input: {
   return fetchFromServiceByToken("telegram", media.token);
 }
 
+async function materializeRouteMediaForQueue(userId: string, media: RouteForwardMedia | null): Promise<RouteForwardMedia | null> {
+  if (!media) return null;
+  if (media.base64) return media;
+  if (!media.token) return media;
+
+  if (media.sourcePlatform === "whatsapp") {
+    const resolved = await resolveRouteForwardMediaForPlatform({
+      userId,
+      platform: "telegram",
+      media,
+    });
+    return resolved?.base64 ? resolved : media;
+  }
+
+  if (media.sourcePlatform === "telegram") {
+    const resolved = await resolveRouteForwardMediaForPlatform({
+      userId,
+      platform: "whatsapp",
+      media,
+    });
+    return resolved?.base64 ? resolved : media;
+  }
+
+  const fromTelegram = await resolveRouteForwardMediaForPlatform({
+    userId,
+    platform: "telegram",
+    media,
+  });
+  if (fromTelegram?.base64) return fromTelegram;
+
+  const fromWhatsApp = await resolveRouteForwardMediaForPlatform({
+    userId,
+    platform: "whatsapp",
+    media,
+  });
+  if (fromWhatsApp?.base64) return fromWhatsApp;
+
+  return media;
+}
+
+async function queueRouteForwardForQuietHours(input: {
+  userId: string;
+  routeId: string;
+  routeName: string;
+  sourceName: string;
+  sourceExternalId: string;
+  sessionId: string;
+  content: string;
+  media: RouteForwardMedia | null;
+  destinationGroupIds: string[];
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  scheduledAtIso: string;
+}): Promise<{ queued: boolean; postId?: string; error?: string }> {
+  const {
+    userId,
+    routeId,
+    routeName,
+    sourceName,
+    sourceExternalId,
+    sessionId,
+    content,
+    media,
+    destinationGroupIds,
+    quietHoursStart,
+    quietHoursEnd,
+    scheduledAtIso,
+  } = input;
+
+  const uniqueDestinationGroupIds = Array.from(
+    new Set(destinationGroupIds.map((value) => String(value || "").trim()).filter(Boolean)),
+  );
+  if (uniqueDestinationGroupIds.length === 0) {
+    return { queued: false, error: "Nenhum destino elegivel para enfileirar" };
+  }
+
+  const metadata = {
+    scheduleName: `Fila da rota: ${routeName}`,
+    finalContent: content,
+    messageType: media ? media.kind : "text",
+    media: media || null,
+    scheduleSource: ROUTE_QUIET_HOURS_SCHEDULE_SOURCE,
+    routeId,
+    routeName,
+    sourceName,
+    sourceExternalId,
+    sourceSessionId: sessionId,
+    quietHoursStart,
+    quietHoursEnd,
+    queuedAt: nowIso(),
+  };
+
+  const createdPost = await queryOne<{ id: string }>(
+    `INSERT INTO scheduled_posts (user_id, content, status, scheduled_at, recurrence, metadata)
+     VALUES ($1, $2, 'pending', $3, 'none', $4::jsonb)
+     RETURNING id`,
+    [userId, content, scheduledAtIso, JSON.stringify(metadata)],
+  );
+  if (!createdPost?.id) {
+    return { queued: false, error: "Falha ao criar item da fila de rota" };
+  }
+
+  try {
+    await execute(
+      `INSERT INTO scheduled_post_destinations (post_id, group_id)
+       SELECT $1::uuid, UNNEST($2::uuid[])
+       ON CONFLICT (post_id, group_id) DO NOTHING`,
+      [createdPost.id, uniqueDestinationGroupIds],
+    );
+  } catch (error) {
+    await execute("DELETE FROM scheduled_posts WHERE id = $1 AND user_id = $2", [createdPost.id, userId]).catch(() => undefined);
+    return {
+      queued: false,
+      error: error instanceof Error ? error.message : "Falha ao vincular destinos na fila de rota",
+    };
+  }
+
+  return { queued: true, postId: createdPost.id };
+}
+
 async function scheduleRouteForwardMediaDeletion(input: {
   userId: string;
   media: RouteForwardMedia | null;
@@ -1994,8 +3007,13 @@ async function refreshTelegramHealthState(userId: string): Promise<number> {
     runtimeStatusBySession.set(sessionId, normalizeTelegramStatus(r.status));
   }
 
-  const dbSessions = await query<{ id: string }>(
-    "SELECT id FROM telegram_sessions WHERE user_id = $1",
+  const dbSessions = await query<{
+    id: string;
+    status: string | null;
+    connected_at: string | null;
+    error_message: string | null;
+  }>(
+    "SELECT id, status, connected_at, error_message FROM telegram_sessions WHERE user_id = $1",
     [userId],
   );
 
@@ -2005,32 +3023,31 @@ async function refreshTelegramHealthState(userId: string): Promise<number> {
     if (!sessionId) continue;
 
     const runtimeStatus = runtimeStatusBySession.get(sessionId);
-    if (runtimeStatus) {
-      await execute(
-        `UPDATE telegram_sessions
-         SET status = $1,
-             connected_at = CASE WHEN $1 = 'online' THEN COALESCE(connected_at, NOW()) ELSE NULL END,
-             error_message = CASE WHEN $1 = 'online' THEN '' ELSE error_message END,
-             updated_at = NOW()
-         WHERE id = $2 AND user_id = $3`,
-        [runtimeStatus, sessionId, userId],
-      );
-      touched += 1;
-      continue;
-    }
+    if (!runtimeStatus) continue;
+
+    const currentStatus = String(row.status ?? "").trim();
+    const hasConnectedAt = Boolean(row.connected_at);
+    const hasErrorMessage = Boolean(String(row.error_message ?? "").trim());
+    const shouldUpdate =
+      currentStatus !== runtimeStatus
+      || (runtimeStatus === "online" && !hasConnectedAt)
+      || (!(runtimeStatus === "online" || runtimeStatus === "connecting" || runtimeStatus === "warning") && hasConnectedAt)
+      || (runtimeStatus === "online" && hasErrorMessage);
+
+    if (!shouldUpdate) continue;
 
     await execute(
       `UPDATE telegram_sessions
-       SET status = 'offline',
-           connected_at = NULL,
-           phone_code_hash = '',
-           error_message = CASE
-             WHEN COALESCE(error_message, '') = '' THEN 'Sessão não encontrada no runtime do Telegram. Reautentique para reconectar.'
-             ELSE error_message
+       SET status = $1,
+           connected_at = CASE
+             WHEN $1 = 'online' THEN COALESCE(connected_at, NOW())
+             WHEN $1 IN ('connecting', 'warning') THEN connected_at
+             ELSE NULL
            END,
+           error_message = CASE WHEN $1 = 'online' THEN '' ELSE error_message END,
            updated_at = NOW()
-       WHERE id = $1 AND user_id = $2`,
-      [sessionId, userId],
+       WHERE id = $2 AND user_id = $3`,
+      [runtimeStatus, sessionId, userId],
     );
     touched += 1;
   }
@@ -2080,7 +3097,16 @@ async function reconcileWhatsAppSessionsFromHealth(userId: string) {
     });
   }
 
-  const ownSessions = await query<{ id: string }>("SELECT id FROM whatsapp_sessions WHERE user_id = $1", [userId]);
+  const ownSessions = await query<{
+    id: string;
+    status: string | null;
+    connected_at: string | null;
+    error_message: string | null;
+    qr_code: string | null;
+  }>(
+    "SELECT id, status, connected_at, error_message, qr_code FROM whatsapp_sessions WHERE user_id = $1",
+    [userId],
+  );
   let reconciled = 0;
 
   for (const row of ownSessions) {
@@ -2089,19 +3115,33 @@ async function reconcileWhatsAppSessionsFromHealth(userId: string) {
 
     const fromHealth = statusBySessionId.get(sessionId);
     if (!fromHealth) {
-      await execute(
-        "UPDATE whatsapp_sessions SET status='offline', connected_at=NULL, qr_code='', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2",
-        [sessionId, userId],
-      );
-      reconciled += 1;
+      // Shared DB mode: a session may be owned by another runtime (for example local vs deploy).
+      // Absence from *this* connector health check must not destructively mark it offline.
       continue;
     }
+
+    const currentStatus = String(row.status ?? "").trim();
+    const hasConnectedAt = Boolean(row.connected_at);
+    const hasErrorMessage = Boolean(String(row.error_message ?? "").trim());
+    const hasQrCode = Boolean(String(row.qr_code ?? "").trim());
+    const shouldUpdate =
+      currentStatus !== fromHealth.status
+      || (fromHealth.status === "online" && !hasConnectedAt)
+      || (!(fromHealth.status === "online" || fromHealth.status === "connecting" || fromHealth.status === "warning") && hasConnectedAt)
+      || (!(fromHealth.status === "qr_code" || fromHealth.status === "pairing_code") && hasQrCode)
+      || (fromHealth.status !== "warning" && hasErrorMessage);
+
+    if (!shouldUpdate) continue;
 
     const connectedAt = fromHealth.status === "online" ? nowIso() : null;
     await execute(
       `UPDATE whatsapp_sessions
        SET status = $1,
-           connected_at = $2,
+           connected_at = CASE
+             WHEN $1 = 'online' THEN COALESCE(connected_at, $2::timestamptz, NOW())
+             WHEN $1 IN ('connecting', 'warning') THEN connected_at
+             ELSE NULL
+           END,
            qr_code = CASE WHEN $1 IN ('qr_code', 'pairing_code') THEN qr_code ELSE '' END,
            error_message = CASE WHEN $1 = 'warning' THEN error_message ELSE '' END,
            updated_at = NOW()
@@ -2324,6 +3364,8 @@ async function appendInboundCaptureHistory(input: {
   media: RouteForwardMedia | null;
   hasMediaHint: boolean;
   mediaKindHint: string;
+  sourceMessageId?: string;
+  sourceMessageDate?: string;
 }): Promise<void> {
   const {
     userId,
@@ -2335,6 +3377,8 @@ async function appendInboundCaptureHistory(input: {
     media,
     hasMediaHint,
     mediaKindHint,
+    sourceMessageId,
+    sourceMessageDate,
   } = input;
 
   const capturedAt = nowIso();
@@ -2354,7 +3398,10 @@ async function appendInboundCaptureHistory(input: {
         platform,
         hasMedia: !!media || hasMediaHint,
         mediaKind: mediaKindHint || (media ? media.kind : ""),
+        media: historyRouteForwardMedia(media),
         capturedAt,
+        sourceMessageId: String(sourceMessageId || "").trim() || undefined,
+        sourceMessageDate: String(sourceMessageDate || "").trim() || undefined,
       }), messageType],
     );
   } catch {
@@ -2385,7 +3432,11 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
         await execute(
           `UPDATE whatsapp_sessions
            SET status = $1,
-               connected_at = $2,
+               connected_at = CASE
+                 WHEN $1 = 'online' THEN COALESCE(connected_at, $2::timestamptz, NOW())
+                 WHEN $1 IN ('connecting', 'warning') THEN connected_at
+                 ELSE NULL
+               END,
                error_message = $3,
                qr_code = $4,
                phone = CASE WHEN $5 <> '' THEN $5 ELSE phone END,
@@ -2429,6 +3480,8 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
         const sourceExternalId = String(data.groupId ?? "").trim();
         const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
         const message = String(data.message ?? "").trim();
+        const sourceMessageId = String(data.messageId ?? data.message_id ?? "").trim();
+        const sourceMessageDate = String(data.messageDate ?? data.message_date ?? "").trim();
         const fromMe = data.fromMe === true || data.from_me === true;
         const media = parseRouteForwardMedia(data.media);
         const mediaKindHint = String(data.mediaKind ?? data.media_kind ?? "").trim().toLowerCase();
@@ -2474,6 +3527,8 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
           media,
           hasMediaHint,
           mediaKindHint,
+          sourceMessageId,
+          sourceMessageDate,
         });
 
         if (!message && !media && hasMediaHint) {
@@ -2548,7 +3603,11 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
         await execute(
           `UPDATE telegram_sessions
            SET status = $1,
-               connected_at = $2,
+               connected_at = CASE
+                 WHEN $1 = 'online' THEN COALESCE(connected_at, $2::timestamptz, NOW())
+                 WHEN $1 IN ('connecting', 'warning') THEN connected_at
+                 ELSE NULL
+               END,
                error_message = $3,
                session_string = CASE
                  WHEN $8 THEN ''
@@ -2597,6 +3656,8 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
         const sourceExternalId = String(data.groupId ?? "").trim();
         const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
         const message = String(data.message ?? "").trim();
+        const sourceMessageId = String(data.messageId ?? data.message_id ?? "").trim();
+        const sourceMessageDate = String(data.messageDate ?? data.message_date ?? "").trim();
         const fromMe = data.fromMe === true || data.from_me === true;
         const media = parseRouteForwardMedia(data.media);
         const mediaKindHint = String(data.mediaKind ?? data.media_kind ?? "").trim().toLowerCase();
@@ -2642,6 +3703,8 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
           media,
           hasMediaHint,
           mediaKindHint,
+          sourceMessageId,
+          sourceMessageDate,
         });
 
         if (!message && !media && hasMediaHint) {
@@ -2699,6 +3762,7 @@ const ROUTE_LINK_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
 const ROUTE_PARTNER_MARKETPLACE_PATTERNS: Record<string, RegExp[]> = {
   shopee: [/shopee\.com(\.\w+)?/i, /shope\.ee/i, /s\.shopee\./i],
   mercadolivre: [/mercadolivre\.com\.br/i, /mercadolibre\.com/i, /mlb\.am/i, /meli\.la/i],
+  amazon: [/amazon\.com\.br/i, /amzn\.to/i],
 };
 
 function extractRouteLinks(content: string): string[] {
@@ -2748,6 +3812,9 @@ function isRouteMarketplaceConversionEnabled(
   if (marketplace === "mercadolivre") {
     return rules.autoConvertMercadoLivre !== false;
   }
+  if (marketplace === "amazon") {
+    return rules.autoConvertAmazon !== false;
+  }
   return false;
 }
 
@@ -2756,6 +3823,23 @@ function detectRoutePartnerMarketplace(url: string): string | null {
     if (patterns.some((pattern) => pattern.test(url))) return name;
   }
   return null;
+}
+
+function hasShopeeProductIdentifiers(url: string): boolean {
+  const value = String(url || "").trim();
+  if (!value) return false;
+  if (/-i\.(\d+)\.(\d+)/i.test(value)) return true;
+  if (/\/(\d+)\/(\d+)(?:[/?#]|$)/.test(value)) return true;
+  return false;
+}
+
+function shouldResolveShopeeLinkForProductData(url: string): boolean {
+  const parsed = parseHttpUrl(url);
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase();
+  if (host === "shope.ee" || host.endsWith(".shope.ee")) return true;
+  if (/^s\.shopee\./i.test(host)) return true;
+  return !hasShopeeProductIdentifiers(parsed.toString());
 }
 
 function isPrivateNetworkUrl(urlStr: string): boolean {
@@ -2873,9 +3957,17 @@ async function processRouteMessageForUser(input: {
     product?: Record<string, unknown>;
   }>();
   const meliConversionCache = new Map<string, { affiliateLink: string; ok: boolean; error?: string }>();
+  const amazonConversionCache = new Map<string, {
+    affiliateLink: string;
+    resolvedUrl: string;
+    asin: string;
+    ok: boolean;
+    error?: string;
+  }>();
   const routeMeliSessionCache = new Map<string, string>();
-  const routeTemplateCache = new Map<string, string | null>();
+  const routeTemplateCache = new Map<string, { content: string; scope: TemplateScope } | null>();
   const shouldScheduleInboundMediaDeletion = Boolean(media?.token);
+  let inboundMediaDeleteDelayMs = 120_000;
 
   try {
 
@@ -2928,9 +4020,19 @@ async function processRouteMessageForUser(input: {
      FROM routes r
      LEFT JOIN groups sg ON sg.id::text = r.source_group_id AND sg.user_id::text = r.user_id::text
      LEFT JOIN route_destinations rd ON rd.route_id = r.id
-     WHERE r.user_id::text = $1 AND r.status = 'active'
+     WHERE r.user_id::text = $1
+       AND r.status = 'active'
+       AND (
+         r.source_group_id = ANY($2::text[])
+         OR EXISTS (
+           SELECT 1 FROM groups g
+            WHERE g.id::text = r.source_group_id
+              AND g.external_id = ANY($3::text[])
+              AND g.deleted_at IS NULL
+         )
+       )
      GROUP BY r.id, sg.external_id`,
-    [userId],
+    [userId, Array.from(sourceCandidates), sourceExternalCandidates],
   );
 
   const matching = routes.filter((route) => {
@@ -3103,7 +4205,9 @@ async function processRouteMessageForUser(input: {
 
     const disallowedMarketplaceLink = inspectedLinks.find((item) => {
       const detected = item.originalMarketplace || item.resolvedMarketplace;
-      return Boolean(detected && !enabledPartnerMarketplaces.includes(detected));
+      if (!detected || enabledPartnerMarketplaces.includes(detected)) return false;
+      // Keep existing hard-block for disabled marketplaces, but Amazon can be ignored when disabled.
+      return detected !== "amazon";
     });
     if (disallowedMarketplaceLink) {
       const disallowedMarketplace = disallowedMarketplaceLink.originalMarketplace || disallowedMarketplaceLink.resolvedMarketplace || "unknown";
@@ -3147,6 +4251,7 @@ async function processRouteMessageForUser(input: {
     let linksEligibleForConversion = 0;
     let convertedLinks = 0;
     let conversionProductImageUrl = "";
+    let primaryConvertedMarketplace: string | null = null;
 
     for (const link of partnerLinks) {
       const marketplace = String(link.partnerMarketplace || "");
@@ -3163,7 +4268,14 @@ async function processRouteMessageForUser(input: {
           break;
         }
 
-        const conversionSource = link.resolvedMarketplace === "shopee" ? link.resolved : link.original;
+        const rawConversionSource = link.resolvedMarketplace === "shopee" ? link.resolved : link.original;
+        let conversionSource = rawConversionSource;
+        if (shouldResolveShopeeLinkForProductData(rawConversionSource)) {
+          const resolvedCandidate = await resolveRouteLinkWithRedirect(rawConversionSource);
+          if (isShopeeProductUrlLike(resolvedCandidate)) {
+            conversionSource = resolvedCandidate;
+          }
+        }
         const cacheKey = conversionSource;
         let conversion = shopeeConversionCache.get(cacheKey);
         if (!conversion) {
@@ -3217,6 +4329,9 @@ async function processRouteMessageForUser(input: {
         }
         if (!conversionProductImageUrl && conversion.productImageUrl) {
           conversionProductImageUrl = conversion.productImageUrl;
+        }
+        if (!primaryConvertedMarketplace) {
+          primaryConvertedMarketplace = "shopee";
         }
         convertedLinks += 1;
         continue;
@@ -3282,6 +4397,56 @@ async function processRouteMessageForUser(input: {
         if (!primaryLink || primaryLink === link.original || primaryLink === link.resolved) {
           primaryLink = conversion.affiliateLink;
         }
+        if (!primaryConvertedMarketplace) {
+          primaryConvertedMarketplace = "mercadolivre";
+        }
+        convertedLinks += 1;
+        continue;
+      }
+
+      if (marketplace === "amazon") {
+        linksEligibleForConversion += 1;
+        const conversionSource = link.resolvedMarketplace === "amazon" ? link.resolved : link.original;
+        const normalizedConversionSource = canonicalizeAmazonProductUrl(conversionSource) || conversionSource;
+        const cacheKey = normalizedConversionSource;
+
+        let conversion = amazonConversionCache.get(cacheKey);
+        if (!conversion) {
+          try {
+            const result = await buildAmazonAffiliateConversionForUser(userId, normalizedConversionSource);
+            conversion = {
+              affiliateLink: String(result.affiliateLink || "").trim(),
+              resolvedUrl: String(result.resolvedUrl || normalizedConversionSource),
+              asin: String(result.asin || "").trim().toUpperCase(),
+              ok: Boolean(String(result.affiliateLink || "").trim()),
+            };
+          } catch (error) {
+            conversion = {
+              affiliateLink: "",
+              resolvedUrl: normalizedConversionSource,
+              asin: "",
+              ok: false,
+              error: error instanceof Error ? error.message : "Falha ao converter link Amazon.",
+            };
+          }
+          amazonConversionCache.set(cacheKey, conversion);
+        }
+
+        if (!conversion.ok || !conversion.affiliateLink) {
+          conversionFailure = { reason: "amazon_conversion_failed", error: conversion.error || "Falha ao converter link Amazon." };
+          break;
+        }
+
+        outboundText = outboundText.split(link.original).join(conversion.affiliateLink);
+        if (link.resolved && link.resolved !== link.original) {
+          outboundText = outboundText.split(link.resolved).join(conversion.affiliateLink);
+        }
+        if (!primaryLink || primaryLink === link.original || primaryLink === link.resolved) {
+          primaryLink = conversion.affiliateLink;
+        }
+        if (!primaryConvertedMarketplace) {
+          primaryConvertedMarketplace = "amazon";
+        }
         convertedLinks += 1;
       }
     }
@@ -3315,26 +4480,37 @@ async function processRouteMessageForUser(input: {
       continue;
     }
 
-    const rawTemplateId = typeof rules.templateId === "string" ? rules.templateId.trim() : "";
-    const templateId = rawTemplateId && rawTemplateId !== "none" && rawTemplateId !== "original"
-      ? rawTemplateId
-      : "";
+    const readTemplateId = (value: unknown): string => {
+      const raw = typeof value === "string" ? value.trim() : "";
+      return raw && raw !== "none" && raw !== "original"
+        ? raw
+        : "";
+    };
+
+    const defaultTemplateId = readTemplateId(rules.templateId);
+    const amazonTemplateId = readTemplateId(rules.amazonTemplateId);
+    const templateId = primaryConvertedMarketplace === "amazon"
+      ? amazonTemplateId
+      : defaultTemplateId;
     if (templateId && isUuid(templateId)) {
-      let templateContent = routeTemplateCache.get(templateId);
-      if (templateContent === undefined) {
-        const templateRow = await queryOne<{ content: string }>(
-          "SELECT content FROM templates WHERE user_id = $1 AND id = $2",
+      let templateData = routeTemplateCache.get(templateId);
+      if (templateData === undefined) {
+        const templateRow = await queryOne<{ content: string; scope: string | null; tags: unknown }>(
+          "SELECT content, scope, tags FROM templates WHERE user_id = $1 AND id = $2",
           [userId, templateId],
         );
-        templateContent = templateRow && typeof templateRow.content === "string"
-          ? templateRow.content
+        templateData = templateRow && typeof templateRow.content === "string"
+          ? {
+              content: templateRow.content,
+              scope: inferTemplateScopeFromTemplateRow(templateRow as unknown as Record<string, unknown>),
+            }
           : null;
-        routeTemplateCache.set(templateId, templateContent);
+        routeTemplateCache.set(templateId, templateData);
       }
 
-      if (templateContent) {
-        const placeholderData = buildRouteTemplatePlaceholderData(primaryProduct, primaryLink);
-        outboundText = applyPlaceholders(templateContent, placeholderData);
+      if (templateData?.content) {
+        const placeholderData = buildRouteTemplatePlaceholderData(primaryProduct, primaryLink, outboundText);
+        outboundText = applyScopedTemplatePlaceholders(templateData.scope, templateData.content, placeholderData);
       }
     }
 
@@ -3431,6 +4607,73 @@ async function processRouteMessageForUser(input: {
           hasMedia: !!routeMedia,
         }), routeMessageType, destinationSessionFilter ? "no_destination_groups_for_session" : "no_destination_groups"],
       );
+      continue;
+    }
+
+    const quietHoursEnabled = rules.quietHoursEnabled === true;
+    const quietHoursStart = normalizeClockTimeForRules(rules.quietHoursStart, ROUTE_QUIET_HOURS_DEFAULT_START);
+    const quietHoursEnd = normalizeClockTimeForRules(rules.quietHoursEnd, ROUTE_QUIET_HOURS_DEFAULT_END);
+    if (quietHoursEnabled && isInRouteQuietHoursWindow(quietHoursStart, quietHoursEnd)) {
+      const queuedMinutes = minutesUntilRouteQuietHoursEnd(quietHoursStart, quietHoursEnd);
+      const resumeAtIso = new Date(Date.now() + (queuedMinutes * 60_000) + 15_000).toISOString();
+      const queuedMedia = await materializeRouteMediaForQueue(userId, routeMedia);
+
+      if (shouldScheduleInboundMediaDeletion && queuedMedia?.token && !queuedMedia.base64) {
+        inboundMediaDeleteDelayMs = Math.max(
+          inboundMediaDeleteDelayMs,
+          (queuedMinutes * 60_000) + 120_000,
+        );
+      }
+
+      const queueResult = await queueRouteForwardForQuietHours({
+        userId,
+        routeId: route.id,
+        routeName: route.name,
+        sourceName,
+        sourceExternalId,
+        sessionId,
+        content: outboundText,
+        media: queuedMedia,
+        destinationGroupIds: filteredTargetIds,
+        quietHoursStart,
+        quietHoursEnd,
+        scheduledAtIso: resumeAtIso,
+      });
+
+      if (!queueResult.queued) {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'inbound',$6,'failed','quiet_hours_queue_failed','quiet_hours')",
+          [uuid(), userId, sourceName, route.name, JSON.stringify({
+            message: outboundText,
+            routeId: route.id,
+            routeName: route.name,
+            reason: "quiet_hours_queue_failed",
+            quietHoursStart,
+            quietHoursEnd,
+            queuedUntil: resumeAtIso,
+            destinationCount: filteredTargetIds.length,
+            error: queueResult.error || "Falha ao enfileirar durante janela silenciosa",
+            hasMedia: !!queuedMedia,
+          }), routeMessageType],
+        );
+      } else {
+        await execute(
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'info',$5,'inbound',$6,'blocked','quiet_hours_queued','quiet_hours')",
+          [uuid(), userId, sourceName, route.name, JSON.stringify({
+            message: outboundText,
+            routeId: route.id,
+            routeName: route.name,
+            reason: "quiet_hours_queued",
+            quietHoursStart,
+            quietHoursEnd,
+            queuedUntil: resumeAtIso,
+            destinationCount: filteredTargetIds.length,
+            queuePostId: queueResult.postId || null,
+            hasMedia: !!queuedMedia,
+          }), routeMessageType],
+        );
+      }
+
       continue;
     }
 
@@ -3585,7 +4828,7 @@ async function processRouteMessageForUser(input: {
       await scheduleRouteForwardMediaDeletion({
         userId,
         media,
-        delayMs: 120_000,
+        delayMs: inboundMediaDeleteDelayMs,
       });
     }
   }
@@ -3610,14 +4853,15 @@ async function pollWhatsAppEventsForSession(userId: string, sessionId: string): 
       status: Number((upstream.error as { status?: number }).status) || null,
     });
     if (isNotFoundSessionError(upstream.error.message)) {
-      await execute(
-        "UPDATE whatsapp_sessions SET status='offline', connected_at=NULL, qr_code='', error_message='Sessão não encontrada no serviço WhatsApp. Conecte novamente para recriar.', updated_at=NOW() WHERE id=$1 AND user_id=$2",
-        [sessionId, userId],
-      );
+      // In shared DB mode another runtime may own this session. Preserve the last known state
+      // unless the owning runtime explicitly emits an offline/close event.
+      return 0;
+    }
+    if (isTransientMicroserviceError(upstream.error)) {
       return 0;
     }
     await execute(
-      "UPDATE whatsapp_sessions SET status='warning', connected_at=NULL, error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+      "UPDATE whatsapp_sessions SET status='warning', error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
       [upstream.error.message, sessionId, userId],
     );
     return 0;
@@ -3640,6 +4884,137 @@ async function pollWhatsAppEventsForSession(userId: string, sessionId: string): 
   return events.length;
 }
 
+type TelegramBackfillTarget = {
+  chatId: string;
+  minMessageId: number;
+  since: string | null;
+  limit: number;
+};
+
+async function loadTelegramBackfillTargets(userId: string, sessionId: string): Promise<TelegramBackfillTarget[]> {
+  const rows = await query<{
+    chat_id: string;
+    last_message_id: string | number | null;
+    since_at: string | null;
+  }>(
+    `WITH active_sources AS (
+       SELECT
+         COALESCE(sg.external_id, '') AS chat_id,
+         MIN(r.created_at) AS first_route_created_at
+       FROM routes r
+       JOIN groups sg
+         ON sg.id::text = r.source_group_id
+        AND sg.user_id::text = r.user_id::text
+      WHERE r.user_id::text = $1
+        AND r.status = 'active'
+        AND sg.platform = 'telegram'
+        AND COALESCE(sg.session_id::text, '') = $2
+        AND sg.deleted_at IS NULL
+        AND COALESCE(sg.external_id, '') <> ''
+      GROUP BY 1
+     ),
+     capture_state AS (
+       SELECT
+         COALESCE(details->>'sourceExternalId', '') AS chat_id,
+         MAX(
+           CASE
+             WHEN COALESCE(details->>'sourceMessageId', '') ~ '^[0-9]+$'
+               THEN (details->>'sourceMessageId')::bigint
+             ELSE 0
+           END
+         ) AS last_message_id,
+         MAX(created_at) AS last_captured_at
+       FROM history_entries
+      WHERE user_id::text = $1
+        AND type = 'session_event'
+        AND COALESCE(details->>'platform', '') = 'telegram'
+        AND COALESCE(details->>'sessionId', '') = $2
+      GROUP BY 1
+     )
+     SELECT
+       s.chat_id,
+       c.last_message_id,
+       COALESCE(
+         c.last_captured_at,
+         GREATEST(s.first_route_created_at, NOW() - make_interval(hours => $3::int))
+       )::text AS since_at
+     FROM active_sources s
+     LEFT JOIN capture_state c
+       ON c.chat_id = s.chat_id`,
+    [userId, sessionId, TELEGRAM_BACKFILL_WINDOW_HOURS],
+  );
+
+  return rows
+    .map((row) => {
+      const chatId = String(row.chat_id || "").trim();
+      if (!chatId) return null;
+      const minMessageId = Math.max(0, Number(row.last_message_id) || 0);
+      const since = String(row.since_at || "").trim() || null;
+      return {
+        chatId,
+        minMessageId,
+        since,
+        limit: TELEGRAM_BACKFILL_BATCH_LIMIT,
+      } satisfies TelegramBackfillTarget;
+    })
+    .filter((row): row is TelegramBackfillTarget => Boolean(row));
+}
+
+async function pollTelegramBackfillForSession(userId: string, sessionId: string): Promise<number> {
+  const targets = await loadTelegramBackfillTargets(userId, sessionId);
+  if (targets.length === 0) return 0;
+
+  const headers = buildUserScopedHeaders(userId);
+  const upstream = await proxyMicroservice(
+    TELEGRAM_URL,
+    "/api/telegram/pull-messages",
+    "POST",
+    {
+      sessionId,
+      limit: TELEGRAM_BACKFILL_BATCH_LIMIT,
+      chats: targets.map((target) => ({
+        chatId: target.chatId,
+        minMessageId: target.minMessageId,
+        since: target.since,
+        limit: target.limit,
+      })),
+    },
+    headers,
+    TELEGRAM_BACKFILL_TIMEOUT_MS,
+  );
+
+  if (upstream.error) {
+    pushChannelPollError({
+      platform: "telegram",
+      userId,
+      sessionId,
+      stage: "fetch_backfill",
+      message: upstream.error.message,
+      status: Number((upstream.error as { status?: number }).status) || null,
+    });
+    return 0;
+  }
+
+  const events = toIntegrationEvents(upstream.data);
+  if (events.length === 0) return 0;
+
+  try {
+    await applyTelegramEvents(userId, sessionId, events);
+  } catch (error) {
+    pushChannelPollError({
+      platform: "telegram",
+      userId,
+      sessionId,
+      stage: "apply_events",
+      message: error instanceof Error ? error.message : String(error),
+      status: null,
+    });
+    throw error;
+  }
+
+  return events.length;
+}
+
 async function pollTelegramEventsForSession(userId: string, sessionId: string): Promise<number> {
   const headers = buildUserScopedHeaders(userId);
   const upstream = await proxyMicroservice(
@@ -3659,22 +5034,26 @@ async function pollTelegramEventsForSession(userId: string, sessionId: string): 
       status: Number((upstream.error as { status?: number }).status) || null,
     });
     if (isNotFoundSessionError(upstream.error.message)) {
-      await execute(
-        "UPDATE telegram_sessions SET status='offline', connected_at=NULL, phone_code_hash='', error_message='Sessão não encontrada no serviço Telegram. Inicie uma nova conexão.', updated_at=NOW() WHERE id=$1 AND user_id=$2",
-        [sessionId, userId],
-      );
+      // In shared DB mode another runtime may own this session. Preserve the last known state
+      // unless the owning runtime explicitly emits an offline/close event.
+      return 0;
+    }
+    if (isTransientMicroserviceError(upstream.error)) {
       return 0;
     }
     await execute(
-      "UPDATE telegram_sessions SET status='warning', connected_at=NULL, error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+      "UPDATE telegram_sessions SET status='warning', error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
       [upstream.error.message, sessionId, userId],
     );
     return 0;
   }
   const events = toIntegrationEvents(upstream.data);
-  if (events.length === 0) return 0;
+  let appliedEvents = 0;
   try {
-    await applyTelegramEvents(userId, sessionId, events);
+    if (events.length > 0) {
+      await applyTelegramEvents(userId, sessionId, events);
+      appliedEvents = events.length;
+    }
   } catch (error) {
     pushChannelPollError({
       platform: "telegram",
@@ -3686,7 +5065,8 @@ async function pollTelegramEventsForSession(userId: string, sessionId: string): 
     });
     throw error;
   }
-  return events.length;
+  const backfilledEvents = await pollTelegramBackfillForSession(userId, sessionId);
+  return appliedEvents + backfilledEvents;
 }
 
 type ChannelPollSessionRow = {
@@ -3766,7 +5146,7 @@ type ChannelPollErrorEntry = {
   platform: "whatsapp" | "telegram";
   userId: string;
   sessionId: string;
-  stage: "fetch_events" | "apply_events" | "session_loop";
+  stage: "fetch_events" | "fetch_backfill" | "apply_events" | "session_loop";
   message: string;
   status: number | null;
 };
@@ -4257,6 +5637,9 @@ async function maybeRunAutoChannelOrphanCleanup(input: {
   }
 }
 
+let _lastWaFallbackCount = -1;
+let _lastTgFallbackCount = -1;
+
 async function pollChannelEventsInScope(input: {
   requesterUserId: string;
   canRunGlobal: boolean;
@@ -4302,10 +5685,15 @@ async function pollChannelEventsInScope(input: {
     whatsappHealthFallbackAdded = Math.max(0, sessions.length - dbSessions.length);
     whatsappSessions = sessions.length;
 
-    if (whatsappHealthFallbackAdded > 0) {
-      console.info(
-        `[poll-channel-events] whatsapp health fallback added ${whatsappHealthFallbackAdded} session(s) (scope=${scope}, db=${dbSessions.length}, merged=${sessions.length})`,
-      );
+    if (whatsappHealthFallbackAdded !== _lastWaFallbackCount) {
+      _lastWaFallbackCount = whatsappHealthFallbackAdded;
+      if (whatsappHealthFallbackAdded > 0) {
+        console.info(
+          `[poll-channel-events] whatsapp health fallback added ${whatsappHealthFallbackAdded} session(s) (scope=${scope}, db=${dbSessions.length}, merged=${sessions.length})`,
+        );
+      } else {
+        console.info(`[poll-channel-events] whatsapp health fallback cleared (scope=${scope})`);
+      }
     }
 
     for (const session of sessions) {
@@ -4343,10 +5731,15 @@ async function pollChannelEventsInScope(input: {
     telegramHealthFallbackAdded = Math.max(0, sessions.length - dbSessions.length);
     telegramSessions = sessions.length;
 
-    if (telegramHealthFallbackAdded > 0) {
-      console.info(
-        `[poll-channel-events] telegram health fallback added ${telegramHealthFallbackAdded} session(s) (scope=${scope}, db=${dbSessions.length}, merged=${sessions.length})`,
-      );
+    if (telegramHealthFallbackAdded !== _lastTgFallbackCount) {
+      _lastTgFallbackCount = telegramHealthFallbackAdded;
+      if (telegramHealthFallbackAdded > 0) {
+        console.info(
+          `[poll-channel-events] telegram health fallback added ${telegramHealthFallbackAdded} session(s) (scope=${scope}, db=${dbSessions.length}, merged=${sessions.length})`,
+        );
+      } else {
+        console.info(`[poll-channel-events] telegram health fallback cleared (scope=${scope})`);
+      }
     }
 
     for (const session of sessions) {
@@ -4455,12 +5848,19 @@ const BUILTIN_PLANS: Array<{ id: string; period: string; isActive: boolean }> = 
 const BUILTIN_PLAN_IDS = new Set(BUILTIN_PLANS.map((p) => p.id));
 const ADMIN_PANEL_PLAN_ID = "admin";
 const MERCADO_LIVRE_FEATURE_KEY = "mercadoLivre";
+const AMAZON_FEATURE_KEY = "amazon";
 const MERCADO_LIVRE_FALLBACK_ENABLED_PLANS = new Set([
   "plan-starter",
   "plan-business",
   "plan-business-annual",
 ]);
+const AMAZON_FALLBACK_ENABLED_PLANS = new Set([
+  "plan-starter",
+  "plan-business",
+  "plan-business-annual",
+]);
 const MERCADO_LIVRE_BLOCKED_MESSAGE = "Mercado Livre não está disponível no seu plano ou nível de acesso.";
+const AMAZON_BLOCKED_MESSAGE = "Amazon não está disponível no seu plano ou nível de acesso.";
 
 function normalizeEmail(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
@@ -4547,7 +5947,11 @@ async function getUserPlanId(userId: string): Promise<string> {
     "SELECT plan_id FROM profiles WHERE user_id = $1",
     [userId],
   );
-  return String(row?.plan_id || "plan-starter").trim() || "plan-starter";
+  const planId = String(row?.plan_id ?? "").trim();
+  if (!planId) {
+    throw new Error("Plano nao configurado para este usuario.");
+  }
+  return planId;
 }
 
 function hasPositiveLimit(value: unknown): boolean | null {
@@ -4556,25 +5960,39 @@ function hasPositiveLimit(value: unknown): boolean | null {
   return n === -1 || n > 0;
 }
 
-async function resolveMercadoLivreFeatureAccess(userId: string): Promise<{ allowed: boolean; message: string }> {
-  const planId = await getUserPlanId(userId);
+async function resolveMarketplaceFeatureAccess(
+  userId: string,
+  input: {
+    featureKey: string;
+    fallbackEnabledPlans: Set<string>;
+    blockedMessage: string;
+    fallbackLimitKey?: string;
+  },
+): Promise<{ allowed: boolean; message: string }> {
+  let planId = "";
+  try {
+    planId = await getUserPlanId(userId);
+  } catch {
+    return { allowed: false, message: "Nao foi possivel validar o plano da sua conta." };
+  }
+
   const cp = await loadControlPlane();
 
   const plans = Array.isArray(cp?.plans) ? cp.plans : [];
   const accessLevels = Array.isArray(cp?.accessLevels) ? cp.accessLevels : [];
 
   const plan = plans.find((entry) => String(entry?.id || "").trim() === planId) || null;
-  let fallbackAllowed = MERCADO_LIVRE_FALLBACK_ENABLED_PLANS.has(planId);
+  let fallbackAllowed = input.fallbackEnabledPlans.has(planId);
 
   if (plan && typeof plan === "object" && !Array.isArray(plan)) {
     const limits = (plan as Record<string, unknown>).limits;
-    if (limits && typeof limits === "object" && !Array.isArray(limits)) {
-      const byLimit = hasPositiveLimit((limits as Record<string, unknown>).meliSessions);
+    if (limits && typeof limits === "object" && !Array.isArray(limits) && input.fallbackLimitKey) {
+      const byLimit = hasPositiveLimit((limits as Record<string, unknown>)[input.fallbackLimitKey]);
       if (byLimit !== null) fallbackAllowed = byLimit;
     }
   }
 
-  let blockedMessage = MERCADO_LIVRE_BLOCKED_MESSAGE;
+  let blockedMessage = input.blockedMessage;
 
   if (plan && typeof plan === "object" && !Array.isArray(plan)) {
     const accessLevelId = String((plan as Record<string, unknown>).accessLevelId || "").trim();
@@ -4583,7 +6001,7 @@ async function resolveMercadoLivreFeatureAccess(userId: string): Promise<{ allow
       if (accessLevel && typeof accessLevel === "object" && !Array.isArray(accessLevel)) {
         const featureRules = (accessLevel as Record<string, unknown>).featureRules;
         if (featureRules && typeof featureRules === "object" && !Array.isArray(featureRules)) {
-          const featureRuleRaw = (featureRules as Record<string, unknown>)[MERCADO_LIVRE_FEATURE_KEY];
+          const featureRuleRaw = (featureRules as Record<string, unknown>)[input.featureKey];
           if (featureRuleRaw && typeof featureRuleRaw === "object" && !Array.isArray(featureRuleRaw)) {
             const featureRule = featureRuleRaw as Record<string, unknown>;
             const mode = String(featureRule.mode || "").trim().toLowerCase();
@@ -4599,6 +6017,24 @@ async function resolveMercadoLivreFeatureAccess(userId: string): Promise<{ allow
 
   if (fallbackAllowed) return { allowed: true, message: "" };
   return { allowed: false, message: blockedMessage };
+}
+
+async function resolveMercadoLivreFeatureAccess(userId: string): Promise<{ allowed: boolean; message: string }> {
+  return resolveMarketplaceFeatureAccess(userId, {
+    featureKey: MERCADO_LIVRE_FEATURE_KEY,
+    fallbackEnabledPlans: MERCADO_LIVRE_FALLBACK_ENABLED_PLANS,
+    blockedMessage: MERCADO_LIVRE_BLOCKED_MESSAGE,
+    fallbackLimitKey: "meliSessions",
+  });
+}
+
+async function resolveAmazonFeatureAccess(userId: string): Promise<{ allowed: boolean; message: string }> {
+  return resolveMarketplaceFeatureAccess(userId, {
+    featureKey: AMAZON_FEATURE_KEY,
+    fallbackEnabledPlans: AMAZON_FALLBACK_ENABLED_PLANS,
+    blockedMessage: AMAZON_BLOCKED_MESSAGE,
+    fallbackLimitKey: "amazonSessions",
+  });
 }
 
 async function listUsersWithMeta() {
@@ -4687,7 +6123,7 @@ rpcRouter.post("/rpc", async (req, res) => {
 
   if (!isService) {
     const rateScopeKey = userId || (req.ip ?? req.socket.remoteAddress ?? "unknown");
-    const rateResult = consumeRpcFunctionRateLimit(rateScopeKey, funcName);
+    const rateResult = await consumeRpcFunctionRateLimit(rateScopeKey, funcName);
     if (!rateResult.allowed) {
       if (rateResult.retryAfterSec > 0) {
         res.setHeader("Retry-After", String(rateResult.retryAfterSec));
@@ -4702,16 +6138,29 @@ rpcRouter.post("/rpc", async (req, res) => {
     if (await isPlanExpired(userId)) { fail(res, "Plano expirado. Renove ou troque de plano."); return; }
   }
 
-  const isMeliFunction = funcName.startsWith("meli-");
-  if (isMeliFunction && !effectiveAdmin) {
+  const requiresMercadoLivreAccess = funcName.startsWith("meli-");
+  const requiresAmazonAccess = funcName.startsWith("amazon-");
+  if ((requiresMercadoLivreAccess || requiresAmazonAccess) && !effectiveAdmin) {
     try {
-      const featureAccess = await resolveMercadoLivreFeatureAccess(userId);
+      const featureAccess = requiresAmazonAccess
+        ? await resolveAmazonFeatureAccess(userId)
+        : await resolveMercadoLivreFeatureAccess(userId);
       if (!featureAccess.allowed) {
-        fail(res, featureAccess.message || MERCADO_LIVRE_BLOCKED_MESSAGE, 403);
+        fail(
+          res,
+          featureAccess.message || (requiresAmazonAccess ? AMAZON_BLOCKED_MESSAGE : MERCADO_LIVRE_BLOCKED_MESSAGE),
+          403,
+        );
         return;
       }
     } catch {
-      fail(res, "Não foi possível válidar o acesso ao módulo Mercado Livre.", 503);
+      fail(
+        res,
+        requiresAmazonAccess
+          ? "Nao foi possivel validar o acesso ao modulo Amazon."
+          : "Nao foi possivel validar o acesso ao modulo Mercado Livre.",
+        503,
+      );
       return;
     }
   }
@@ -4786,7 +6235,38 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
 
     // â”€â”€ whatsapp-connect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (funcName === "whatsapp-connect") {
+    
+    // -- purge-history-entries ------------------------------------------------
+    // Removes history_entries rows older than max_age_days (default: 90).
+    // Only callable by the scheduler (SERVICE_TOKEN) or a platform admin.
+    if (funcName === "purge-history-entries") {
+      if (!isService && !effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
+      const maxAgeDays = Math.max(30, Math.min(3650, toInt(params.maxAgeDays, 90)));
+      const batchSize  = Math.max(100, Math.min(50_000, toInt(params.batchSize, 5_000)));
+      const startedAtMs = Date.now();
+      try {
+        const rows = await query(
+          "SELECT deleted_total, batches FROM purge_old_history_entries($1, $2)",
+          [maxAgeDays, batchSize],
+        );
+        const row = rows[0] ?? { deleted_total: "0", batches: "0" };
+        const deletedTotal = Number(row.deleted_total || 0);
+        const batchCount   = Number(row.batches || 0);
+        console.info(JSON.stringify({
+          ts: nowIso(), svc: "api", event: "history_purge",
+          maxAgeDays, batchSize, deletedTotal, batchCount,
+          durationMs: Date.now() - startedAtMs,
+          triggeredBy: isService ? "scheduler" : userId,
+        }));
+        ok(res, { ok: true, deletedTotal, batchCount, maxAgeDays, durationMs: Date.now() - startedAtMs });
+        return;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`[rpc] purge-history-entries failed: ${msg}`);
+        fail(res, `Falha ao purgar historico: ${msg}`, 500); return;
+      }
+    }
+if (funcName === "whatsapp-connect") {
       const action = String(params.action ?? "");
       const sessionId = String(params.sessionId ?? "");
       if (!WHATSAPP_URL) {
@@ -5214,7 +6694,7 @@ rpcRouter.post("/rpc", async (req, res) => {
         [k: string]: unknown;
       }>;
       let sent = 0, failed = 0, skipped = 0;
-      const scheduleTemplateCache = new Map<string, string | null>();
+      const scheduleTemplateCache = new Map<string, { content: string; scope: TemplateScope } | null>();
       const insertScheduleFailedHistory = async (input: {
         userId: string;
         destination: string;
@@ -5246,6 +6726,8 @@ rpcRouter.post("/rpc", async (req, res) => {
       for (const post of pending) {
         const nowMs = Date.now();
         const meta = parseScheduleMetadata(post.metadata);
+        const isRouteQuietHoursQueue = String(meta.scheduleSource || "").trim().toLowerCase() === ROUTE_QUIET_HOURS_SCHEDULE_SOURCE;
+        const routeQueueRouteId = typeof meta.routeId === "string" ? meta.routeId.trim() : "";
         const recurrence = normalizeScheduleRecurrence(post.recurrence);
         const dueSlotKey = getDueScheduleSlotKey(
           {
@@ -5300,20 +6782,28 @@ rpcRouter.post("/rpc", async (req, res) => {
         const rawTemplateId = typeof meta.templateId === "string" ? meta.templateId.trim() : "";
         if (rawTemplateId) {
           const cacheKey = `${post.user_id}:${rawTemplateId}`;
-          let templateContent = scheduleTemplateCache.get(cacheKey);
-          if (templateContent === undefined) {
-            const templateRow = await queryOne<{ content: string }>(
-              "SELECT content FROM templates WHERE user_id = $1 AND id = $2",
+          let cachedTemplate = scheduleTemplateCache.get(cacheKey);
+          if (cachedTemplate === undefined) {
+            const templateRow = await queryOne<{ content: string; scope: string | null; tags: unknown }>(
+              "SELECT content, scope, tags FROM templates WHERE user_id = $1 AND id = $2",
               [post.user_id, rawTemplateId],
             );
-            templateContent = templateRow && typeof templateRow.content === "string"
-              ? templateRow.content
+            cachedTemplate = templateRow && typeof templateRow.content === "string"
+              ? {
+                content: templateRow.content,
+                scope: inferTemplateScopeFromTemplateRow(templateRow as unknown as Record<string, unknown>),
+              }
               : null;
-            scheduleTemplateCache.set(cacheKey, templateContent);
+            scheduleTemplateCache.set(cacheKey, cachedTemplate);
           }
           const templateData = parseScheduleTemplateData(meta);
-          if (templateContent && Object.keys(templateData).length > 0) {
-            message = applyPlaceholders(templateContent, templateData);
+          if (cachedTemplate && Object.keys(templateData).length > 0) {
+            const scopeHint = inferTemplateScopeFromScheduleSource(meta.scheduleSource);
+            message = applyScopedTemplatePlaceholders(
+              scopeHint || cachedTemplate.scope,
+              cachedTemplate.content,
+              templateData,
+            );
           }
         }
         let scheduleMedia = parseScheduledPostMedia(meta);
@@ -5524,6 +7014,29 @@ rpcRouter.post("/rpc", async (req, res) => {
           });
         }
 
+        if (postSentCount > 0 && isRouteQuietHoursQueue && isUuid(routeQueueRouteId)) {
+          await execute(
+            `UPDATE routes
+                SET rules = jsonb_set(
+                      COALESCE(rules, '{}'::jsonb),
+                      '{messagesForwarded}',
+                      to_jsonb(
+                        (
+                          CASE
+                            WHEN COALESCE(rules->>'messagesForwarded', '') ~ '^[0-9]+$'
+                              THEN (rules->>'messagesForwarded')::bigint
+                            ELSE 0
+                          END
+                        ) + $1::bigint
+                      ),
+                      true
+                    ),
+                    updated_at = NOW()
+              WHERE id = $2 AND user_id = $3`,
+            [postSentCount, routeQueueRouteId, post.user_id],
+          );
+        }
+
         if (postSentCount > 0) {
           await scheduleRouteForwardMediaDeletion({
             userId: String(post.user_id),
@@ -5618,6 +7131,224 @@ rpcRouter.post("/rpc", async (req, res) => {
       ok(res, success ? { success: true, region } : { success: false, reason, region });
       return;
     }
+    if (funcName === "marketplace-convert-link") {
+      const sourceInput = String(params.url ?? params.link ?? "").trim();
+      if (!sourceInput) { fail(res, "URL obrigatoria"); return; }
+      if (sourceInput.length > MAX_URL_LENGTH) { fail(res, "URL excede o tamanho maximo permitido"); return; }
+
+      const sourceUrl = /^https?:\/\//i.test(sourceInput) ? sourceInput : `https://${sourceInput}`;
+      if (!parseHttpUrl(sourceUrl)) { fail(res, "URL invalida"); return; }
+
+      const resolvedUrl = await resolveRouteLinkWithRedirect(sourceUrl);
+      const marketplace = detectAffiliateMarketplace(resolvedUrl) ?? detectAffiliateMarketplace(sourceUrl);
+      if (!marketplace) {
+        fail(res, "Marketplace nao suportado. Use links da Shopee, Mercado Livre ou Amazon.");
+        return;
+      }
+
+      if ((marketplace === "mercadolivre" || marketplace === "amazon") && !effectiveAdmin) {
+        try {
+          const featureAccess = marketplace === "amazon"
+            ? await resolveAmazonFeatureAccess(userId)
+            : await resolveMercadoLivreFeatureAccess(userId);
+          if (!featureAccess.allowed) {
+            fail(
+              res,
+              featureAccess.message || (marketplace === "amazon" ? AMAZON_BLOCKED_MESSAGE : MERCADO_LIVRE_BLOCKED_MESSAGE),
+              403,
+            );
+            return;
+          }
+        } catch {
+          fail(
+            res,
+            marketplace === "amazon"
+              ? "Nao foi possivel validar o acesso ao modulo Amazon."
+              : "Nao foi possivel validar o acesso ao modulo Mercado Livre.",
+            503,
+          );
+          return;
+        }
+      }
+
+      if (marketplace === "amazon") {
+        const amazonUrl = isAmazonProductUrlLike(resolvedUrl) ? resolvedUrl : sourceUrl;
+        if (!isAmazonProductUrlLike(amazonUrl)) { fail(res, "URL informada nao parece ser da Amazon (amazon.com.br)"); return; }
+        let conversion: AmazonAffiliateConversionResult;
+        try {
+          conversion = await buildAmazonAffiliateConversionForUser(userId, amazonUrl);
+        } catch (error) {
+          fail(res, error instanceof Error ? error.message : "Falha ao converter link Amazon");
+          return;
+        }
+
+        ok(res, {
+          marketplace: "amazon",
+          originalLink: sourceUrl,
+          resolvedLink: conversion.resolvedUrl,
+          affiliateLink: conversion.affiliateLink,
+          asin: conversion.asin,
+          usedService: true,
+        });
+        return;
+      }
+
+      if (marketplace === "mercadolivre") {
+        if (!MELI_URL) { fail(res, "MeLi RPA nao configurado."); return; }
+
+        const productUrl = isMercadoLivreProductUrlLike(resolvedUrl) ? resolvedUrl : sourceUrl;
+        if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada nao parece ser do Mercado Livre"); return; }
+        const requestedSessionId = String(params.sessionId ?? "").trim();
+        const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
+        if (!sessionId) { fail(res, "Nenhuma sessao Mercado Livre disponivel para conversao."); return; }
+
+        const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
+        const meliHeaders = { "x-autolinks-user-id": userId };
+        const upstream = await proxyMicroservice(
+          MELI_URL,
+          "/api/meli/convert",
+          "POST",
+          { productUrl, sessionId: scopedSessionId },
+          meliHeaders,
+          90_000,
+        );
+        if (upstream.error) { fail(res, upstream.error.message); return; }
+
+        const payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+          ? (upstream.data as Record<string, unknown>)
+          : {};
+        if (payload.success !== true) {
+          fail(res, String(payload.error || "Falha ao converter link do Mercado Livre"));
+          return;
+        }
+
+        ok(res, {
+          marketplace: "mercadolivre",
+          success: true,
+          originalLink: String(payload.originalUrl || sourceUrl),
+          resolvedLink: String(payload.resolvedUrl || payload.originalUrl || productUrl),
+          affiliateLink: String(payload.affiliateLink || productUrl),
+          cached: payload.cached === true,
+          conversionTimeMs: Number.isFinite(Number(payload.conversionTimeMs))
+            ? Number(payload.conversionTimeMs)
+            : undefined,
+        });
+        return;
+      }
+
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice nao configurado."); return; }
+      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      if (!cred) { fail(res, "Credenciais Shopee nao configuradas."); return; }
+      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
+
+      const shopeeUrl = isShopeeProductUrlLike(resolvedUrl) ? resolvedUrl : sourceUrl;
+      if (!isShopeeProductUrlLike(shopeeUrl)) { fail(res, "URL informada nao parece ser da Shopee"); return; }
+
+      const shopeeHeaders = buildUserScopedHeaders(userId);
+      const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
+        url: shopeeUrl,
+        appId: cred.app_id,
+        secret: cred.secret_key,
+        region: cred.region,
+      }, shopeeHeaders, 30_000);
+      if (r.error) { fail(res, r.error.message); return; }
+
+      const payload: Record<string, unknown> = (r.data && typeof r.data === "object")
+        ? (r.data as Record<string, unknown>)
+        : {};
+      ok(res, {
+        marketplace: "shopee",
+        originalLink: String(payload.originalLink || sourceUrl),
+        resolvedLink: String(payload.resolvedLink || payload.resolvedUrl || shopeeUrl),
+        affiliateLink: String(payload.affiliateLink || shopeeUrl),
+        cached: payload.cached === true,
+        conversionTimeMs: Number.isFinite(Number(payload.conversionTimeMs))
+          ? Number(payload.conversionTimeMs)
+          : undefined,
+        status: payload.status ? String(payload.status) : undefined,
+      });
+      return;
+    }
+    if (funcName === "amazon-convert-link") {
+      const sourceUrl = String(params.url ?? params.link ?? "").trim();
+      try {
+        const conversion = await buildAmazonAffiliateConversionForUser(userId, sourceUrl);
+        ok(res, {
+          affiliateLink: conversion.affiliateLink,
+          asin: conversion.asin,
+          resolvedUrl: conversion.resolvedUrl,
+          usedService: true,
+        });
+      } catch (error) {
+        fail(res, error instanceof Error ? error.message : "Falha ao converter link Amazon");
+        return;
+      }
+      return;
+    }
+
+    if (funcName === "amazon-convert-links") {
+      const urlsRaw = Array.isArray(params.urls) ? params.urls : (Array.isArray(params.links) ? params.links : []);
+      const urls = urlsRaw
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const dedupedUrls: string[] = [...new Set<string>(urls)];
+      if (dedupedUrls.length === 0) { fail(res, "Lista de URLs Amazon obrigatoria"); return; }
+      if (dedupedUrls.length > 50) { fail(res, "Limite de 50 URLs por lote Amazon"); return; }
+      if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
+      if (dedupedUrls.some((item) => !isAmazonProductUrlLike(item))) { fail(res, "Uma ou mais URLs não parecem ser da Amazon"); return; }
+      
+      const conversions = [];
+      for (const originalLink of dedupedUrls) {
+        try {
+          const conversion = await buildAmazonAffiliateConversionForUser(userId, originalLink);
+          conversions.push({
+            originalLink,
+            affiliateLink: conversion.affiliateLink,
+            asin: conversion.asin,
+            resolvedUrl: conversion.resolvedUrl,
+            usedService: true,
+            error: null,
+          });
+        } catch (error) {
+          conversions.push({
+            originalLink,
+            affiliateLink: originalLink,
+            asin: null,
+            usedService: false,
+            error: error instanceof Error ? error.message : "Falha ao converter link Amazon",
+          });
+        }
+      }
+      ok(res, { conversions });
+      return;
+    }
+
+    if (funcName === "amazon-product-snapshot") {
+      const sourceUrl = String(params.productUrl ?? params.url ?? "").trim();
+      const asinHint = String(params.asin ?? "").trim().toUpperCase();
+      if (!sourceUrl && !asinHint) { fail(res, "URL ou ASIN Amazon obrigatorio"); return; }
+      if (sourceUrl && sourceUrl.length > MAX_URL_LENGTH) { fail(res, "URL Amazon excede o tamanho maximo permitido"); return; }
+
+      const canonicalUrl = sourceUrl ? (canonicalizeAmazonProductUrl(sourceUrl) || "") : "";
+      if (sourceUrl && !canonicalUrl) { fail(res, "URL informada não parece ser da Amazon (deve ser amazon.com.br)"); return; }
+
+      const asin = asinHint || (canonicalUrl ? String(extractAmazonAsin(canonicalUrl) || "").trim().toUpperCase() : "");
+      const targetUrl = canonicalUrl || (asin ? `https://www.amazon.com.br/dp/${asin}` : "");
+      if (!targetUrl) { fail(res, "Nao foi possivel identificar o produto Amazon"); return; }
+
+      try {
+        const snapshot = await getAmazonProductSnapshot(targetUrl);
+        ok(res, {
+          ...snapshot,
+          asin: String(snapshot.asin || asin || "").trim() || undefined,
+        });
+      } catch (error) {
+        fail(res, error instanceof Error ? error.message : "Falha ao extrair dados do produto Amazon");
+      }
+      return;
+    }
+
     if (funcName === "shopee-convert-link") {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
       const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
@@ -5848,15 +7579,11 @@ rpcRouter.post("/rpc", async (req, res) => {
 
         const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
         const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
-        const template = await queryOne<{ id: string; name: string; content: string; is_default: boolean }>(
-          `SELECT id, name, content, is_default
-             FROM templates
-            WHERE user_id = $1
-              AND ($2::uuid IS NULL OR id = $2 OR is_default = TRUE)
-            ORDER BY CASE WHEN id = $2 THEN 0 WHEN is_default = TRUE THEN 1 ELSE 2 END
-            LIMIT 1`,
-          [ownerUserId, templateId || null],
-        );
+        const template = await resolveAutomationTemplateForScope({
+          userId: ownerUserId,
+          templateId,
+          scope: "shopee",
+        });
 
         const queries = buildShopeeAutomationQueries({
           categories: claimed.categories,
@@ -6057,7 +7784,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           "SELECT id, name, platform, session_id, external_id FROM groups WHERE user_id = $1 AND id = ANY($2)",
           [ownerUserId, destinationIds],
         );
-        const automationSessionId = String(claimed.session_id || "").trim();
+        const automationSessionId = readAutomationDeliverySessionId(claimed);
         const destinationGroups = automationSessionId
           ? allDestinationGroups.filter((group) => String(group.session_id || "").trim() === automationSessionId)
           : allDestinationGroups;
@@ -6461,16 +8188,11 @@ rpcRouter.post("/rpc", async (req, res) => {
 
         const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
         const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
-        const template = await queryOne<{ id: string; name: string; content: string; is_default: boolean }>(
-          `SELECT id, name, content, is_default
-             FROM templates
-            WHERE user_id = $1
-              AND scope = 'meli'
-              AND ($2::uuid IS NULL OR id = $2 OR is_default = TRUE)
-            ORDER BY CASE WHEN id = $2 THEN 0 WHEN is_default = TRUE THEN 1 ELSE 2 END
-            LIMIT 1`,
-          [ownerUserId, templateId || null],
-        );
+        const template = await resolveAutomationTemplateForScope({
+          userId: ownerUserId,
+          templateId,
+          scope: "meli",
+        });
 
         const products = await query<{
           id: string;
@@ -6717,7 +8439,7 @@ rpcRouter.post("/rpc", async (req, res) => {
           "SELECT id, name, platform, session_id, external_id FROM groups WHERE user_id = $1 AND id = ANY($2)",
           [ownerUserId, destinationIds],
         );
-        const automationSessionId = String(claimed.session_id || "").trim();
+        const automationSessionId = readAutomationDeliverySessionId(claimed);
         const destinationGroups = automationSessionId
           ? allDestinationGroups.filter((group) => String(group.session_id || "").trim() === automationSessionId)
           : allDestinationGroups;
@@ -7021,6 +8743,677 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
 
+    if (funcName === "amazon-automation-run") {
+      if (!WHATSAPP_URL && !TELEGRAM_URL) {
+        fail(res, "Nenhum canal de envio configurado (WhatsApp/Telegram).");
+        return;
+      }
+
+      const requestedAutomationId = String(params.automationId ?? "").trim();
+      const source = String(params.source ?? "manual").trim() || "manual";
+      const runAllUsers = isService || (effectiveAdmin && !userIsAdmin && params.allUsers === true);
+      const limit = Math.max(1, Math.min(toInt(params.limit, runAllUsers ? 120 : 30), runAllUsers ? 300 : 100));
+
+      const dueClause = `
+        status = 'active' AND is_active = TRUE
+        AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'amazon'
+        AND (
+          last_run_at IS NULL
+          OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
+        )
+      `;
+
+      const automations = requestedAutomationId
+        ? (runAllUsers
+            ? await query(
+                "SELECT * FROM shopee_automations WHERE id = $1 AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'amazon' LIMIT 1",
+                [requestedAutomationId],
+              )
+            : await query(
+                "SELECT * FROM shopee_automations WHERE id = $1 AND user_id = $2 AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'amazon' LIMIT 1",
+                [requestedAutomationId, userId],
+              ))
+        : (runAllUsers
+            ? await query(
+                `SELECT * FROM shopee_automations
+                 WHERE ${dueClause}
+                 ORDER BY COALESCE(last_run_at, to_timestamp(0)) ASC
+                 LIMIT $1`,
+                [limit],
+              )
+            : await query(
+                `SELECT * FROM shopee_automations
+                 WHERE user_id = $1 AND ${dueClause}
+                 ORDER BY COALESCE(last_run_at, to_timestamp(0)) ASC
+                 LIMIT $2`,
+                [userId, limit],
+              ));
+
+      if (requestedAutomationId && automations.length === 0) { fail(res, "Automação não encontrada"); return; }
+      if (automations.length === 0) {
+        ok(res, {
+          ok: true,
+          source,
+          scope: runAllUsers ? "global" : "user",
+          active: 0,
+          processed: 0,
+          sent: 0,
+          skipped: 0,
+          failed: 0,
+          errors: [],
+          message: "Nenhuma automação Amazon elegível para execução neste ciclo.",
+        });
+        return;
+      }
+
+      let processed = 0;
+      let sent = 0;
+      let skipped = 0;
+      let failed = 0;
+      const errors: string[] = [];
+      const amazonAccessByUser = new Map<string, boolean>();
+
+      for (const auto of automations) {
+        const ownerUserId = String(auto.user_id || "").trim();
+        const automationName = String(auto.name || auto.id || "Automação Amazon");
+        const automationId = String(auto.id || "").trim();
+        if (!ownerUserId || !automationId) {
+          skipped += 1;
+          errors.push(`${automationName}: dados da automação inválidos`);
+          continue;
+        }
+
+        if (runAllUsers) {
+          let ownerHasAccess = amazonAccessByUser.get(ownerUserId);
+          if (ownerHasAccess === undefined) {
+            try {
+              const access = await resolveAmazonFeatureAccess(ownerUserId);
+              ownerHasAccess = access.allowed;
+            } catch {
+              ownerHasAccess = false;
+            }
+            amazonAccessByUser.set(ownerUserId, ownerHasAccess);
+          }
+          if (!ownerHasAccess) {
+            skipped += 1;
+            continue;
+          }
+        }
+
+        if (!inAutomationTimeWindow(auto.active_hours_start, auto.active_hours_end)) {
+          skipped += 1;
+          continue;
+        }
+
+        const claimed = await queryOne<Record<string, unknown>>(
+          `UPDATE shopee_automations
+             SET last_run_at = NOW(),
+                 updated_at = NOW()
+           WHERE id = $1
+             AND user_id = $2
+             AND status = 'active'
+             AND is_active = TRUE
+             AND COALESCE(NULLIF(TRIM(config->>'marketplace'), ''), 'shopee') = 'amazon'
+             AND (
+               last_run_at IS NULL
+               OR last_run_at <= NOW() - (GREATEST(COALESCE(interval_minutes, 1), 1) * INTERVAL '1 minute')
+             )
+           RETURNING *`,
+          [automationId, ownerUserId],
+        );
+        if (!claimed) {
+          skipped += 1;
+          continue;
+        }
+
+        const automationConfig = claimed.config && typeof claimed.config === "object" && !Array.isArray(claimed.config)
+          ? claimed.config as Record<string, unknown>
+          : {};
+        const configTabs = normalizeMeliAutomationVitrineTabs(automationConfig.vitrineTabs);
+        const fallbackTabs = configTabs.length > 0
+          ? configTabs
+          : normalizeMeliAutomationVitrineTabs(claimed.categories);
+        const vitrineTabs = fallbackTabs.length > 0 ? fallbackTabs : ["destaques"];
+
+        const templateIdRaw = claimed.template_id == null ? "" : String(claimed.template_id);
+        const templateId = isUuid(templateIdRaw) ? templateIdRaw : "";
+        const template = await resolveAutomationTemplateForScope({
+          userId: ownerUserId,
+          templateId,
+          scope: "amazon",
+        });
+
+        const products = await query<{
+          id: string;
+          tab_key: string;
+          asin: string | null;
+          title: string;
+          product_url: string;
+          image_url: string;
+          price_cents: string | number;
+          old_price_cents: string | number | null;
+          discount_text: string;
+          seller: string;
+          rating: string | number | null;
+          reviews_count: string | number | null;
+          badge_text: string;
+        }>(
+          `SELECT id, tab_key, asin, title, product_url, image_url, price_cents, old_price_cents, discount_text, seller, rating, reviews_count, badge_text
+             FROM amazon_vitrine_products
+            WHERE is_active = TRUE
+              AND tab_key = ANY($1::text[])
+            ORDER BY updated_at DESC, collected_at DESC
+            LIMIT 600`,
+          [vitrineTabs],
+        );
+
+        const minPrice = Math.max(0, toNumber(claimed.min_price, 0));
+        const maxPriceRaw = Math.max(0, toNumber(claimed.max_price, 999999));
+        const maxPrice = maxPriceRaw > 0 ? maxPriceRaw : 999999;
+        const positiveKeywords = toRouteKeywordList(automationConfig.positiveKeywords);
+        const negativeKeywords = toRouteKeywordList(automationConfig.negativeKeywords);
+
+        const candidates: Record<string, unknown>[] = [];
+        for (const row of products) {
+          const title = String(row.title || "").trim();
+          const productUrl = String(row.product_url || "").trim();
+          const imageUrl = String(row.image_url || "").trim();
+          const price = Number((Math.max(0, toNumber(row.price_cents, 0)) / 100).toFixed(2));
+          const oldPriceRaw = toNumber(row.old_price_cents, 0);
+          const oldPrice = oldPriceRaw > 0 ? Number((oldPriceRaw / 100).toFixed(2)) : 0;
+          const seller = String(row.seller || "").trim();
+          const productText = buildAutomationProductKeywordText({
+            title,
+            shopName: seller,
+          });
+          if (!title || !productUrl || !imageUrl || price <= 0) continue;
+          if (price < minPrice) continue;
+          if (price > maxPrice) continue;
+          if (negativeKeywords.length > 0 && routeTextMatchesAnyKeyword(productText, negativeKeywords)) continue;
+          if (positiveKeywords.length > 0 && !routeTextMatchesAnyKeyword(productText, positiveKeywords)) continue;
+
+          candidates.push({
+            id: String(row.id || ""),
+            tab: String(row.tab_key || ""),
+            asin: String(row.asin || "").trim(),
+            title,
+            productUrl,
+            imageUrl,
+            price,
+            oldPrice: oldPrice > 0 ? oldPrice : null,
+            discountText: String(row.discount_text || "").trim(),
+            seller,
+            rating: toNumber(row.rating, 0),
+            reviewsCount: Math.max(0, Math.floor(toNumber(row.reviews_count, 0))),
+            installmentsText: "",
+            badgeText: String(row.badge_text || "").trim(),
+          });
+        }
+
+        if (candidates.length === 0) {
+          skipped += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Nada compativel com seus filtros agora. Vamos tentar de novo no proximo ciclo.",
+            details: {
+              automationId,
+              source,
+              reason: "no_eligible_offer",
+              positiveKeywordsCount: positiveKeywords.length,
+              negativeKeywordsCount: negativeKeywords.length,
+            },
+            blockReason: "no_eligible_offer",
+            errorStep: "offer_filter",
+          });
+          continue;
+        }
+
+        const recentOfferTitles = await loadRecentAutomationOfferTitleSet({
+          userId: ownerUserId,
+          automationId,
+          automationName,
+        });
+
+        let duplicateRejectedCount = 0;
+        let selectedProduct: Record<string, unknown> | null = null;
+        for (const candidate of candidates) {
+          const normalizedTitle = normalizeOfferTitle(candidate.title);
+          if (normalizedTitle && recentOfferTitles.has(normalizedTitle)) {
+            duplicateRejectedCount += 1;
+            continue;
+          }
+          selectedProduct = candidate;
+          break;
+        }
+
+        if (!selectedProduct) {
+          skipped += 1;
+          errors.push(`${automationName}: sem nova oferta disponível (duplicadas descartadas: ${duplicateRejectedCount})`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Sem oferta nova agora. As opcoes disponiveis ja foram enviadas recentemente.",
+            details: {
+              automationId,
+              source,
+              reason: "offer_duplicate_blocked",
+              duplicateRejectedCount,
+              recentMemorySize: recentOfferTitles.size,
+            },
+            blockReason: "offer_duplicate_blocked",
+            errorStep: "offer_dedupe",
+          });
+          continue;
+        }
+
+        let conversion: AmazonAffiliateConversionResult;
+        try {
+          conversion = await buildAmazonAffiliateConversionForUser(
+            ownerUserId,
+            String(selectedProduct.productUrl || "").trim(),
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Falha ao converter link Amazon";
+          const blockReason = reason.includes("/amazon/configuracoes")
+            ? "missing_amazon_tag"
+            : "amazon_conversion_failed";
+          const historyStatus = blockReason === "missing_amazon_tag" ? "warning" : "error";
+          const processingStatus = blockReason === "missing_amazon_tag" ? "blocked" : "failed";
+          if (blockReason === "missing_amazon_tag") {
+            skipped += 1;
+          } else {
+            failed += 1;
+            errors.push(`${automationName}: ${reason}`);
+          }
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: historyStatus,
+            processingStatus,
+            message: reason,
+            details: { automationId, source, reason: blockReason },
+            blockReason,
+            errorStep: "link_conversion",
+          });
+          continue;
+        }
+
+        const affiliateLink = String(conversion.affiliateLink || "").trim();
+        if (!affiliateLink) {
+          skipped += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "warning",
+            processingStatus: "blocked",
+            message: "Conversão sem link afiliado válido.",
+            details: { automationId, source, reason: "missing_affiliate_link" },
+            blockReason: "missing_affiliate_link",
+            errorStep: "link_conversion",
+          });
+          continue;
+        }
+
+        const templateContent = template && typeof template.content === "string" ? template.content : "";
+        const fallbackTitle = String(selectedProduct.title || "Oferta Amazon");
+        const message = templateContent
+          ? buildAmazonAutomationMessage(templateContent, selectedProduct, affiliateLink)
+          : `${fallbackTitle}\n${affiliateLink}`;
+
+        const directGroupIds = toStringArray(claimed.destination_group_ids);
+        const masterGroupIds = toStringArray(claimed.master_group_ids);
+        const linkedGroupIds = masterGroupIds.length > 0
+          ? (await query<{ group_id: string }>(
+              `SELECT l.group_id
+                 FROM master_group_links l
+                 JOIN master_groups mg
+                   ON mg.id = l.master_group_id
+                WHERE l.master_group_id = ANY($1)
+                  AND l.is_active <> FALSE
+                  AND mg.user_id = $2`,
+              [masterGroupIds, ownerUserId],
+            )).map((row) => String(row.group_id || "").trim()).filter(Boolean)
+          : [];
+
+        const destinationIds = [...new Set([...directGroupIds, ...linkedGroupIds])];
+        if (destinationIds.length === 0) {
+          failed += 1;
+          errors.push(`${automationName}: nenhum grupo de destino configurado`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: "Automação sem grupos de destino configurados.",
+            details: { automationId, source, reason: "no_destination_groups" },
+            blockReason: "no_destination_groups",
+            errorStep: "destination_resolve",
+          });
+          continue;
+        }
+
+        const allDestinationGroups = await query<{
+          id: string;
+          name: string;
+          platform: string;
+          session_id: string;
+          external_id: string;
+        }>(
+          "SELECT id, name, platform, session_id, external_id FROM groups WHERE user_id = $1 AND id = ANY($2)",
+          [ownerUserId, destinationIds],
+        );
+        const automationSessionId = readAutomationDeliverySessionId(claimed);
+        const destinationGroups = automationSessionId
+          ? allDestinationGroups.filter((group) => String(group.session_id || "").trim() === automationSessionId)
+          : allDestinationGroups;
+
+        if (destinationGroups.length === 0) {
+          failed += 1;
+          errors.push(`${automationName}: nenhum grupo de destino válido para a sessão configurada`);
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: "automation:diagnostic",
+            status: "error",
+            processingStatus: "failed",
+            message: "Nenhum grupo válido para a sessão selecionada.",
+            details: { automationId, source, reason: "no_destination_groups_for_session" },
+            blockReason: "no_destination_groups_for_session",
+            errorStep: "destination_resolve",
+          });
+          continue;
+        }
+
+        let automationMedia: RouteForwardMedia | null = null;
+        try {
+          automationMedia = await buildAutomationImageMedia(selectedProduct);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Envio cancelado: falha ao anexar imagem.";
+          failed += destinationGroups.length;
+          errors.push(`${automationName}: ${reason}`);
+          for (const group of destinationGroups) {
+            const groupName = String(group.name || group.id || "Grupo");
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "warning",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform: String(group.platform || ""),
+                reason: "missing_image_required",
+                mediaError: reason,
+                product: selectedProduct,
+                hasMedia: false,
+              },
+              blockReason: "missing_image_required",
+              errorStep: "automation_media_failed",
+              messageType: "text",
+            });
+          }
+          continue;
+        }
+
+        const waSessionIds = [...new Set(
+          destinationGroups
+            .filter((group) => String(group.platform || "").trim() === "whatsapp")
+            .map((group) => String(group.session_id || "").trim())
+            .filter(Boolean),
+        )];
+        const tgSessionIds = [...new Set(
+          destinationGroups
+            .filter((group) => String(group.platform || "").trim() === "telegram")
+            .map((group) => String(group.session_id || "").trim())
+            .filter(Boolean),
+        )];
+        const [waSessionRows, tgSessionRows] = await Promise.all([
+          waSessionIds.length > 0
+            ? query<{ id: string; status: string }>(
+                "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
+                [ownerUserId, waSessionIds],
+              )
+            : Promise.resolve([]),
+          tgSessionIds.length > 0
+            ? query<{ id: string; status: string }>(
+                "SELECT id, status FROM telegram_sessions WHERE user_id = $1 AND id = ANY($2)",
+                [ownerUserId, tgSessionIds],
+              )
+            : Promise.resolve([]),
+        ]);
+        const onlineWaSessions = new Set(
+          waSessionRows
+            .filter((row) => isSessionOnlineStatus(row.status))
+            .map((row) => String(row.id || "").trim())
+            .filter(Boolean),
+        );
+        const onlineTgSessions = new Set(
+          tgSessionRows
+            .filter((row) => isSessionOnlineStatus(row.status))
+            .map((row) => String(row.id || "").trim())
+            .filter(Boolean),
+        );
+
+        let sentNow = 0;
+        for (const group of destinationGroups) {
+          const groupName = String(group.name || group.id || "Grupo");
+          const platform = String(group.platform || "").trim();
+          const sessionId = String(group.session_id || "").trim();
+          const externalId = String(group.external_id || "").trim();
+          if (!sessionId || !externalId) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: grupo sem sessão/external_id`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "error",
+              processingStatus: "failed",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "invalid_destination",
+              },
+              blockReason: "invalid_destination",
+              errorStep: "destination_validate",
+            });
+            continue;
+          }
+
+          const isOnline = platform === "whatsapp"
+            ? onlineWaSessions.has(sessionId)
+            : platform === "telegram"
+              ? onlineTgSessions.has(sessionId)
+              : false;
+          if (!isOnline) {
+            skipped += 1;
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "info",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "destination_session_offline",
+              },
+              blockReason: "destination_session_offline",
+              errorStep: "destination_precheck",
+            });
+            continue;
+          }
+
+          const scopedHeaders = buildUserScopedHeaders(ownerUserId);
+          const mediaForDestination = await resolveRouteForwardMediaForPlatform({
+            userId: ownerUserId,
+            platform,
+            media: automationMedia,
+          });
+
+          if (mediaForDestination.kind !== "image") {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: imagem obrigatoria ausente`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "warning",
+              processingStatus: "blocked",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "missing_image_required",
+                product: selectedProduct,
+                hasMedia: false,
+              },
+              blockReason: "missing_image_required",
+              errorStep: "media_requirements",
+              messageType: "text",
+            });
+            continue;
+          }
+
+          const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
+          const sendResult = platform === "whatsapp" && WHATSAPP_URL
+            ? await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+                sessionId,
+                jid: externalId,
+                content: outboundMessage,
+                media: mediaForDestination,
+              }, scopedHeaders)
+            : platform === "telegram" && TELEGRAM_URL
+              ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+                  sessionId,
+                  chatId: externalId,
+                  message: outboundMessage,
+                  media: mediaForDestination,
+                }, scopedHeaders)
+              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
+
+          if (sendResult.error) {
+            failed += 1;
+            errors.push(`${automationName} -> ${groupName}: ${sendResult.error.message}`);
+            await insertAutomationHistoryEntry({
+              userId: ownerUserId,
+              automationName,
+              destination: groupName,
+              status: "error",
+              processingStatus: "failed",
+              message,
+              details: {
+                automationId,
+                source,
+                platform,
+                reason: "destination_send_failed",
+                error: sendResult.error.message,
+                product: selectedProduct,
+                hasMedia: true,
+              },
+              blockReason: "destination_send_failed",
+              errorStep: "automation_send",
+              messageType: "image",
+            });
+            continue;
+          }
+
+          sent += 1;
+          sentNow += 1;
+          await insertAutomationHistoryEntry({
+            userId: ownerUserId,
+            automationName,
+            destination: groupName,
+            status: "success",
+            processingStatus: "sent",
+            message,
+            details: {
+              automationId,
+              source,
+              platform,
+              product: selectedProduct,
+              hasMedia: true,
+            },
+            messageType: "image",
+          });
+        }
+
+        if (sentNow > 0) {
+          await scheduleRouteForwardMediaDeletion({
+            userId: ownerUserId,
+            media: automationMedia,
+            delayMs: 120_000,
+          });
+          processed += 1;
+          await execute(
+            "UPDATE shopee_automations SET products_sent = products_sent + $1, updated_at = NOW() WHERE id = $2 AND user_id = $3",
+            [sentNow, automationId, ownerUserId],
+          );
+        }
+      }
+
+      ok(res, {
+        ok: failed === 0,
+        source,
+        scope: runAllUsers ? "global" : "user",
+        active: automations.length,
+        processed,
+        sent,
+        skipped,
+        failed,
+        errors: errors.slice(0, 30),
+      });
+      return;
+    }
+
+    if (funcName === "amazon-vitrine-sync") {
+      const isPrivilegedSync = Boolean(effectiveAdmin || isService);
+      if (!isPrivilegedSync && params.force === true) {
+        fail(res, "Acesso negado", 403);
+        return;
+      }
+
+      const source = String(
+        params.source
+        ?? (isService ? "scheduler" : isPrivilegedSync ? "manual-admin" : "manual-user"),
+      ).trim() || (isService ? "scheduler" : isPrivilegedSync ? "manual-admin" : "manual-user");
+      const force = isPrivilegedSync && params.force === true;
+      const onlyIfStale = isPrivilegedSync ? params.onlyIfStale !== false : true;
+
+      const result = await syncAmazonVitrine({ source, force, onlyIfStale });
+      if (!result.success) { fail(res, result.message); return; }
+      ok(res, result);
+      return;
+    }
+
+    if (funcName === "amazon-vitrine-list") {
+      const payload = await listAmazonVitrine({
+        tab: params.tab,
+        page: params.page,
+        limit: params.limit,
+      });
+
+      ok(res, payload);
+      return;
+    }
+
     if (funcName === "meli-service-health") {
       if (!MELI_URL) {
         ok(res, {
@@ -7097,11 +9490,33 @@ rpcRouter.post("/rpc", async (req, res) => {
           );
 
           if (!sessionCheck.error) {
-            const sessionPayload = (sessionCheck.data && typeof sessionCheck.data === "object")
+            let sessionPayload = (sessionCheck.data && typeof sessionCheck.data === "object")
               ? sessionCheck.data as Record<string, unknown>
               : {};
-            const checkStatus = normalizeMeliSessionHealthStatus(sessionPayload.status);
-            const checkLogs = Array.isArray(sessionPayload.logs) ? sessionPayload.logs : [];
+            let checkStatus = normalizeMeliSessionHealthStatus(sessionPayload.status);
+            let checkLogs = Array.isArray(sessionPayload.logs) ? sessionPayload.logs : [];
+
+            if (isMeliSessionNotFoundStatus(checkStatus)) {
+              const restored = await rehydrateMeliSessionFileFromDatabase(userId, sessionId);
+              if (restored.restored) {
+                const retryCheck = await proxyMicroservice(
+                  MELI_URL,
+                  `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test`,
+                  "POST",
+                  {},
+                  meliHeaders,
+                  25_000,
+                );
+                if (!retryCheck.error) {
+                  sessionPayload = (retryCheck.data && typeof retryCheck.data === "object")
+                    ? retryCheck.data as Record<string, unknown>
+                    : {};
+                  checkStatus = normalizeMeliSessionHealthStatus(sessionPayload.status);
+                  checkLogs = Array.isArray(sessionPayload.logs) ? sessionPayload.logs : [];
+                }
+              }
+            }
+
             const firstErrorLog = checkLogs.find((item) => {
               if (!item || typeof item !== "object" || Array.isArray(item)) return false;
               const lvl = String((item as { level?: unknown }).level || "").toLowerCase();
@@ -7174,9 +9589,13 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!MELI_URL) { fail(res, "MeLi RPA não configurado."); return; }
 
       const sessionId = String(params.sessionId ?? "").trim();
-      if (!sessionId) { fail(res, "sessionId e obrigatório"); return; }
+      if (!sessionId) { fail(res, "sessionId é obrigatório"); return; }
       if (!isUuid(sessionId)) { fail(res, "sessionId inválido"); return; }
-      if (params.cookies == null) { fail(res, "cookies e obrigatório"); return; }
+      if (params.cookies == null) { fail(res, "cookies é obrigatório"); return; }
+      const cookiesPayload = normalizeMeliCookiesPayload(params.cookies);
+      if (!cookiesPayload) { fail(res, "cookies inválido. Envie JSON válido."); return; }
+
+      meliDiag(`[meli:save-session] ENTRY user=${userId} sessionId=${sessionId} cookiesPayloadType=${typeof cookiesPayload} cookiesPayloadKeys=${cookiesPayload && typeof cookiesPayload === "object" ? Object.keys(cookiesPayload as object).join(",") : "N/A"} rawCookiesType=${typeof params.cookies} rawCookiesLen=${String(params.cookies || "").length}`);
 
       const existingSession = await queryOne<{ user_id: string; name: string }>(
         "SELECT user_id, name FROM meli_sessions WHERE id = $1",
@@ -7197,17 +9616,66 @@ rpcRouter.post("/rpc", async (req, res) => {
         .map((row) => String(row.id || "").trim())
         .filter((id) => id && id !== canonicalSessionId);
 
+      meliDiag(`[meli:save-session] canonical=${canonicalSessionId} existingSessions=${userSessions.map(r => r.id).join(",")} stale=${staleSessionIds.join(",")}`);
+
+      // Accept both "sessionName" (new clients/extension) and legacy "name" field.
+      // "name" is used as the RPC selector and is stripped from params before this
+      // handler runs, so clients that still send "name" as the session display name
+      // will seamlessly fall through to "sessionName" here.
+      const inputName = String(params.sessionName ?? params.name ?? "").trim();
+      const previousName = String(canonicalSessionName || existingSession?.name || "").trim();
+      const initialFallbackName = buildFriendlyMeliSessionName(canonicalSessionId, "");
+      const initialName = inputName
+        || (previousName && !isLegacyMeliAutoSessionName(previousName) ? previousName : "")
+        || initialFallbackName;
+
+      // Persist session metadata + cookies first so transient upstream failures do not
+      // discard valid cookies and cause false "cookies not found" on the next test.
+      await execute(
+        `INSERT INTO meli_sessions (id, user_id, name, account_name, ml_user_id, status, last_checked_at, error_message)
+         VALUES ($1,$2,$3,$4,$5,'untested',NOW(),'')
+         ON CONFLICT (id) DO UPDATE
+         SET user_id = EXCLUDED.user_id,
+             name = EXCLUDED.name,
+             last_checked_at = EXCLUDED.last_checked_at,
+             updated_at = NOW()`,
+        [canonicalSessionId, userId, initialName, "", ""],
+      );
+
+      // Persist cookies to DB (dual-write: JSONB + encrypted backup).
+      // Wrap in try/catch so that a transient DB failure does NOT prevent the RPA
+      // proxy below from receiving and saving the cookies to its local disk.
+      // The RPA diskfile is the primary runtime storage; the DB layers are
+      // authoritative backups used only for rehydration when the RPA file is lost.
+      let dbPersistOk = false;
+      try {
+        meliDiag(`[meli:save-session] BEFORE persistMeliSessionCookiesPayload canonical=${canonicalSessionId} user=${userId}`);
+        await persistMeliSessionCookiesPayload(userId, canonicalSessionId, cookiesPayload);
+        dbPersistOk = true;
+        meliDiag(`[meli:save-session] AFTER persistMeliSessionCookiesPayload — persisted successfully`);
+      } catch (persistError) {
+        // Log but do NOT abort — the RPA must still receive the cookies.
+        meliDiag(`[meli:save-session] persistMeliSessionCookiesPayload FAILED (non-fatal): ${String(persistError)}`);
+      }
+
       const scopedSessionId = buildScopedMeliSessionId(userId, canonicalSessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
       const upstream = await proxyMicroservice(
         MELI_URL,
         "/api/meli/sessions",
         "POST",
-        { sessionId: scopedSessionId, cookies: params.cookies },
+        { sessionId: scopedSessionId, cookies: cookiesPayload },
         meliHeaders,
         45_000,
       );
-      if (upstream.error) { fail(res, upstream.error.message); return; }
+      if (upstream.error) {
+        await execute(
+          "UPDATE meli_sessions SET status='error', last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+          [upstream.error.message, canonicalSessionId, userId],
+        );
+        fail(res, upstream.error.message);
+        return;
+      }
 
       const upstreamData: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
         ? (upstream.data as Record<string, unknown>)
@@ -7218,9 +9686,10 @@ rpcRouter.post("/rpc", async (req, res) => {
       const accountName = String(upstreamData.accountName || "");
       const mlUserId = String(upstreamData.mlUserId || "");
       const logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
-      const inputName = String(params.name ?? "").trim();
-      const fallbackName = `Conta ${canonicalSessionId.slice(0, 8)}`;
-      const finalName = inputName || String(canonicalSessionName || existingSession?.name || "").trim() || fallbackName;
+      const fallbackName = buildFriendlyMeliSessionName(canonicalSessionId, accountName);
+      const finalName = inputName
+        || (previousName && !isLegacyMeliAutoSessionName(previousName) ? previousName : "")
+        || fallbackName;
       const unknownStatusMessage = rawStatus && !allowedStatuses.has(rawStatus)
         ? `Status inválido retornado pelo servico Mercado Livre (${rawStatus})`
         : "";
@@ -7229,19 +9698,20 @@ rpcRouter.post("/rpc", async (req, res) => {
         : "";
 
       await execute(
-        `INSERT INTO meli_sessions (id, user_id, name, account_name, ml_user_id, status, last_checked_at, error_message)
-         VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)
-         ON CONFLICT (id) DO UPDATE
-         SET user_id = EXCLUDED.user_id,
-             name = EXCLUDED.name,
-             account_name = EXCLUDED.account_name,
-             ml_user_id = EXCLUDED.ml_user_id,
-             status = EXCLUDED.status,
-             last_checked_at = EXCLUDED.last_checked_at,
-             error_message = EXCLUDED.error_message,
-             updated_at = NOW()`,
-        [canonicalSessionId, userId, finalName, accountName, mlUserId, status, errorMessage],
+        "UPDATE meli_sessions SET name=$1, account_name=$2, ml_user_id=$3, status=$4, last_checked_at=NOW(), error_message=$5, updated_at=NOW() WHERE id=$6 AND user_id=$7",
+        [finalName, accountName, mlUserId, status, errorMessage, canonicalSessionId, userId],
       );
+
+      // Deferred retry: if the DB persist above failed but the RPA saved cookies
+      // successfully, attempt DB persist again now that the network may have recovered.
+      if (!dbPersistOk) {
+        try {
+          await persistMeliSessionCookiesPayload(userId, canonicalSessionId, cookiesPayload);
+          console.info(`[meli:save-session] deferred DB persist SUCCEEDED for session=${canonicalSessionId}`);
+        } catch (retryError) {
+          console.error(`[meli:save-session] deferred DB persist also FAILED: ${String(retryError)}`);
+        }
+      }
 
       if (staleSessionIds.length > 0) {
         await execute("DELETE FROM meli_sessions WHERE user_id = $1 AND id = ANY($2)", [userId, staleSessionIds]);
@@ -7272,18 +9742,18 @@ rpcRouter.post("/rpc", async (req, res) => {
       if (!MELI_URL) { fail(res, "MeLi RPA não configurado."); return; }
 
       const sessionId = String(params.sessionId ?? "").trim();
-      if (!sessionId) { fail(res, "sessionId e obrigatório"); return; }
+      if (!sessionId) { fail(res, "sessionId é obrigatório"); return; }
       if (!isUuid(sessionId)) { fail(res, "sessionId inválido"); return; }
 
-      const owned = await queryOne<{ id: string }>(
-        "SELECT id FROM meli_sessions WHERE id = $1 AND user_id = $2",
+      const owned = await queryOne<{ id: string; name: string }>(
+        "SELECT id, name FROM meli_sessions WHERE id = $1 AND user_id = $2",
         [sessionId, userId],
       );
       if (!owned) { fail(res, "Sessão não encontrada"); return; }
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
-      const upstream = await proxyMicroservice(
+      let upstream = await proxyMicroservice(
         MELI_URL,
         `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test`,
         "POST",
@@ -7309,13 +9779,55 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
 
-      const upstreamData: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+      let upstreamData: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
         ? (upstream.data as Record<string, unknown>)
         : {};
-      const status = String(upstreamData.status || "error");
-      const accountName = String(upstreamData.accountName || "");
-      const mlUserId = String(upstreamData.mlUserId || "");
-      const logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
+      let status = String(upstreamData.status || "error");
+      let accountName = String(upstreamData.accountName || "");
+      let mlUserId = String(upstreamData.mlUserId || "");
+      let logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
+
+      if (isMeliSessionNotFoundStatus(status)) {
+        const restored = await rehydrateMeliSessionFileFromDatabase(userId, sessionId);
+        if (restored.restored) {
+          upstream = await proxyMicroservice(
+            MELI_URL,
+            `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test`,
+            "POST",
+            {},
+            meliHeaders,
+            45_000,
+          );
+
+          if (upstream.error) {
+            const transientFailure = isTransientMicroserviceError(upstream.error);
+            if (transientFailure) {
+              await execute(
+                "UPDATE meli_sessions SET last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+                [`Falha temporária ao válidar sessão: ${upstream.error.message}`, sessionId, userId],
+              );
+            } else {
+              await execute(
+                "UPDATE meli_sessions SET status='error', last_checked_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+                [upstream.error.message, sessionId, userId],
+              );
+            }
+            fail(res, upstream.error.message, transientFailure ? 503 : 502);
+            return;
+          }
+
+          upstreamData = (upstream.data && typeof upstream.data === "object")
+            ? (upstream.data as Record<string, unknown>)
+            : {};
+          status = String(upstreamData.status || "error");
+          accountName = String(upstreamData.accountName || "");
+          mlUserId = String(upstreamData.mlUserId || "");
+          logs = Array.isArray(upstreamData.logs) ? upstreamData.logs : [];
+        } else if (restored.reason && !String(upstreamData.error || "").trim()) {
+          upstreamData.error = restored.reason;
+        }
+      }
+
       const firstErrorLog = logs.find((item) => {
         if (!item || typeof item !== "object") return false;
         const lvl = String((item as { level?: unknown }).level || "").toLowerCase();
@@ -7345,9 +9857,14 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
 
+      const currentName = String(owned.name || "").trim();
+      const nextName = currentName && !isLegacyMeliAutoSessionName(currentName)
+        ? currentName
+        : buildFriendlyMeliSessionName(sessionId, accountName);
+
       await execute(
-        "UPDATE meli_sessions SET status=$1, account_name=$2, ml_user_id=$3, last_checked_at=NOW(), error_message=$4 WHERE id=$5 AND user_id=$6",
-        [status, accountName, mlUserId, errorMessage, sessionId, userId],
+        "UPDATE meli_sessions SET status=$1, account_name=$2, ml_user_id=$3, last_checked_at=NOW(), error_message=$4, name=$7 WHERE id=$5 AND user_id=$6",
+        [status, accountName, mlUserId, errorMessage, sessionId, userId, nextName],
       );
 
       ok(res, {
@@ -7365,6 +9882,30 @@ rpcRouter.post("/rpc", async (req, res) => {
         [userId],
       );
       const canonical = data[0] || null;
+      const canonicalSessionId = canonical?.id ? String(canonical.id).trim() : "";
+      if (canonical && canonicalSessionId) {
+        const canonicalName = String(canonical.name || "").trim();
+        const canonicalAccountName = String(canonical.account_name || "").trim();
+        if (!canonicalName || isLegacyMeliAutoSessionName(canonicalName)) {
+          const upgradedName = buildFriendlyMeliSessionName(canonicalSessionId, canonicalAccountName);
+          canonical.name = upgradedName;
+          try {
+            await execute(
+              "UPDATE meli_sessions SET name = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3",
+              [upgradedName, canonicalSessionId, userId],
+            );
+          } catch {
+            // Non-fatal: use upgraded name in-memory for this response.
+          }
+        }
+      }
+      if (canonicalSessionId) {
+        try {
+          await maybeAlignMeliCookiesBackupOwner(userId, canonicalSessionId);
+        } catch (error) {
+          console.warn(`[meli] failed to realign backup pointer for user=${userId} session=${canonicalSessionId}: ${String(error)}`);
+        }
+      }
       const staleSessionIds = data.slice(1).map((row) => String(row.id || "").trim()).filter(Boolean);
       if (staleSessionIds.length > 0) {
         await execute("DELETE FROM meli_sessions WHERE user_id = $1 AND id = ANY($2)", [userId, staleSessionIds]);
@@ -7388,7 +9929,7 @@ rpcRouter.post("/rpc", async (req, res) => {
     }
     if (funcName === "meli-delete-session") {
       const sessionId = String(params.sessionId ?? "").trim();
-      if (!sessionId) { fail(res, "sessionId e obrigatório"); return; }
+      if (!sessionId) { fail(res, "sessionId é obrigatório"); return; }
       if (!isUuid(sessionId)) { fail(res, "sessionId inválido"); return; }
 
       const owned = await queryOne<{ id: string }>(
@@ -7413,6 +9954,10 @@ rpcRouter.post("/rpc", async (req, res) => {
       }
 
       await execute("DELETE FROM meli_sessions WHERE id=$1 AND user_id=$2", [sessionId, userId]);
+      await execute(
+        "DELETE FROM api_credentials WHERE user_id = $1 AND provider = $2",
+        [userId, MELI_SESSION_COOKIES_PROVIDER],
+      );
       ok(res, { success: true, warning });
       return;
     }
@@ -7429,7 +9974,7 @@ rpcRouter.post("/rpc", async (req, res) => {
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
-      const upstream = await proxyMicroservice(
+      let upstream = await proxyMicroservice(
         MELI_URL,
         "/api/meli/convert",
         "POST",
@@ -7439,9 +9984,29 @@ rpcRouter.post("/rpc", async (req, res) => {
       );
       if (upstream.error) { fail(res, upstream.error.message); return; }
 
-      const payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+      let payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
         ? (upstream.data as Record<string, unknown>)
         : {};
+      if (payload.success !== true && isMeliSessionFileMissingSignal(payload.error)) {
+        const restored = await rehydrateMeliSessionFileFromDatabase(userId, sessionId);
+        if (restored.restored) {
+          upstream = await proxyMicroservice(
+            MELI_URL,
+            "/api/meli/convert",
+            "POST",
+            { productUrl, sessionId: scopedSessionId },
+            meliHeaders,
+            90_000,
+          );
+          if (upstream.error) { fail(res, upstream.error.message); return; }
+          payload = (upstream.data && typeof upstream.data === "object")
+            ? (upstream.data as Record<string, unknown>)
+            : {};
+        } else if (restored.reason && !String(payload.error || "").trim()) {
+          payload.error = restored.reason;
+        }
+      }
+
       if (payload.success !== true) {
         fail(res, String(payload.error || "Falha ao converter link do Mercado Livre"));
         return;
@@ -7493,7 +10058,7 @@ rpcRouter.post("/rpc", async (req, res) => {
 
       const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
       const meliHeaders = { "x-autolinks-user-id": userId };
-      const upstream = await proxyMicroservice(
+      let upstream = await proxyMicroservice(
         MELI_URL,
         "/api/meli/convert/batch",
         "POST",
@@ -7503,10 +10068,37 @@ rpcRouter.post("/rpc", async (req, res) => {
       );
       if (upstream.error) { fail(res, upstream.error.message); return; }
 
-      const payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+      let payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
         ? (upstream.data as Record<string, unknown>)
         : {};
-      const rawResults = Array.isArray(payload.results) ? payload.results : [];
+      let rawResults = Array.isArray(payload.results) ? payload.results : [];
+
+      const shouldRetryAfterRestore = rawResults.length > 0
+        && rawResults.every((item) => {
+          const row = (item && typeof item === "object") ? item as Record<string, unknown> : {};
+          if (row.success === true) return false;
+          return isMeliSessionFileMissingSignal(row.error);
+        });
+
+      if (shouldRetryAfterRestore) {
+        const restored = await rehydrateMeliSessionFileFromDatabase(userId, sessionId);
+        if (restored.restored) {
+          upstream = await proxyMicroservice(
+            MELI_URL,
+            "/api/meli/convert/batch",
+            "POST",
+            { urls: dedupedUrls, sessionId: scopedSessionId },
+            meliHeaders,
+            120_000,
+          );
+          if (upstream.error) { fail(res, upstream.error.message); return; }
+          payload = (upstream.data && typeof upstream.data === "object")
+            ? (upstream.data as Record<string, unknown>)
+            : {};
+          rawResults = Array.isArray(payload.results) ? payload.results : [];
+        }
+      }
+
       const results = rawResults.map((item) => {
         const row = (item && typeof item === "object") ? item as Record<string, unknown> : {};
         return {
@@ -9318,7 +11910,7 @@ if (funcName === "admin-users") {
       }
       if (action === "set_name") {
         const tid = String(params.user_id ?? ""); const name = String(params.name ?? "").trim();
-        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (!name) { fail(res, "Nome obrigatório"); return; }
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (!name) { fail(res, "Nomé obrigatório"); return; }
         await execute("UPDATE users SET metadata = metadata || $1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify({ name }), tid]);
         await execute("UPDATE profiles SET name=$1, updated_at=NOW() WHERE user_id=$2", [name, tid]);
         await appendAudit("set_name", userId, tid, { name });
@@ -9362,10 +11954,12 @@ if (funcName === "admin-users") {
           ? ADMIN_PANEL_PLAN_ID
           : (requestedPlanId && validPlanIds.has(requestedPlanId) ? requestedPlanId : fallbackPlan);
         const createPasswordError = getPasswordPolicyError(password);
+        const disposableEmailError = getDisposableEmailError(email);
         if (!email || !isValidEmail(email) || createPasswordError) { fail(res, createPasswordError ? `Senha inválida: ${createPasswordError}` : "Informe email válido"); return; }
+        if (disposableEmailError) { fail(res, disposableEmailError, 400); return; }
         const exists = await queryOne("SELECT id FROM users WHERE email=$1", [email]);
         if (exists) { fail(res, "Email já cadastrado"); return; }
-        const hash = await bcrypt.hash(password, 10);
+        const hash = await bcrypt.hash(password, BCRYPT_COST);
         const newId = uuid();
         // Wrap 3 INSERTs in a transaction â€” if any fails, roll back to avoid orphan user/role/profile
         await transaction(async (client) => {
@@ -9505,7 +12099,7 @@ if (funcName === "admin-users") {
         const tid = String(params.user_id ?? ""); const pwd = String(params.password ?? "").trim();
         const resetPasswordError = getPasswordPolicyError(pwd);
         if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (resetPasswordError) { fail(res, resetPasswordError); return; }
-        const hash = await bcrypt.hash(pwd, 10);
+        const hash = await bcrypt.hash(pwd, BCRYPT_COST);
         // Inválidate all existing tokens immediately â€” the account must be secured after password reset
         await execute("UPDATE users SET password_hash=$1, token_invalidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
         await appendAudit("reset_password", userId, tid, {});
@@ -9602,5 +12196,3 @@ if (funcName === "admin-users") {
     res.status(500).json({ data: null, error: { message: msg } });
   }
 });
-
-

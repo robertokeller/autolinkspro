@@ -58,7 +58,7 @@ function Show-State([string]$Label, [array]$Rows) {
   $Rows | Sort-Object id | Format-Table id, online, processOnline, componentOnline, processStatus, uptimeSec -AutoSize | Out-String | Write-Output
 }
 
-Write-Host "Iniciando validacao de controles globais em $BaseUrl" -ForegroundColor Yellow
+Write-Host "Iniciando válidação de controles globais em $BaseUrl" -ForegroundColor Yellow
 
 $health = Invoke-JsonGet "$BaseUrl/health"
 $system = Invoke-JsonGet "$BaseUrl/api/system/health"
