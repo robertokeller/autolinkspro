@@ -417,10 +417,14 @@ app.use("/functions/v1/rpc", userRpcRateLimiter); // per-user fair-use guard (po
 app.use("/functions/v1/rpc", requireTrustedOriginForSessionWrite);
 app.use("/functions/v1", rpcRouter);
 
-// Health check — pings DB so container orchestrators get real liveness signal.
-// Anonymous callers get only { ok } — no service name, version, or timestamp that
-// could be used to fingerprint or target this endpoint.
+// Liveness check: process-level heartbeat for container healthchecks.
+// Keep this DB-independent so transient database issues do not restart the API container.
 app.get("/health", async (_req, res) => {
+  res.json({ ok: true, service: "autolinks-api", timestamp: new Date().toISOString() });
+});
+
+// Readiness check: validates database reachability for diagnostics/observability.
+app.get("/ready", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
     res.json({ ok: true, service: "autolinks-api", timestamp: new Date().toISOString() });
