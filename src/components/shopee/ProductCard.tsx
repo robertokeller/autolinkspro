@@ -40,7 +40,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
 
   const copyLink = () => {
     if (!product.affiliateLink) {
-      toast.error("Link não disponível");
+      toast.error("Link nao disponivel");
       return;
     }
     navigator.clipboard.writeText(product.affiliateLink);
@@ -60,7 +60,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
 
   const openAffiliateLink = () => {
     if (!product.affiliateLink) {
-      toast.error("Link não disponível para esse produto");
+      toast.error("Link nao disponivel para esse produto");
       return;
     }
     window.open(product.affiliateLink, "_blank");
