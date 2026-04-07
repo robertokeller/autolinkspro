@@ -13,6 +13,27 @@ import { appendFileSync } from "node:fs";
 import { getMeliProductSnapshot, listMeliVitrine, syncMeliVitrine } from "./meli-vitrine.js";
 import { getAmazonProductSnapshot, listAmazonVitrine, syncAmazonVitrine } from "./amazon-vitrine.js";
 import { getDisposableEmailError } from "./disposable-email.js";
+import {
+  loadKiwifyConfig,
+  saveKiwifyConfig,
+  kiwifyGetAccountDetails,
+  kiwifyListProducts,
+  kiwifyListSales,
+  kiwifyRefundSale,
+  kiwifyGetStats,
+  kiwifyGetBalance,
+  kiwifyListAffiliates,
+  kiwifyGetAffiliate,
+  kiwifyEditAffiliate,
+  kiwifyListWebhooks,
+  kiwifyCreateWebhook,
+  kiwifyDeleteWebhook,
+  loadPlanMappings,
+  savePlanMapping,
+  deletePlanMapping,
+  KIWIFY_WEBHOOK_TRIGGERS,
+} from "./kiwify/client.js";
+import { activateUserPlan } from "./kiwify/webhook-handler.js";
 
 export const rpcRouter = Router();
 // Public RPC is enabled by default so link-hub and master-group pages work for
@@ -243,6 +264,20 @@ rpcRouter.post("/rpc", async (req, res, next) => {
       error: null,
     });
   } catch {
+    res.status(500).json({ data: null, error: { message: "Erro interno" } });
+  }
+});
+
+rpcRouter.post("/rpc", async (req, res, next) => {
+  if (String(req.body?.name ?? "") !== "kiwify-plan-mappings") { next(); return; }
+  try {
+    const mappings = await query(
+      "SELECT plan_id, period_type, kiwify_checkout_url, affiliate_enabled FROM kiwify_plan_mappings WHERE is_active = TRUE"
+    );
+    ok(res, { mappings });
+    return;
+  } catch (error) {
+    console.error("[rpc] kiwify-plan-mappings error:", error instanceof Error ? error.message : error);
     res.status(500).json({ data: null, error: { message: "Erro interno" } });
   }
 });
@@ -12187,6 +12222,293 @@ if (funcName === "admin-users") {
       await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'session_event','Conta','Plano','success',$3,'system','text','processed','','')",
         [uuid(), userId, JSON.stringify({ message: `Plano alterado para ${targetPlan.name}`, plan_id: nextPlanId })]);
       ok(res, { success: true, plan_id: nextPlanId, plan_expires_at: newExpiry }); return;
+    }
+
+    if (funcName === "admin-kiwify") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado"); return; }
+      const action = String(params.action ?? "");
+
+      if (action === "get_config") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg) { ok(res, { config: null }); return; }
+        ok(res, {
+          config: {
+            account_id: cfg.account_id,
+            client_id_set: !!cfg.client_id,
+            client_secret_set: !!cfg.client_secret,
+            webhook_secret_set: !!cfg.webhook_secret,
+            affiliate_enabled: cfg.affiliate_enabled,
+            grace_period_days: cfg.grace_period_days,
+          },
+        });
+        return;
+      }
+
+      if (action === "save_config") {
+        const clientId = String(params.client_id ?? "").trim();
+        const clientSecret = String(params.client_secret ?? "").trim();
+        const accountId = String(params.account_id ?? "").trim();
+        const webhookSecret = String(params.webhook_secret ?? "").trim();
+        const affiliateEnabled = params.affiliate_enabled === true;
+        const gracePeriodDays = Math.max(0, Math.min(30, Number(params.grace_period_days) || 3));
+
+        if (!accountId) { fail(res, "account_id é obrigatório"); return; }
+
+        const existingCfg = await loadKiwifyConfig();
+        if (!existingCfg && (!clientId || !clientSecret)) {
+          fail(res, "Na primeira configuração, client_id e client_secret são obrigatórios"); return;
+        }
+
+        await saveKiwifyConfig({
+          client_id: clientId || (existingCfg?.client_id ?? ""),
+          client_secret: clientSecret || (existingCfg?.client_secret ?? ""),
+          account_id: accountId,
+          webhook_secret: webhookSecret || (existingCfg?.webhook_secret ?? ""),
+          affiliate_enabled: affiliateEnabled,
+          grace_period_days: gracePeriodDays,
+        });
+        await appendAudit("kiwify_config_save", userId, null, { account_id: accountId });
+        ok(res, { success: true }); return;
+      }
+
+      if (action === "test_connection") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        try {
+          const details = await kiwifyGetAccountDetails(cfg);
+          ok(res, { success: true, account: details }); return;
+        } catch (error) {
+          fail(res, `Falha na conexão: ${error instanceof Error ? error.message : error}`); return;
+        }
+      }
+
+      if (action === "list_products") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const page = Math.max(1, Number(params.page) || 1);
+        const result = await kiwifyListProducts(cfg, page);
+        ok(res, result); return;
+      }
+
+      if (action === "list_mappings") {
+        const mappings = await loadPlanMappings();
+        ok(res, { mappings }); return;
+      }
+
+      if (action === "save_mapping") {
+        const planId = String(params.plan_id ?? "").trim();
+        if (!planId) { fail(res, "plan_id obrigatório"); return; }
+        const periodType = String(params.period_type ?? "monthly").trim();
+        const validPeriods = ["monthly", "quarterly", "semiannual", "annual"];
+        if (!validPeriods.includes(periodType)) { fail(res, "period_type inválido"); return; }
+        await savePlanMapping({
+          plan_id: planId,
+          period_type: periodType,
+          kiwify_product_id: String(params.kiwify_product_id ?? "").trim(),
+          kiwify_product_name: String(params.kiwify_product_name ?? "").trim(),
+          kiwify_checkout_url: String(params.kiwify_checkout_url ?? "").trim(),
+          affiliate_enabled: params.affiliate_enabled === true,
+          affiliate_commission_percent: Math.max(0, Math.min(100, Number(params.affiliate_commission_percent) || 0)),
+          is_active: params.is_active !== false,
+        });
+        await appendAudit("kiwify_mapping_save", userId, null, { plan_id: planId, period_type: periodType });
+        ok(res, { success: true }); return;
+      }
+
+      if (action === "delete_mapping") {
+        const planId = String(params.plan_id ?? "").trim();
+        if (!planId) { fail(res, "plan_id obrigatório"); return; }
+        const periodType = params.period_type ? String(params.period_type).trim() : undefined;
+        await deletePlanMapping(planId, periodType);
+        await appendAudit("kiwify_mapping_delete", userId, null, { plan_id: planId, period_type: periodType ?? "all" });
+        ok(res, { success: true }); return;
+      }
+
+      if (action === "list_transactions") {
+        const page = Math.max(1, Number(params.page) || 1);
+        const limit = Math.min(100, Math.max(1, Number(params.limit) || 50));
+        const offset = (page - 1) * limit;
+        const filters: string[] = [];
+        const values: unknown[] = [];
+        let idx = 1;
+
+        if (params.status) { filters.push(`status = $${idx++}`); values.push(String(params.status)); }
+        if (params.event_type) { filters.push(`event_type = $${idx++}`); values.push(String(params.event_type)); }
+        if (params.customer_email) { filters.push(`LOWER(customer_email) LIKE $${idx++}`); values.push(`%${String(params.customer_email).toLowerCase()}%`); }
+        if (params.plan_id) { filters.push(`plan_id = $${idx++}`); values.push(String(params.plan_id)); }
+
+        const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+        const rows = await query(
+          `SELECT * FROM kiwify_transactions ${where} ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
+          [...values, limit, offset]
+        );
+        const countRow = await queryOne(`SELECT COUNT(*)::int AS total FROM kiwify_transactions ${where}`, values);
+        ok(res, { transactions: rows, total: countRow?.total ?? 0, page, limit }); return;
+      }
+
+      if (action === "link_transaction") {
+        const txId = String(params.transaction_id ?? "").trim();
+        const targetUserId = String(params.user_id ?? "").trim();
+        if (!txId || !targetUserId) { fail(res, "transaction_id e user_id obrigatórios"); return; }
+        const tx = await queryOne("SELECT * FROM kiwify_transactions WHERE id = $1", [txId]);
+        if (!tx) { fail(res, "Transação não encontrada"); return; }
+        const planId = String(tx.plan_id);
+        if (planId) {
+          await activateUserPlan(targetUserId, planId);
+        }
+        await execute("UPDATE kiwify_transactions SET user_id=$1, status='activated', processed_at=NOW() WHERE id=$2", [targetUserId, txId]);
+        await appendAudit("kiwify_link_transaction", userId, targetUserId, { transaction_id: txId, plan_id: planId });
+        ok(res, { success: true }); return;
+      }
+
+      if (action === "list_sales") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const startDate = String(params.start_date ?? "");
+        const endDate = String(params.end_date ?? "");
+        if (!startDate || !endDate) { fail(res, "start_date e end_date obrigatórios"); return; }
+        const result = await kiwifyListSales(cfg, {
+          start_date: startDate,
+          end_date: endDate,
+          status: params.status ? String(params.status) : undefined,
+          product_id: params.product_id ? String(params.product_id) : undefined,
+          affiliate_id: params.affiliate_id ? String(params.affiliate_id) : undefined,
+          page_number: params.page ? Number(params.page) : undefined,
+          page_size: params.page_size ? Number(params.page_size) : undefined,
+          view_full_sale_details: params.view_full_sale_details === true,
+        });
+        ok(res, result); return;
+      }
+
+      if (action === "refund_sale") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const saleId = String(params.sale_id ?? "").trim();
+        if (!saleId) { fail(res, "sale_id obrigatório"); return; }
+        const pixKey = params.pix_key ? String(params.pix_key).trim() : undefined;
+        const result = await kiwifyRefundSale(cfg, saleId, pixKey);
+        await appendAudit("kiwify_refund", userId, null, { sale_id: saleId });
+        ok(res, result); return;
+      }
+
+      if (action === "list_affiliates") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const result = await kiwifyListAffiliates(cfg, {
+          status: params.status ? String(params.status) : undefined,
+          product_id: params.product_id ? String(params.product_id) : undefined,
+          search: params.search ? String(params.search) : undefined,
+          page_number: params.page ? Number(params.page) : undefined,
+        });
+        ok(res, result); return;
+      }
+
+      if (action === "get_affiliate") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const affId = String(params.affiliate_id ?? "").trim();
+        if (!affId) { fail(res, "affiliate_id obrigatório"); return; }
+        const result = await kiwifyGetAffiliate(cfg, affId);
+        ok(res, result); return;
+      }
+
+      if (action === "edit_affiliate") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const affId = String(params.affiliate_id ?? "").trim();
+        if (!affId) { fail(res, "affiliate_id obrigatório"); return; }
+        const data: { commission?: number; status?: "active" | "blocked" | "refused" } = {};
+        if (params.commission != null) data.commission = Number(params.commission);
+        if (params.status) data.status = String(params.status) as "active" | "blocked" | "refused";
+        const result = await kiwifyEditAffiliate(cfg, affId, data);
+        await appendAudit("kiwify_edit_affiliate", userId, null, { affiliate_id: affId, ...data });
+        ok(res, result); return;
+      }
+
+      if (action === "get_stats") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const stats = await kiwifyGetStats(cfg, {
+          product_id: params.product_id ? String(params.product_id) : undefined,
+          start_date: params.start_date ? String(params.start_date) : undefined,
+          end_date: params.end_date ? String(params.end_date) : undefined,
+        });
+        ok(res, { stats }); return;
+      }
+
+      if (action === "get_balance") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const balance = await kiwifyGetBalance(cfg);
+        ok(res, { balance }); return;
+      }
+
+      if (action === "list_webhooks") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const result = await kiwifyListWebhooks(cfg);
+        ok(res, result); return;
+      }
+
+      if (action === "setup_webhook") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const webhookUrl = String(params.webhook_url ?? "").trim();
+        if (!webhookUrl) { fail(res, "webhook_url obrigatório"); return; }
+        const webhookName = String(params.webhook_name || "AutoLinks Webhook").trim();
+        const result = await kiwifyCreateWebhook(cfg, {
+          name: webhookName,
+          url: webhookUrl,
+          products: "all",
+          triggers: [...KIWIFY_WEBHOOK_TRIGGERS],
+          token: cfg.webhook_secret,
+        });
+        await appendAudit("kiwify_webhook_setup", userId, null, { webhook_url: webhookUrl });
+        ok(res, result); return;
+      }
+
+      if (action === "delete_webhook") {
+        const cfg = await loadKiwifyConfig();
+        if (!cfg || !cfg.client_id) { fail(res, "Kiwify não configurado"); return; }
+        const whId = String(params.webhook_id ?? "").trim();
+        if (!whId) { fail(res, "webhook_id obrigatório"); return; }
+        await kiwifyDeleteWebhook(cfg, whId);
+        await appendAudit("kiwify_webhook_delete", userId, null, { webhook_id: whId });
+        ok(res, { success: true }); return;
+      }
+
+      if (action === "list_webhook_logs") {
+        const page = Math.max(1, Number(params.page) || 1);
+        const limit = Math.min(100, Math.max(1, Number(params.limit) || 50));
+        const offset = (page - 1) * limit;
+        const rows = await query(
+          "SELECT * FROM kiwify_webhooks_log ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+          [limit, offset]
+        );
+        const countRow = await queryOne("SELECT COUNT(*)::int AS total FROM kiwify_webhooks_log");
+        ok(res, { logs: rows, total: countRow?.total ?? 0, page, limit }); return;
+      }
+
+      fail(res, "Ação Kiwify inválida"); return;
+    }
+
+    if (funcName === "kiwify-checkout-url") {
+      const planId = String(params.plan_id ?? "").trim();
+      if (!planId) { fail(res, "plan_id obrigatório"); return; }
+      const mapping = await queryOne(
+        "SELECT kiwify_checkout_url FROM kiwify_plan_mappings WHERE plan_id = $1 AND is_active = TRUE",
+        [planId]
+      );
+      if (!mapping || !mapping.kiwify_checkout_url) {
+        fail(res, "Checkout não disponível para este plano"); return;
+      }
+      const profile = await queryOne("SELECT email FROM profiles WHERE user_id=$1", [userId]);
+      let checkoutUrl = String(mapping.kiwify_checkout_url);
+      if (profile?.email) {
+        const sep = checkoutUrl.includes("?") ? "&" : "?";
+        checkoutUrl += `${sep}email=${encodeURIComponent(String(profile.email))}`;
+      }
+      ok(res, { checkout_url: checkoutUrl }); return;
     }
 
     fail(res, `Função não implementada: ${funcName}`);

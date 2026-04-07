@@ -142,6 +142,7 @@ export const Pages = {
   AdminDashboard: lazyPage("AdminDashboard", "/src/pages/admin/AdminDashboard.tsx", () => import("@/pages/admin/AdminDashboard")),
   AdminUsers: lazyPage("AdminUsers", "/src/pages/admin/AdminUsers.tsx", () => import("@/pages/admin/AdminUsers")),
   AdminPlans: lazyPage("AdminPlans", "/src/pages/admin/AdminPlans.tsx", () => import("@/pages/admin/AdminPlans")),
+  AdminKiwify: lazyPage("AdminKiwify", "/src/pages/admin/AdminKiwify.tsx", () => import("@/pages/admin/AdminKiwify")),
   AdminAccess: lazyPage("AdminAccess", "/src/pages/admin/AdminAccess.tsx", () => import("@/pages/admin/AdminAccess")),
   AdminLogs: lazyPage("AdminLogs", "/src/pages/admin/AdminLogs.tsx", () => import("@/pages/admin/AdminLogs")),
   AdminNotifications: lazyPage("AdminNotifications", "/src/pages/admin/AdminNotifications.tsx", () => import("@/pages/admin/AdminNotifications")),

@@ -1,4 +1,4 @@
-import { getPlanFeatureList, plans as staticPlans, type Plan, type PlanLimits } from "@/lib/plans";
+import { getPlanFeatureList, plans as staticPlans, type Plan, type PlanLimits, type PlanPeriodConfig, type BillingPeriodType } from "@/lib/plans";
 import { loadAdminConfig, saveAdminConfig, subscribeLocalDbChanges } from "@/integrations/backend/local-core";
 
 export type AppFeature =
@@ -56,6 +56,16 @@ export interface ManagedPlan extends Plan {
   // billingPeriod and monthlyEquivalentPrice are inherited from Plan
   /** Base limits before access level caps are applied. Admin-editable. */
   baseLimits?: PlanLimits;
+  /** Kiwify product ID linked to this plan (from kiwify_plan_mappings) */
+  kiwifyProductId?: string;
+  /** Kiwify checkout URL for purchasing this plan */
+  kiwifyCheckoutUrl?: string;
+  /** Whether affiliates are enabled for this product on Kiwify */
+  kiwifyAffiliateEnabled?: boolean;
+  /** Affiliate commission percentage on Kiwify */
+  kiwifyAffiliateCommissionPercent?: number;
+  /** Per-period pricing and Kiwify configs (4 periods: monthly/quarterly/semiannual/annual) */
+  periods?: PlanPeriodConfig[];
 }
 
 export interface AdminControlPlaneState {
@@ -271,9 +281,12 @@ function ensureUniqueFeatures(features: AppFeature[]): AppFeature[] {
 
 function pickDefaultAccessForPlan(planId: string) {
   if (planId === "plan-starter") return "level-business"; // trial gets all features
-  if (planId === "plan-start" || planId === "plan-start-annual") return "level-starter";
-  if (planId === "plan-pro" || planId === "plan-pro-annual") return "level-pro";
-  if (planId === "plan-business" || planId === "plan-business-annual") return "level-business";
+  if (planId === "plan-start-annual") return "level-starter";
+  if (planId === "plan-pro-annual") return "level-pro";
+  if (planId === "plan-business-annual") return "level-business";
+  if (planId === "plan-start") return "level-starter";
+  if (planId === "plan-pro") return "level-pro";
+  if (planId === "plan-business") return "level-business";
   return "level-business";
 }
 
@@ -322,28 +335,24 @@ const DEFAULT_PLAN_DESCRIPTIONS: Record<string, string> = {
 
 function defaultManagedPlans(): ManagedPlan[] {
   return staticPlans.map((plan, index) => {
-    // Annual plans reuse the highlights from their monthly counterpart
-    const highlightKey = plan.id.replace("-annual", "");
-    const highlights = DEFAULT_PLAN_HIGHLIGHTS[highlightKey] || getPlanFeatureList(plan).slice(0, 6);
+    const highlights = DEFAULT_PLAN_HIGHLIGHTS[plan.id] || getPlanFeatureList(plan).slice(0, 6);
     const description = DEFAULT_PLAN_DESCRIPTIONS[plan.id] || "Plano ideal para sua operacao atual.";
-    // Trial and annual plans are not shown on home or in account selection
     const isTrial = plan.id === "plan-starter";
-    const isAnnual = plan.billingPeriod === "annual";
+    const isLegacyAnnual = plan.id.endsWith("-annual");
     return {
       ...plan,
       accessLevelId: pickDefaultAccessForPlan(plan.id),
-      visibleOnHome: plan.isActive && !isTrial,
-      visibleInAccount: plan.isActive && !isTrial,
+      visibleOnHome: plan.isActive && !isTrial && !isLegacyAnnual,
+      visibleInAccount: plan.isActive && !isTrial && !isLegacyAnnual,
       sortOrder: index,
       homeTitle: plan.name,
       homeDescription: description,
       homeCtaText: plan.price === 0 ? "Criar conta grátis" : `Assinar ${plan.name}`,
-      homeFeatureHighlights: isAnnual
-        ? [...highlights, "✓ 2 meses grátis (economia de 17%)"]
-        : highlights,
+      homeFeatureHighlights: highlights,
       accountTitle: plan.name,
       accountDescription: description,
       baseLimits: { ...plan.limits },
+      periods: plan.periods ? [...plan.periods] : [],
     };
   });
 }
@@ -412,6 +421,39 @@ export function normalizeAdminControlPlaneState(input: AdminControlPlaneState | 
         const basePlan = staticPlans.find((item) => item.id === plan.id) || staticPlans[0];
         const storedBaseLimits = (plan as { baseLimits?: Partial<PlanLimits> }).baseLimits;
         const baseLimits = normalizeLimits(storedBaseLimits ?? plan.limits, basePlan.limits);
+
+        // Normalize periods[] — preserve stored periods or fall back to static catalog
+        const normalizedPeriods: PlanPeriodConfig[] = (() => {
+          const stored = (plan as { periods?: unknown }).periods;
+          if (Array.isArray(stored) && stored.length > 0) {
+            return stored
+              .filter((p): p is PlanPeriodConfig =>
+                p != null && typeof p === "object" &&
+                ["monthly", "quarterly", "semiannual", "annual"].includes((p as { type?: unknown }).type as string)
+              )
+              .map((p) => ({
+                type: (p as PlanPeriodConfig).type,
+                price: Number((p as PlanPeriodConfig).price) || 0,
+                monthlyEquivalentPrice: typeof (p as PlanPeriodConfig).monthlyEquivalentPrice === "number"
+                  ? (p as PlanPeriodConfig).monthlyEquivalentPrice
+                  : undefined,
+                kiwifyProductId: typeof (p as PlanPeriodConfig).kiwifyProductId === "string"
+                  ? (p as PlanPeriodConfig).kiwifyProductId
+                  : undefined,
+                kiwifyCheckoutUrl: typeof (p as PlanPeriodConfig).kiwifyCheckoutUrl === "string"
+                  ? (p as PlanPeriodConfig).kiwifyCheckoutUrl
+                  : undefined,
+                isActive: Boolean((p as PlanPeriodConfig).isActive ?? true),
+              }));
+          }
+          return basePlan.periods ? [...basePlan.periods] : [];
+        })();
+
+        const billingPeriod = (["monthly", "quarterly", "semiannual", "annual"] as BillingPeriodType[])
+          .includes(plan.billingPeriod as BillingPeriodType)
+          ? (plan.billingPeriod as BillingPeriodType)
+          : (basePlan.billingPeriod ?? "monthly");
+
         return {
           id: String(plan.id),
           name: String(plan.name || basePlan.name),
@@ -439,9 +481,7 @@ export function normalizeAdminControlPlaneState(input: AdminControlPlaneState | 
                 name: String(plan.name || basePlan.name),
                 price: Number(plan.price ?? basePlan.price),
                 period: String(plan.period || basePlan.period),
-                billingPeriod: (plan.billingPeriod === "monthly" || plan.billingPeriod === "annual")
-                  ? plan.billingPeriod
-                  : (basePlan.billingPeriod ?? "monthly"),
+                billingPeriod,
                 monthlyEquivalentPrice: typeof plan.monthlyEquivalentPrice === "number"
                   ? plan.monthlyEquivalentPrice
                   : basePlan.monthlyEquivalentPrice,
@@ -450,13 +490,12 @@ export function normalizeAdminControlPlaneState(input: AdminControlPlaneState | 
               }).slice(0, 6),
           accountTitle: String(plan.accountTitle || plan.name || basePlan.name),
           accountDescription: String(plan.accountDescription || "Seu plano atual e os limites disponiveis para uso."),
-          billingPeriod: (plan.billingPeriod === "monthly" || plan.billingPeriod === "annual")
-            ? plan.billingPeriod
-            : (basePlan.billingPeriod ?? "monthly"),
+          billingPeriod,
           monthlyEquivalentPrice: typeof plan.monthlyEquivalentPrice === "number"
             ? plan.monthlyEquivalentPrice
             : basePlan.monthlyEquivalentPrice,
           baseLimits,
+          periods: normalizedPeriods,
         };
       })
     : [];

@@ -21,22 +21,39 @@ export default function Index() {
   const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>("monthly");
 
   const publicPlans: LandingPlanCard[] = state.plans
-    .filter((plan) => plan.isActive && plan.visibleOnHome && (plan.billingPeriod ?? "monthly") === billingPeriod)
-    .sort((a, b) => a.price - b.price)
+    .filter((plan) => {
+      if (!plan.isActive || !plan.visibleOnHome) return false;
+      // New model: plan must have an active period matching the selected billingPeriod
+      if (Array.isArray(plan.periods) && plan.periods.length > 0) {
+        return plan.periods.some((p) => p.type === billingPeriod && p.isActive);
+      }
+      // Legacy fallback: use top-level billingPeriod
+      return (plan.billingPeriod ?? "monthly") === billingPeriod;
+    })
+    .sort((a, b) => a.sortOrder - b.sortOrder)
     .slice(0, 3)
-    .map((plan) => ({
-      id: plan.id,
-      name: plan.homeTitle || plan.name,
-      priceLabel: plan.price === 0 ? "Grátis" : `R$${plan.price.toFixed(2).replace(".", ",")}`,
-      period: plan.period,
-      monthlyEquivalentPrice: plan.monthlyEquivalentPrice,
-      description: plan.homeDescription,
-      features: Array.isArray(plan.homeFeatureHighlights) && plan.homeFeatureHighlights.length > 0
-        ? plan.homeFeatureHighlights.slice(0, 6)
-        : [],
-      cta: plan.homeCtaText || (plan.price === 0 ? "Começar grátis" : `Assinar ${plan.name}`),
-      highlight: plan.id === "plan-pro" || plan.id === "plan-pro-annual",
-    }));
+    .map((plan) => {
+      // Get price and checkout URL from the matching period
+      const period = (plan.periods ?? []).find((p) => p.type === billingPeriod);
+      const price = period?.price ?? plan.price;
+      const checkoutUrl = period?.kiwifyCheckoutUrl ?? plan.kiwifyCheckoutUrl;
+      const monthlyEq = period?.monthlyEquivalentPrice ?? (billingPeriod === "monthly" ? undefined : plan.monthlyEquivalentPrice);
+
+      return {
+        id: plan.id,
+        name: plan.homeTitle || plan.name,
+        priceLabel: price === 0 ? "Grátis" : `R$${price.toFixed(2).replace(".", ",")}`,
+        period: billingPeriod === "monthly" ? "/mês" : billingPeriod === "quarterly" ? "/trimestre" : billingPeriod === "semiannual" ? "/semestre" : "/ano",
+        monthlyEquivalentPrice: monthlyEq,
+        description: plan.homeDescription,
+        features: Array.isArray(plan.homeFeatureHighlights) && plan.homeFeatureHighlights.length > 0
+          ? plan.homeFeatureHighlights.slice(0, 6)
+          : [],
+        cta: plan.homeCtaText || (price === 0 ? "Começar grátis" : `Assinar ${plan.name}`),
+        ctaHref: checkoutUrl || undefined,
+        highlight: plan.id === "plan-pro",
+      };
+    });
 
   const isAuthenticated = Boolean(user);
 

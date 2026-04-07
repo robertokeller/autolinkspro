@@ -2,7 +2,7 @@ import { RouteGuard } from "@/components/RouteGuard";
 import { AdminLayout } from "@/components/layout/AdminLayout";
 import { ROUTES } from "@/lib/routes";
 import { Pages } from "@/routes/lazy-pages";
-import { Route } from "react-router-dom";
+import { Navigate, Route } from "react-router-dom";
 
 export function AdminRoutes() {
   return (
@@ -16,6 +16,7 @@ export function AdminRoutes() {
         <Route path={ROUTES.admin.notifications} element={<Pages.AdminNotifications />} />
         <Route path={ROUTES.admin.whatsapp} element={<Pages.AdminWhatsApp />} />
         <Route path={ROUTES.admin.mensagens} element={<Pages.AdminMensagens />} />
+        <Route path={ROUTES.admin.kiwify} element={<Navigate to={`${ROUTES.admin.plans}?tab=kiwify`} replace />} />
       </Route>
     </Route>
   );

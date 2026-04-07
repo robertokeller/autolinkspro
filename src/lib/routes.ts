@@ -47,6 +47,7 @@ export const ROUTES = {
     root: "/admin",
     users: "/admin/users",
     plans: "/admin/plans",
+    kiwify: "/admin/kiwify",
     access: "/admin/access",
     logs: "/admin/logs",
     notifications: "/admin/notifications",

@@ -22,17 +22,57 @@ export interface PlanLimits {
   linkHub: boolean;
 }
 
+/** All supported billing period types */
+export type BillingPeriodType = "monthly" | "quarterly" | "semiannual" | "annual";
+
+/** Days in each billing cycle */
+export const PERIOD_DAYS: Record<BillingPeriodType, number> = {
+  monthly: 30,
+  quarterly: 90,
+  semiannual: 180,
+  annual: 365,
+};
+
+/** Human-readable label for each period */
+export const PERIOD_LABELS: Record<BillingPeriodType, string> = {
+  monthly: "Mensal",
+  quarterly: "Trimestral",
+  semiannual: "Semestral",
+  annual: "Anual",
+};
+
+/** Per-period pricing and Kiwify config for a plan */
+export interface PlanPeriodConfig {
+  type: BillingPeriodType;
+  /** Total price for this billing period */
+  price: number;
+  /** Monthly equivalent (for display — calculated automatically if not set) */
+  monthlyEquivalentPrice?: number;
+  /** Kiwify product ID for this period */
+  kiwifyProductId?: string;
+  /** Kiwify checkout URL for this period */
+  kiwifyCheckoutUrl?: string;
+  /** Whether this period variant is available for purchase */
+  isActive: boolean;
+}
+
 export interface Plan {
   id: string;
   name: string;
   price: number;
   period: string;
-  /** Whether this is a monthly or annual plan */
-  billingPeriod: "monthly" | "annual";
+  /** Primary billing period (kept for backward compat) */
+  billingPeriod: BillingPeriodType;
   /** For annual plans: the monthly equivalent price to show in the UI */
   monthlyEquivalentPrice?: number;
   limits: PlanLimits;
   isActive: boolean;
+  /** Kiwify product ID linked to this plan (set via admin mapping) */
+  kiwifyProductId?: string;
+  /** Kiwify checkout URL for purchasing this plan */
+  kiwifyCheckoutUrl?: string;
+  /** Per-period pricing configs (new model — 4 periods per plan) */
+  periods?: PlanPeriodConfig[];
 }
 
 // ─── Shared limit sets ─────────────────────────────────────────────────────────
@@ -72,29 +112,51 @@ export const plans: Plan[] = [
     billingPeriod: "monthly",
     limits: TRIAL_LIMITS,
     isActive: true,
+    periods: [],
   },
 
-  // ── Monthly paid plans ────────────────────────────────────────────────────────
+  // ── Start ─────────────────────────────────────────────────────────────────────
   {
     id: "plan-start", name: "Start", price: 77, period: "30 dias",
     billingPeriod: "monthly",
     limits: START_LIMITS,
     isActive: true,
+    periods: [
+      { type: "monthly",    price: 77,   isActive: true },
+      { type: "quarterly",  price: 207,  monthlyEquivalentPrice: 69.00,  isActive: true },
+      { type: "semiannual", price: 390,  monthlyEquivalentPrice: 65.00,  isActive: true },
+      { type: "annual",     price: 770,  monthlyEquivalentPrice: 64.17,  isActive: true },
+    ],
   },
+
+  // ── Pro ───────────────────────────────────────────────────────────────────────
   {
     id: "plan-pro", name: "Pro", price: 147, period: "30 dias",
     billingPeriod: "monthly",
     limits: PRO_LIMITS,
     isActive: true,
+    periods: [
+      { type: "monthly",    price: 147,  isActive: true },
+      { type: "quarterly",  price: 396,  monthlyEquivalentPrice: 132.00, isActive: true },
+      { type: "semiannual", price: 750,  monthlyEquivalentPrice: 125.00, isActive: true },
+      { type: "annual",     price: 1470, monthlyEquivalentPrice: 122.50, isActive: true },
+    ],
   },
+
+  // ── Business ──────────────────────────────────────────────────────────────────
   {
     id: "plan-business", name: "Business", price: 197, period: "30 dias",
     billingPeriod: "monthly",
     limits: BUSINESS_LIMITS,
     isActive: true,
+    periods: [
+      { type: "monthly",    price: 197,  isActive: true },
+      { type: "quarterly",  price: 531,  monthlyEquivalentPrice: 177.00, isActive: true },
+      { type: "semiannual", price: 1002, monthlyEquivalentPrice: 167.00, isActive: true },
+      { type: "annual",     price: 1970, monthlyEquivalentPrice: 164.17, isActive: true },
+    ],
   },
 
-  // ── Annual paid plans (2 months free = 10× monthly price) ────────────────────
   {
     id: "plan-start-annual", name: "Start Anual", price: 770, period: "365 dias",
     billingPeriod: "annual", monthlyEquivalentPrice: 64.17,
@@ -112,14 +174,6 @@ export const plans: Plan[] = [
     billingPeriod: "annual", monthlyEquivalentPrice: 164.17,
     limits: BUSINESS_LIMITS,
     isActive: true,
-  },
-
-  // ── Legacy (kept for backward compat; hidden from UI) ─────────────────────────
-  {
-    id: "plan-enterprise", name: "Enterprise", price: 249.90, period: "30 dias",
-    billingPeriod: "monthly",
-    limits: BUSINESS_LIMITS,
-    isActive: false,
   },
 ];
 

@@ -7,6 +7,7 @@ import { queryOne, execute } from "./db.js";
 import { getPasswordPolicyError } from "./password-policy.js";
 import { isEmailDeliveryConfigured, sendEmail } from "./mailer.js";
 import { getDisposableEmailError } from "./disposable-email.js";
+import { activatePendingKiwifyPurchases } from "./kiwify/webhook-handler.js";
 
 const SECRET = (() => {
   const s = process.env.JWT_SECRET;
@@ -758,6 +759,11 @@ authRouter.post("/signup", async (req, res) => {
     await execute("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,$5)", [id, normalizedEmail, hash, JSON.stringify(metadata), null]);
     await execute("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,'user')", [uuid(), id]);
     await execute("INSERT INTO profiles (id, user_id, name, email, plan_id, phone) VALUES ($1,$2,$3,$4,$5,$6)", [uuid(), id, name, normalizedEmail, signupPlanId, phone]);
+    try {
+      await activatePendingKiwifyPurchases(id, normalizedEmail);
+    } catch (error) {
+      console.error("[auth] kiwify pending activation error:", error);
+    }
     const verifyToken = await createAuthEmailToken(id, "email_verification", VERIFY_TOKEN_TTL_MINUTES);
 
     const user = await getUserWithRole(id);

@@ -19,12 +19,13 @@ import {
 } from "@/components/ui/sidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { ROUTES } from "@/lib/routes";
-import { Bell, CreditCard, KeyRound, LayoutDashboard, LogOut, MessageSquare, MessagesSquare, ScrollText, Shield, Users } from "lucide-react";
+import { Bell, CreditCard, KeyRound, LayoutDashboard, LogOut, MessageSquare, MessagesSquare, ScrollText, Shield, Users, Wallet } from "lucide-react";
 
 const adminNav = [
   { title: "Dashboard", icon: LayoutDashboard, href: ROUTES.admin.root },
   { title: "Usuários", icon: Users, href: ROUTES.admin.users },
   { title: "Planos", icon: CreditCard, href: ROUTES.admin.plans },
+  { title: "Kiwify", icon: Wallet, href: `${ROUTES.admin.plans}?tab=kiwify` },
   { title: "Notificações", icon: Bell, href: ROUTES.admin.notifications },
   { title: "Logs do Sistema", icon: ScrollText, href: ROUTES.admin.logs },
   { title: "Controle de Acesso", icon: KeyRound, href: ROUTES.admin.access },
@@ -36,8 +37,19 @@ function AdminSidebar() {
   const location = useLocation();
   const { signOut } = useAuth();
 
-  const isActive = (href: string) =>
-    href === ROUTES.admin.root ? location.pathname === ROUTES.admin.root : location.pathname.startsWith(href);
+  const isActive = (href: string) => {
+    if (href === ROUTES.admin.root) return location.pathname === ROUTES.admin.root;
+    const [hrefPath, hrefQuery] = href.split("?");
+    if (hrefQuery) {
+      const params = new URLSearchParams(hrefQuery);
+      const locationParams = new URLSearchParams(location.search);
+      return location.pathname.startsWith(hrefPath) && params.get("tab") === locationParams.get("tab");
+    }
+    if (href === ROUTES.admin.plans) {
+      return location.pathname.startsWith(href) && !location.search.includes("tab=");
+    }
+    return location.pathname.startsWith(href);
+  };
 
   return (
     <Sidebar collapsible="icon" className="border-r-0">

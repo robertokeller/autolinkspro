@@ -90,7 +90,7 @@ export default function SettingsPage() {
     templates: 0,
   });
   const [plansModalOpen, setPlansModalOpen] = useState(false);
-  const [plansBillingPeriod, setPlansBillingPeriod] = useState<"monthly" | "annual">("monthly");
+  const [plansBillingPeriod, setPlansBillingPeriod] = useState<"monthly" | "quarterly" | "semiannual" | "annual">("monthly");
   const [prorationDialog, setProrationDialog] = useState<ProrationState | null>(null);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const [showPassword, setShowPassword] = useState(false);
@@ -115,13 +115,14 @@ export default function SettingsPage() {
     ]);
 
     if (profileRes.data) {
-      const profileName = String(profileRes.data.name || "").trim();
-      const profileEmail = String(profileRes.data.email || "").trim().toLowerCase();
+      const pd = profileRes.data as { name?: string; email?: string; phone?: string };
+      const profileName = String(pd.name || "").trim();
+      const profileEmail = String(pd.email || "").trim().toLowerCase();
       const fallbackEmail = String(user.email || "").trim().toLowerCase();
       setProfile({
         name: profileName,
         email: profileEmail || fallbackEmail,
-        phone: String(profileRes.data.phone || ""),
+        phone: String(pd.phone || ""),
       });
     }
 
@@ -164,8 +165,16 @@ export default function SettingsPage() {
     telegramGroups: effectiveLimits.groups,
   };
   const visiblePlans = adminControlPlane.plans
-    .filter((plan) => plan.isActive && plan.visibleInAccount && (plan.billingPeriod ?? "monthly") === plansBillingPeriod)
-    .sort((a, b) => a.price - b.price);
+    .filter((plan) => {
+      if (!plan.isActive || !plan.visibleInAccount) return false;
+      // New model: plan has periods array — check for matching active period
+      if (Array.isArray(plan.periods) && plan.periods.length > 0) {
+        return plan.periods.some((p) => p.type === plansBillingPeriod && p.isActive);
+      }
+      // Legacy fallback
+      return (plan.billingPeriod ?? "monthly") === plansBillingPeriod;
+    })
+    .sort((a, b) => a.sortOrder - b.sortOrder);
   const nowMs = Date.now();
   const planExpiryMs = planExpiresAt ? Date.parse(planExpiresAt) : NaN;
   const msToExpiry = Number.isFinite(planExpiryMs) ? planExpiryMs - nowMs : Number.NaN;
@@ -528,13 +537,24 @@ export default function SettingsPage() {
                         ? `Venceu em ${planExpiryLabel}. Escolha um plano pra voltar a usar tudo.`
                         : "Venceu. Escolha um plano pra voltar a usar tudo."}
                     </p>
-                    <Button
-                      size="sm"
-                      className="mt-3"
-                      onClick={() => setPlansModalOpen(true)}
-                    >
-                      Renovar agora
-                    </Button>
+                    {currentPlan.kiwifyCheckoutUrl ? (
+                      <a
+                        href={(() => { try { const u = new URL(currentPlan.kiwifyCheckoutUrl); if (user?.email) u.searchParams.set("email", user.email); return u.toString(); } catch { return currentPlan.kiwifyCheckoutUrl; } })()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-flex"
+                      >
+                        <Button size="sm" asChild><span>Renovar via Kiwify</span></Button>
+                      </a>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="mt-3"
+                        onClick={() => setPlansModalOpen(true)}
+                      >
+                        Renovar agora
+                      </Button>
+                    )}
                   </div>
                 )}
 
@@ -546,14 +566,25 @@ export default function SettingsPage() {
                         ? `Vence em ${planExpiryLabel}. Renove antes pra não ficar sem acesso.`
                         : "Vence em breve. Renove antes pra não ficar sem acesso."}
                     </p>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="mt-3"
-                      onClick={() => setPlansModalOpen(true)}
-                    >
-                      Renovar plano
-                    </Button>
+                    {currentPlan.kiwifyCheckoutUrl ? (
+                      <a
+                        href={(() => { try { const u = new URL(currentPlan.kiwifyCheckoutUrl); if (user?.email) u.searchParams.set("email", user.email); return u.toString(); } catch { return currentPlan.kiwifyCheckoutUrl; } })()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-flex"
+                      >
+                        <Button size="sm" variant="outline" asChild><span>Renovar via Kiwify</span></Button>
+                      </a>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="mt-3"
+                        onClick={() => setPlansModalOpen(true)}
+                      >
+                        Renovar plano
+                      </Button>
+                    )}
                   </div>
                 )}
 
@@ -651,6 +682,29 @@ export default function SettingsPage() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setPlansBillingPeriod("quarterly")}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all sm:px-4 sm:text-sm ${
+                    plansBillingPeriod === "quarterly"
+                      ? "bg-background shadow text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Trimestral
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPlansBillingPeriod("semiannual")}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all flex items-center gap-1 sm:px-4 sm:text-sm sm:gap-1.5 ${
+                    plansBillingPeriod === "semiannual"
+                      ? "bg-background shadow text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Semestral
+                  <span className="hidden rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary min-[420px]:inline">-15% 🔥</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setPlansBillingPeriod("annual")}
                   className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all flex items-center gap-1 sm:px-4 sm:text-sm sm:gap-1.5 ${
                     plansBillingPeriod === "annual"
@@ -730,10 +784,20 @@ export default function SettingsPage() {
                       <CardContent className="space-y-3">
                         <div className="rounded-md border bg-background/70 p-3">
                           <p className="text-xs text-muted-foreground">Assinatura</p>
-                          <p className="text-xl font-semibold text-foreground">R${plan.price.toFixed(2).replace(".", ",")}</p>
-                          {plan.billingPeriod === "annual" && plan.monthlyEquivalentPrice != null && (
-                            <p className="mt-0.5 text-xs text-muted-foreground">≈ R${plan.monthlyEquivalentPrice.toFixed(2).replace(".", ",")}/mês — economize 17%</p>
-                          )}
+                          {(() => {
+                            const periodCfg = (plan.periods ?? []).find((p) => p.type === plansBillingPeriod);
+                            const price = periodCfg?.price ?? plan.price;
+                            const monthlyEq = periodCfg?.monthlyEquivalentPrice ?? plan.monthlyEquivalentPrice;
+                            const savings = plansBillingPeriod !== "monthly" && monthlyEq ? Math.round((1 - monthlyEq / (plan.periods?.find((p) => p.type === "monthly")?.price ?? plan.price)) * 100) : null;
+                            return (
+                              <>
+                                <p className="text-xl font-semibold text-foreground">R${price.toFixed(2).replace(".", ",")}</p>
+                                {monthlyEq != null && plansBillingPeriod !== "monthly" && (
+                                  <p className="mt-0.5 text-xs text-muted-foreground">≈ R${monthlyEq.toFixed(2).replace(".", ",")}/mês{savings ? ` — economize ${savings}%` : ""}</p>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                         <ul className="space-y-1 text-xs text-muted-foreground">
                           {items.map((item) => (
@@ -750,6 +814,19 @@ export default function SettingsPage() {
                           onClick={() => {
                             if (isCurrentPlan) {
                               toast.info("Plano em uso");
+                              return;
+                            }
+                            // If the plan has a Kiwify checkout URL for this period, redirect there
+                            const periodCfg = (plan.periods ?? []).find((p) => p.type === plansBillingPeriod);
+                            const checkoutUrl = periodCfg?.kiwifyCheckoutUrl || plan.kiwifyCheckoutUrl;
+                            if (checkoutUrl) {
+                              try {
+                                const url = new URL(checkoutUrl);
+                                if (user?.email) url.searchParams.set("email", user.email);
+                                window.open(url.toString(), "_blank", "noopener,noreferrer");
+                              } catch {
+                                window.open(checkoutUrl, "_blank", "noopener,noreferrer");
+                              }
                               return;
                             }
                             const isUpgrade = plan.price > currentPlan.price;

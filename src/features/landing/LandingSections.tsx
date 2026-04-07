@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   ArrowRight,
+  BarChart3,
   Check,
   Clock,
   LayoutDashboard,
@@ -22,7 +23,7 @@ import { WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
 
 type IconComponent = ComponentType<{ className?: string }>;
 
-export type BillingPeriod = "monthly" | "annual";
+export type BillingPeriod = "monthly" | "quarterly" | "semiannual" | "annual";
 
 export interface LandingPlanCard {
   id: string;
@@ -33,6 +34,8 @@ export interface LandingPlanCard {
   description?: string | null;
   features: string[];
   cta: string;
+  /** External checkout URL (e.g. Kiwify). When set, the CTA links here instead of the signup page. */
+  ctaHref?: string;
   highlight: boolean;
 }
 
@@ -57,71 +60,63 @@ const fadeUp = {
 };
 
 const landingFeatures: Array<{ icon: IconComponent; title: string; description: string }> = [
-  { icon: WhatsAppIcon, title: "WhatsApp & Telegram juntos", description: "Conecte várias contas ao mesmo tempo e controle tudo num lugar só." },
-  { icon: ShoppingBag, title: "Shopee", description: "Filtre só as melhores comissões e deixe o sistema enviar sozinho." },
-  { icon: ShoppingCart, title: "Mercado Livre", description: "Converta ofertas do Mercado Livre em poucos cliques, sem complicação." },
-  { icon: Users, title: "Grupos mestres", description: "Organize seus grupos num só lugar e o sistema cuida do resto." },
-  { icon: Clock, title: "Agendamentos", description: "Programe suas mensagens para qualquer horário e esqueça." },
-  { icon: Route, title: "Rotas automáticas", description: "Copie as ofertas dos maiores afiliados no automático, sem mexer um dedo." },
+  { icon: WhatsAppIcon, title: "Gestão Unificada de Canais", description: "Controle seu WhatsApp e Telegram na mesma tela. Acabe com a confusão de dispositivos e abas abertas de vez." },
+  { icon: Zap, title: "Conversor Universal Seguro", description: "Mude links comuns da Amazon, Shopee e Mercado Livre para afiliados em poucos segundos. O seu cookie estará rastreado." },
+  { icon: Clock, title: "Agendamento Inteligente", description: "Seu tempo vale dinheiro e saúde mental. Programe campanhas de forma antecipada para manter constância postando de hora em hora." },
+  { icon: Route, title: "Rotas Práticas", description: "O Auto Links repassa ofertas automaticamente de um grupo principal para vários outros. Chega de copiar e colar a toda hora." },
+  { icon: ShoppingBag, title: "Filtro de Desempenho", description: "Determine comissões mínimas para a operação automática ou ignore lojistas ruins, assim o algoritmo trabalha com o que de fato gera ROI." },
+  { icon: BarChart3, title: "Métricas Diretas", description: "Veja com facilidade num painel limpo as postagens, links gerados e canais integrados para atuar nas pendências certas da sua empresa." }
 ];
 
 const testimonials = [
-  { name: "Lucas Ferreira", text: "Mano, depois que eu ajustei o filtro de comissão para só enviar oferta acima de 15%, eu comecei a lucrar bem mais com os mesmos grupos que eu já tinha." },
-  { name: "Tayná Oliveira", text: "Na real, depois que automatizei as rotas ficou bem mais leve. Hoje eu faço uma conferência 1 vez por semana e deixo rodando no automático o resto dos dias." },
-  { name: "Pedro Henrique", text: "Eu pagava bem mais caro em outras ferramentas e não tinha metade do que tem aqui. As automações fazem quase tudo sozinhas e as rotas para copiar estratégia de concorrente ajudam demais." },
+  { name: "Lucas Ferreira", text: "Cara, fiquei bem mais tranquilo. Conseguir centralizar minhas divulgações de Amazon e Mercado Livre com a segurança do cookie correto me devolveu paz." },
+  { name: "Tayná Oliveira", text: "Antes eu perdia meus sábados correndo feito louca no Telegram pra postar ofertas a noite. Com as Rotas eu deixo pronto. Foi a melhor coisa." },
+  { name: "Pedro Henrique", text: "O negócio impressionante é a clareza do sistema. Chegava a errar os meus cupons copiando e colando nos contatos, com os conversores o risco foi a zero." },
 ];
 
 const withoutAutoLinks = [
-  "Posta ofertas na mão, uma por uma, o dia inteiro",
-  "Perde promoção boa porque não viu a tempo",
-  "WhatsApp e Telegram separados, sem controle",
-  "Grupos param quando você dorme ou sai",
-  "Não sabe o que os maiores afiliados estão divulgando",
-  "Gera link de afiliado na mão, um por um",
+  "Copia e cola as ofertas exaustivamente na mão",
+  "Não pode tirar os olhos do celular senão não vende",
+  "Demora muito tempo criando uma oferta bonita com links",
+  "Usa Telegram e WhatsApp juntos e sem padrão",
+  "O link quebra, a rotina não para, e sua comissão morre",
+  "Administra 3 grupos estressado ao invés de lucrar e delegar"
 ];
 
 const withAutoLinks = [
-  "Zero trabalho - as rotas postam 24h por dia sozinhas",
-  "Ofertas capturadas em segundos das fontes que você escolhe",
-  "WhatsApp e Telegram num painel só",
-  "Seus grupos vendem mesmo enquanto você dorme",
-  "Você vê o que os concorrentes estão postando em tempo real",
-  "Link de afiliado gerado e enviado sozinho ao detectar a oferta",
+  "Muito mais vendas com as mãos livres o dia inteiro",
+  "Seu robô de vendas acorda no fim de semana pra trabalhar",
+  "O único painel em que WhatsApp e Telegram conversam",
+  "Rotas limpam perfeitamente as poluições de link que vem de fábrica",
+  "Agendamentos diários. Trabalha pra você postar com consistência",
+  "Gerenciar 20 grupos torna-se tranquilo como se fosse apenas 1"
 ];
 
 const faqs = [
   {
-    q: "Preciso ficar online para as automações funcionarem?",
-    a: "Não. Depois que você configura as rotas e automações, o sistema opera de forma completamente independente. O Auto Links roda 24 horas por dia, 7 dias por semana - enquanto você dorme, viaja ou cuida de outro trabalho, ele continua monitorando fontes, gerando links com seu cookie de afiliado e disparando ofertas nos seus grupos sem nenhuma intervenção sua.",
+    q: "O Auto Links funciona para quais varejistas?",
+    a: "Atualmente atuamos facilitando pra quem é afiliado ativo na Amazon, Shopee e Mercado Livre. O sistema garante que seus identificadores entrem corretamente quando o link for convertido para o seu público."
   },
   {
-    q: "Como funciona o monitoramento de rotas inteligentes?",
-    a: "Você cadastra quais fontes quer monitorar e define os grupos de destino. O Auto Links rastreia cada oferta publicada em tempo real, captura o link do produto, processa com seu cookie de afiliado e dispara automaticamente nos grupos configurados. Tudo em segundos, sem você precisar copiar, colar ou confirmar nada.",
+    q: "Como o Auto Links lida com grupos de WhatsApp e Telegram?",
+    a: "Uma das coisas que nossos clientes mais gostam é organizar isso! Você tem as duas mensagerias juntas rodando num só painel seguro e claro. Nada de perder canais em abas ou precisar de celulares secundários quentes."
   },
   {
-    q: "Consigo usar WhatsApp e Telegram ao mesmo tempo?",
-    a: "Sim. O Auto Links suporta múltiplas sessões de WhatsApp e Telegram em paralelo, tudo num único painel. Você gerencia os dois canais de forma integrada, define regras específicas por plataforma e acompanha o status de cada sessão em tempo real - sem precisar abrir apps separados ou alternar entre ferramentas diferentes.",
+    q: "O que seriam as famosas Rotas Práticas?",
+    a: "Você não vai mais repetir trabalhos. Um canal 'Líder' ou 'Mestre' pode servir de espelho para as ferramentas repassarem suas mensagens aos demais canais. Recebeu ali? O Auto Links duplica pro resto da sua carteira perfeitamente."
   },
   {
-    q: "Corro risco de ter minha conta banida?",
-    a: "O sistema conta com proteções nativas: delays inteligentes entre envios consecutivos, templates de mensagem rotativos para evitar padrão repetitivo, sistema de filas para não sobrecarregar sessões e pausas automáticas quando o limiar de segurança é atingido. Seguindo as configurações recomendadas no painel, o risco é muito baixo.",
+    q: "Preciso baixar algo estranho pro sistema rodar?",
+    a: "Zero! O Auto Links opera 100% na nuvem, você só faz login como faria na Netflix. Como as integrações são em alto nível, não precisa deixar pc ligado se agendar a campanha corretamente."
   },
   {
-    q: "Posso definir horários exatos para as automações dispararem?",
-    a: "Sim. O módulo de agendamento permite configurar janelas horárias precisas para cada automação - dias da semana, horário de início e de fim. O sistema respeita esses limites automaticamente, ideal para atingir seus grupos no momento de maior engajamento e para não enviar ofertas fora de hora, o que reduz o desengajamento dos membros.",
+    q: "Sou afiliado que trabalha do celular, dá pra navegar à vontade pelo aparelho?",
+    a: "Total. Nossas telas foram projetadas com um carinho ímpar para quem não tem computador e opera pelo touch do celular na maioria dos dias. Telas fluidas e organizadas pra qualquer modelo."
   },
   {
-    q: "Como funciona o conversor de links da Shopee e do Mercado Livre?",
-    a: "Basta colar o link de qualquer produto. O sistema detecta automaticamente a plataforma, gera o URL com seu cookie de afiliado e entrega o link pronto para divulgar - sem trabalho manual. No caso da Shopee, ele também remove parâmetros que prejudicam o rastreamento da comissão, garantindo que cada clique seja corretamente atribuído a você.",
-  },
-  {
-    q: "É difícil de configurar para quem está começando?",
-    a: "Não. O painel foi desenhado para ser simples e direto: você conecta sua primeira sessão WhatsApp via QR Code, configura uma rota em menos de 5 minutos e o sistema já começa a trabalhar por você. Não é necessário nenhum conhecimento técnico - tudo é visual e guiado. E se tiver alguma dúvida, o suporte está disponível para ajudar você a dar o primeiro passo.",
-  },
-  {
-    q: "Posso cancelar a qualquer momento sem multa?",
-    a: "Sim. Todos os planos são sem fidelidade e sem qualquer taxa de cancelamento. Você pode assinar no modelo mensal ou anual - o plano anual oferece 2 meses grátis e é cobrado de uma vez, mas sem multa de saída. Você pode fazer upgrade, downgrade ou cancelar quando quiser, diretamente no painel, sem precisar falar com ninguém. Sem burocracia, sem prazo mínimo, sem letra miúda.",
-  },
+    q: "O sistema me prende com multas altas pra cancelar?",
+    a: "Que nada, ninguém segura gente boa pela força. Os planos Mensal, Trimestral, Semestral e Anual ficam à sua disposição e você desativa sua renovação a qualquer instante sozinho através da aba 'Assinaturas'."
+  }
 ];
 
 export function LandingHeader({ isAuthenticated, isLoading }: LandingHeaderProps) {
@@ -159,20 +154,22 @@ export function LandingHero({ isAuthenticated }: AuthAwareSectionProps) {
       <motion.div {...fadeUp} className="max-w-3xl mx-auto space-y-6">
         <div className="inline-flex items-center gap-1.5 rounded-full border bg-secondary/50 px-3 py-1 text-xs font-medium text-muted-foreground">
           <img src="/brand/logo-chama-64.png" alt="" className="h-3 w-3 object-contain" loading="lazy" />
-          Sistema Nº1 para afiliados Shopee e Mercado Livre
+          Conforto e Escala de verdade para você focar no que importa
         </div>
         <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight leading-[1.1]">
-          Automatize suas divulgações. <span className="text-gradient">Escale seus resultados.</span>
+          Automatize seus disparos e <span className="text-gradient">multiplique comissões</span> sem sacrificar seu tempo livre.
         </h1>
         <div className="flex items-center justify-center gap-4 flex-wrap text-xs font-medium text-muted-foreground pt-2">
-          <div className="flex items-center gap-1.5"><Check className="h-4 w-4 text-primary" /><span>Garantia de 7 dias</span></div>
+          <div className="flex items-center gap-1.5"><Check className="h-4 w-4 text-primary" /><span>Não perca comissões</span></div>
           <div className="w-1 h-1 rounded-full bg-border" />
-          <div className="flex items-center gap-1.5"><Check className="h-4 w-4 text-primary" /><span>Cancele quando quiser</span></div>
+          <div className="flex items-center gap-1.5"><Check className="h-4 w-4 text-primary" /><span>Operação escalável</span></div>
         </div>
         <p className="text-lg text-muted-foreground max-w-xl mx-auto pt-4">
-          Conecte seu WhatsApp ou Telegram e o sistema cria ofertas sozinho e até monitora as estratégias do mercado por você. Tudo no automático!
+          O parceiro dos afiliados profissionais que não perdem tempo. Interaja com Amazon, Mercado Livre e Shopee sem falhas.
         </p>
         <div className="flex items-center justify-center gap-3 pt-2">
+
+
           {isAuthenticated ? (
             <Button size="lg" className="glow-primary" asChild>
               <Link to={ROUTES.app.dashboard}>
@@ -196,8 +193,7 @@ export function LandingHero({ isAuthenticated }: AuthAwareSectionProps) {
           <div className="text-center"><p className="text-2xl font-bold">24/7</p><p className="text-xs text-muted-foreground">operação automática</p></div>
           <div className="hidden sm:block w-px h-8 bg-border" />
           <div className="text-center"><p className="text-2xl font-bold">5 min</p><p className="text-xs text-muted-foreground">para configurar</p></div>
-          <div className="hidden sm:block w-px h-8 bg-border" />
-          <div className="text-center"><p className="text-2xl font-bold">2</p><p className="text-xs text-muted-foreground">canais (WhatsApp + Telegram)</p></div>
+          
         </div>
       </motion.div>
     </section>
@@ -208,8 +204,8 @@ export function LandingFeaturesSection({ isAuthenticated }: AuthAwareSectionProp
   return (
     <section id="features" className="container py-20 border-t">
       <motion.div {...fadeUp} className="text-center mb-12">
-        <h2 className="text-3xl font-bold tracking-tight mb-3">Tudo que você precisa, em um só lugar</h2>
-        <p className="text-muted-foreground max-w-lg mx-auto">Ferramentas profissionais para afiliados que querem escalar suas operações.</p>
+        <h2 className="text-3xl font-bold tracking-tight mb-3">O Lucro dos Benefícios Indiretos</h2>
+        <p className="text-muted-foreground max-w-lg mx-auto">Não é só velocidade. Tudo foi preparado para que você compre de volta o seu tempo e lucre com segurança.</p>
       </motion.div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 items-stretch">
         {landingFeatures.map((feature, i) => (
@@ -248,12 +244,12 @@ export function LandingTestimonialsSection() {
   return (
     <section className="container py-20 border-t">
       <div className="text-center mb-12">
-        <h2 className="text-3xl font-bold tracking-tight mb-3">O que nossos clientes dizem</h2>
-        <p className="text-muted-foreground">Afiliados reais, resultados reais.</p>
+        <h2 className="text-3xl font-bold tracking-tight mb-3">A Prova de quem já Escala</h2>
+        <p className="text-muted-foreground">Um ecossistema de sucesso validado por Afiliados reais que mudaram de nível.</p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 max-w-4xl mx-auto">
         {testimonials.map((testimonial) => (
-          <div key={testimonial.name} className="rounded-xl border bg-card/50 p-5 space-y-3">
+          <div key={testimonial.name} className="rounded-xl border bg-card/50 p-6 space-y-4 text-left">
             <div className="flex gap-0.5">{[...Array(5)].map((_, i) => <Star key={i} className="h-3.5 w-3.5 fill-warning text-warning" />)}</div>
             <p className="text-sm text-muted-foreground leading-relaxed min-h-[80px]">"{testimonial.text}"</p>
             <div><p className="text-sm font-medium">{testimonial.name}</p></div>
@@ -268,8 +264,8 @@ export function LandingComparisonSection() {
   return (
     <section className="container py-20 border-t">
       <div className="text-center mb-12">
-        <h2 className="text-3xl font-bold tracking-tight mb-3">Por que usar o Auto Links?</h2>
-        <p className="text-muted-foreground">Veja a diferença de operar com as ferramentas certas.</p>
+        <h2 className="text-3xl font-bold tracking-tight mb-3">Afiliado Amador vs. Afiliado AutoLinks</h2>
+        <p className="text-muted-foreground">Entenda por que o afiliado manual está sendo engolido por quem sabe automatizar a venda.</p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 max-w-3xl mx-auto">
         <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-6">
@@ -308,7 +304,7 @@ export function LandingPricingSection({ billingPeriod, publicPlans, setBillingPe
       </div>
 
       <div className="flex justify-center mb-10 flex-col items-center gap-4">
-        <div className="inline-flex items-center rounded-full border bg-secondary/40 p-1 gap-1">
+        <div className="inline-flex items-center rounded-full border bg-secondary/40 p-1 gap-1 flex-wrap justify-center">
           <button
             type="button"
             onClick={() => setBillingPeriod("monthly")}
@@ -320,18 +316,37 @@ export function LandingPricingSection({ billingPeriod, publicPlans, setBillingPe
           </button>
           <button
             type="button"
+            onClick={() => setBillingPeriod("quarterly")}
+            className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
+              billingPeriod === "quarterly" ? "bg-background shadow text-foreground" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Trimestral
+          </button>
+          <button
+            type="button"
+            onClick={() => setBillingPeriod("semiannual")}
+            className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all flex items-center gap-1.5 ${
+              billingPeriod === "semiannual" ? "bg-background shadow text-foreground" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Semestral
+            <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[0.6rem] font-bold text-primary">-15%</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setBillingPeriod("annual")}
             className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all flex items-center gap-1.5 ${
               billingPeriod === "annual" ? "bg-background shadow text-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
             Anual
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary">2 meses grátis</span>
+            <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[0.6rem] font-bold text-primary">-20%</span>
           </button>
         </div>
-        {billingPeriod === "annual" && (
+        {(billingPeriod === "annual" || billingPeriod === "semiannual") && (
           <div className="text-sm font-medium text-primary animate-in fade-in duration-300">
-            Economize até R$194 ao ano
+            {billingPeriod === "annual" ? "Economize até R$194 ao ano" : "Economize até R$130 no semestre"}
           </div>
         )}
       </div>
@@ -376,7 +391,9 @@ export function LandingPricingSection({ billingPeriod, publicPlans, setBillingPe
                 ))}
               </ul>
               <Button className="w-full" variant={plan.highlight ? "default" : "outline"} asChild>
-                <Link to={ROUTES.auth.cadastro}>{plan.cta}</Link>
+                {plan.ctaHref
+                  ? <a href={plan.ctaHref} target="_blank" rel="noopener noreferrer">{plan.cta}</a>
+                  : <Link to={ROUTES.auth.cadastro}>{plan.cta}</Link>}
               </Button>
             </div>
           ))}

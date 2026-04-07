@@ -9,6 +9,8 @@ import { authMiddleware, authRouter, requireTrustedOriginForSessionWrite } from 
 import { restRouter } from "./rest.js";
 import { rpcRouter } from "./rpc.js";
 import { consumeRateLimit, cleanupMemoryRateLimits, cleanupDistributedRateLimits } from "./rate-limit-store.js";
+import { handleKiwifyWebhook } from "./kiwify/webhook-handler.js";
+import { scheduleKiwifyReconciler } from "./kiwify/reconciler.js";
 
 const app = express();
 app.set("trust proxy", 1); // trust first-hop proxy (Coolify/nginx) so req.ip reflects the real client IP
@@ -221,6 +223,8 @@ setInterval(() => {
   cleanupDistributedRateLimits().catch(() => { /* non-fatal */ });
 }, 5 * 60_000).unref();
 
+scheduleKiwifyReconciler();
+
 function ensureRequiredEnvVars() {
   if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") return;
 
@@ -432,6 +436,28 @@ app.use("/functions/v1/rpc", rpcRateLimiter); // per-IP DoS guard before auth is
 app.use("/functions/v1/rpc", userRpcRateLimiter); // per-user fair-use guard (post-auth)
 app.use("/functions/v1/rpc", requireTrustedOriginForSessionWrite);
 app.use("/functions/v1", rpcRouter);
+
+app.post("/webhooks/kiwify", async (req, res) => {
+  try {
+    const payload = req.body ?? {};
+    const webhookToken = String(
+      payload.token
+      ?? payload.webhook_token
+      ?? req.query?.["token"]
+      ?? req.headers["x-kiwify-webhook-token"]
+      ?? "",
+    ).trim();
+    const result = await handleKiwifyWebhook(payload, webhookToken);
+    if (result.success) {
+      res.json({ ok: true });
+      return;
+    }
+    res.status(result.message === "Invalid webhook token" ? 401 : 400).json({ ok: false, message: result.message });
+  } catch (error) {
+    console.error("[webhooks/kiwify] error:", error instanceof Error ? error.message : error);
+    res.status(500).json({ ok: false, message: "Erro interno" });
+  }
+});
 
 // Liveness check: process-level heartbeat for container healthchecks.
 // Keep this DB-independent so transient database issues do not restart the API container.

@@ -1,900 +1,497 @@
 ﻿import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "@/components/PageHeader";
+import { KiwifyPanel } from "@/pages/admin/AdminKiwify";
 import { useAdminControlPlane } from "@/hooks/useAdminControlPlane";
-import { applyAccessLevelLimits, type ManagedPlan } from "@/lib/admin-control-plane";
 import { appendAdminAudit, triggerGlobalResyncPulse } from "@/lib/admin-shared";
-import { getPlanFeatureList, plans as staticPlans, type PlanLimits } from "@/lib/plans";
+import {
+  PERIOD_LABELS,
+  type BillingPeriodType,
+  type PlanLimits,
+  type PlanPeriodConfig,
+} from "@/lib/plans";
+import { type ManagedPlan } from "@/lib/admin-control-plane";
+import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { Pencil, Trash2 } from "lucide-react";
+import { Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 
-interface NewPlanDraft {
-  name: string;
-  price: number;
-  periodDays: number;
-  accessLevelId: string;
-  billingPeriod: "monthly" | "annual";
-  monthlyEquivalentPrice: number | "";
-  homeFeatureHighlightsText: string;
-  isActive: boolean;
-  visibleOnHome: boolean;
-  visibleInAccount: boolean;
-}
+const PERIOD_ORDER: BillingPeriodType[] = ["monthly", "quarterly", "semiannual", "annual"];
+const PAID_PLAN_IDS = ["plan-start", "plan-pro", "plan-business"];
 
-function parsePeriodDays(period: string): number {
-  const raw = String(period || "").trim().toLowerCase();
-  const match = raw.match(/(\d+)\s*(dia|dias|d)/i);
-  if (match) {
-    const parsed = Number(match[1]);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 30;
-  }
-  if (raw.includes("/mes") || raw.includes("mes") || raw.includes("mês")) return 30;
-  if (raw.includes("/ano") || raw.includes("ano")) return 365;
-  return 30;
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function toPeriodLabel(days: number): string {
-  const safeDays = Number.isFinite(days) ? Math.max(1, Math.floor(days)) : 30;
-  return `${safeDays} dias`;
-}
-
-function clonePlans(plans: ManagedPlan[]) {
-  return plans.map((plan) => ({
+function clonePlan(plan: ManagedPlan): ManagedPlan {
+  return {
     ...plan,
     limits: { ...plan.limits },
     baseLimits: plan.baseLimits ? { ...plan.baseLimits } : undefined,
-    homeFeatureHighlights: [...(plan.homeFeatureHighlights || [])],
-  }));
+    homeFeatureHighlights: [...(plan.homeFeatureHighlights ?? [])],
+    periods: (plan.periods ?? []).map((p) => ({ ...p })),
+  };
 }
 
-function parseFeatureHighlightsText(value: string) {
+function clonePlans(plans: ManagedPlan[]) {
+  return plans.map(clonePlan);
+}
+
+function parseFeatureText(value: string) {
   return value
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((l) => l.trim())
     .filter(Boolean)
     .slice(0, 10);
 }
 
-export default function AdminPlans() {
-  const { state, saveState } = useAdminControlPlane();
-  const [draftPlans, setDraftPlans] = useState<ManagedPlan[]>(() => clonePlans(state.plans));
-  const [draftDefaultSignupPlanId, setDraftDefaultSignupPlanId] = useState(state.defaultSignupPlanId);
-  const [activePlanId, setActivePlanId] = useState<string | null>(null);
-  const [deletePlanTarget, setDeletePlanTarget] = useState<ManagedPlan | null>(null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [newPlan, setNewPlan] = useState<NewPlanDraft>({
-    name: "",
-    price: 0,
-    periodDays: 30,
-    accessLevelId: state.accessLevels[0]?.id || "level-starter",
-    billingPeriod: "monthly",
-    monthlyEquivalentPrice: "",
-    homeFeatureHighlightsText: "",
-    isActive: true,
-    visibleOnHome: true,
-    visibleInAccount: true,
-  });
+// ─── Period row ────────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    setDraftPlans(clonePlans(state.plans));
-    setDraftDefaultSignupPlanId(state.defaultSignupPlanId);
-  }, [state.defaultSignupPlanId, state.plans]);
+interface PeriodRowProps {
+  period: PlanPeriodConfig;
+  onChange: (updated: PlanPeriodConfig) => void;
+  onSave: (period: PlanPeriodConfig) => Promise<void>;
+}
 
-  const hasChanges = useMemo(() => {
-    if (JSON.stringify(draftPlans) !== JSON.stringify(state.plans)) return true;
-    return draftDefaultSignupPlanId !== state.defaultSignupPlanId;
-  }, [draftDefaultSignupPlanId, draftPlans, state.defaultSignupPlanId, state.plans]);
+function PeriodRow({ period, onChange, onSave }: PeriodRowProps) {
+  const [saving, setSaving] = useState(false);
+  const label = PERIOD_LABELS[period.type];
 
-  const activePlan = useMemo(
-    () => draftPlans.find((plan) => plan.id === activePlanId) || null,
-    [activePlanId, draftPlans],
-  );
-
-  const updatePlan = (planId: string, updater: (plan: ManagedPlan) => ManagedPlan) => {
-    setDraftPlans((prev) => prev.map((plan) => (plan.id === planId ? updater(plan) : plan)));
-  };
-
-  const getBaseLimitsForPlan = (plan: ManagedPlan) => {
-    return plan.baseLimits || plan.limits;
-  };
-
-  const updateBaseLimits = (planId: string, key: keyof PlanLimits, value: string | boolean) => {
-    setDraftPlans((prev) => prev.map((plan) => {
-      if (plan.id !== planId) return plan;
-      const current = plan.baseLimits || plan.limits;
-      const newBaseLimits = {
-        ...current,
-        [key]: typeof value === "boolean" ? value : (Number(value) || 0),
-      };
-      return { ...plan, baseLimits: newBaseLimits };
-    }));
-  };
-
-  const applyAccessLevelToPlan = (plan: ManagedPlan, accessLevelId: string): ManagedPlan => {
-    const selectedLevel = state.accessLevels.find((level) => level.id === accessLevelId);
-    if (!selectedLevel) {
-      return { ...plan, accessLevelId };
-    }
-
-    const limits = applyAccessLevelLimits(getBaseLimitsForPlan(plan), selectedLevel.limitOverrides);
-    const resourceItems = getPlanFeatureList({
-      id: plan.id,
-      name: plan.name,
-      price: plan.price,
-      period: plan.period,
-      billingPeriod: plan.billingPeriod ?? "monthly",
-      monthlyEquivalentPrice: plan.monthlyEquivalentPrice,
-      limits,
-      isActive: plan.isActive,
-    }).slice(0, 10);
-
-    return {
-      ...plan,
-      accessLevelId,
-      limits,
-      baseLimits: getBaseLimitsForPlan(plan),
-      homeFeatureHighlights: resourceItems,
-    };
-  };
-
-  const buildUniquePlanId = (name: string) => {
-    const base = name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "") || "custom";
-
-    const prefix = `plan-${base}`;
-    if (!draftPlans.some((plan) => plan.id === prefix)) return prefix;
-
-    let index = 2;
-    while (draftPlans.some((plan) => plan.id === `${prefix}-${index}`)) {
-      index += 1;
-    }
-
-    return `${prefix}-${index}`;
-  };
-
-  const createPlan = () => {
-    const name = newPlan.name.trim();
-    if (!name) {
-      toast.error("Forneça o nome do plano");
-      return;
-    }
-
-    if (!Number.isFinite(newPlan.price) || newPlan.price < 0) {
-      toast.error("Forneça um preço válido");
-      return;
-    }
-
-    if (!Number.isFinite(newPlan.periodDays) || newPlan.periodDays < 1) {
-      toast.error("Forneça a duração em dias (mínimo 1)");
-      return;
-    }
-
-    if (!state.accessLevels.some((level) => level.id === newPlan.accessLevelId)) {
-      toast.error("Escolha um nível de acesso válido");
-      return;
-    }
-
-    const id = buildUniquePlanId(name);
-    const baselinePlan = draftPlans.find((plan) => plan.id === draftDefaultSignupPlanId) || draftPlans[0];
-    if (!baselinePlan) {
-      toast.error("Não deu pra criar o plano");
-      return;
-    }
-
-    const createdPlan: ManagedPlan = {
-      ...baselinePlan,
-      id,
-      name,
-      price: Number(newPlan.price || 0),
-      period: toPeriodLabel(newPlan.periodDays),
-      billingPeriod: newPlan.billingPeriod,
-      monthlyEquivalentPrice: newPlan.billingPeriod === "annual" && newPlan.monthlyEquivalentPrice !== ""
-        ? Number(newPlan.monthlyEquivalentPrice)
-        : undefined,
-      accessLevelId: newPlan.accessLevelId,
-      isActive: newPlan.isActive,
-      visibleOnHome: newPlan.visibleOnHome,
-      visibleInAccount: newPlan.visibleInAccount,
-      homeTitle: name,
-      accountTitle: name,
-      homeDescription: "O que vem no plano.",
-      homeFeatureHighlights: parseFeatureHighlightsText(newPlan.homeFeatureHighlightsText),
-      accountDescription: "O que vem no plano.",
-      homeCtaText: Number(newPlan.price || 0) === 0 ? "Começar grátis" : `Assinar ${name}`,
-      sortOrder: draftPlans.length,
-    };
-
-    const hydratedPlan = applyAccessLevelToPlan(createdPlan, newPlan.accessLevelId);
-    const withResources = hydratedPlan.homeFeatureHighlights.length > 0
-      ? hydratedPlan
-      : {
-          ...hydratedPlan,
-          homeFeatureHighlights: parseFeatureHighlightsText(newPlan.homeFeatureHighlightsText),
-        };
-
-    setDraftPlans((prev) => [...prev, withResources]);
-    setShowCreateModal(false);
-    setNewPlan({
-      name: "",
-      price: 0,
-      periodDays: 30,
-      accessLevelId: state.accessLevels[0]?.id || "level-starter",
-      billingPeriod: "monthly",
-      monthlyEquivalentPrice: "",
-      homeFeatureHighlightsText: "",
-      isActive: true,
-      visibleOnHome: true,
-      visibleInAccount: true,
-    });
-    toast.success("Plano adicionado!");
-  };
-
-  const savePlans = async () => {
-    const invalidPlan = draftPlans.find((plan) => {
-      const priceOk = Number.isFinite(plan.price) && plan.price >= 0;
-      const periodDays = parsePeriodDays(plan.period);
-      const periodOk = Number.isFinite(periodDays) && periodDays >= 1;
-      const accessOk = state.accessLevels.some((level) => level.id === plan.accessLevelId);
-      return !priceOk || !periodOk || !accessOk;
-    });
-
-    if (invalidPlan) {
-      toast.error(`Plano inválido: ${invalidPlan.name}. Confira preço, duração e nível.`);
-      return;
-    }
-
-    const activePlans = draftPlans.filter((plan) => plan.isActive).length;
-    const syncedPlans = draftPlans.map((plan) => {
-      const normalized = {
-        ...plan,
-        price: Number(plan.price || 0),
-        period: toPeriodLabel(parsePeriodDays(plan.period)),
-      };
-      return applyAccessLevelToPlan(normalized, normalized.accessLevelId);
-    });
-
+  const handleSave = async () => {
+    setSaving(true);
     try {
-      await saveState({
-        ...state,
-        plans: syncedPlans.map((plan, index) => ({
-          ...plan,
-          homeTitle: plan.name,
-          accountTitle: plan.name,
-          // Preserve admin-written descriptions; fall back only when empty.
-          homeDescription: plan.homeDescription?.trim() || "O que vem no plano.",
-          accountDescription: plan.accountDescription?.trim() || plan.homeDescription?.trim() || "O que vem no plano.",
-          homeCtaText: plan.price === 0 ? "Começar grátis" : `Assinar ${plan.name}`,
-          sortOrder: index,
-        })),
-        defaultSignupPlanId: draftDefaultSignupPlanId,
-      });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Nao foi possivel salvar planos");
-      return;
+      await onSave(period);
+    } finally {
+      setSaving(false);
     }
-
-    triggerGlobalResyncPulse("admin-plans-save");
-    setActivePlanId(null);
-
-    try {
-      await appendAdminAudit("update_admin_plans", {
-        total_plans: syncedPlans.length,
-        active_plans: activePlans,
-        default_signup_plan_id: draftDefaultSignupPlanId,
-      });
-    } catch {
-      // Audit log should not block the main save operation.
-    }
-
-    toast.success("Planos salvos!");
-  };
-
-  const removePlan = (planId: string) => {
-    if (draftPlans.length <= 1) {
-      toast.error("Precisa ter pelo menos um plano");
-      return;
-    }
-    const targetPlan = draftPlans.find((plan) => plan.id === planId);
-    if (!targetPlan) return;
-    setDeletePlanTarget(targetPlan);
-  };
-
-  const confirmRemovePlan = () => {
-    if (!deletePlanTarget) return;
-    const planId = deletePlanTarget.id;
-
-    const nextPlans = draftPlans.filter((plan) => plan.id !== planId);
-    if (nextPlans.length === 0) {
-      toast.error("Precisa ter pelo menos um plano");
-      setDeletePlanTarget(null);
-      return;
-    }
-
-    setDraftPlans(nextPlans);
-    setDeletePlanTarget(null);
-
-    if (activePlanId === planId) setActivePlanId(null);
-
-    if (draftDefaultSignupPlanId === planId) {
-      setDraftDefaultSignupPlanId(nextPlans[0].id);
-      toast.success("Plano removido! O plano inicial foi ajustado.");
-      return;
-    }
-
-    toast.success("Plano removido!");
   };
 
   return (
-    <div className="admin-page">
-      <PageHeader
-        title="Planos"
-        description="Defina o preço, duração e onde aparece. Os limites vêm do nível de acesso."
-      />
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/30 px-3 py-2">
+      <span className="w-24 shrink-0 text-sm font-medium">{label}</span>
 
-      <Card className="admin-card">
-        <CardHeader className="pb-3">
-          <CardTitle className="admin-card-title">Plano Inicial</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-xs text-muted-foreground">
-            Todo novo usuário recebe esse plano na hora do cadastro.
-          </p>
-          <Select value={draftDefaultSignupPlanId} onValueChange={setDraftDefaultSignupPlanId}>
-            <SelectTrigger className="max-w-sm">
-              <SelectValue placeholder="Escolha o plano inicial" />
-            </SelectTrigger>
-            <SelectContent>
-              {draftPlans.map((plan) => (
-                <SelectItem key={plan.id} value={plan.id}>
-                  {plan.name} {plan.isActive ? "" : "(inativo)"}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-primary">
-            Plano escolhido: {draftPlans.find((plan) => plan.id === draftDefaultSignupPlanId)?.name || "-"}
-          </p>
-        </CardContent>
-      </Card>
-
-      <div className="admin-toolbar justify-center sm:justify-start">
-        <Badge variant="outline" className="text-xs">
-          {draftPlans.length} plano{draftPlans.length !== 1 ? "s" : ""}
-        </Badge>
-        <Button variant="outline" onClick={() => setShowCreateModal(true)}>Novo Plano</Button>
-        <Button onClick={savePlans} disabled={!hasChanges}>Salvar Alterações</Button>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-muted-foreground">R$</span>
+        <Input
+          className="h-7 w-24 text-sm"
+          type="number"
+          min={0}
+          value={period.price}
+          onChange={(e) => onChange({ ...period, price: Number(e.target.value) || 0 })}
+          placeholder="Preço"
+        />
       </div>
 
-      {(["monthly", "annual"] as const).map((period) => {
-        const group = draftPlans.filter((p) => (p.billingPeriod ?? "monthly") === period);
-        if (group.length === 0) return null;
-        return (
-          <div key={period} className="space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {period === "monthly" ? "Planos Mensais" : "Planos Anuais"}
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {group.map((plan) => {
-          const isDefaultSignup = plan.id === draftDefaultSignupPlanId;
-          const accessLevelName = state.accessLevels.find((level) => level.id === plan.accessLevelId)?.name || "Nível";
-          return (
-            <Card
-              key={plan.id}
-              className={`admin-card transition hover:border-primary/40 ${
-                isDefaultSignup ? "border-primary ring-1 ring-primary/50" : ""
-              }`}
-            >
-              <CardHeader className="pb-1">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-sm font-semibold">{plan.name}</CardTitle>
-                    <p className="mt-1 text-xs text-muted-foreground">{accessLevelName}</p>
-                  </div>
-                  {isDefaultSignup && <Badge variant="default">Plano Inicial</Badge>}
+      <div className="flex min-w-48 flex-1 items-center gap-1.5">
+        <span className="shrink-0 text-xs text-muted-foreground">URL Kiwify</span>
+        <Input
+          className="h-7 text-sm"
+          value={period.kiwifyCheckoutUrl ?? ""}
+          onChange={(e) => onChange({ ...period, kiwifyCheckoutUrl: e.target.value })}
+          placeholder="https://pay.kiwify.com/..."
+        />
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        <Switch
+          checked={period.isActive}
+          onCheckedChange={(v) => onChange({ ...period, isActive: v })}
+        />
+        <span className="text-xs">{period.isActive ? "Ativo" : "Inativo"}</span>
+      </div>
+
+      <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={handleSave} disabled={saving}>
+        {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+        Salvar
+      </Button>
+    </div>
+  );
+}
+
+// ─── Plan card ─────────────────────────────────────────────────────────────────
+
+interface PlanCardProps {
+  plan: ManagedPlan;
+  accessLevels: { id: string; name: string }[];
+  onUpdate: (updater: (plan: ManagedPlan) => ManagedPlan) => void;
+  onSavePlan: () => Promise<void>;
+  onSavePeriod: (period: PlanPeriodConfig) => Promise<void>;
+  saving: boolean;
+}
+
+function PlanCard({ plan, accessLevels, onUpdate, onSavePlan, onSavePeriod, saving }: PlanCardProps) {
+  const displayPeriods = PERIOD_ORDER.map((type) => {
+    const existing = (plan.periods ?? []).find((p) => p.type === type);
+    return existing ?? { type, price: 0, isActive: false };
+  });
+
+  const updatePeriod = (updated: PlanPeriodConfig) => {
+    onUpdate((p) => ({
+      ...p,
+      periods: displayPeriods.map((dp) => (dp.type === updated.type ? updated : dp)),
+    }));
+  };
+
+  const activePeriods = (plan.periods ?? []).filter((p) => p.isActive).length;
+
+  return (
+    <Card className="overflow-hidden border">
+      <Accordion type="single" collapsible>
+        <AccordionItem value={plan.id} className="border-0">
+          <AccordionTrigger className="px-4 py-3 hover:no-underline">
+            <div className="flex flex-1 items-center gap-3 text-left">
+              <span className="font-semibold">{plan.homeTitle || plan.name}</span>
+              <Badge variant={plan.isActive ? "default" : "secondary"} className="text-xs">
+                {plan.isActive ? "Ativo" : "Inativo"}
+              </Badge>
+              <span className="ml-auto mr-4 text-sm text-muted-foreground">
+                {activePeriods} período{activePeriods !== 1 ? "s" : ""} ativo{activePeriods !== 1 ? "s" : ""}
+              </span>
+            </div>
+          </AccordionTrigger>
+
+          <AccordionContent>
+            <div className="space-y-6 px-4 pb-4">
+              {/* Period rows */}
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Períodos de Cobrança &amp; Links Kiwify
+                </Label>
+                {displayPeriods.map((period) => (
+                  <PeriodRow
+                    key={period.type}
+                    period={period}
+                    onChange={updatePeriod}
+                    onSave={onSavePeriod}
+                  />
+                ))}
+              </div>
+
+              {/* Metadata */}
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Nome do Plano</Label>
+                  <Input
+                    value={plan.homeTitle || plan.name}
+                    onChange={(e) =>
+                      onUpdate((p) => ({ ...p, homeTitle: e.target.value, name: e.target.value }))
+                    }
+                  />
                 </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Texto do botão CTA</Label>
+                  <Input
+                    value={plan.homeCtaText}
+                    onChange={(e) => onUpdate((p) => ({ ...p, homeCtaText: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label className="text-xs">Descrição</Label>
+                  <Input
+                    value={plan.homeDescription}
+                    onChange={(e) => onUpdate((p) => ({ ...p, homeDescription: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label className="text-xs">Destaques (um por linha, máx. 10)</Label>
+                  <Textarea
+                    rows={4}
+                    value={(plan.homeFeatureHighlights ?? []).join("\n")}
+                    onChange={(e) =>
+                      onUpdate((p) => ({ ...p, homeFeatureHighlights: parseFeatureText(e.target.value) }))
+                    }
+                  />
+                </div>
+              </div>
+
+              {/* Toggles + access level */}
+              <div className="grid grid-cols-2 gap-x-4 gap-y-3 md:grid-cols-4">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={plan.isActive}
+                    onCheckedChange={(v) => onUpdate((p) => ({ ...p, isActive: v }))}
+                  />
+                  <Label className="text-xs">Plano ativo</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={plan.visibleOnHome}
+                    onCheckedChange={(v) => onUpdate((p) => ({ ...p, visibleOnHome: v }))}
+                  />
+                  <Label className="text-xs">Visível na Home</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={plan.visibleInAccount}
+                    onCheckedChange={(v) => onUpdate((p) => ({ ...p, visibleInAccount: v }))}
+                  />
+                  <Label className="text-xs">Visível na Conta</Label>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Nível de Acesso</Label>
+                  <Select
+                    value={plan.accessLevelId}
+                    onValueChange={(v) => onUpdate((p) => ({ ...p, accessLevelId: v }))}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {accessLevels.map((level) => (
+                        <SelectItem key={level.id} value={level.id}>
+                          {level.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* Base limits */}
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Limites Base
+                </Label>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  {(
+                    [
+                      ["whatsappSessions", "WhatsApp"],
+                      ["telegramSessions", "Telegram"],
+                      ["meliSessions", "Meli sessões"],
+                      ["groups", "Grupos"],
+                      ["routes", "Rotas"],
+                      ["automations", "Automações"],
+                      ["schedules", "Agendamentos"],
+                      ["masterGroups", "Master Groups"],
+                    ] as [keyof PlanLimits, string][]
+                  ).map(([key, lbl]) => (
+                    <div key={key} className="space-y-0.5">
+                      <Label className="text-xs text-muted-foreground">{lbl}</Label>
+                      <Input
+                        type="number"
+                        className="h-7 text-xs"
+                        value={(plan.baseLimits ?? plan.limits)[key] as number}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          onUpdate((p) => ({
+                            ...p,
+                            baseLimits: { ...(p.baseLimits ?? p.limits), [key]: val },
+                            limits: { ...p.limits, [key]: val },
+                          }));
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">-1 = ilimitado · 0 = bloqueado</p>
+              </div>
+
+              <div className="flex justify-end border-t pt-4">
+                <Button size="sm" onClick={onSavePlan} disabled={saving} className="gap-1.5">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Salvar plano
+                </Button>
+              </div>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+    </Card>
+  );
+}
+
+// ─── Main page ─────────────────────────────────────────────────────────────────
+
+export default function AdminPlans() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mainTab = searchParams.get("tab") === "kiwify" ? "kiwify" : "plans";
+  const { state, saveState } = useAdminControlPlane();
+  const [draftPlans, setDraftPlans] = useState<ManagedPlan[]>(() => clonePlans(state.plans));
+  const [draftDefaultPlanId, setDraftDefaultPlanId] = useState(state.defaultSignupPlanId);
+  const [savingPlanId, setSavingPlanId] = useState<string | null>(null);
+  const [globalSaving, setGlobalSaving] = useState(false);
+  const [mappingsLoaded, setMappingsLoaded] = useState(false);
+
+  // Sync state on external changes
+  useEffect(() => {
+    setDraftPlans(clonePlans(state.plans));
+    setDraftDefaultPlanId(state.defaultSignupPlanId);
+  }, [state.plans, state.defaultSignupPlanId]);
+
+  // Load Kiwify DB mappings into draft periods on tab open
+  useEffect(() => {
+    if (mainTab !== "plans" || mappingsLoaded) return;
+    const load = async () => {
+      try {
+        const res = await invokeBackendRpc<{
+          mappings: Array<{
+            plan_id: string;
+            period_type: string;
+            kiwify_checkout_url: string;
+            kiwify_product_id: string;
+            is_active: boolean;
+          }>;
+        }>("admin-kiwify", { body: { action: "list_mappings" } });
+        const rows = res?.mappings ?? [];
+        if (rows.length === 0) return;
+        setDraftPlans((prev) =>
+          prev.map((plan) => {
+            const planRows = rows.filter((r) => r.plan_id === plan.id);
+            if (planRows.length === 0) return plan;
+            const updatedPeriods = (plan.periods ?? []).map((period) => {
+              const m = planRows.find((r) => r.period_type === period.type);
+              if (!m) return period;
+              return {
+                ...period,
+                kiwifyCheckoutUrl: m.kiwify_checkout_url || period.kiwifyCheckoutUrl,
+                kiwifyProductId: m.kiwify_product_id || period.kiwifyProductId,
+                isActive: m.is_active,
+              };
+            });
+            return { ...plan, periods: updatedPeriods };
+          })
+        );
+        setMappingsLoaded(true);
+      } catch {
+        // Kiwify may not be configured yet
+      }
+    };
+    load();
+  }, [mainTab, mappingsLoaded]);
+
+  const paidPlans = useMemo(
+    () => draftPlans.filter((p) => PAID_PLAN_IDS.includes(p.id)),
+    [draftPlans]
+  );
+
+  const updatePlan = (planId: string, updater: (plan: ManagedPlan) => ManagedPlan) => {
+    setDraftPlans((prev) => prev.map((p) => (p.id === planId ? updater(p) : p)));
+  };
+
+  const savePlan = async (planId: string) => {
+    setSavingPlanId(planId);
+    try {
+      await saveState({ ...state, plans: draftPlans, defaultSignupPlanId: draftDefaultPlanId });
+      await appendAdminAudit("plan_update", { plan_id: planId });
+      triggerGlobalResyncPulse("admin-plans");
+      toast.success("Plano salvo!");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar plano");
+    } finally {
+      setSavingPlanId(null);
+    }
+  };
+
+  const savePeriodToDb = async (planId: string, period: PlanPeriodConfig) => {
+    await invokeBackendRpc("admin-kiwify", {
+      body: {
+        action: "save_mapping",
+        plan_id: planId,
+        period_type: period.type,
+        kiwify_product_id: period.kiwifyProductId ?? "",
+        kiwify_product_name: "",
+        kiwify_checkout_url: period.kiwifyCheckoutUrl ?? "",
+        affiliate_enabled: false,
+        affiliate_commission_percent: 0,
+        is_active: period.isActive,
+      },
+    });
+    toast.success(`Período ${PERIOD_LABELS[period.type]} salvo no banco!`);
+  };
+
+  const saveGlobal = async () => {
+    setGlobalSaving(true);
+    try {
+      await saveState({ ...state, plans: draftPlans, defaultSignupPlanId: draftDefaultPlanId });
+      triggerGlobalResyncPulse("admin-plans");
+      toast.success("Configuração salva!");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar");
+    } finally {
+      setGlobalSaving(false);
+    }
+  };
+
+  return (
+    <div className="min-h-full">
+      <PageHeader
+        title="Planos & Kiwify"
+        description="Configure os planos, períodos de cobrança e links de checkout Kiwify."
+      />
+      <div className="container max-w-5xl py-6">
+        <Tabs
+          value={mainTab}
+          onValueChange={(v) => setSearchParams(v === "kiwify" ? { tab: "kiwify" } : {})}
+        >
+          <TabsList className="mb-6">
+            <TabsTrigger value="plans">Planos</TabsTrigger>
+            <TabsTrigger value="kiwify">Kiwify</TabsTrigger>
+          </TabsList>
+
+          {/* ── Plans tab ── */}
+          <TabsContent value="plans" className="space-y-4">
+            {/* Global config */}
+            <Card>
+              <CardHeader className="pb-2 pt-3">
+                <CardTitle className="text-sm">Configuração Global</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="admin-kpi">
-                    <p className="text-xs text-muted-foreground">Preço</p>
-                    <p className="font-medium">{plan.price === 0 ? "Grátis" : `R$${plan.price.toFixed(2).replace(".", ",")}`}</p>
-                    {plan.billingPeriod === "annual" && plan.monthlyEquivalentPrice != null && (
-                      <p className="mt-0.5 text-xs text-muted-foreground">≈ R${plan.monthlyEquivalentPrice.toFixed(2).replace(".", ",")}/mês</p>
-                    )}
-                  </div>
-                  <div className="admin-kpi">
-                    <p className="text-xs text-muted-foreground">Período</p>
-                    <p className="font-medium">{plan.period}</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Home: {plan.visibleOnHome ? "Visível" : "Oculto"}</span>
-                  <span>Cliente: {plan.visibleInAccount ? "Visível" : "Oculto"}</span>
-                </div>
-
-                <div className="flex items-center justify-end gap-1 pt-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setActivePlanId(plan.id)}
-                    aria-label={`Editar plano ${plan.name}`}
-                    title="Editar plano"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => removePlan(plan.id)}
-                    aria-label={`Excluir plano ${plan.name}`}
-                    title="Excluir plano"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
+              <CardContent className="pb-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <Label className="shrink-0 text-sm">Plano padrão para novos usuários</Label>
+                  <Select value={draftDefaultPlanId} onValueChange={setDraftDefaultPlanId}>
+                    <SelectTrigger className="w-44">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {draftPlans.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" variant="outline" onClick={saveGlobal} disabled={globalSaving} className="gap-1.5">
+                    {globalSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    Salvar
                   </Button>
                 </div>
               </CardContent>
             </Card>
-          );
-        })}
-            </div>
-          </div>
-        );
-      })}
 
-      <Dialog open={!!activePlan} onOpenChange={(open) => !open && setActivePlanId(null)}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Editar Plano</DialogTitle>
-          </DialogHeader>
-          {activePlan && (
-            <div className="space-y-4">
-              {activePlan.id === draftDefaultSignupPlanId ? (
-                <div className="rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs text-primary">
-                  Esse é o plano que novos usuários recebem.
-                </div>
-              ) : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="w-fit"
-                  onClick={() => setDraftDefaultSignupPlanId(activePlan.id)}
-                >
-                  Usar como padrão
-                </Button>
-              )}
-
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="admin-card-title">Info do Plano</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="space-y-1 sm:col-span-2">
-                      <Label>Nome do Plano</Label>
-                      <Input
-                        value={activePlan.name}
-                        onChange={(event) => updatePlan(activePlan.id, (current) => ({ ...current, name: event.target.value }))}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Preço</Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        value={activePlan.price}
-                        onChange={(event) => updatePlan(activePlan.id, (current) => ({ ...current, price: Number(event.target.value || 0) }))}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label>Duração (dias)</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        value={parsePeriodDays(activePlan.period)}
-                        onChange={(event) => updatePlan(activePlan.id, (current) => ({
-                          ...current,
-                          period: toPeriodLabel(Number(event.target.value || 0)),
-                        }))}
-                        placeholder="Ex: 30"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Cobrança</Label>
-                      <Select
-                        value={activePlan.billingPeriod ?? "monthly"}
-                        onValueChange={(value) => updatePlan(activePlan.id, (current) => ({
-                          ...current,
-                          billingPeriod: value as "monthly" | "annual",
-                          period: value === "annual" ? "365 dias" : "30 dias",
-                        }))}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="monthly">Mensal</SelectItem>
-                          <SelectItem value="annual">Anual</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  {(activePlan.billingPeriod ?? "monthly") === "annual" && (
-                    <div className="space-y-1">
-                      <Label>Equivalente mensal (mostrado no card)</Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        placeholder="Ex: 64.17"
-                        value={activePlan.monthlyEquivalentPrice ?? ""}
-                        onChange={(event) => updatePlan(activePlan.id, (current) => ({
-                          ...current,
-                          monthlyEquivalentPrice: event.target.value ? Number(event.target.value) : undefined,
-                        }))}
-                      />
-                    </div>
-                  )}
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label>Nível de Acesso</Label>
-                      <Select
-                        value={activePlan.accessLevelId}
-                        onValueChange={(value) => updatePlan(activePlan.id, (current) => applyAccessLevelToPlan(current, value))}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {state.accessLevels.map((level) => (
-                            <SelectItem key={level.id} value={level.id}>{level.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                  <Label>Plano Ativo</Label>
-                  <Switch
-                    checked={activePlan.isActive}
-                    onCheckedChange={(checked) => updatePlan(activePlan.id, (current) => ({ ...current, isActive: checked }))}
-                  />
-                </div>
-                <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                  <Label>Mostrar na Home</Label>
-                  <Switch
-                    checked={activePlan.visibleOnHome}
-                    onCheckedChange={(checked) => updatePlan(activePlan.id, (current) => ({ ...current, visibleOnHome: checked }))}
-                  />
-                </div>
-                <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                  <Label>Mostrar para Cliente</Label>
-                  <Switch
-                    checked={activePlan.visibleInAccount}
-                    onCheckedChange={(checked) => updatePlan(activePlan.id, (current) => ({ ...current, visibleInAccount: checked }))}
-                  />
-                </div>
-              </div>
-
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="admin-card-title">Textos pro Cliente</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-1">
-                    <Label>Descrição (aparece na Home e na área do cliente)</Label>
-                    <Textarea
-                      rows={2}
-                      placeholder="Ex: Ideal para quem está começando a automatizar suas vendas."
-                      value={activePlan.homeDescription || ""}
-                      onChange={(event) => updatePlan(activePlan.id, (current) => ({
-                        ...current,
-                        homeDescription: event.target.value,
-                        accountDescription: event.target.value,
-                      }))}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Lista de recursos (1 por linha)</Label>
-                    <Textarea
-                      rows={6}
-                      value={(activePlan.homeFeatureHighlights || []).join("\n")}
-                      onChange={(event) => updatePlan(activePlan.id, (current) => ({
-                        ...current,
-                        homeFeatureHighlights: parseFeatureHighlightsText(event.target.value),
-                      }))}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="admin-card-title">Limites Base do Plano</CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    Capacidade bruta antes dos caps do nível de acesso. Use <strong>-1</strong> para ilimitado · <strong>0</strong> bloqueia.
-                  </p>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sessões</p>
-                    <div className="grid grid-cols-3 gap-3">
-                      {(
-                        [
-                          { key: "whatsappSessions", label: "WhatsApp" },
-                          { key: "telegramSessions", label: "Telegram" },
-                          { key: "meliSessions", label: "Mercado Livre" },
-                        ] as const
-                      ).map(({ key, label }) => (
-                        <div key={key} className="space-y-1">
-                          <Label className="text-xs">{label}</Label>
-                          <Input
-                            type="number"
-                            className="h-8"
-                            value={String((activePlan.baseLimits || activePlan.limits)[key] ?? 0)}
-                            onChange={(e) => updateBaseLimits(activePlan.id, key, e.target.value)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Contadores</p>
-                    <div className="grid grid-cols-3 gap-3">
-                      {(
-                        [
-                          { key: "routes", label: "Rotas" },
-                          { key: "automations", label: "Automações" },
-                          { key: "schedules", label: "Agendamentos" },
-                          { key: "templates", label: "Templates" },
-                          { key: "masterGroups", label: "Master Groups" },
-                          { key: "meliAutomations", label: "Auto. ML" },
-                        ] as const
-                      ).map(({ key, label }) => (
-                        <div key={key} className="space-y-1">
-                          <Label className="text-xs">{label}</Label>
-                          <Input
-                            type="number"
-                            className="h-8"
-                            value={String((activePlan.baseLimits || activePlan.limits)[key] ?? 0)}
-                            onChange={(e) => updateBaseLimits(activePlan.id, key, e.target.value)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Grupos de destino</p>
-                    <div className="grid grid-cols-3 gap-3">
-                      {(
-                        [
-                          { key: "groups", label: "Total Cadastro" },
-                          { key: "groupsPerAutomation", label: "Cota Automações" },
-                          { key: "groupsPerRoute", label: "Cota Rotas" },
-                        ] as const
-                      ).map(({ key, label }) => (
-                        <div key={key} className="space-y-1">
-                          <Label className="text-xs">{label}</Label>
-                          <Input
-                            type="number"
-                            className="h-8"
-                            value={String((activePlan.baseLimits || activePlan.limits)[key] ?? 0)}
-                            onChange={(e) => updateBaseLimits(activePlan.id, key, e.target.value)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-4 pt-1">
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={Boolean((activePlan.baseLimits || activePlan.limits).bulkSend)}
-                        onCheckedChange={(checked) => updateBaseLimits(activePlan.id, "bulkSend", checked)}
-                      />
-                      <Label className="text-xs">Envio em massa (bulkSend)</Label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={Boolean((activePlan.baseLimits || activePlan.limits).linkHub)}
-                        onCheckedChange={(checked) => updateBaseLimits(activePlan.id, "linkHub", checked)}
-                      />
-                      <Label className="text-xs">Link Hub</Label>
-                    </div>
-                  </div>
-
-                  {(() => {
-                    const accessLevel = state.accessLevels.find((level) => level.id === activePlan.accessLevelId);
-                    if (!accessLevel) return null;
-                    const ov = accessLevel.limitOverrides;
-                    const fmt = (n: number | null) => (n == null ? "—" : n === -1 ? "∞" : String(n));
-                    return (
-                      <div className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                        <span className="font-medium">Caps do nível "{accessLevel.name}":</span>{" "}
-                        WA: {fmt(ov.whatsappSessions)} · TG: {fmt(ov.telegramSessions)} · Auto: {fmt(ov.automations)} · Rotas: {fmt(ov.routes)} · Agend: {fmt(ov.schedules)} · G.auto: {fmt(ov.groupsPerAutomation)} · G.rota: {fmt(ov.groupsPerRoute)}
-                      </div>
-                    );
-                  })()}
-                </CardContent>
-              </Card>
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setActivePlanId(null)}>Fechar</Button>
-            <Button onClick={savePlans} disabled={!hasChanges}>Salvar Alterações</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Criar Plano</DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="space-y-1 sm:col-span-2">
-                <Label>Nome do Plano</Label>
-                <Input value={newPlan.name} onChange={(event) => setNewPlan((prev) => ({ ...prev, name: event.target.value }))} />
-              </div>
-              <div className="space-y-1">
-                <Label>Preço</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={newPlan.price}
-                  onChange={(event) => setNewPlan((prev) => ({ ...prev, price: Number(event.target.value || 0) }))}
+            {/* Plan cards */}
+            <div className="space-y-3">
+              {paidPlans.map((plan) => (
+                <PlanCard
+                  key={plan.id}
+                  plan={plan}
+                  accessLevels={state.accessLevels}
+                  onUpdate={(updater) => updatePlan(plan.id, updater)}
+                  onSavePlan={() => savePlan(plan.id)}
+                  onSavePeriod={(period) => savePeriodToDb(plan.id, period)}
+                  saving={savingPlanId === plan.id}
                 />
-              </div>
+              ))}
             </div>
+          </TabsContent>
 
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="space-y-1">
-                <Label>Duração (dias)</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  value={newPlan.periodDays}
-                  onChange={(event) => setNewPlan((prev) => ({ ...prev, periodDays: Number(event.target.value || 0) }))}
-                  placeholder="Ex: 30"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>Cobrança</Label>
-                <Select
-                  value={newPlan.billingPeriod}
-                  onValueChange={(value) => setNewPlan((prev) => ({
-                    ...prev,
-                    billingPeriod: value as "monthly" | "annual",
-                    periodDays: value === "annual" ? 365 : 30,
-                  }))}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="monthly">Mensal</SelectItem>
-                    <SelectItem value="annual">Anual</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <Label>Nível de Acesso</Label>
-                <Select value={newPlan.accessLevelId} onValueChange={(value) => setNewPlan((prev) => ({ ...prev, accessLevelId: value }))}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {state.accessLevels.map((level) => (
-                      <SelectItem key={level.id} value={level.id}>{level.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {newPlan.billingPeriod === "annual" && (
-              <div className="space-y-1">
-                <Label>Preço Mensal Equivalente (exibido no card)</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  placeholder="Ex: 64.17"
-                  value={newPlan.monthlyEquivalentPrice}
-                  onChange={(event) => setNewPlan((prev) => ({
-                    ...prev,
-                    monthlyEquivalentPrice: event.target.value ? Number(event.target.value) : "",
-                  }))}
-                />
-              </div>
-            )}
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                <Label>Plano Ativo</Label>
-                <Switch checked={newPlan.isActive} onCheckedChange={(checked) => setNewPlan((prev) => ({ ...prev, isActive: checked }))} />
-              </div>
-              <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                <Label>Mostrar na Home</Label>
-                <Switch checked={newPlan.visibleOnHome} onCheckedChange={(checked) => setNewPlan((prev) => ({ ...prev, visibleOnHome: checked }))} />
-              </div>
-              <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                <Label>Mostrar para Cliente</Label>
-                <Switch checked={newPlan.visibleInAccount} onCheckedChange={(checked) => setNewPlan((prev) => ({ ...prev, visibleInAccount: checked }))} />
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <Label>Lista de recursos (1 por linha)</Label>
-              <Textarea
-                rows={6}
-                value={newPlan.homeFeatureHighlightsText}
-                onChange={(event) => setNewPlan((prev) => ({ ...prev, homeFeatureHighlightsText: event.target.value }))}
-              />
-              {newPlan.homeFeatureHighlightsText.split(/\r?\n/).filter(Boolean).length > 10 && (
-                <p className="text-xs text-amber-500">Máximo 10 itens. O que passar disso será cortado.</p>
-              )}
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateModal(false)}>Fechar</Button>
-            <Button onClick={createPlan}>Adicionar Plano</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog open={!!deletePlanTarget} onOpenChange={(open) => !open && setDeletePlanTarget(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Apagar plano?</AlertDialogTitle>
-            <AlertDialogDescription>
-              O plano <strong>{deletePlanTarget?.name}</strong> vai sair do rascunho. Só afeta os usuários quando você salvar.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={confirmRemovePlan}
-            >
-              Excluir
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+          {/* ── Kiwify tab ── */}
+          <TabsContent value="kiwify">
+            <KiwifyPanel />
+          </TabsContent>
+        </Tabs>
+      </div>
     </div>
   );
 }
