@@ -3,6 +3,7 @@ import { access, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createBrotliCompress, createGzip, constants as zlibConstants } from "node:zlib";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +29,28 @@ const mimeTypes = {
   ".woff": "font/woff",
   ".woff2": "font/woff2",
 };
+
+const COMPRESSIBLE_CONTENT_TYPES = [
+  "text/",
+  "application/javascript",
+  "application/json",
+  "image/svg+xml",
+];
+const COMPRESSION_MIN_BYTES = 1024;
+
+function isCompressibleContentType(contentType) {
+  return COMPRESSIBLE_CONTENT_TYPES.some((prefix) => contentType.startsWith(prefix));
+}
+
+function pickContentEncoding(req, contentType, fileSize) {
+  const acceptEncoding = String(req.headers["accept-encoding"] || "").toLowerCase();
+  if (fileSize < COMPRESSION_MIN_BYTES || !isCompressibleContentType(contentType)) {
+    return null;
+  }
+  if (acceptEncoding.includes("br")) return "br";
+  if (acceptEncoding.includes("gzip")) return "gzip";
+  return null;
+}
 
 function safeJoin(baseDir, requestPath) {
   const normalized = requestPath.split("?")[0].split("#")[0];
@@ -71,15 +94,18 @@ const server = createServer(async (req, res) => {
   const filePath = await resolveFilePath(urlPath || "/index.html");
   const ext = path.extname(filePath).toLowerCase();
   const contentType = mimeTypes[ext] || "application/octet-stream";
-
-  createReadStream(filePath)
-    .on("error", () => {
-      res.statusCode = 404;
-      res.end("Not Found");
-    })
-    .pipe(res);
+  let fileSize = 0;
+  try {
+    const fileInfo = await stat(filePath);
+    fileSize = Number(fileInfo.size || 0);
+  } catch {
+    res.statusCode = 404;
+    res.end("Not Found");
+    return;
+  }
 
   res.setHeader("Content-Type", contentType);
+  res.setHeader("Vary", "Accept-Encoding");
   // Security headers
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -94,6 +120,40 @@ const server = createServer(async (req, res) => {
   } else {
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   }
+
+  if (method === "HEAD") {
+    res.statusCode = 200;
+    res.end();
+    return;
+  }
+
+  const encoding = pickContentEncoding(req, contentType, fileSize);
+  const source = createReadStream(filePath).on("error", () => {
+    if (!res.headersSent) {
+      res.statusCode = 404;
+      res.end("Not Found");
+      return;
+    }
+    res.destroy();
+  });
+
+  if (encoding === "br") {
+    res.setHeader("Content-Encoding", "br");
+    source.pipe(createBrotliCompress({
+      params: {
+        [zlibConstants.BROTLI_PARAM_QUALITY]: 5,
+      },
+    })).pipe(res);
+    return;
+  }
+
+  if (encoding === "gzip") {
+    res.setHeader("Content-Encoding", "gzip");
+    source.pipe(createGzip({ level: 6 })).pipe(res);
+    return;
+  }
+
+  source.pipe(res);
 });
 
 server.listen(PORT, HOST, () => {

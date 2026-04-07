@@ -15,7 +15,7 @@ const MEM_WARN_PERCENT = Number.parseFloat(process.env.OPS_MEM_WARN_PERCENT || "
 const MEM_CRITICAL_PERCENT = Number.parseFloat(process.env.OPS_MEM_CRITICAL_PERCENT || "90");
 const LOAD_WARN_PER_CPU = Number.parseFloat(process.env.OPS_LOAD_WARN_PER_CPU || "1.5");
 const LOAD_CRITICAL_PER_CPU = Number.parseFloat(process.env.OPS_LOAD_CRITICAL_PER_CPU || "2.0");
-const OPS_CONTROL_TOKEN = String(process.env.OPS_CONTROL_TOKEN || process.env.WEBHOOK_SECRET || "").trim();
+const OPS_CONTROL_TOKEN = String(process.env.OPS_CONTROL_TOKEN || "").trim();
 const SERVICE_HEALTH_SECRET = String(process.env.WEBHOOK_SECRET || process.env.OPS_CONTROL_TOKEN || "").trim();
 const NODE_ENV = String(process.env.NODE_ENV || "development").toLowerCase();
 // Restrict CORS to explicit origin list. Accepts comma-separated origins (same format as the API service).

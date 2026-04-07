@@ -19,7 +19,7 @@ const baseApp = {
     // are missing from the environment, the services fail fast at startup via
     // ensureRequiredEnvVars() rather than silently running with a weak default.
     WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || "",
-    OPS_CONTROL_TOKEN: process.env.OPS_CONTROL_TOKEN || process.env.WEBHOOK_SECRET || "",
+    OPS_CONTROL_TOKEN: process.env.OPS_CONTROL_TOKEN || "",
   },
 };
 

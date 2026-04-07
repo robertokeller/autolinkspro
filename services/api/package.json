@@ -11,8 +11,10 @@
     "blocklist:update:disposable-email": "node scripts/update-disposable-email-blocklist.mjs"
   },
   "dependencies": {
+    "@types/compression": "^1.8.1",
     "bcryptjs": "^2.4.3",
     "cheerio": "^1.0.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",

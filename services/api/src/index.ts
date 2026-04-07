@@ -1,4 +1,5 @@
 ﻿import express from "express";
+import compression from "compression";
 import cors from "cors";
 import bcrypt from "bcryptjs";
 import { createHash } from "node:crypto";
@@ -338,6 +339,15 @@ app.use(cors({
   },
   credentials: true,
 }));
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (String(req.headers["x-no-compression"] || "").trim().toLowerCase() === "true") {
+      return false;
+    }
+    return compression.filter(req, res);
+  },
+}));
 // 1 MB is more than sufficient for any legitimate RPC payload.
 // 10 MB was excessive and creates a trivial DoS vector for authenticated users.
 app.use(express.json({ limit: "1mb" }));
@@ -360,8 +370,14 @@ app.use((_req, res, next) => {
 // ─── Request ID ── generate per-request UUID, echo back in header ─────────
 // This ID must be added to every log line so that API ↔ microservice calls can
 // be correlated when tracing an incident across multiple service logs.
+function sanitizeRequestId(raw: string | undefined): string {
+  if (!raw) return `api-${uuid()}`;
+  const trimmed = String(raw).slice(0, 128);
+  return /^[A-Za-z0-9_-]+$/.test(trimmed) ? trimmed : `api-${uuid()}`;
+}
+
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const rid = (req.headers["x-request-id"] as string | undefined) ?? `api-${uuid()}`;
+  const rid = sanitizeRequestId(req.headers["x-request-id"] as string | undefined);
   (req as { rid?: string }).rid = rid;
   res.setHeader("x-request-id", rid);
   next();

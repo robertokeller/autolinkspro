@@ -9,6 +9,9 @@ import { SERVICE_RUNTIME_ERROR_EVENT, invokeBackendRpc } from "@/integrations/ba
 import { subscribeAdminControlPlane } from "@/lib/admin-control-plane";
 import { loadSystemRuntimeControlState, subscribeSystemRuntimeControl } from "@/lib/system-runtime-control";
 
+const BROWSER_BACKGROUND_RUNTIME_ENABLED = import.meta.env.DEV
+  || String(import.meta.env.VITE_BROWSER_RUNTIME_ENABLED || "").trim().toLowerCase() === "true";
+
 /**
  * Keeps all runtime automations and health loops active for authenticated users,
  * regardless of the current route in the SPA.
@@ -19,10 +22,11 @@ export function SystemRuntime() {
   const [runtimeEnabled, setRuntimeEnabled] = useState(() => loadSystemRuntimeControlState().enabled);
   const runtimeErrorInvalidateUntilRef = useRef(0);
   const userId = user?.id;
+  const backgroundRuntimeEnabled = runtimeEnabled && BROWSER_BACKGROUND_RUNTIME_ENABLED;
   const { dispatchMessages } = useDispatchMessages();
 
-  useChannelRuntime({ enabled: runtimeEnabled });
-  useMercadoLivreSessions({ enableAutoMonitor: runtimeEnabled });
+  useChannelRuntime({ enabled: backgroundRuntimeEnabled });
+  useMercadoLivreSessions({ enableAutoMonitor: backgroundRuntimeEnabled });
 
   useEffect(() => {
     setRuntimeEnabled(loadSystemRuntimeControlState().enabled);
@@ -35,7 +39,7 @@ export function SystemRuntime() {
     const RUNTIME_ERROR_INVALIDATE_COOLDOWN_MS = 15_000;
 
     const onServiceRuntimeError = () => {
-      if (!runtimeEnabled || !userId) return;
+      if (!backgroundRuntimeEnabled || !userId) return;
       const now = Date.now();
       if (now < runtimeErrorInvalidateUntilRef.current) return;
       runtimeErrorInvalidateUntilRef.current = now + RUNTIME_ERROR_INVALIDATE_COOLDOWN_MS;
@@ -48,7 +52,7 @@ export function SystemRuntime() {
     return () => {
       window.removeEventListener(SERVICE_RUNTIME_ERROR_EVENT, onServiceRuntimeError);
     };
-  }, [queryClient, runtimeEnabled, userId]);
+  }, [backgroundRuntimeEnabled, queryClient, userId]);
 
   useEffect(() => {
     // Invalidate only the queries that are actually affected by DB/control-plane changes.
@@ -70,7 +74,7 @@ export function SystemRuntime() {
   }, [queryClient]);
 
   useEffect(() => {
-    if (isLoading || !userId || !runtimeEnabled) return;
+    if (isLoading || !userId || !backgroundRuntimeEnabled) return;
 
     let cancelled = false;
 
@@ -139,7 +143,7 @@ export function SystemRuntime() {
     );
 
     return () => { cancelled = true; };
-  }, [dispatchMessages, isLoading, runtimeEnabled, userId]);
+  }, [backgroundRuntimeEnabled, dispatchMessages, isLoading, userId]);
 
   return null;
 }
