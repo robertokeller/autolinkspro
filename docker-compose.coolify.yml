@@ -1,0 +1,402 @@
+# Log driver resolves at deploy time via DOCKER_LOG_DRIVER env var.
+# Default: json-file with rotation (logs stay on host, max ~50MB per service).
+# Recommended for production: set DOCKER_LOG_DRIVER=loki and LOKI_URL to stream
+# logs to a Grafana/Loki instance. This takes logs out of reach of an attacker
+# who might try to delete local json files to cover their tracks.
+#   DOCKER_LOG_DRIVER=loki
+#   LOKI_URL=https://loki.yourhost.com
+#   DOCKER_LOG_LOKI_LABELS=compose_service={{.Name}}
+
+x-logging: &default-logging
+  driver: ${DOCKER_LOG_DRIVER:-json-file}
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  web:
+    image: autolinks-web:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+        VITE_BROWSER_RUNTIME_ENABLED: ${VITE_BROWSER_RUNTIME_ENABLED:-false}
+        VITE_WHATSAPP_MICROSERVICE_URL: ${VITE_WHATSAPP_MICROSERVICE_URL}
+        VITE_TELEGRAM_MICROSERVICE_URL: ${VITE_TELEGRAM_MICROSERVICE_URL}
+        VITE_SHOPEE_MICROSERVICE_URL: ${VITE_SHOPEE_MICROSERVICE_URL}
+        VITE_MELI_RPA_URL: ${VITE_MELI_RPA_URL}
+        VITE_AMAZON_MICROSERVICE_URL: ${VITE_AMAZON_MICROSERVICE_URL}
+        VITE_OPS_CONTROL_URL: ${VITE_OPS_CONTROL_URL}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    restart: unless-stopped
+
+  whatsapp:
+    image: autolinks-whatsapp:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/whatsapp.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3111
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      BAILEYS_SESSIONS_DIR: /data/wa-sessions
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
+      MEDIA_CAPTURE_DEBUG: ${MEDIA_CAPTURE_DEBUG:-false}
+    volumes:
+      - wa_sessions:/data/wa-sessions
+    expose:
+      - "3111"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3111/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 35s
+    logging: *default-logging
+    restart: unless-stopped
+
+  telegram:
+    image: autolinks-telegram:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/telegram.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3112
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      TELEGRAM_SESSIONS_DIR: /data/tg-sessions
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
+      MEDIA_CAPTURE_DEBUG: ${MEDIA_CAPTURE_DEBUG:-false}
+    volumes:
+      - tg_sessions:/data/tg-sessions
+    expose:
+      - "3112"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3112/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 35s
+    logging: *default-logging
+    restart: unless-stopped
+
+  shopee:
+    image: autolinks-shopee:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/shopee.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3113
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "3113"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3113/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 35s
+    logging: *default-logging
+    restart: unless-stopped
+
+  meli:
+    image: autolinks-meli:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/meli.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.5'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      MELI_RPA_PORT: 3114
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${MELI_CORS_ORIGIN:?MELI_CORS_ORIGIN is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - meli_sessions:/app/services/mercadolivre-rpa/.sessions
+    expose:
+      - "3114"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3114/api/meli/health',{headers:{'x-webhook-secret':process.env.WEBHOOK_SECRET||''}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 45s
+    logging: *default-logging
+    restart: unless-stopped
+
+  amazon:
+    image: autolinks-amazon:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/amazon.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3117
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "3117"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3117/health',{headers:{'x-webhook-secret':process.env.WEBHOOK_SECRET||''}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    restart: unless-stopped
+
+  ops-control:
+    image: autolinks-ops-control:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/ops-control.Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3115
+      OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      OPS_RUNTIME_MODE: docker
+      DOCKER_CONTROL_ENABLED: ${DOCKER_CONTROL_ENABLED:-true}
+      DOCKER_SERVICE_LABEL_KEY: ${DOCKER_SERVICE_LABEL_KEY:-com.docker.compose.service}
+      WHATSAPP_HEALTH_URL: http://whatsapp:3111/health
+      TELEGRAM_HEALTH_URL: http://telegram:3112/health
+      SHOPEE_HEALTH_URL: http://shopee:3113/health
+      MELI_HEALTH_URL: http://meli:3114/api/meli/health
+      AMAZON_HEALTH_URL: http://amazon:3117/health
+      ALLOW_INSECURE_NO_TOKEN: "false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "3115"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3115/health',{headers:{'x-ops-token':process.env.OPS_CONTROL_TOKEN||''}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    restart: unless-stopped
+
+  api:
+    image: autolinks-api:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: '2.0'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3116
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DB_SSL: ${DB_SSL:-true}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-true}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?CREDENTIAL_ENCRYPTION_KEY is required}
+      CREDENTIAL_CIPHER_SALT: ${CREDENTIAL_CIPHER_SALT:?CREDENTIAL_CIPHER_SALT is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:?APP_PUBLIC_URL is required}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:?API_PUBLIC_URL is required}
+      RESEND_API_KEY: ${RESEND_API_KEY:?RESEND_API_KEY is required}
+      RESEND_FROM: ${RESEND_FROM:?RESEND_FROM is required}
+      RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
+      EMAIL_VERIFY_TOKEN_TTL_MINUTES: ${EMAIL_VERIFY_TOKEN_TTL_MINUTES:-1440}
+      PASSWORD_RESET_TOKEN_TTL_MINUTES: ${PASSWORD_RESET_TOKEN_TTL_MINUTES:-30}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      # DB_POOL_MAX: max pg connections per API container.
+      # Single container (Docker) → 10 is safe. Raise only if Postgres max_connections allows.
+      # Formula: DB_POOL_MAX + ~15 (Postgres internals) ≤ max_connections.
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      # Burst shed: max RPC requests per 10s per container before returning 503.
+      # 500 = 50 req/sec \u2014 matches single-container Docker capacity.
+      # Raise with BURST_THRESHOLD_PER_BUCKET=1000 for high-traffic deployments.
+      BURST_THRESHOLD_PER_BUCKET: ${BURST_THRESHOLD_PER_BUCKET:-500}
+      WHATSAPP_MICROSERVICE_URL: http://whatsapp:3111
+      TELEGRAM_MICROSERVICE_URL: http://telegram:3112
+      SHOPEE_MICROSERVICE_URL: http://shopee:3113
+      MELI_RPA_URL: http://meli:3114
+      AMAZON_MICROSERVICE_URL: http://amazon:3117
+      OPS_CONTROL_URL: http://ops-control:3115
+      OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
+      DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
+      ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
+    expose:
+      - "3116"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3116/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 8s
+      retries: 6
+      start_period: 30s
+    logging: *default-logging
+    restart: unless-stopped
+
+  scheduler:
+    image: autolinks-scheduler:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/scheduler.Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    environment:
+      NODE_ENV: production
+      SCHEDULER_MODE: remote
+      SCHEDULER_RPC_BASE_URL: ${SCHEDULER_RPC_BASE_URL:-http://api:3116}
+      SCHEDULER_RPC_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
+      DISPATCH_INTERVAL_SECONDS: ${DISPATCH_INTERVAL_SECONDS}
+      SHOPEE_INTERVAL_SECONDS: ${SHOPEE_INTERVAL_SECONDS}
+      CHANNEL_EVENTS_INTERVAL_SECONDS: ${CHANNEL_EVENTS_INTERVAL_SECONDS:-15}
+      DISPATCH_LIMIT: ${DISPATCH_LIMIT}
+      DISPATCH_SOURCE: ${DISPATCH_SOURCE}
+      SCHEDULER_TIMEOUT_MS: ${SCHEDULER_TIMEOUT_MS}
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *default-logging
+    restart: unless-stopped
+
+  sessions-backup:
+    image: autolinks-sessions-backup:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/sessions-backup.Dockerfile
+    environment:
+      BACKUP_SCHEDULE: ${SESSIONS_BACKUP_SCHEDULE:-0 4 * * *}
+      BACKUP_KEEP_DAYS: ${SESSIONS_BACKUP_KEEP_DAYS:-7}
+      # Defina BACKUP_ENCRYPTION_KEY para cifrar os backups com AES-256-CBC.
+      # Se vazio, os backups são gerados sem cifra (não recomendado em produção).
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+    volumes:
+      - wa_sessions:/data/wa-sessions:ro
+      - tg_sessions:/data/tg-sessions:ro
+      - meli_sessions:/data/meli-sessions:ro
+      - sessions_backups:/backups
+    depends_on:
+      whatsapp:
+        condition: service_healthy
+      telegram:
+        condition: service_healthy
+      meli:
+        condition: service_healthy
+    logging: *default-logging
+    restart: unless-stopped
+
+volumes:
+  sessions_backups:
+  wa_sessions:
+  tg_sessions:
+  meli_sessions:

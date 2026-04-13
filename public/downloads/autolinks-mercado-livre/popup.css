@@ -1,0 +1,237 @@
+:root {
+  --bg-base: #090a0c;
+  --bg-top: #1e2024;
+  --surface: #13171d;
+  --surface-2: #212326;
+  --border: #212326;
+  --text: #f7f9fc;
+  --muted: #8b949e;
+  --accent: #fa7035;
+  --accent-2: #ff8c5a;
+  --accent-soft: rgba(250, 112, 53, 0.22);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 400px;
+  width: 420px;
+  color: var(--text);
+  font-family: "Plus Jakarta Sans", "Inter", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(120% 140% at 15% -25%, rgba(250, 112, 53, 0.16) 0%, rgba(250, 112, 53, 0) 55%),
+    radial-gradient(140% 120% at 100% 0%, rgba(255, 140, 90, 0.08) 0%, rgba(255, 140, 90, 0) 65%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-base) 100%);
+}
+
+.app {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.brand {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.brand-icon {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.brand-icon img {
+  width: 32px;
+  height: 32px;
+  display: block;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.card {
+  padding: 20px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+}
+
+.card.hidden {
+  display: none;
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.copy {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+label {
+  display: block;
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+input {
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+input::placeholder {
+  color: var(--muted);
+}
+
+input:hover {
+  background: #2a2d31;
+}
+
+input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface-2);
+}
+
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(250, 112, 53, 0.2);
+}
+
+button.secondary {
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: #2a2d31;
+  border-color: #3b3e43;
+}
+
+.actions {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+
+.status {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status.info {
+  color: #fbdfbc;
+  border-color: rgba(250, 112, 53, 0.4);
+  background: rgba(250, 112, 53, 0.1);
+}
+
+.status.success {
+  color: #a3f4c6;
+  border-color: #328059;
+  background: rgba(50, 128, 89, 0.15);
+}
+
+.status.error {
+  color: #ffc4cb;
+  border-color: #8c4248;
+  background: rgba(140, 66, 72, 0.15);
+}

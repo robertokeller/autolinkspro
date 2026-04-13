@@ -1,0 +1,33 @@
+# Allow social previews for public shareable pages only
+User-agent: Twitterbot
+Allow: /hub/
+Allow: /mg/
+Disallow: /
+
+User-agent: facebookexternalhit
+Allow: /hub/
+Allow: /mg/
+Disallow: /
+
+# Allow general crawlers only on public content pages
+User-agent: *
+Allow: /hub/
+Allow: /mg/
+Disallow: /admin
+Disallow: /admin/
+Disallow: /api
+Disallow: /api/
+Disallow: /auth
+Disallow: /auth/
+Disallow: /functions
+Disallow: /functions/
+Disallow: /dashboard
+Disallow: /connections
+Disallow: /routes
+Disallow: /shopee
+Disallow: /meli
+Disallow: /amazon
+Disallow: /schedules
+Disallow: /link-hub
+Disallow: /history
+Disallow: /account

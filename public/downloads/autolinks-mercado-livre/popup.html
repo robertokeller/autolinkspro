@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://api.autolinks.pro" />
+    <title>Auto Links - Mercado Livre</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">
+          <img src="icons/icon-48.png" alt="" width="32" height="32" />
+        </div>
+        <div class="brand-copy">
+          <h1>AutoLinks para Mercado Livre</h1>
+          <p class="subtitle">Conecte sua conta em 2 passos e sincronize os cookies de forma automática.</p>
+        </div>
+      </div>
+
+      <div id="stepLogin" class="card">
+        <h2>1. Entrar na conta AutoLinks</h2>
+        <p class="copy">Use o mesmo e-mail do painel para liberar a sincronização da extensão. A conexão com a API é feita automaticamente.</p>
+
+        <label for="email">E-mail</label>
+        <input id="email" type="email" placeholder="seu@email.com" autocomplete="email" />
+
+        <label for="password">Senha</label>
+        <input id="password" type="password" placeholder="********" autocomplete="current-password" />
+
+        <button id="loginBtn" type="button" class="primary">Entrar</button>
+      </div>
+
+      <div id="stepCapture" class="card hidden">
+        <h2>2. Capturar e enviar cookies</h2>
+        <p class="copy">Login validado. Agora vamos sincronizar seus cookies com sua conta.</p>
+        <p class="copy"><strong>Dica:</strong> deixe uma aba do Mercado Livre aberta e logada antes de capturar.</p>
+        <div class="actions">
+          <button id="captureBtn" type="button" class="primary">Capturar e enviar cookies</button>
+          <button id="logoutBtn" type="button" class="secondary">Sair da conta</button>
+        </div>
+      </div>
+
+      <div id="status" class="status info" aria-live="polite">Pronto para começar. Faça login para continuar.</div>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,1345 @@
+import { createHash } from "node:crypto";
+import type { PoolClient } from "pg";
+import { load } from "cheerio";
+import type { AnyNode } from "domhandler";
+import { execute, query, queryOne, transaction } from "./db.js";
+
+export type MeliVitrineTabKey =
+  | "destaques"
+  | "top_performance"
+  | "mais_vendidos"
+  | "ofertas_quentes"
+  | "melhor_avaliados";
+
+export type MeliVitrineTabConfig = {
+  key: MeliVitrineTabKey;
+  label: string;
+  sourceUrls: string[];
+};
+
+const MELI_VITRINE_SYNC_INTERVAL_MS = Number.parseInt(process.env.MELI_VITRINE_SYNC_INTERVAL_MS || "7200000", 10);
+const MELI_VITRINE_FETCH_TIMEOUT_MS = Number.parseInt(process.env.MELI_VITRINE_FETCH_TIMEOUT_MS || "20000", 10);
+const MELI_VITRINE_FETCH_MAX_ATTEMPTS = Math.max(1, Number.parseInt(process.env.MELI_VITRINE_FETCH_MAX_ATTEMPTS || "3", 10));
+const MELI_VITRINE_FETCH_RETRY_BASE_MS = Math.max(150, Number.parseInt(process.env.MELI_VITRINE_FETCH_RETRY_BASE_MS || "700", 10));
+const MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS || "600000", 10),
+);
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const MELI_BASE_URL = "https://www.mercadolivre.com.br";
+const DEFAULT_TAB_KEY: MeliVitrineTabKey = "destaques";
+const PAUSED_AD_MARKERS = ["anuncio pausado", "publicação pausada"];
+const BLOCKED_HTML_MARKERS = [
+  "captcha",
+  "verifique que voce e humano",
+  "acesso denegado",
+  "access denied",
+  "too many requests",
+  "request blocked",
+  "solicitacao bloqueada",
+];
+
+const MELI_VITRINE_TAB_ALIAS_MAP: Record<string, MeliVitrineTabKey> = {
+  all: "destaques",
+  destaques: "destaques",
+  top_performance: "top_performance",
+  mais_vendidos: "mais_vendidos",
+  ofertas_quentes: "ofertas_quentes",
+  melhor_avaliados: "melhor_avaliados",
+  beleza_cuidados: "destaques",
+  calcados_roupas_bolsas: "destaques",
+  casa_moveis_decoracao: "destaques",
+  celulares_telefones: "destaques",
+  construcao: "destaques",
+  eletrodomesticos: "destaques",
+  esportes_fitness: "destaques",
+  ferramentas: "destaques",
+  informatica: "destaques",
+  saude: "destaques",
+};
+
+export const MELI_VITRINE_TABS: MeliVitrineTabConfig[] = [
+  {
+    key: "destaques",
+    label: "Destaques",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/promotom/lists/8f90988a-1c69-4f23-8b26-76286c3cdc87",
+      "https://www.mercadolivre.com.br/social/techdealsbr/lists/50eac525-4695-49f7-812c-5522ad1d667a",
+    ],
+  },
+  {
+    key: "top_performance",
+    label: "Top Performance",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/promozonevip/lists/bf623a1c-2a1f-43af-ab51-b5155a677a9e",
+      "https://www.mercadolivre.com.br/social/tudonapromo/lists/b07d147c-7750-43cd-bb5a-852967804a73",
+    ],
+  },
+  {
+    key: "mais_vendidos",
+    label: "Mais vendidos",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/ofertasgamer/lists/ffc82d3a-cf5e-436e-a2a8-f92f5ba79379?page=1",
+      "https://www.mercadolivre.com.br/social/ta20250821221208/lists/cf0accd5-df65-4ad9-99be-ddd038ffad54",
+    ],
+  },
+  {
+    key: "ofertas_quentes",
+    label: "Ofertas quentes",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/nn20251114221751/lists/b07d72f6-57d9-4170-9443-f6b07f340e82",
+      "https://www.mercadolivre.com.br/social/fadadoscupons/lists/32815423-27cb-4651-8bb6-985183a5e0d8?page=3",
+    ],
+  },
+  {
+    key: "melhor_avaliados",
+    label: "Melhor Avaliados",
+    sourceUrls: [
+      "https://www.mercadolivre.com.br/social/nn20251114221751/lists/b07d72f6-57d9-4170-9443-f6b07f340e82",
+      "https://www.mercadolivre.com.br/social/rogenevinicius/lists/d62a0a62-343e-4c4a-994e-b92693de660f",
+    ],
+  },
+];
+
+type ExtractedProduct = {
+  id: string;
+  tab: MeliVitrineTabKey;
+  sourceUrl: string;
+  productUrl: string;
+  title: string;
+  imageUrl: string;
+  priceCents: number;
+  oldPriceCents: number | null;
+  discountText: string;
+  seller: string;
+  rating: number | null;
+  reviewsCount: number | null;
+  shippingText: string;
+  installmentsText: string;
+  badgeText: string;
+  payloadHash: string;
+};
+
+type ExistingRow = {
+  product_url: string;
+  payload_hash: string;
+  is_active: boolean;
+};
+
+type LastSyncRow = {
+  created_at: string;
+  finished_at: string | null;
+};
+
+type ListSnapshot = {
+  countRow: { total: string } | null;
+  rows: Array<{
+    id: string;
+    tab_key: MeliVitrineTabKey;
+    source_url: string;
+    title: string;
+    product_url: string;
+    image_url: string;
+    price_cents: number;
+    old_price_cents: number | null;
+    discount_text: string;
+    seller: string;
+    rating: number | null;
+    reviews_count: number | null;
+    shipping_text: string;
+    installments_text: string;
+    badge_text: string;
+    collected_at: string;
+  }>;
+  tabRows: Array<{ tab_key: MeliVitrineTabKey; active_count: string }>;
+  lastSync: LastSyncRow | null;
+};
+
+export type MeliVitrineSyncResult = {
+  success: boolean;
+  skipped: boolean;
+  source: string;
+  scannedTabs: number;
+  fetchedCards: number;
+  addedCount: number;
+  updatedCount: number;
+  removedCount: number;
+  unchangedCount: number;
+  lastSyncAt: string | null;
+  message: string;
+};
+
+export type MeliVitrineListResult = {
+  tab: MeliVitrineTabKey;
+  page: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+  items: Array<{
+    id: string;
+    tab: MeliVitrineTabKey;
+    sourceUrl: string;
+    title: string;
+    productUrl: string;
+    imageUrl: string;
+    price: number;
+    oldPrice: number | null;
+    discountText: string;
+    seller: string;
+    rating: number | null;
+    reviewsCount: number | null;
+    shippingText: string;
+    installmentsText: string;
+    badgeText: string;
+    collectedAt: string;
+  }>;
+  tabs: Array<{ key: MeliVitrineTabKey; label: string; activeCount: number }>;
+  lastSyncAt: string | null;
+  stale: boolean;
+};
+
+export type MeliProductSnapshot = {
+  productUrl: string;
+  title: string;
+  imageUrl: string;
+  price: number | null;
+  oldPrice: number | null;
+  installmentsText: string;
+  seller: string;
+  rating: number | null;
+  reviewsCount: number | null;
+};
+
+let syncInFlight: Promise<MeliVitrineSyncResult> | null = null;
+let lastEmptyAutoSyncAtMs = 0;
+
+function normalizeText(value: string): string {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeSearchableText(value: string): string {
+  return normalizeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isPausedAdText(value: string): boolean {
+  const normalized = normalizeSearchableText(value);
+  if (!normalized) return false;
+  return PAUSED_AD_MARKERS.some((marker) => normalized.includes(marker));
+}
+
+function parseIntegerDigits(value: string): number {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return 0;
+  const parsed = Number.parseInt(digits, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseAmountCentsFromNode(nodeText: string, centsText = ""): number {
+  const fraction = parseIntegerDigits(nodeText);
+  if (!fraction) return 0;
+  const centsRaw = parseIntegerDigits(centsText);
+  const cents = Math.max(0, Math.min(99, centsRaw));
+  return fraction * 100 + cents;
+}
+
+function parseAmountCentsFromCurrencyText(value: string): number {
+  const normalized = normalizeText(value);
+  if (!normalized) return 0;
+  const match = normalized.match(/R\$\s*([\d.]+)(?:,(\d{1,2}))?/i);
+  if (!match) return 0;
+  const integerPart = Number.parseInt(String(match[1] || "").replace(/\./g, ""), 10);
+  if (!Number.isFinite(integerPart) || integerPart <= 0) return 0;
+  const centsRaw = String(match[2] || "").trim();
+  const centsParsed = Number.parseInt(centsRaw.padEnd(2, "0").slice(0, 2), 10);
+  const cents = Number.isFinite(centsParsed) ? Math.max(0, Math.min(99, centsParsed)) : 0;
+  return integerPart * 100 + cents;
+}
+
+function parseRating(value: string): number | null {
+  const normalized = normalizeText(value).replace(",", ".");
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function parseReviewsCount(value: string): number | null {
+  const parsed = parseIntegerDigits(value);
+  return parsed > 0 ? parsed : null;
+}
+
+function parseDecimalNumber(value: unknown): number | null {
+  const normalized = normalizeText(String(value || "")).replace(",", ".");
+  if (!normalized) return null;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function parseStringifiedNumber(value: unknown): number | null {
+  const raw = normalizeText(String(value || ""));
+  if (!raw) return null;
+
+  let normalized = raw
+    .replace(/[R$\s]/gi, "")
+    .replace(/[^0-9.,-]/g, "");
+
+  if (!normalized) return null;
+
+  // 1.234,56 -> 1234.56
+  if (/^-?\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  // 1,234.56 -> 1234.56
+  } else if (/^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/,/g, "");
+  // 1234,56 -> 1234.56
+  } else if (/^-?\d+,\d+$/.test(normalized)) {
+    normalized = normalized.replace(",", ".");
+  // 7.706 (reviews count) -> 7706
+  } else if (/^-?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "");
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function priceFromCents(value: number | null | undefined): number | null {
+  if (!Number.isFinite(Number(value)) || Number(value) <= 0) return null;
+  return Number((Number(value) / 100).toFixed(2));
+}
+
+function normalizeSeller(value: string): string {
+  const normalized = normalizeText(value);
+  return normalized.replace(/^por\s+/i, "").trim();
+}
+
+function sanitizeDiscountText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  if (/pix/i.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeInstallmentsText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+
+  const match = normalized.match(/(\d{1,2})x\s*R\$\s*([\d.]+(?:,\d{1,2})?)/i);
+  if (!match) {
+    return normalized.replace(/^ou\s+/i, "").trim();
+  }
+
+  const times = Number.parseInt(match[1], 10);
+  const amount = String(match[2] || "").trim();
+  if (!Number.isFinite(times) || times <= 0 || !amount) {
+    return normalized.replace(/^ou\s+/i, "").trim();
+  }
+
+  const suffix = /sem juros/i.test(normalized) ? " sem juros" : "";
+  return `${times}x de R$${amount}${suffix}`.trim();
+}
+
+function sanitizeShippingText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  return normalized
+    .replace(/por\s*ser\s*sua\s*primeira\s*compra/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sanitizeBadgeText(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  if (/mais\s*vendid/i.test(normalized)) return "";
+  return normalized;
+}
+
+function readJsonStringCapture(value: string): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  try {
+    return JSON.parse(`"${normalized.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+  } catch {
+    return normalized;
+  }
+}
+
+function extractRegexString(input: string, pattern: RegExp): string {
+  const match = input.match(pattern);
+  return match?.[1] ? readJsonStringCapture(String(match[1])) : "";
+}
+
+function extractRegexNumber(input: string, pattern: RegExp): number | null {
+  const match = input.match(pattern);
+  if (!match?.[1]) return null;
+  return parseStringifiedNumber(match[1]);
+}
+
+function extractFirstSrcsetUrl(value: string): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+  const firstEntry = normalized.split(",")[0] || "";
+  const firstUrl = firstEntry.trim().split(/\s+/)[0] || "";
+  return firstUrl.trim();
+}
+
+function normalizeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return normalizeText(message);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function toAbsoluteUrl(raw: string): string {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    return new URL(value, MELI_BASE_URL).toString();
+  } catch {
+    return "";
+  }
+}
+
+function canonicalizeProductUrl(raw: string): string {
+  const absolute = toAbsoluteUrl(raw);
+  if (!absolute) return "";
+
+  try {
+    const parsed = new URL(absolute);
+    parsed.search = "";
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+    return parsed.toString();
+  } catch {
+    return absolute;
+  }
+}
+
+function parseJsonLdBlocks(html: string): unknown[] {
+  const $ = load(html);
+  const out: unknown[] = [];
+
+  $("script[type='application/ld+json']").each((_, element) => {
+    const raw = String($(element).contents().text() || "").trim();
+    if (!raw) return;
+    try {
+      out.push(JSON.parse(raw));
+    } catch {
+      // Ignore malformed JSON-LD blocks and continue with the next one.
+    }
+  });
+
+  return out;
+}
+
+function flattenJsonLdNodes(input: unknown): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const queue: unknown[] = [input];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) continue;
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    if (typeof current !== "object") continue;
+
+    const record = current as Record<string, unknown>;
+    out.push(record);
+    if (Array.isArray(record["@graph"])) queue.push(...record["@graph"]);
+  }
+
+  return out;
+}
+
+function findJsonLdProductRecord(html: string): Record<string, unknown> | null {
+  const blocks = parseJsonLdBlocks(html);
+  for (const block of blocks) {
+    for (const node of flattenJsonLdNodes(block)) {
+      const typeRaw = node["@type"];
+      const types = Array.isArray(typeRaw) ? typeRaw : [typeRaw];
+      const hasProductType = types.some((entry) => normalizeText(String(entry || "")).toLowerCase() === "product");
+      if (hasProductType) return node;
+    }
+  }
+  return null;
+}
+
+function pickFirstNonEmptyString(...values: unknown[]): string {
+  for (const value of values) {
+    const normalized = normalizeText(String(value || ""));
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function pickFirstPositiveNumber(...values: Array<number | null | undefined>): number | null {
+  for (const value of values) {
+    if (Number.isFinite(Number(value)) && Number(value) > 0) {
+      return Number(Number(value).toFixed(2));
+    }
+  }
+  return null;
+}
+
+function hasSnapshotCoreFields(snapshot: MeliProductSnapshot | null | undefined): snapshot is MeliProductSnapshot {
+  if (!snapshot) return false;
+  return (
+    String(snapshot.title || "").trim().length > 0
+    && Number.isFinite(Number(snapshot.price))
+    && Number(snapshot.price) > 0
+  );
+}
+
+function mergeSnapshotData(
+  primary: MeliProductSnapshot | null | undefined,
+  fallback: MeliProductSnapshot | null | undefined,
+): MeliProductSnapshot | null {
+  if (!primary && !fallback) return null;
+  if (!primary) return fallback || null;
+  if (!fallback) return primary || null;
+
+  return {
+    productUrl: pickFirstNonEmptyString(primary.productUrl, fallback.productUrl),
+    title: pickFirstNonEmptyString(primary.title, fallback.title),
+    imageUrl: pickFirstNonEmptyString(primary.imageUrl, fallback.imageUrl),
+    price: pickFirstPositiveNumber(primary.price, fallback.price),
+    oldPrice: pickFirstPositiveNumber(primary.oldPrice, fallback.oldPrice),
+    installmentsText: pickFirstNonEmptyString(primary.installmentsText, fallback.installmentsText),
+    seller: pickFirstNonEmptyString(primary.seller, fallback.seller),
+    rating: pickFirstPositiveNumber(primary.rating, fallback.rating),
+    reviewsCount: pickFirstPositiveNumber(primary.reviewsCount, fallback.reviewsCount),
+  };
+}
+
+function extractPriceFromMoneyNode($: ReturnType<typeof load>, selector: string): number | null {
+  const node = $(selector).first();
+  if (node.length === 0) return null;
+
+  const fraction = normalizeText(node.find(".andes-money-amount__fraction").first().text());
+  const cents = normalizeText(node.find(".andes-money-amount__cents").first().text());
+  const fromNodes = parseAmountCentsFromNode(fraction, cents);
+  if (fromNodes > 0) return priceFromCents(fromNodes);
+
+  const fromText = parseAmountCentsFromCurrencyText(node.text());
+  return fromText > 0 ? priceFromCents(fromText) : null;
+}
+
+function extractInstallmentsFromProductPage($: ReturnType<typeof load>, html: string): string {
+  const fromDom = normalizeInstallmentsText(pickFirstNonEmptyString(
+    $("#pricing_price_subtitle").first().text(),
+    $(".ui-pdp-price__subtitles").first().text(),
+    $(".ui-installments__payment").first().text(),
+  ));
+  if (fromDom) return fromDom;
+
+  const installments = extractRegexNumber(html, /"installments":([0-9]+)/i);
+  const installmentAmount = extractRegexNumber(html, /"installment_amount":([0-9]+(?:\.[0-9]+)?)/i);
+  if (Number.isFinite(Number(installments)) && Number(installments) > 0 && Number.isFinite(Number(installmentAmount)) && Number(installmentAmount) > 0) {
+    const amount = Number(installmentAmount).toFixed(2).replace(".", ",");
+    return `${Math.floor(Number(installments))}x de R$${amount}`;
+  }
+
+  return "";
+}
+
+function extractSellerFromProductPage($: ReturnType<typeof load>, html: string): string {
+  const sellerFromDom = pickFirstNonEmptyString(
+    $(".ui-pdp-seller__link span").first().text(),
+    $(".ui-pdp-seller__link-trigger-button a span").first().text(),
+    $(".ui-pdp-seller__header a span").first().text(),
+  );
+  if (sellerFromDom) return normalizeSeller(sellerFromDom);
+
+  return normalizeSeller(extractRegexString(
+    html,
+    /"seller_name":"([^"]+)"/i,
+  ));
+}
+
+async function findSnapshotInVitrine(productUrl: string): Promise<MeliProductSnapshot | null> {
+  const row = await queryOne<{
+    product_url: string;
+    title: string;
+    image_url: string;
+    price_cents: number;
+    old_price_cents: number | null;
+    installments_text: string;
+    seller: string;
+    rating: number | null;
+    reviews_count: number | null;
+  }>(
+    `SELECT product_url, title, image_url, price_cents, old_price_cents, installments_text, seller, rating, reviews_count
+       FROM meli_vitrine_products
+      WHERE product_url = $1
+      ORDER BY
+        CASE WHEN price_cents > 0 THEN 1 ELSE 0 END DESC,
+        CASE WHEN title <> '' THEN 1 ELSE 0 END DESC,
+        CASE WHEN image_url <> '' THEN 1 ELSE 0 END DESC,
+        CASE WHEN seller <> '' THEN 1 ELSE 0 END DESC,
+        is_active DESC,
+        updated_at DESC
+      LIMIT 1`,
+    [productUrl],
+  );
+
+  if (!row) return null;
+
+  return {
+    productUrl: String(row.product_url || productUrl),
+    title: String(row.title || ""),
+    imageUrl: String(row.image_url || ""),
+    price: priceFromCents(row.price_cents),
+    oldPrice: priceFromCents(row.old_price_cents),
+    installmentsText: normalizeInstallmentsText(String(row.installments_text || "")),
+    seller: normalizeSeller(String(row.seller || "")),
+    rating: row.rating === null || row.rating === undefined ? null : Number(row.rating),
+    reviewsCount: row.reviews_count === null || row.reviews_count === undefined ? null : Number(row.reviews_count),
+  };
+}
+
+async function extractSnapshotFromLivePage(canonicalUrl: string): Promise<MeliProductSnapshot> {
+  const html = await fetchHtml(canonicalUrl, { expectCards: false });
+  const $ = load(html);
+  const jsonLdProduct = findJsonLdProductRecord(html);
+  const offers = (jsonLdProduct?.offers && typeof jsonLdProduct.offers === "object")
+    ? jsonLdProduct.offers as Record<string, unknown>
+    : null;
+  const aggregateRating = (jsonLdProduct?.aggregateRating && typeof jsonLdProduct.aggregateRating === "object")
+    ? jsonLdProduct.aggregateRating as Record<string, unknown>
+    : null;
+
+  return {
+    productUrl: canonicalizeProductUrl(
+      pickFirstNonEmptyString(
+        $("link[rel='canonical']").attr("href"),
+        offers?.url,
+        canonicalUrl,
+      ),
+    ) || canonicalUrl,
+    title: pickFirstNonEmptyString(
+      jsonLdProduct?.name,
+      $("meta[property='og:title']").attr("content"),
+      $(".ui-pdp-title").first().text(),
+      $("h1").first().text(),
+    ),
+    imageUrl: toAbsoluteUrl(pickFirstNonEmptyString(
+      Array.isArray(jsonLdProduct?.image) ? jsonLdProduct?.image[0] : jsonLdProduct?.image,
+      $("meta[property='og:image']").attr("content"),
+      $("img.ui-pdp-image").first().attr("src"),
+      $("img[data-zoom]").first().attr("src"),
+    )),
+    price: pickFirstPositiveNumber(
+      extractPriceFromMoneyNode($, ".ui-pdp-price__second-line .andes-money-amount"),
+      extractPriceFromMoneyNode($, ".ui-pdp-price__main-container .andes-money-amount"),
+      extractPriceFromMoneyNode($, ".ui-pdp-price__current .andes-money-amount"),
+      parseStringifiedNumber(offers?.price),
+      extractRegexNumber(html, /"price":([0-9]+(?:\.[0-9]+)?)/i),
+    ),
+    oldPrice: pickFirstPositiveNumber(
+      extractPriceFromMoneyNode($, ".ui-pdp-price__original-value"),
+      extractPriceFromMoneyNode($, ".andes-money-amount--previous"),
+      extractRegexNumber(html, /"original_price":([0-9]+(?:\.[0-9]+)?)/i),
+      extractRegexNumber(html, /"originalPrice":([0-9]+(?:\.[0-9]+)?)/i),
+    ),
+    installmentsText: extractInstallmentsFromProductPage($, html),
+    seller: extractSellerFromProductPage($, html),
+    rating: pickFirstPositiveNumber(
+      parseDecimalNumber(aggregateRating?.ratingValue),
+      parseDecimalNumber($(".ui-pdp-review__rating").first().text()),
+      parseDecimalNumber($("[data-testid='rating-value']").first().text()),
+      extractRegexNumber(html, /"rating_average_formatted":"([0-9]+(?:\.[0-9]+)?)"/i),
+      extractRegexNumber(html, /"rate":([0-9]+(?:\.[0-9]+)?)/i),
+    ),
+    reviewsCount: pickFirstPositiveNumber(
+      parseStringifiedNumber(aggregateRating?.ratingCount),
+      parseStringifiedNumber(aggregateRating?.reviewCount),
+      parseStringifiedNumber(parseReviewsCount($(".ui-pdp-review__amount").first().text())),
+      parseStringifiedNumber($("[data-testid='reviews-amount']").first().text()),
+      extractRegexNumber(html, /"rating_count":([0-9]+)/i),
+      extractRegexNumber(html, /"reviews_count":([0-9]+)/i),
+      extractRegexNumber(html, /"reviewCount":"?([0-9.]+)"?/i),
+      extractRegexNumber(html, /"ratingCount":"?([0-9.]+)"?/i),
+    ),
+  };
+}
+
+export async function getMeliProductSnapshot(rawUrl: string): Promise<MeliProductSnapshot> {
+  const canonicalUrl = canonicalizeProductUrl(rawUrl);
+  if (!canonicalUrl) {
+    throw new Error("URL do produto inválida para extracao.");
+  }
+
+  const fromVitrine = await findSnapshotInVitrine(canonicalUrl).catch(() => null);
+  const shouldEnrichFromLive = (
+    !fromVitrine
+    || !hasSnapshotCoreFields(fromVitrine)
+    || !fromVitrine.seller
+    || !fromVitrine.installmentsText
+    || !fromVitrine.imageUrl
+    || !Number.isFinite(Number(fromVitrine.oldPrice))
+    || !Number.isFinite(Number(fromVitrine.rating))
+    || !Number.isFinite(Number(fromVitrine.reviewsCount))
+  );
+
+  if (!shouldEnrichFromLive) {
+    return fromVitrine;
+  }
+
+  let fromLive: MeliProductSnapshot | null = null;
+  try {
+    fromLive = await extractSnapshotFromLivePage(canonicalUrl);
+  } catch (error) {
+    if (!fromVitrine) {
+      throw error;
+    }
+  }
+
+  const merged = mergeSnapshotData(fromLive, fromVitrine);
+  if (merged && hasSnapshotCoreFields(merged)) {
+    return merged;
+  }
+
+  if (fromVitrine) {
+    return fromVitrine;
+  }
+
+  if (merged) {
+    return merged;
+  }
+
+  throw new Error("Não foi possivel extrair dados do produto.");
+}
+
+function shuffleArray<T>(input: T[]): T[] {
+  const out = [...input];
+  for (let index = out.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [out[index], out[randomIndex]] = [out[randomIndex], out[index]];
+  }
+  return out;
+}
+
+function buildProductId(tab: MeliVitrineTabKey, productUrl: string): string {
+  return createHash("sha1").update(`${tab}::${productUrl}`).digest("hex");
+}
+
+function buildPayloadHash(input: Omit<ExtractedProduct, "payloadHash">): string {
+  const payload = JSON.stringify({
+    title: input.title,
+    imageUrl: input.imageUrl,
+    priceCents: input.priceCents,
+    oldPriceCents: input.oldPriceCents,
+    discountText: input.discountText,
+    seller: input.seller,
+    rating: input.rating,
+    reviewsCount: input.reviewsCount,
+    shippingText: input.shippingText,
+    installmentsText: input.installmentsText,
+    badgeText: input.badgeText,
+  });
+  return createHash("sha1").update(payload).digest("hex");
+}
+
+function isBlockedHtml(value: string): boolean {
+  const head = normalizeSearchableText(String(value || "").slice(0, 80_000));
+  if (!head) return false;
+  return BLOCKED_HTML_MARKERS.some((marker) => head.includes(marker));
+}
+
+async function fetchHtml(url: string, options: { expectCards?: boolean } = {}): Promise<string> {
+  const expectCards = options.expectCards !== false;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= MELI_VITRINE_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "user-agent": BROWSER_UA,
+          "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+          accept: "text/html,application/xhtml+xml",
+          referer: MELI_BASE_URL,
+          "cache-control": "no-cache",
+          pragma: "no-cache",
+        },
+        signal: AbortSignal.timeout(Math.max(5000, MELI_VITRINE_FETCH_TIMEOUT_MS)),
+      });
+
+      const html = await response.text();
+      if (!response.ok) {
+        const suffix = normalizeText(html.slice(0, 180));
+        throw new Error(`HTTP ${response.status}${suffix ? ` - ${suffix}` : ""}`);
+      }
+
+      const hasCards = html.includes("poly-card");
+      if (expectCards && !hasCards && isBlockedHtml(html)) {
+        throw new Error("página bloqueada por anti-bot/captcha");
+      }
+
+      return html;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error || "erro desconhecido"));
+      if (attempt >= MELI_VITRINE_FETCH_MAX_ATTEMPTS) break;
+      const retryDelayMs = MELI_VITRINE_FETCH_RETRY_BASE_MS * attempt + Math.floor(Math.random() * 250);
+      await sleep(retryDelayMs);
+    }
+  }
+
+  throw new Error(`Falha ao buscar ${url}: ${normalizeErrorMessage(lastError) || "erro desconhecido"}`);
+}
+
+function extractTitleFromCard($: ReturnType<typeof load>, card: AnyNode): string {
+  const titleFromNode = normalizeText($(card).find(".poly-component__title").first().text());
+  if (titleFromNode) return titleFromNode;
+
+  return normalizeText(String(
+    $(card).find("a.poly-component__title").first().attr("title")
+    || $(card).find("a[title]").first().attr("title")
+    || $(card).find("img").first().attr("alt")
+    || "",
+  ));
+}
+
+function extractProductUrlFromCard($: ReturnType<typeof load>, card: AnyNode): string {
+  const hrefCandidates = [
+    String($(card).find("a.poly-component__title").first().attr("href") || ""),
+    String($(card).find("a[href*='/p/']").first().attr("href") || ""),
+    String($(card).find("a[href*='/MLB']").first().attr("href") || ""),
+    String($(card).find("a[href*='mercadolivre.com.br']").first().attr("href") || ""),
+  ];
+
+  for (const href of hrefCandidates) {
+    const canonical = canonicalizeProductUrl(href);
+    if (canonical) return canonical;
+  }
+
+  return "";
+}
+
+function extractImageUrlFromCard($: ReturnType<typeof load>, card: AnyNode): string {
+  const imageNode = $(card).find("img.poly-component__picture, img").first();
+  const imageCandidates = [
+    String(imageNode.attr("src") || ""),
+    String(imageNode.attr("data-src") || ""),
+    extractFirstSrcsetUrl(String(imageNode.attr("data-srcset") || "")),
+    extractFirstSrcsetUrl(String(imageNode.attr("srcset") || "")),
+  ];
+
+  for (const candidate of imageCandidates) {
+    const absolute = toAbsoluteUrl(candidate);
+    if (absolute) return absolute;
+  }
+
+  return "";
+}
+
+function extractPriceCentsFromCard($: ReturnType<typeof load>, card: AnyNode): number {
+  const currentAmount = $(card).find(".poly-price__current .andes-money-amount").first();
+  const currentFraction = normalizeText(currentAmount.find(".andes-money-amount__fraction").first().text());
+  const currentCents = normalizeText(currentAmount.find(".andes-money-amount__cents").first().text());
+  const priceFromNodes = parseAmountCentsFromNode(currentFraction, currentCents);
+  if (priceFromNodes > 0) return priceFromNodes;
+
+  return parseAmountCentsFromCurrencyText($(card).find(".poly-price__current").first().text());
+}
+
+function extractTabProducts(input: {
+  tabKey: MeliVitrineTabKey;
+  sourceUrl: string;
+  html: string;
+}): ExtractedProduct[] {
+  const { tabKey, sourceUrl, html } = input;
+  const $ = load(html);
+  const cards = $(".poly-card").toArray();
+  const dedupe = new Map<string, ExtractedProduct>();
+
+  for (const card of cards) {
+    const cardText = normalizeText($(card).text());
+    if (isPausedAdText(cardText)) continue;
+
+    const title = extractTitleFromCard($, card);
+    const productUrl = extractProductUrlFromCard($, card);
+    const imageUrl = extractImageUrlFromCard($, card);
+    const priceCents = extractPriceCentsFromCard($, card);
+
+    if (!title || !productUrl || !imageUrl || priceCents <= 0) continue;
+
+    const previousAmount = $(card).find("s.andes-money-amount--previous").first();
+    const previousFraction = normalizeText(previousAmount.find(".andes-money-amount__fraction").first().text());
+    const previousCents = normalizeText(previousAmount.find(".andes-money-amount__cents").first().text());
+    const oldPriceCents = previousFraction ? parseAmountCentsFromNode(previousFraction, previousCents) : 0;
+
+    const base: Omit<ExtractedProduct, "payloadHash"> = {
+      id: buildProductId(tabKey, productUrl),
+      tab: tabKey,
+      sourceUrl,
+      productUrl,
+      title,
+      imageUrl,
+      priceCents,
+      oldPriceCents: oldPriceCents > 0 ? oldPriceCents : null,
+      discountText: sanitizeDiscountText($(card).find(".andes-money-amount__discount, .poly-price__disc_label").first().text()),
+      seller: normalizeSeller($(card).find(".poly-component__seller").first().text()),
+      rating: parseRating($(card).find(".poly-reviews__rating").first().text()),
+      reviewsCount: parseReviewsCount($(card).find(".poly-reviews__total").first().text()),
+      shippingText: sanitizeShippingText($(card).find(".poly-component__shipping").first().text()),
+      installmentsText: normalizeInstallmentsText($(card).find(".poly-price__installments").first().text()),
+      badgeText: sanitizeBadgeText($(card).find(".poly-component__highlight").first().text()),
+    };
+
+    const payloadHash = buildPayloadHash(base);
+    dedupe.set(productUrl, { ...base, payloadHash });
+  }
+
+  return [...dedupe.values()];
+}
+
+function normalizeTabKey(value: unknown): MeliVitrineTabKey {
+  const raw = String(value || "").trim().toLowerCase();
+  const mapped = MELI_VITRINE_TAB_ALIAS_MAP[raw];
+  if (mapped) return mapped;
+  const found = MELI_VITRINE_TABS.find((tab) => tab.key === raw);
+  return found ? found.key : DEFAULT_TAB_KEY;
+}
+
+function getSafePage(value: unknown): number {
+  const parsed = Number.parseInt(String(value || "1"), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+  return parsed;
+}
+
+function getSafeLimit(value: unknown): number {
+  const parsed = Number.parseInt(String(value || "24"), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 24;
+  return Math.max(1, Math.min(parsed, 60));
+}
+
+async function getLastSuccessfulSync(): Promise<LastSyncRow | null> {
+  return await queryOne<LastSyncRow>(
+    `SELECT created_at, finished_at
+       FROM meli_vitrine_sync_runs
+      WHERE status = 'success'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+  );
+}
+
+export async function isMeliVitrineStale(): Promise<boolean> {
+  const lastSync = await getLastSuccessfulSync();
+  if (!lastSync?.created_at) return true;
+  const lastMs = Date.parse(String(lastSync.finished_at || lastSync.created_at));
+  if (!Number.isFinite(lastMs)) return true;
+  return Date.now() - lastMs >= MELI_VITRINE_SYNC_INTERVAL_MS;
+}
+
+async function persistSyncError(input: {
+  source: string;
+  startedAt: string;
+  message: string;
+}) {
+  await execute(
+    `INSERT INTO meli_vitrine_sync_runs
+      (source, status, message, scanned_tabs, fetched_cards, added_count, updated_count, removed_count, unchanged_count, started_at, finished_at)
+     VALUES ($1, 'error', $2, 0, 0, 0, 0, 0, 0, $3, NOW())`,
+    [input.source, input.message, input.startedAt],
+  );
+}
+
+async function upsertTabProducts(
+  client: PoolClient,
+  tab: MeliVitrineTabConfig,
+  products: ExtractedProduct[],
+): Promise<{ added: number; updated: number; removed: number; unchanged: number }> {
+  const existingRows = await client.query<ExistingRow>(
+    `SELECT product_url, payload_hash, is_active
+       FROM meli_vitrine_products
+      WHERE tab_key = $1`,
+    [tab.key],
+  );
+
+  const existingByUrl = new Map<string, ExistingRow>();
+  for (const row of existingRows.rows) {
+    existingByUrl.set(String(row.product_url), row);
+  }
+
+  let added = 0;
+  let updated = 0;
+  let unchanged = 0;
+  const seen = new Set<string>();
+
+  for (const product of products) {
+    const existing = existingByUrl.get(product.productUrl);
+    if (!existing) added += 1;
+    else if (String(existing.payload_hash) !== product.payloadHash || !existing.is_active) updated += 1;
+    else unchanged += 1;
+
+    seen.add(product.productUrl);
+
+    await client.query(
+      `INSERT INTO meli_vitrine_products
+        (id, tab_key, source_url, product_url, title, image_url, price_cents, old_price_cents, discount_text, seller, rating, reviews_count, shipping_text, installments_text, badge_text, payload_hash, is_active, first_seen_at, last_seen_at, collected_at)
+       VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,TRUE,NOW(),NOW(),NOW())
+       ON CONFLICT (tab_key, product_url) DO UPDATE
+       SET id = EXCLUDED.id,
+           source_url = EXCLUDED.source_url,
+           title = EXCLUDED.title,
+           image_url = EXCLUDED.image_url,
+           price_cents = EXCLUDED.price_cents,
+           old_price_cents = EXCLUDED.old_price_cents,
+           discount_text = EXCLUDED.discount_text,
+           seller = EXCLUDED.seller,
+           rating = EXCLUDED.rating,
+           reviews_count = EXCLUDED.reviews_count,
+           shipping_text = EXCLUDED.shipping_text,
+           installments_text = EXCLUDED.installments_text,
+           badge_text = EXCLUDED.badge_text,
+           payload_hash = EXCLUDED.payload_hash,
+           is_active = TRUE,
+           last_seen_at = NOW(),
+           collected_at = NOW(),
+           updated_at = NOW()`,
+      [
+        product.id,
+        product.tab,
+        product.sourceUrl,
+        product.productUrl,
+        product.title,
+        product.imageUrl,
+        product.priceCents,
+        product.oldPriceCents,
+        product.discountText,
+        product.seller,
+        product.rating,
+        product.reviewsCount,
+        product.shippingText,
+        product.installmentsText,
+        product.badgeText,
+        product.payloadHash,
+      ],
+    );
+  }
+
+  const removedUrls = existingRows.rows
+    .filter((row) => row.is_active === true && !seen.has(String(row.product_url)))
+    .map((row) => String(row.product_url));
+
+  let removed = 0;
+  if (removedUrls.length > 0) {
+    const result = await client.query(
+      `UPDATE meli_vitrine_products
+          SET is_active = FALSE, updated_at = NOW()
+        WHERE tab_key = $1
+          AND product_url = ANY($2::text[])
+          AND is_active = TRUE`,
+      [tab.key, removedUrls],
+    );
+    removed = Math.max(0, result.rowCount || 0);
+  }
+
+  return { added, updated, removed, unchanged };
+}
+
+async function syncMeliVitrineInternal(input: {
+  source?: string;
+  force?: boolean;
+  onlyIfStale?: boolean;
+} = {}): Promise<MeliVitrineSyncResult> {
+  const source = normalizeText(String(input.source || "manual")) || "manual";
+  const startedAt = new Date().toISOString();
+  const onlyIfStale = input.onlyIfStale !== false;
+
+  try {
+    if (!input.force && onlyIfStale) {
+      const stale = await isMeliVitrineStale();
+      if (!stale) {
+        const lastSync = await getLastSuccessfulSync();
+        return {
+          success: true,
+          skipped: true,
+          source,
+          scannedTabs: 0,
+          fetchedCards: 0,
+          addedCount: 0,
+          updatedCount: 0,
+          removedCount: 0,
+          unchangedCount: 0,
+          lastSyncAt: lastSync?.finished_at || lastSync?.created_at || null,
+          message: "Sync ignorado porque a vitrine ainda está dentro da janela de 2h.",
+        };
+      }
+    }
+
+    const extractedByTab = new Map<MeliVitrineTabConfig, ExtractedProduct[]>();
+    const extractionWarnings: string[] = [];
+    let fetchedCards = 0;
+
+    for (const tab of MELI_VITRINE_TABS) {
+      const mergedByUrl = new Map<string, ExtractedProduct>();
+      for (const sourceUrl of tab.sourceUrls) {
+        try {
+          const html = await fetchHtml(sourceUrl);
+          const extracted = extractTabProducts({
+            tabKey: tab.key,
+            sourceUrl,
+            html,
+          });
+          fetchedCards += extracted.length;
+          if (extracted.length === 0) {
+            extractionWarnings.push(`[${tab.key}] sem cards válidos em ${sourceUrl}`);
+            continue;
+          }
+
+          for (const product of extracted) {
+            if (mergedByUrl.has(product.productUrl)) continue;
+            mergedByUrl.set(product.productUrl, product);
+          }
+        } catch (sourceError) {
+          extractionWarnings.push(`[${tab.key}] ${sourceUrl}: ${normalizeErrorMessage(sourceError)}`);
+        }
+      }
+
+      const products = shuffleArray([...mergedByUrl.values()]);
+      if (products.length === 0) {
+        extractionWarnings.push(`[${tab.key}] nenhuma oferta válida após processar ${tab.sourceUrls.length} fonte(s)`);
+        continue;
+      }
+      extractedByTab.set(tab, products);
+    }
+
+    if (extractedByTab.size === 0) {
+      const details = extractionWarnings
+        .map((warning) => normalizeText(warning))
+        .filter(Boolean)
+        .slice(0, 5)
+        .join(" | ");
+      throw new Error(details ? `Nenhum produto válido encontrado. ${details}` : "Nenhum produto válido encontrado.");
+    }
+
+    const syncWarningMessage = extractionWarnings.length > 0
+      ? normalizeText(extractionWarnings.slice(0, 10).join(" | ")).slice(0, 1900)
+      : "";
+
+    const counters = await transaction(async (client) => {
+      let added = 0;
+      let updated = 0;
+      let removed = 0;
+      let unchanged = 0;
+
+      for (const [tab, products] of extractedByTab.entries()) {
+        const result = await upsertTabProducts(client, tab, products);
+        added += result.added;
+        updated += result.updated;
+        removed += result.removed;
+        unchanged += result.unchanged;
+      }
+
+      await client.query(
+        `INSERT INTO meli_vitrine_sync_runs
+          (source, status, message, scanned_tabs, fetched_cards, added_count, updated_count, removed_count, unchanged_count, started_at, finished_at)
+         VALUES ($1, 'success', $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
+        [
+          source,
+          syncWarningMessage,
+          extractedByTab.size,
+          fetchedCards,
+          added,
+          updated,
+          removed,
+          unchanged,
+          startedAt,
+        ],
+      );
+
+      return { added, updated, removed, unchanged };
+    });
+
+    const lastSync = await getLastSuccessfulSync();
+    return {
+      success: true,
+      skipped: false,
+      source,
+      scannedTabs: extractedByTab.size,
+      fetchedCards,
+      addedCount: counters.added,
+      updatedCount: counters.updated,
+      removedCount: counters.removed,
+      unchangedCount: counters.unchanged,
+      lastSyncAt: lastSync?.finished_at || lastSync?.created_at || null,
+      message: extractionWarnings.length > 0
+        ? `Sync da vitrine ML concluido com avisos (${extractedByTab.size}/${MELI_VITRINE_TABS.length} abas atualizadas).`
+        : "Sync da vitrine ML concluido com sucesso.",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await persistSyncError({ source, startedAt, message }).catch(() => undefined);
+    return {
+      success: false,
+      skipped: false,
+      source,
+      scannedTabs: 0,
+      fetchedCards: 0,
+      addedCount: 0,
+      updatedCount: 0,
+      removedCount: 0,
+      unchangedCount: 0,
+      lastSyncAt: null,
+      message,
+    };
+  }
+}
+
+export async function syncMeliVitrine(input: {
+  source?: string;
+  force?: boolean;
+  onlyIfStale?: boolean;
+} = {}): Promise<MeliVitrineSyncResult> {
+  if (syncInFlight) {
+    return await syncInFlight;
+  }
+
+  syncInFlight = syncMeliVitrineInternal(input).finally(() => {
+    syncInFlight = null;
+  });
+
+  return await syncInFlight;
+}
+
+async function fetchMeliVitrineListSnapshot(tab: MeliVitrineTabKey, limit: number, offset: number): Promise<ListSnapshot> {
+  const [countRow, rows, tabRows, lastSync] = await Promise.all([
+    queryOne<{ total: string }>(
+      "SELECT COUNT(*)::text AS total FROM meli_vitrine_products WHERE tab_key = $1 AND is_active = TRUE",
+      [tab],
+    ),
+    query<{
+      id: string;
+      tab_key: MeliVitrineTabKey;
+      source_url: string;
+      title: string;
+      product_url: string;
+      image_url: string;
+      price_cents: number;
+      old_price_cents: number | null;
+      discount_text: string;
+      seller: string;
+      rating: number | null;
+      reviews_count: number | null;
+      shipping_text: string;
+      installments_text: string;
+      badge_text: string;
+      collected_at: string;
+    }>(
+      `SELECT id, tab_key, source_url, title, product_url, image_url, price_cents, old_price_cents, discount_text, seller, rating, reviews_count, shipping_text, installments_text, badge_text, collected_at
+         FROM meli_vitrine_products
+        WHERE tab_key = $1
+          AND is_active = TRUE
+        ORDER BY updated_at DESC, collected_at DESC
+        LIMIT $2 OFFSET $3`,
+      [tab, limit, offset],
+    ),
+    query<{ tab_key: MeliVitrineTabKey; active_count: string }>(
+      `SELECT tab_key, COUNT(*)::text AS active_count
+         FROM meli_vitrine_products
+        WHERE is_active = TRUE
+        GROUP BY tab_key`,
+    ),
+    getLastSuccessfulSync(),
+  ]);
+
+  return { countRow, rows, tabRows, lastSync };
+}
+
+async function maybeAutoRecoverEmptyVitrine() {
+  if (syncInFlight) {
+    await syncInFlight.catch(() => undefined);
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastEmptyAutoSyncAtMs < MELI_VITRINE_EMPTY_AUTO_SYNC_COOLDOWN_MS) {
+    return;
+  }
+
+  lastEmptyAutoSyncAtMs = now;
+  await syncMeliVitrine({
+    source: "auto-empty-list",
+    force: true,
+    onlyIfStale: false,
+  }).catch(() => undefined);
+}
+
+export async function listMeliVitrine(input: {
+  tab?: unknown;
+  page?: unknown;
+  limit?: unknown;
+}): Promise<MeliVitrineListResult> {
+  const tab = normalizeTabKey(input.tab);
+  const page = getSafePage(input.page);
+  const limit = getSafeLimit(input.limit);
+  const offset = (page - 1) * limit;
+
+  let snapshot = await fetchMeliVitrineListSnapshot(tab, limit, offset);
+  let total = Number.parseInt(String(snapshot.countRow?.total || "0"), 10) || 0;
+  if (total <= 0) {
+    await maybeAutoRecoverEmptyVitrine();
+    snapshot = await fetchMeliVitrineListSnapshot(tab, limit, offset);
+    total = Number.parseInt(String(snapshot.countRow?.total || "0"), 10) || 0;
+  }
+
+  const { rows, tabRows, lastSync } = snapshot;
+  const tabCountMap = new Map<MeliVitrineTabKey, number>();
+  for (const row of tabRows) {
+    tabCountMap.set(row.tab_key, Number.parseInt(String(row.active_count || "0"), 10) || 0);
+  }
+
+  const tabs = MELI_VITRINE_TABS.map((item) => ({
+    key: item.key,
+    label: item.label,
+    activeCount: tabCountMap.get(item.key) || 0,
+  }));
+
+  const lastSyncAt = lastSync?.finished_at || lastSync?.created_at || null;
+  const stale = await isMeliVitrineStale();
+
+  return {
+    tab,
+    page,
+    limit,
+    total,
+    hasMore: offset + rows.length < total,
+    items: rows.map((row) => ({
+      id: String(row.id),
+      tab: row.tab_key,
+      sourceUrl: String(row.source_url || ""),
+      title: String(row.title || ""),
+      productUrl: String(row.product_url || ""),
+      imageUrl: String(row.image_url || ""),
+      price: Number((Number(row.price_cents || 0) / 100).toFixed(2)),
+      oldPrice: row.old_price_cents === null || row.old_price_cents === undefined
+        ? null
+        : Number((Number(row.old_price_cents) / 100).toFixed(2)),
+      discountText: String(row.discount_text || ""),
+      seller: String(row.seller || ""),
+      rating: row.rating === null || row.rating === undefined
+        ? null
+        : Number(row.rating),
+      reviewsCount: row.reviews_count === null || row.reviews_count === undefined
+        ? null
+        : Number(row.reviews_count),
+      shippingText: String(row.shipping_text || ""),
+      installmentsText: String(row.installments_text || ""),
+      badgeText: String(row.badge_text || ""),
+      collectedAt: String(row.collected_at || ""),
+    })),
+    tabs,
+    lastSyncAt,
+    stale,
+  };
+}
+

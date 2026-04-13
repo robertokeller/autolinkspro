@@ -1,0 +1,32 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.gitignore
+.vscode
+coverage
+**/.sessions
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Prevent secrets from leaking into Docker build context
+.env
+.env.*
+!.env.example
+!.env.coolify.example
+.private/
+.ops/
+.ai/
+.copilot/
+.claude/
+.synnacode/
+supabase/.temp/
+
+# Dev-only files
+.planning/
+logs/
+*.md
+!README.md
+!services/*/README.md

@@ -1,0 +1,69 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+**/node_modules
+dist
+**/dist
+dist-ssr
+*.local
+.env
+.env.*
+!.env.example
+!.env.coolify.example
+services/**/.sessions
+supabase/.temp/
+_tmp_*/
+**/attached_assets/
+*.backup.ts
+*.bak
+.tmp*
+
+# AI assistant config (local only)
+.claude/
+.ai/
+.copilot/
+.synnacode/
+
+# Private local runtime (never commit)
+.private/*
+!.private/.gitkeep
+!.private/env/
+!.private/secrets/
+.private/env/*
+.private/secrets/*
+!.private/env/.gitkeep
+!.private/secrets/.gitkeep
+.ops/
+
+# Local secrets and certificates
+.credential-cipher-salt
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Audit reports and deployment guides (contain security details)
+AUDIT_REPORT_COMPLETE.md
+DEPLOY_GUIDE.md
+
+# Production env template (contains security guidance)
+.env.production.template
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
