@@ -6284,7 +6284,7 @@ async function loadControlPlane() {
   return (row?.value ?? {}) as Record<string, unknown>;
 }
 
-// Built-in plan catalog â€” mirrors src/lib/plans.ts. Acts as fallback when
+// Built-in plan catalog - mirrors src/lib/plans.ts. Acts as fallback when
 // admin_config has not yet been configured via the admin panel.
 const BUILTIN_PLANS: Array<{ id: string; period: string; isActive: boolean }> = [
   { id: "plan-starter", period: "7 dias",  isActive: true },
@@ -6631,7 +6631,7 @@ async function resolveShopeeAutomationAccess(userId: string): Promise<{ allowed:
 }
 
 async function listUsersWithMeta() {
-  // Single JOIN instead of 3 sequential round-trips â€” reduces latency under load
+  // Single JOIN instead of 3 sequential round-trips - reduces latency under load
   // and frees 2 pool connections per call.
   const rows = await query(`
     SELECT u.id, u.email, u.metadata, u.created_at,
@@ -7393,7 +7393,7 @@ if (funcName === "whatsapp-connect") {
       await cleanupExpiredScheduledPostMedia();
 
       const limit = Math.min(Number(params.limit ?? 20), 50);
-      // Atomic claim: UPDATE status â†’ 'processing' using FOR UPDATE SKIP LOCKED so that
+      // Atomic claim: UPDATE status -> 'processing' using FOR UPDATE SKIP LOCKED so that
       // concurrent calls from the frontend and the scheduler never process the same post.
       // Only rows still 'pending' at the moment of the UPDATE are claimed, preventing
       // double-dispatch (SQL-5).
@@ -12068,7 +12068,7 @@ if (funcName === "whatsapp-connect") {
         if (params.target_filter) updates.target_filter = JSON.stringify(normalizeTargetFilter(params.target_filter));
         const keys = Object.keys(updates);
         if (keys.length > 0) {
-          // Double-quote identifiers â€” keys are hardcoded strings above, quoting prevents future injection
+          // Double-quote identifiers - keys are hardcoded strings above, quoting prevents future injection
           const setClause = keys.map((k, i) => `"${k}" = $${i + 2}`).join(", ");
           await execute(`UPDATE system_announcements SET ${setClause}, updated_at=NOW() WHERE id=$1`, [aid, ...Object.values(updates)]);
         }
@@ -12737,7 +12737,7 @@ if (funcName === "admin-users") {
         const nextUserPlanExpiry = (shouldReassignUserPlan || !hasValidExpiry)
           ? planExpiresAt(cp, nextUserPlan)
           : (profile.plan_expires_at ?? null);
-        // Wrap role change + token inválidation in a transaction â€” DELETE without INSERT leaves user roleless
+        // Wrap role change + token invalidation in a transaction - DELETE without INSERT leaves user roleless
         await transaction(async (client) => {
           if (role === "admin") {
             await client.query(
@@ -12752,7 +12752,7 @@ if (funcName === "admin-users") {
           }
           await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
           await client.query("INSERT INTO user_roles (id, user_id, role) VALUES ($1,$2,$3)", [uuid(), tid, role]);
-          // Inválidate all active tokens for the target user â€” JWT embeds role, so old tokens
+          // Invalidate all active tokens for the target user - JWT embeds role, so old tokens
           // would otherwise remain valid with the previous role until natural expiry.
           await client.query("UPDATE users SET token_invalidated_before = NOW() WHERE id = $1", [tid]);
         });
@@ -12794,10 +12794,41 @@ if (funcName === "admin-users") {
       }
       if (action === "delete_user") {
         const tid = String(params.user_id ?? ""); if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (tid === userId) { fail(res, "Não é permitido apagar o próprio usuário"); return; }
-        const target = await queryOne("SELECT email FROM users WHERE id=$1", [tid]);
+        const target = await queryOne("SELECT u.email, COALESCE(r.role, 'user') AS role FROM users u LEFT JOIN user_roles r ON r.user_id=u.id WHERE u.id=$1", [tid]);
         if (!target) { fail(res, "Usuário não encontrado"); return; }
-        await execute("DELETE FROM users WHERE id=$1", [tid]);
-        await appendAudit("delete_user", userId, tid, { deleted_user_id: tid, email: target.email ?? null });
+        if (String(target.role ?? "user") === "admin") {
+          const adminCountRow = await queryOne<{ total: string | number }>(
+            "SELECT COUNT(*)::int AS total FROM user_roles WHERE role='admin'",
+          );
+          const adminCount = Number(adminCountRow?.total ?? 0);
+          if (adminCount <= 1) { fail(res, "Não é permitido remover o último administrador do sistema"); return; }
+        }
+        const deletedEmail = `deleted+${tid}@autolinks.local`;
+        await transaction(async (client) => {
+          await client.query(
+            "UPDATE users SET email=$1, metadata = metadata || $2::jsonb, token_invalidated_before=NOW(), updated_at=NOW() WHERE id=$3",
+            [
+              deletedEmail,
+              JSON.stringify({
+                account_status: "archived",
+                deleted_at: nowIso(),
+                deleted_by: userId,
+                status_updated_at: nowIso(),
+              }),
+              tid,
+            ],
+          );
+          await client.query(
+            "UPDATE profiles SET email=$1, phone='', name='Usuário removido', updated_at=NOW() WHERE user_id=$2",
+            [deletedEmail, tid],
+          );
+          await client.query("DELETE FROM user_roles WHERE user_id=$1", [tid]);
+        });
+        await appendAudit("delete_user", userId, tid, {
+          deleted_user_id: tid,
+          email: target.email ?? null,
+          mode: "soft_delete",
+        });
         ok(res, { success: true }); return;
       }
       if (action === "create_user") {
@@ -12820,7 +12851,7 @@ if (funcName === "admin-users") {
         }
         const hash = await bcrypt.hash(password, BCRYPT_COST);
         const newId = uuid();
-        // Wrap 3 INSERTs in a transaction â€” if any fails, roll back to avoid orphan user/role/profile
+        // Wrap 3 INSERTs in a transaction - if any fails, roll back to avoid orphan user/role/profile
         try {
           await transaction(async (client) => {
             await client.query("INSERT INTO users (id, email, password_hash, metadata, email_confirmed_at) VALUES ($1,$2,$3,$4,NOW())", [newId, email, hash, JSON.stringify({ name, account_status: "active", status_updated_at: nowIso() })]);
@@ -12999,7 +13030,7 @@ if (funcName === "admin-users") {
         const resetPasswordError = getPasswordPolicyError(pwd);
         if (!tid) { fail(res, "Usuário alvo obrigatório"); return; } if (resetPasswordError) { fail(res, resetPasswordError); return; }
         const hash = await bcrypt.hash(pwd, BCRYPT_COST);
-        // Inválidate all existing tokens immediately â€” the account must be secured after password reset
+        // Invalidate all existing tokens immediately - the account must be secured after password reset
         await execute("UPDATE users SET password_hash=$1, token_invalidated_before=NOW(), updated_at=NOW() WHERE id=$2", [hash, tid]);
         await appendAudit("reset_password", userId, tid, {});
         ok(res, { success: true }); return;

@@ -238,7 +238,7 @@ function SessionCard({ session, onDelete }: {
           <AlertDialogHeader>
             <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
             <AlertDialogDescription>
-              A conta <strong>{session.name}</strong> e os cookies salvos vÃ£o ser apagados. NÃ£o hÃ¡ como desfazer.
+              A conta <strong>{session.name}</strong> e os cookies salvos vão ser apagados. Não há como desfazer.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -314,7 +314,7 @@ export default function MercadoLivreConfiguracoes() {
     const syncedProductUrl = await listProbeProduct();
     if (syncedProductUrl) return syncedProductUrl;
 
-    throw new Error("NÃ£o foi possÃ­vel obter um produto da vitrine para validar a conversÃ£o.");
+    throw new Error("Não foi possível obter um produto da vitrine para validar a conversão.");
   };
 
   const validateLinkConversion = async () => {
@@ -328,7 +328,7 @@ export default function MercadoLivreConfiguracoes() {
 
     const affiliateLink = String(conversion.affiliateLink || "").trim();
     if (!affiliateLink) {
-      throw new Error("ConversÃ£o de link retornou vazio.");
+      throw new Error("Conversão de link retornou vazio.");
     }
   };
 
@@ -339,16 +339,16 @@ export default function MercadoLivreConfiguracoes() {
       const status = await refreshHealth();
 
       if (status?.online === false && status.error) {
-        toast.warning("PÃ¡gina atualizada com alerta", {
+        toast.warning("Página atualizada com alerta", {
           description: status.error,
         });
       } else {
-        toast.success("PÃ¡gina atualizada", {
-          description: "Contas e status recarregados sem recarregar a pÃ¡gina inteira.",
+        toast.success("Página atualizada", {
+          description: "Contas e status recarregados sem recarregar a página inteira.",
         });
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "NÃ£o foi possÃ­vel atualizar os dados da pÃ¡gina");
+      toast.error(error instanceof Error ? error.message : "Não foi possível atualizar os dados da página");
     } finally {
       setIsRefreshingView(false);
     }
@@ -359,13 +359,13 @@ export default function MercadoLivreConfiguracoes() {
     try {
       const status = await refreshHealth();
       if (!status?.online) {
-        toast.error(status?.error || "ServiÃ§o Mercado Livre fora do ar");
+        toast.error(status?.error || "Serviço Mercado Livre fora do ar");
         return;
       }
 
       if (sessions.length === 0) {
-        toast.error("ConexÃ£o incompleta", {
-          description: "ServiÃ§o online, mas nÃ£o hÃ¡ nenhuma conta de cookies. Adicione uma para continuar.",
+        toast.error("Conexão incompleta", {
+          description: "Serviço online, mas não há nenhuma conta de cookies. Adicione uma para continuar.",
         });
         return;
       }
@@ -378,9 +378,9 @@ export default function MercadoLivreConfiguracoes() {
       if (activeCount === 0) {
         const details = noAffiliateCount > 0
           ? "Conta encontrada, mas sem acesso ao programa de afiliados."
-          : "Conta de cookies encontrada, mas nÃ£o estÃ¡ funcionando.";
-        toast.error("ConexÃ£o incompleta", {
-          description: `${details} Atualize os cookies em ConfiguraÃ§Ãµes ML.`,
+          : "Conta de cookies encontrada, mas não está funcionando.";
+        toast.error("Conexão incompleta", {
+          description: `${details} Atualize os cookies em Configurações ML.`,
         });
         return;
       }
@@ -388,28 +388,28 @@ export default function MercadoLivreConfiguracoes() {
       try {
         await validateLinkConversion();
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Falha ao validar conversÃ£o";
-        toast.error("ConexÃ£o parcial", {
-          description: `Cookies autenticam, mas a conversÃ£o de link falhou: ${message}`,
+        const message = error instanceof Error ? error.message : "Falha ao validar conversão";
+        toast.error("Conexão parcial", {
+          description: `Cookies autenticam, mas a conversão de link falhou: ${message}`,
         });
         return;
       }
 
       if (problemCount > 0) {
-        toast.warning("ConexÃ£o testada com alertas", {
-          description: `${activeCount} ativa(s), ${problemCount} com problema. ConversÃ£o validada.`,
+        toast.warning("Conexão testada com alertas", {
+          description: `${activeCount} ativa(s), ${problemCount} com problema. Conversão validada.`,
         });
       } else if (noAffiliateCount > 0) {
-        toast.warning("ConexÃ£o testada com alertas", {
-          description: `${activeCount} ativa(s), ${noAffiliateCount} sem programa de afiliados. ConversÃ£o validada.`,
+        toast.warning("Conexão testada com alertas", {
+          description: `${activeCount} ativa(s), ${noAffiliateCount} sem programa de afiliados. Conversão validada.`,
         });
       } else {
-        toast.success("ConexÃ£o OK!", {
-          description: `${activeCount} conta(s) ativa(s) e conversÃ£o de link validada.`,
+        toast.success("Conexão OK!", {
+          description: `${activeCount} conta(s) ativa(s) e conversão de link validada.`,
         });
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "NÃ£o foi possÃ­vel testar a conexÃ£o");
+      toast.error(error instanceof Error ? error.message : "Não foi possível testar a conexão");
     } finally {
       setIsTestingConnection(false);
     }
@@ -417,7 +417,7 @@ export default function MercadoLivreConfiguracoes() {
 
   const handleCreateSession = async () => {
     if (!sessionName.trim()) {
-      toast.error("DÃª um nome para a conta");
+      toast.error("Dê um nome para a conta");
       return;
     }
     if (!cookiesJson.trim()) {
@@ -437,7 +437,7 @@ export default function MercadoLivreConfiguracoes() {
       setIsCreateOpen(false);
       resetCreateForm();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "NÃ£o foi possÃ­vel adicionar a conta");
+      toast.error(error instanceof Error ? error.message : "Não foi possível adicionar a conta");
     } finally {
       setIsCreating(false);
     }
@@ -458,14 +458,14 @@ export default function MercadoLivreConfiguracoes() {
       if (data.type === "AUTOLINKS_PING") {
         // Security: do NOT include bridgeToken in the PING response.
         // Any JS on the same origin can listen to window.message and capture tokens
-        // from PING responses â€” the extension already holds the token from the initial
+        // from PING responses - the extension already holds the token from the initial
         // bootstrap handshake and must include it in every subsequent request.
         postBridgeResponse({
           source: "autolinks-page-bridge",
           type: "AUTOLINKS_PING_RESULT",
           requestId: data.requestId,
           ok: true,
-          message: "Bridge ativo na pÃ¡gina de ConfiguraÃ§Ãµes ML.",
+          message: "Bridge ativo na página de Configurações ML.",
           payload: { path: window.location.pathname },
         });
         return;
@@ -482,7 +482,7 @@ export default function MercadoLivreConfiguracoes() {
               : "AUTOLINKS_PUSH_COOKIES_RESULT",
           requestId: data.requestId,
           ok: false,
-          message: "Canal da extensÃ£o invÃ¡lido. Reabra ConfiguraÃ§Ãµes ML e tente novamente.",
+          message: "Canal da extensão inválido. Reabra Configurações ML e tente novamente.",
         });
         return;
       }
@@ -495,8 +495,8 @@ export default function MercadoLivreConfiguracoes() {
           requestId: data.requestId,
           ok: loggedIn,
           message: loggedIn
-            ? `Login confirmado para ${user?.email || "usuÃ¡rio"}.`
-            : "FaÃ§a login no Autolinks antes de importar cookies pela extensÃ£o.",
+            ? `Login confirmado para ${user?.email || "usuário"}.`
+            : "Faça login no Autolinks antes de importar cookies pela extensão.",
           payload: loggedIn ? { email: user?.email || "", userId: user?.id || "" } : undefined,
         });
         return;
@@ -557,7 +557,7 @@ export default function MercadoLivreConfiguracoes() {
           type: "AUTOLINKS_PUSH_COOKIES_RESULT",
           requestId: data.requestId,
           ok: false,
-          message: "VocÃª precisa estar logado no Autolinks para enviar cookies.",
+          message: "Você precisa estar logado no Autolinks para enviar cookies.",
         });
         return;
       }
@@ -572,7 +572,7 @@ export default function MercadoLivreConfiguracoes() {
 
           if (existingMlUserId && incomingMlUserId && existingMlUserId !== incomingMlUserId) {
             throw new Error(
-              "Os cookies parecem ser de outra conta Mercado Livre. Remova a sessÃ£o atual antes de conectar outra conta.",
+              "Os cookies parecem ser de outra conta Mercado Livre. Remova a sessão atual antes de conectar outra conta.",
             );
           }
 
@@ -586,8 +586,8 @@ export default function MercadoLivreConfiguracoes() {
             cookies: JSON.stringify({ cookies: cookieArray }),
           });
 
-          toast.success("Cookies recebidos da extensÃ£o", {
-            description: "SessÃ£o salva com sucesso. VocÃª jÃ¡ pode testar a conexÃ£o.",
+          toast.success("Cookies recebidos da extensão", {
+            description: "Sessão salva com sucesso. Você já pode testar a conexão.",
           });
 
           postBridgeResponse({
@@ -595,11 +595,11 @@ export default function MercadoLivreConfiguracoes() {
             type: "AUTOLINKS_PUSH_COOKIES_RESULT",
             requestId: data.requestId,
             ok: true,
-            message: "SessÃ£o salva com sucesso no Autolinks.",
+            message: "Sessão salva com sucesso no Autolinks.",
             payload: { sessionId },
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Falha ao salvar sessÃ£o enviada pela extensÃ£o.";
+          const message = error instanceof Error ? error.message : "Falha ao salvar sessão enviada pela extensão.";
           postBridgeResponse({
             source: "autolinks-page-bridge",
             type: "AUTOLINKS_PUSH_COOKIES_RESULT",
@@ -622,7 +622,7 @@ export default function MercadoLivreConfiguracoes() {
   return (
     <div className="ds-page">
       <PageHeader
-        title="ConfiguraÃ§Ãµes ML"
+        title="Configurações ML"
         description="Conecte e veja sua conta do Mercado Livre"
       >
         <div className="flex items-center gap-2">
@@ -637,7 +637,7 @@ export default function MercadoLivreConfiguracoes() {
             disabled={isHealthRefreshing || isTestingConnection}
           >
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${(isHealthRefreshing || isTestingConnection) ? "animate-spin" : ""}`} />
-            Testar conexÃ£o
+            Testar conexão
           </Button>
         </div>
       </PageHeader>
@@ -654,7 +654,7 @@ export default function MercadoLivreConfiguracoes() {
         <CardHeader>
           <div>
             <CardTitle>Contas</CardTitle>
-            <CardDescription>SÃ³ pode ter 1 conta ativa por vez</CardDescription>
+            <CardDescription>Só pode ter 1 conta ativa por vez</CardDescription>
           </div>
         </CardHeader>
         <CardContent>
@@ -664,7 +664,7 @@ export default function MercadoLivreConfiguracoes() {
             <div className="flex flex-col items-center gap-3 py-10 text-center text-muted-foreground">
               <ShoppingCart className="h-10 w-10 opacity-40" />
               <p className="text-sm">Nenhuma conta conectada</p>
-              <p className="text-xs">Use a extensÃ£o AutoLinks para conectar sua conta.</p>
+              <p className="text-xs">Use a extensão AutoLinks para conectar sua conta.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -689,9 +689,9 @@ export default function MercadoLivreConfiguracoes() {
                 <div className="flex items-center gap-3">
                   <PlugZap className="h-5 w-5 text-primary" />
                   <div>
-                    <CardTitle className="text-base">ExtensÃ£o AutoLinks - Mercado Livre</CardTitle>
+                    <CardTitle className="text-base">Extensão AutoLinks - Mercado Livre</CardTitle>
                     <CardDescription className="text-xs mt-0.5">
-                      FaÃ§a login na extensÃ£o e envie os cookies direto para sua conta, sem copiar e colar JSON
+                      Faça login na extensão e envie os cookies direto para sua conta, sem copiar e colar JSON
                     </CardDescription>
                   </div>
                 </div>
@@ -709,7 +709,7 @@ export default function MercadoLivreConfiguracoes() {
               <Button asChild className="w-full">
                 <a href="/downloads/autolinks-mercado-livre.zip" download="AutoLinks - Mercado Livre.zip">
                   <Download className="mr-1.5 h-4 w-4" />
-                  Baixar extensÃ£o (.zip)
+                  Baixar extensão (.zip)
                 </a>
               </Button>
 
@@ -718,9 +718,9 @@ export default function MercadoLivreConfiguracoes() {
                   1
                 </div>
                 <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-                  <p className="text-sm font-semibold">Baixe a extensÃ£o</p>
+                  <p className="text-sm font-semibold">Baixe a extensão</p>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Clique no botÃ£o acima para fazer o download do arquivo da extensÃ£o AutoLinks.
+                    Clique no botão acima para fazer o download do arquivo da extensão AutoLinks.
                   </p>
                 </div>
               </div>
@@ -733,7 +733,7 @@ export default function MercadoLivreConfiguracoes() {
                 <div className="min-w-0 flex-1 space-y-2 pt-0.5">
                   <p className="text-sm font-semibold">Extraia o arquivo</p>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Extraia o arquivo .zip em uma pasta do seu computador. SerÃ¡ criada uma pasta com os arquivos da extensÃ£o.
+                    Extraia o arquivo .zip em uma pasta do seu computador. Será criada uma pasta com os arquivos da extensão.
                   </p>
                 </div>
               </div>
@@ -757,9 +757,9 @@ export default function MercadoLivreConfiguracoes() {
                   4
                 </div>
                 <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-                  <p className="text-sm font-semibold">Carregue a extensÃ£o</p>
+                  <p className="text-sm font-semibold">Carregue a extensão</p>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Clique em <strong>Carregar sem compactaÃ§Ã£o</strong> e selecione a pasta onde vocÃª extraiu a extensÃ£o.
+                    Clique em <strong>Carregar sem compactação</strong> e selecione a pasta onde você extraiu a extensão.
                   </p>
                 </div>
               </div>
@@ -772,7 +772,7 @@ export default function MercadoLivreConfiguracoes() {
                 <div className="min-w-0 flex-1 space-y-2 pt-0.5">
                   <p className="text-sm font-semibold">Abra o Mercado Livre</p>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Abra uma nova aba do Mercado Livre e faÃ§a login na conta que vocÃª deseja conectar ao AutoLinks.
+                    Abra uma nova aba do Mercado Livre e faça login na conta que você deseja conectar ao AutoLinks.
                   </p>
                 </div>
               </div>
@@ -784,7 +784,7 @@ export default function MercadoLivreConfiguracoes() {
                 <div className="min-w-0 flex-1 space-y-2 pt-0.5">
                   <p className="text-sm font-semibold">Envie os cookies</p>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Na extensÃ£o, clique em <strong>Entrar</strong> e depois em <strong>Capturar e enviar cookies</strong>. Pronto! Sua conta serÃ¡ adicionada automaticamente aqui.
+                    Na extensão, clique em <strong>Entrar</strong> e depois em <strong>Capturar e enviar cookies</strong>. Pronto! Sua conta será adicionada automaticamente aqui.
                   </p>
                 </div>
               </div>

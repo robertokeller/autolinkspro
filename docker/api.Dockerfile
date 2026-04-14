@@ -11,6 +11,7 @@ FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/src/data/disposable_email_blocklist.conf ./dist/data/disposable_email_blocklist.conf
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 

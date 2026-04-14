@@ -132,7 +132,7 @@ export class MercadoLivreSessionService {
     return "Lax";
   }
 
-  // Exact domain allowlist â€” prevents "mercadolivre.attacker.com" bypass via substring match.
+  // Exact domain allowlist - prevents "mercadolivre.attacker.com" bypass via substring match.
   private static readonly ALLOWED_MELI_DOMAINS = new Set([
     "mercadolivre.com.br",
     "www.mercadolivre.com.br",
@@ -158,7 +158,7 @@ export class MercadoLivreSessionService {
   }
 
   /**
-   * Extract account metadata directly from cookie values â€” no browser needed.
+    * Extract account metadata directly from cookie values - no browser needed.
    */
   private extractMetadataFromCookies(cookies: CookieInput[]): { accountName?: string; mlUserId?: string } {
     const orgnickp = cookies.find((c) => c.name === "orgnickp");
@@ -170,7 +170,7 @@ export class MercadoLivreSessionService {
   }
 
   /**
-   * Parse incoming JSON â€” accepts { cookies: [...] } wrapper or [...] array directly.
+    * Parse incoming JSON - accepts { cookies: [...] } wrapper or [...] array directly.
    * Guards against prototype pollution and deeply nested payloads.
    */
   parseCookieJson(raw: string | object): CookieInput[] {
@@ -251,7 +251,7 @@ export class MercadoLivreSessionService {
 
   /**
    * Save cookies as Playwright storageState and return session metadata.
-   * No browser is launched here â€” metadata extracted from cookie values.
+    * No browser is launched here - metadata extracted from cookie values.
    */
   async saveCookies(rawInput: string | object, sessionId: string): Promise<SessionResult> {
     let logs: SessionLog[] = [];
@@ -263,7 +263,7 @@ export class MercadoLivreSessionService {
       const cookies = this.parseCookieJson(rawInput);
 
       if (!Array.isArray(cookies) || cookies.length === 0) {
-        throw new Error("Array de cookies vazio ou invÃ¡lido");
+        throw new Error("Array de cookies vazio ou inválido");
       }
 
       logs = this.addLog(logs, `${cookies.length} cookies recebidos`, "info");
@@ -346,7 +346,7 @@ export class MercadoLivreSessionService {
   }
 
   /**
-   * Lightweight session test via HTTP â€” no browser opened.
+    * Lightweight session test via HTTP - no browser opened.
    * Checks ML API with session cookies.
    */
   async testSessionLight(sessionId: string): Promise<SessionResult> {
@@ -356,10 +356,10 @@ export class MercadoLivreSessionService {
     try {
       const sessionPath = await this.resolveExistingSessionPath(sessionId);
       if (!sessionPath) {
-        return { status: "not_found", logs: this.addLog(logs, "Arquivo de sessÃ£o nÃ£o encontrado", "error") };
+        return { status: "not_found", logs: this.addLog(logs, "Arquivo de sessão não encontrado", "error") };
       }
 
-      logs = this.addLog(logs, "Carregando sessÃ£o...", "info");
+      logs = this.addLog(logs, "Carregando sessão...", "info");
       const storageStateRaw = await fs.readFile(sessionPath, "utf-8");
       const storageState = JSON.parse(storageStateRaw) as { cookies: CookieInput[] };
 
@@ -373,7 +373,7 @@ export class MercadoLivreSessionService {
         return { status: "error", logs: this.addLog(logs, "Nenhum cookie .mercadolivre.com.br encontrado", "error") };
       }
 
-      logs = this.addLog(logs, "Verificando sessÃ£o na pÃ¡gina de afiliados...", "info");
+      logs = this.addLog(logs, "Verificando sessão na página de afiliados...", "info");
 
       // ML REST API (api.mercadolivre.com.br) requires OAuth Bearer tokens, not browser cookies.
       // We test against the actual affiliate web page instead.
@@ -391,20 +391,20 @@ export class MercadoLivreSessionService {
       const finalUrl = response.url;
       logs = this.addLog(logs, `URL final: ${finalUrl}`, "info");
 
-      // Redirected to login â†’ session expired or invalid
+      // Redirected to login -> session expired or invalid
       if (
         finalUrl.includes("/login") ||
         finalUrl.includes("/authentication") ||
         finalUrl.includes("auth.mercadolivre")
       ) {
-        logs = this.addLog(logs, "SessÃ£o expirada â€” redirecionado para login. Cole os cookies novamente.", "error");
+        logs = this.addLog(logs, "Sessão expirada - redirecionado para login. Cole os cookies novamente.", "error");
         return { status: "expired", sessionPath, lastChecked: new Date().toISOString(), logs };
       }
 
-      // Landed on affiliate page â†’ active
+      // Landed on affiliate page -> active
       if (finalUrl.includes("linkbuilder") || finalUrl.includes("/afiliados")) {
         const { accountName, mlUserId } = this.extractMetadataFromCookies(storageState.cookies);
-        logs = this.addLog(logs, `SessÃ£o ativa${accountName ? `: ${accountName}` : ""}`, "success");
+        logs = this.addLog(logs, `Sessão ativa${accountName ? `: ${accountName}` : ""}`, "success");
         return {
           status: "active",
           accountName: accountName || undefined,
@@ -415,9 +415,9 @@ export class MercadoLivreSessionService {
         };
       }
 
-      // On some other ML page â€” session valid but no affiliate access
+      // On some other ML page - session valid but no affiliate access
       if (response.status === 200 && finalUrl.includes("mercadolivre")) {
-        logs = this.addLog(logs, `SessÃ£o vÃ¡lida, mas sem acesso a afiliados. URL: ${finalUrl}`, "warn");
+        logs = this.addLog(logs, `Sessão válida, mas sem acesso a afiliados. URL: ${finalUrl}`, "warn");
         return { status: "no_affiliate", sessionPath, lastChecked: new Date().toISOString(), logs };
       }
 
@@ -431,20 +431,20 @@ export class MercadoLivreSessionService {
   }
 
   /**
-   * Full session test via Playwright â€” navigates to ML affiliate page.
+    * Full session test via Playwright - navigates to ML affiliate page.
    * Used to verify affiliate program access, not just authentication.
    */
   async testSessionFull(sessionId: string): Promise<SessionResult> {
     let logs: SessionLog[] = [];
     const sessionPath = await this.resolveExistingSessionPath(sessionId);
     if (!sessionPath) {
-      return { status: "not_found", logs: this.addLog(logs, "SessÃ£o nÃ£o encontrada", "error") };
+      return { status: "not_found", logs: this.addLog(logs, "Sessão não encontrada", "error") };
     }
 
     let browser = null;
     let context = null;
     try {
-      logs = this.addLog(logs, "Iniciando verificaÃ§Ã£o completa...", "info");
+      logs = this.addLog(logs, "Iniciando verificação completa...", "info");
       browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
       context = await browser.newContext({ storageState: sessionPath });
       const page = await context.newPage();
@@ -465,7 +465,7 @@ export class MercadoLivreSessionService {
         currentUrl.includes("/authentication") ||
         currentUrl.includes("auth.mercadolivre")
       ) {
-        logs = this.addLog(logs, "SessÃ£o expirada â€” redirecionado para login. Cole os cookies novamente.", "error");
+        logs = this.addLog(logs, "Sessão expirada - redirecionado para login. Cole os cookies novamente.", "error");
         return { status: "expired", sessionPath, lastChecked: new Date().toISOString(), logs };
       }
 
@@ -478,7 +478,7 @@ export class MercadoLivreSessionService {
         if (!hasBuilderUi) {
           logs = this.addLog(
             logs,
-            "SessÃ£o autenticada em /afiliados, mas o formulÃ¡rio do Linkbuilder nÃ£o foi detectado (layout pode ter mudado).",
+            "Sessão autenticada em /afiliados, mas o formulário do Linkbuilder não foi detectado (layout pode ter mudado).",
             "warn",
           );
         }
@@ -489,7 +489,7 @@ export class MercadoLivreSessionService {
           .catch(() => undefined);
         logs = this.addLog(
           logs,
-          `SessÃ£o ativa${hasBuilderUi ? " e com acesso a afiliados" : " (afiliados carregado, UI do linkbuilder nÃ£o confirmada)"}${accountName ? `: ${accountName}` : ""}`,
+          `Sessão ativa${hasBuilderUi ? " e com acesso a afiliados" : " (afiliados carregado, UI do linkbuilder não confirmada)"}${accountName ? `: ${accountName}` : ""}`,
           hasBuilderUi ? "success" : "warn",
         );
         return { status: "active", accountName, sessionPath, lastChecked: new Date().toISOString(), logs };
@@ -522,14 +522,14 @@ export class MercadoLivreSessionService {
       }
 
       if (removed === 0) {
-        return { status: "not_found", logs: this.addLog(logs, "Nenhuma sessÃ£o para remover", "info") };
+        return { status: "not_found", logs: this.addLog(logs, "Nenhuma sessão para remover", "info") };
       }
 
-      logs = this.addLog(logs, "SessÃ£o removida", "success");
+      logs = this.addLog(logs, "Sessão removida", "success");
       return { status: "not_found", logs };
     } catch (error: unknown) {
       const e = error as NodeJS.ErrnoException;
-      if (e.code === "ENOENT") return { status: "not_found", logs: this.addLog(logs, "Nenhuma sessÃ£o para remover", "info") };
+      if (e.code === "ENOENT") return { status: "not_found", logs: this.addLog(logs, "Nenhuma sessão para remover", "info") };
       const message = error instanceof Error ? error.message : String(error);
       return { status: "error", logs: this.addLog(logs, `Erro: ${message}`, "error") };
     }

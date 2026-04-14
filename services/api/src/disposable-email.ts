@@ -8,8 +8,12 @@ const __dirname = path.dirname(__filename);
 const DISPOSABLE_EMAIL_BLOCKING_ENABLED = String(process.env.DISPOSABLE_EMAIL_BLOCKING ?? "true").trim().toLowerCase() !== "false";
 const DEFAULT_BLOCKLIST_PATH = path.resolve(__dirname, "data", "disposable_email_blocklist.conf");
 const FALLBACK_BLOCKLIST_PATH = path.resolve(__dirname, "..", "src", "data", "disposable_email_blocklist.conf");
+const CWD_BLOCKLIST_PATH = path.resolve(process.cwd(), "src", "data", "disposable_email_blocklist.conf");
+const CWD_DIST_BLOCKLIST_PATH = path.resolve(process.cwd(), "dist", "data", "disposable_email_blocklist.conf");
+const DISPOSABLE_EMAIL_BLOCKLIST_STRICT = String(process.env.DISPOSABLE_EMAIL_BLOCKLIST_STRICT ?? "false").trim().toLowerCase() === "true";
 
 let cachedBlocklist: Set<string> | null = null;
+let blocklistMissingWarned = false;
 
 function splitDomainList(rawValue: string) {
   return rawValue
@@ -25,7 +29,13 @@ function resolveBlocklistPath() {
 }
 
 function readBlocklistFile() {
-  const locations = [resolveBlocklistPath(), FALLBACK_BLOCKLIST_PATH];
+  const locations = [
+    resolveBlocklistPath(),
+    FALLBACK_BLOCKLIST_PATH,
+    CWD_BLOCKLIST_PATH,
+    CWD_DIST_BLOCKLIST_PATH,
+  ];
+
   for (const location of locations) {
     try {
       return readFileSync(location, "utf-8");
@@ -33,7 +43,17 @@ function readBlocklistFile() {
       // try next location
     }
   }
-  throw new Error("Disposable email blocklist file not found");
+
+  if (DISPOSABLE_EMAIL_BLOCKLIST_STRICT) {
+    throw new Error("Disposable email blocklist file not found");
+  }
+
+  if (!blocklistMissingWarned) {
+    blocklistMissingWarned = true;
+    console.warn("[auth] Disposable email blocklist file not found. Continuing with env blocklist/allowlist only.");
+  }
+
+  return "";
 }
 
 function loadBlocklist() {

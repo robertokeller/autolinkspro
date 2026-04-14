@@ -56,7 +56,7 @@ const shopeeSubNav = [
 const meliSubNav = [
   { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.automacoesMeli },
-  { title: "Templates Meli", icon: FileText, href: ROUTES.app.templatesMeli },
+  { title: "Templates Mercado Livre", icon: FileText, href: ROUTES.app.templatesMeli },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.mercadolivreConfiguracoes },
 ];
 

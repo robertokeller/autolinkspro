@@ -73,7 +73,7 @@ export const APP_ROUTE_TITLES: Record<string, string> = {
   [ROUTES.app.mercadolivreConfiguracoes]: "Configuracoes Mercado Livre",
   [ROUTES.app.vitrineMl]: "Vitrine ML",
   [ROUTES.app.automacoesMeli]: "Piloto automatico ML",
-  [ROUTES.app.templatesMeli]: "Templates Meli",
+  [ROUTES.app.templatesMeli]: "Templates Mercado Livre",
   [ROUTES.app.amazonConfiguracoes]: "Configuracoes Amazon",
   [ROUTES.app.conversorAmazon]: "Conversor de Links",
   [ROUTES.app.vitrineAmazon]: "Vitrine Amazon",

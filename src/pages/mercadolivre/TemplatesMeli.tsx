@@ -384,7 +384,7 @@ export default function TemplatesMeli() {
   return (
     <div className="ds-page pb-[calc(var(--safe-area-bottom)+0.25rem)]">
       <PageHeader
-        title="Templates Meli"
+        title="Templates Mercado Livre"
         description="Monte templates e gere mensagens com conversão de link Mercado Livre"
       >
         <Button size="sm" onClick={openNew} className="w-full sm:w-auto">
@@ -398,7 +398,7 @@ export default function TemplatesMeli() {
           <CardHeader className="border-b pb-4">
             <CardTitle className="flex items-center gap-2 text-sm">
               <Link2 className="h-4 w-4 text-primary" />
-              Gerador de mensagem Meli
+              Gerador de mensagem Mercado Livre
             </CardTitle>
             <p className="text-xs text-muted-foreground">
               Cole um link do Mercado Livre, converta para afiliado e gere a mensagem final com template.
