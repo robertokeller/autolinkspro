@@ -9,6 +9,7 @@
  *   SMOKE_TG_URL=https://tg-api.seudominio.com \
  *   SMOKE_SHOPEE_URL=https://shopee-api.seudominio.com \
  *   SMOKE_MELI_URL=https://meli-api.seudominio.com \
+ *   SMOKE_AMAZON_URL=https://amazon-api.seudominio.com \
  *   SMOKE_OPS_URL=https://ops-api.seudominio.com \
  *   SMOKE_WEB_URL=https://seudominio.com \
  *   SMOKE_WEBHOOK_SECRET=xxx \
@@ -25,6 +26,7 @@ const {
   SMOKE_TG_URL,
   SMOKE_SHOPEE_URL,
   SMOKE_MELI_URL,
+  SMOKE_AMAZON_URL,
   SMOKE_OPS_URL,
   SMOKE_WEB_URL,
   SMOKE_WEBHOOK_SECRET,
@@ -111,6 +113,11 @@ async function main() {
     checkHealth('whatsapp  /health', `${SMOKE_WA_URL ?? ''}/health`),
     checkHealth('telegram  /health', `${SMOKE_TG_URL ?? ''}/health`),
     checkHealth('shopee    /health', `${SMOKE_SHOPEE_URL ?? ''}/health`),
+    checkHealth(
+      'amazon    /health',
+      `${SMOKE_AMAZON_URL ?? ''}/health`,
+      smokeWebhookSecret ? { headers: { 'x-webhook-secret': smokeWebhookSecret } } : {},
+    ),
     checkHealth(
       'meli      /health',
       `${SMOKE_MELI_URL ?? ''}/api/meli/health`,

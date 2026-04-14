@@ -19,6 +19,7 @@ const requiredFiles = [
   "docker/amazon.Dockerfile",
   "docker/ops-control.Dockerfile",
   "docker/scheduler.Dockerfile",
+  "docker/sessions-backup.Dockerfile",
   "supabase/config.toml",
 ];
 
@@ -40,6 +41,7 @@ const requiredComposeServices = [
   "meli",
   "amazon",
   "ops-control",
+  "sessions-backup",
 ];
 
 const requiredEnvVars = [
@@ -70,6 +72,7 @@ const requiredEnvVars = [
   "MELI_CORS_ORIGIN",
   "SCHEDULER_MODE",
   "SCHEDULER_RPC_BASE_URL",
+  "BACKUP_ENCRYPTION_KEY",
 ];
 
 const errors = [];
