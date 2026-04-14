@@ -1149,30 +1149,42 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
       const setKeys = Object.keys(updateData);
       if (setKeys.length === 0) { res.json({ data: [], count: 0, error: null }); return; }
 
-      const params: unknown[] = [];
+      const setParams: unknown[] = [];
       const setClause = setKeys.map((k) => {
-        params.push(pgValue(updateData[k]));
-        return `${safeIdent(k)} = $${params.length}`;
+        setParams.push(pgValue(updateData[k]));
+        return `${safeIdent(k)} = $${setParams.length}`;
       }).join(", ");
 
       const whereFilters: Filter[] = [...normalizedFilters];
       if ((USER_OWNED.has(table) || table === "profiles") && !effectiveAdmin) whereFilters.push({ type: "eq", col: "user_id", val: userId });
-      let whereSql: string;
-      if (PARENT_SCOPED[table] && !effectiveAdmin) {
-        params.push(userId);
-        const parentClause = parentScopeClause(table, params.length);
-        const { sql: extra } = buildWhere(whereFilters, params, params.length + 1);
-        whereSql = `WHERE ${parentClause}` + (extra ? ` AND ${extra.replace(/^WHERE\s+/i, "")}` : "");
-      } else {
-        const { sql } = buildWhere(whereFilters, params, params.length + 1);
-        whereSql = sql;
-      }
-      if (!whereSql) { res.json({ data: null, count: 0, error: { message: "UPDATE sem WHERE é proibido" } }); return; }
+
+      const buildUpdateWhereQuery = (seedParams: unknown[]) => {
+        const scopedParams = [...seedParams];
+        let scopedWhereSql: string;
+
+        if (PARENT_SCOPED[table] && !effectiveAdmin) {
+          scopedParams.push(userId);
+          const parentClause = parentScopeClause(table, scopedParams.length);
+          const { sql: extra } = buildWhere(whereFilters, scopedParams, scopedParams.length + 1);
+          scopedWhereSql = `WHERE ${parentClause}` + (extra ? ` AND ${extra.replace(/^WHERE\s+/i, "")}` : "");
+        } else {
+          const { sql } = buildWhere(whereFilters, scopedParams, scopedParams.length + 1);
+          scopedWhereSql = sql;
+        }
+
+        return {
+          whereSql: scopedWhereSql,
+          params: scopedParams,
+        };
+      };
+
+      const { whereSql: precheckWhereSql, params: precheckParams } = buildUpdateWhereQuery([]);
+      if (!precheckWhereSql) { res.json({ data: null, count: 0, error: { message: "UPDATE sem WHERE é proibido" } }); return; }
 
       if (!effectiveAdmin && table === "templates") {
         const targetTemplates = await client.query<Record<string, unknown>>(
-          `SELECT id, scope, tags FROM "templates" ${whereSql}`,
-          params,
+          `SELECT id, scope, tags FROM "templates" ${precheckWhereSql}`,
+          precheckParams,
         );
         if ((targetTemplates.rowCount ?? 0) > 0) {
           const planState = await getUserPlanState();
@@ -1189,8 +1201,8 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
 
       if (!effectiveAdmin && table === "shopee_automations") {
         const targetAutomations = await client.query<Record<string, unknown>>(
-          `SELECT id, config, session_id, destination_group_ids, master_group_ids, template_id FROM "shopee_automations" ${whereSql}`,
-          params,
+          `SELECT id, config, session_id, destination_group_ids, master_group_ids, template_id FROM "shopee_automations" ${precheckWhereSql}`,
+          precheckParams,
         );
         const mergedRows = (targetAutomations.rows as Record<string, unknown>[])
           .map((row) => ({ existingRow: row, mergedRow: { ...row, ...updateData } }));
@@ -1212,8 +1224,8 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
 
       if (!effectiveAdmin && table === "routes") {
         const targetRoutes = await client.query<Record<string, unknown>>(
-          `SELECT id FROM "routes" ${whereSql}`,
-          params,
+          `SELECT id FROM "routes" ${precheckWhereSql}`,
+          precheckParams,
         );
         if ((targetRoutes.rowCount ?? 0) > 0) {
           const planState = await getUserPlanState();
@@ -1237,8 +1249,8 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
 
       if (!effectiveAdmin && table === "scheduled_posts") {
         const targetPosts = await client.query<Record<string, unknown>>(
-          `SELECT id FROM "scheduled_posts" ${whereSql}`,
-          params,
+          `SELECT id FROM "scheduled_posts" ${precheckWhereSql}`,
+          precheckParams,
         );
         if ((targetPosts.rowCount ?? 0) > 0) {
           const planState = await getUserPlanState();
@@ -1266,6 +1278,7 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
         }
       }
 
+      const { whereSql, params } = buildUpdateWhereQuery(setParams);
       const result = await client.query(`UPDATE "${table}" SET ${setClause} ${whereSql} RETURNING *`, params);
       decryptRows(table, result.rows as Record<string, unknown>[]);
       maskSensitiveColumns(table, result.rows as Record<string, unknown>[]);
