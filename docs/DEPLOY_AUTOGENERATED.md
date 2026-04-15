@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-14T00:21:56.292Z`
+> Atualizado em: `2026-04-15T21:18:23.899Z`
 
 ## Fluxo automático recomendado
 
@@ -56,8 +56,8 @@ npm run deploy:prepare
 | `CHANNEL_EVENTS_INTERVAL_SECONDS` | scheduler | 15 | 15 |
 | `DB_POOL_MAX` | api | 10 | - |
 | `DB_SSL` | api | true | true |
-| `DB_SSL_REJECT_UNAUTHORIZED` | api | true | false |
-| `DISABLE_SIGNUP` | api | true | true |
+| `DB_SSL_REJECT_UNAUTHORIZED` | api | false | false |
+| `DISABLE_SIGNUP` | api | false | false |
 | `DISPATCH_INTERVAL_SECONDS` | scheduler | - | 15 |
 | `DISPATCH_LIMIT` | scheduler | - | 25 |
 | `DISPATCH_SOURCE` | scheduler | - | scheduler |

@@ -27,6 +27,7 @@ export function RouteGuard({ requireAdmin = false, allowAdmin = false }: RouteGu
   const appPathPrefixes = [
     ROUTES.app.dashboard,
     ROUTES.app.connectionsRoot,
+    ROUTES.app.whatsappRoot,
     ROUTES.app.routes,
     ROUTES.app.shopeeRoot,
     ROUTES.app.amazonRoot,
@@ -38,6 +39,8 @@ export function RouteGuard({ requireAdmin = false, allowAdmin = false }: RouteGu
     ROUTES.app.schedules,
     ROUTES.app.linkHub,
     ROUTES.app.history,
+    ROUTES.app.metricasLegacy,
+    ROUTES.app.metricas,
     ROUTES.app.account,
   ];
   const hubPathPrefix = ROUTES.hubPublic.replace(":slug", "");

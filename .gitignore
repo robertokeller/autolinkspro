@@ -30,6 +30,10 @@ _tmp_*/
 .ai/
 .copilot/
 .synnacode/
+SKILL.md
+modules/
+temp/
+services/.analytics/
 
 # Private local runtime (never commit)
 .private/*
