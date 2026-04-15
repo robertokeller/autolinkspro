@@ -15,7 +15,7 @@ import { backend } from "@/integrations/backend/client";
 import { convertMarketplaceLink, type MarketplaceConversionResult } from "@/lib/marketplace-link-converter";
 import { ROUTES } from "@/lib/routes";
 import { toast } from "sonner";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { PageWrapper } from "@/components/PageWrapper";
 
 function detectInputMarketplace(rawInput: string): "shopee" | "mercadolivre" | "amazon" | null {
   try {
@@ -156,12 +156,9 @@ export default function ShopeeConversor() {
     toast.success("Link copiado!");
   };
 
-  if (isLoading || loadingAmazonTag || isCheckingAccess) {
-    return <RoutePendingState label="Carregando..." />;
-  }
-
   return (
-    <div className="ds-page">
+    <PageWrapper fallbackLabel="Carregando...">
+      <div className="ds-page">
       <div className="mx-auto w-full max-w-5xl space-y-6">
         <PageHeader
           title="Conversor global de links"
@@ -318,7 +315,8 @@ export default function ShopeeConversor() {
           </Card>
         )}
       </div>
-    </div>
+      </div>
+    </PageWrapper>
   );
 }
 

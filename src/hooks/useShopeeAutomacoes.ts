@@ -74,7 +74,7 @@ export function useShopeeAutomacoes() {
     const { data, error } = await backend
       .from("shopee_automations")
       .select("id, destination_group_ids, master_group_ids, config");
-    throwIfBackendError(error, "Falha ao validar limites de automacoes");
+      throwIfBackendError(error, "Falha ao validar limites de automações");
 
     const rows = ((data ?? []) as AutomationSnapshotRow[])
       .filter((row) => !!String(row.id || "").trim());
@@ -92,7 +92,7 @@ export function useShopeeAutomacoes() {
         .from("shopee_automations")
         .select("*")
         .order("created_at", { ascending: false });
-      throwIfBackendError(error, "Falha ao listar automacoes Shopee");
+        throwIfBackendError(error, "Falha ao listar automações Shopee");
       const rows = (data ?? []) as ShopeeAutomationRow[];
       return rows.filter((row) => isShopeeAutomationRow(row));
     },
@@ -165,7 +165,7 @@ export function useShopeeAutomacoes() {
         active_hours_end: input.activeHoursEnd || "20:00",
         config,
       });
-      throwIfBackendError(error, "Falha ao criar automacao Shopee");
+      throwIfBackendError(error, "Falha ao criar automação Shopee");
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shopee_automations"] });
@@ -259,7 +259,7 @@ export function useShopeeAutomacoes() {
         .from("shopee_automations")
         .update(updates)
         .eq("id", id);
-      throwIfBackendError(error, "Falha ao atualizar automacao Shopee");
+      throwIfBackendError(error, "Falha ao atualizar automação Shopee");
     },
     onSuccess: async (_, variables) => {
       qc.invalidateQueries({ queryKey: ["shopee_automations"] });
@@ -278,7 +278,7 @@ export function useShopeeAutomacoes() {
         .from("shopee_automations")
         .update({ is_active: !isActive })
         .eq("id", id);
-      throwIfBackendError(error, "Falha ao alterar status da automacao Shopee");
+      throwIfBackendError(error, "Falha ao alterar status da automação Shopee");
     },
     onSuccess: async (_, variables) => {
       qc.invalidateQueries({ queryKey: ["shopee_automations"] });
@@ -293,7 +293,7 @@ export function useShopeeAutomacoes() {
     mutationFn: async (id: string) => {
       if (!user) throw new Error("Not authenticated");
       const { error } = await backend.from("shopee_automations").delete().eq("id", id);
-      throwIfBackendError(error, "Falha ao excluir automacao Shopee");
+      throwIfBackendError(error, "Falha ao excluir automação Shopee");
     },
     onSuccess: async (_, deletedId) => {
       qc.invalidateQueries({ queryKey: ["shopee_automations"] });

@@ -255,7 +255,13 @@
     @apply ds-linkhub-shell;
   }
   .glass {
-    @apply bg-card/80 backdrop-blur-xl border border-border/50;
+    @apply bg-card/70 backdrop-blur-md border border-border/50 shadow-premium;
+  }
+  .glass-hover {
+    @apply hover:bg-card/85 transition-all duration-300 hover:shadow-premium-hover;
+  }
+  .ds-card-compact {
+    @apply rounded-xl border border-border/60 bg-card/50 p-3;
   }
   .glow-primary {
     box-shadow: 0 0 20px -5px hsl(var(--primary) / 0.3);

@@ -9,7 +9,7 @@ import { logHistorico } from "@/lib/log-historico";
 import { resolveEffectiveOperationalLimitsByPlanId } from "@/lib/access-control";
 import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
 
-const SCHEDULE_DESTINATIONS_TABLE_WARNING = "Nao foi possivel carregar os destinos dos agendamentos. Os agendamentos foram exibidos sem os grupos vinculados.";
+const SCHEDULE_DESTINATIONS_TABLE_WARNING = "Não foi possível carregar os destinos dos agendamentos. Os agendamentos foram exibidos sem os grupos vinculados.";
 const ROUTE_QUIET_HOURS_SCHEDULE_SOURCE = "route_quiet_hours";
 
 type PostRow = Tables<"scheduled_posts">;
@@ -209,7 +209,7 @@ export function useAgendamentos() {
 
   const createPost = useCallback(async (post: UpsertPostPayload) => {
     if (!post.content.trim()) {
-      toast.error("Preencha o conteudo");
+      toast.error("Preencha o conteúdo");
       return null;
     }
 
@@ -231,7 +231,7 @@ export function useAgendamentos() {
         .maybeSingle();
 
       if (profileError) {
-        toast.error("Nao foi possivel validar o limite de agendamentos");
+        toast.error("Não foi possível validar o limite de agendamentos");
         return null;
       }
 
@@ -249,7 +249,7 @@ export function useAgendamentos() {
 
       const maxSchedules = limits?.schedules ?? 0;
       if (maxSchedules !== -1 && posts.length >= maxSchedules) {
-        toast.error("Limite de agendamentos atingido para o seu nivel de acesso.");
+        toast.error("Limite de agendamentos atingido para o seu nível de acesso.");
         return null;
       }
     }
@@ -281,7 +281,7 @@ export function useAgendamentos() {
         if (rollback.error) {
           toast.error("Falha ao sincronizar destinos. O agendamento pode ter ficado inconsistente.");
         } else {
-          toast.error("Nao foi possivel vincular os destinos. O agendamento foi desfeito para manter sincronizacao.");
+          toast.error("Não foi possível vincular os destinos. O agendamento foi desfeito para manter sincronização.");
         }
         return null;
       }
@@ -314,13 +314,13 @@ export function useAgendamentos() {
     const previousPost = (snapshotPostRes.data || null) as PostRow | null;
     const previousDestinations = (snapshotDestinationsRes.data || []) as PostDestRow[];
 
-    if (snapshotPostRes.error || !previousPost) {
-      toast.error("Nao foi possivel carregar o agendamento atual");
+      if (snapshotPostRes.error || !previousPost) {
+      toast.error("Não foi possível carregar o agendamento atual");
       return;
     }
 
     if (snapshotDestinationsRes.error) {
-      toast.error("Nao foi possivel carregar os destinos atuais do agendamento");
+      toast.error("Não foi possível carregar os destinos atuais do agendamento");
       return;
     }
 
@@ -378,8 +378,8 @@ export function useAgendamentos() {
       const rollbackOk = await rollbackToSnapshot();
       toast.error(
         rollbackOk
-          ? "Nao foi possivel atualizar os destinos. O agendamento foi restaurado."
-          : "Nao foi possivel atualizar os destinos e o rollback falhou.",
+          ? "Não foi possível atualizar os destinos. O agendamento foi restaurado."
+          : "Não foi possível atualizar os destinos e o rollback falhou.",
       );
       return;
     }
@@ -390,14 +390,14 @@ export function useAgendamentos() {
         .insert(post.destinationGroupIds.map((groupId) => ({ post_id: id, group_id: groupId })));
 
       if (insertDestinations.error) {
-        const rollbackOk = await rollbackToSnapshot();
-        toast.error(
-          rollbackOk
-            ? "Nao foi possivel atualizar os destinos. O agendamento foi restaurado."
-            : "Nao foi possivel atualizar os destinos e o rollback falhou.",
-        );
-        return;
-      }
+          const rollbackOk = await rollbackToSnapshot();
+          toast.error(
+            rollbackOk
+              ? "Não foi possível atualizar os destinos. O agendamento foi restaurado."
+              : "Não foi possível atualizar os destinos e o rollback falhou.",
+          );
+          return;
+        }
     }
 
     await refreshScheduleQueries();
@@ -422,7 +422,7 @@ export function useAgendamentos() {
       .eq("id", id);
 
     if (deletePostResult.error) {
-      toast.error("Nao foi possivel remover o agendamento");
+      toast.error("Não foi possível remover o agendamento");
       return;
     }
 

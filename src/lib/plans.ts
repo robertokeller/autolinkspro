@@ -166,7 +166,7 @@ export const plans: Plan[] = [
 ];
 
 function formatLimit(label: string, value: number): string {
-  if (value === 0) return `${label}: indisponivel`;
+  if (value === 0) return `${label}: indisponível`;
   if (value === -1) return `${label}: ilimitado`;
   return `${label}: ${value}`;
 }
@@ -174,14 +174,14 @@ function formatLimit(label: string, value: number): string {
 export function getPlanFeatureList(plan: Plan): string[] {
   const { limits } = plan;
   return [
-    formatLimit("Sessoes WhatsApp", limits.whatsappSessions),
-    formatLimit("Sessoes Telegram", limits.telegramSessions),
-    formatLimit("Sessoes Mercado Livre", limits.meliSessions),
+    formatLimit("Sessões WhatsApp", limits.whatsappSessions),
+    formatLimit("Sessões Telegram", limits.telegramSessions),
+    formatLimit("Sessões Mercado Livre", limits.meliSessions),
     formatLimit("Grupos", limits.groups),
     formatLimit("Rotas", limits.routes),
-    formatLimit("Automacoes", limits.automations),
+    formatLimit("Automações", limits.automations),
     formatLimit("Agendamentos", limits.schedules),
     formatLimit("Master Groups", limits.masterGroups),
-    `Link Hub: ${limits.linkHub ? "incluido" : "indisponivel"}`,
+    `Link Hub: ${limits.linkHub ? "incluído" : "indisponível"}`,
   ];
 }

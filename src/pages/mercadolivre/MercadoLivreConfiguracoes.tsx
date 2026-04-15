@@ -119,7 +119,7 @@ function parseIncomingCookies(rawCookies: unknown): BridgeCookie[] {
       ? (parsed as { cookies: unknown[] }).cookies
       : null;
   if (!rawArray) {
-    throw new Error("Formato de cookies invalido. Use { cookies: [...] } ou [...].");
+    throw new Error("Formato de cookies inválido. Use { cookies: [...] } ou [...].");
   }
   if (rawArray.length === 0) {
     throw new Error("Nenhum cookie recebido.");
@@ -176,7 +176,7 @@ function parseIncomingCookies(rawCookies: unknown): BridgeCookie[] {
   }
 
   if (normalized.length === 0) {
-    throw new Error("Nao foi possivel extrair cookies validos do Mercado Livre.");
+    throw new Error("Não foi possível extrair cookies válidos do Mercado Livre.");
   }
 
   return normalized;

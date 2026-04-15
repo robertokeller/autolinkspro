@@ -12,7 +12,7 @@ export default function ConexoesWhatsApp() {
   const { user } = useAuth();
   const [subTab, setSubTab] = useState("sessions");
   const { refetch: refetchHealth } = useQuery({
-    queryKey: ["channel-health", user?.id, "connections-whatsapp"],
+    queryKey: ["channel-health", user?.id, "whatsapp-configuracoes"],
     queryFn: getAllChannelHealth,
     enabled: !!user,
     staleTime: 5 * 60 * 1000,
@@ -59,8 +59,8 @@ export default function ConexoesWhatsApp() {
 
   return (
     <ConexoesCanalLayout
-      title="WhatsApp"
-      description="Conecte e veja suas contas do WhatsApp"
+      title="Configurações WhatsApp"
+      description="Gerencie sessões, grupos e ajustes operacionais do WhatsApp"
       centered
       headerActions={null}
       activeTab={subTab}

@@ -7,13 +7,13 @@ function resolveContent(status: string) {
   if (status === "success") {
     return {
       title: "E-mail confirmado",
-      description: "Sua conta foi confirmada. Agora voce ja pode entrar no sistema.",
+      description: "Sua conta foi confirmada. Agora você já pode entrar no sistema.",
     };
   }
   if (status === "invalid") {
     return {
-      title: "Link invalido",
-      description: "Este link de confirmacao e invalido ou expirou. Solicite um novo no login.",
+      title: "Link inválido",
+      description: "Este link de confirmação é inválido ou expirou. Solicite um novo no login.",
     };
   }
   return {

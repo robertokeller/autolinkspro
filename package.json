@@ -9,7 +9,7 @@
     "dev": "node scripts/preview-ready.mjs --host 127.0.0.1 --port 5173",
     "dedv": "npm run dev",
     "dev:legacy": "node scripts/dev-legacy.mjs",
-    "dev:runtime": "concurrently -k -n OPS,API,SCHED,WEB -c cyan,blue,magenta,green --restart-tries 50 --restart-after 2000 \"npm run svc:ops:dev\" \"npm run svc:api:dev\" \"npm run scheduler:local\" \"vite --strictPort --port 5173 --host 127.0.0.1\"",
+    "dev:runtime": "concurrently -k -n OPS,API,WA,SCHED,WEB -c cyan,blue,yellow,magenta,green --restart-tries 50 --restart-after 2000 \"npm run svc:ops:dev\" \"npm run svc:api:dev\" \"npm run svc:wa:dev\" \"npm run scheduler:local\" \"vite --strictPort --port 5173 --host 127.0.0.1\"",
     "dev:runtime:attach": "concurrently -k -n SCHED,WEB -c magenta,green --restart-tries 50 --restart-after 2000 \"npm run scheduler:local\" \"vite --strictPort --port 5173 --host 127.0.0.1\"",
     "dev:runtime:degraded": "concurrently -k -n OPS,WEB -c cyan,green --restart-tries 50 --restart-after 2000 \"npm run svc:ops:dev\" \"vite --strictPort --port 5173 --host 127.0.0.1\"",
     "dev:web": "vite --strictPort --port 5173 --host 127.0.0.1",
@@ -41,7 +41,7 @@
     "ext:build": "concurrently npm:ext:icons:build npm:ext:zip:build",
     "svc:wa:build": "npm --prefix services/whatsapp-baileys run build",
     "svc:wa:start": "npm --prefix services/whatsapp-baileys run start",
-    "svc:wa:dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not $env:WEBHOOK_SECRET) { $env:WEBHOOK_SECRET = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')) }; npm --prefix services/whatsapp-baileys run dev\"",
+    "svc:wa:dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not $env:WEBHOOK_SECRET) { $env:WEBHOOK_SECRET = 'autolinks-dev-local-webhook-secret' }; npm --prefix services/whatsapp-baileys run dev\"",
     "svc:tg:build": "npm --prefix services/telegram-telegraph run build",
     "svc:tg:start": "npm --prefix services/telegram-telegraph run start",
     "svc:tg:dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not $env:WEBHOOK_SECRET) { $env:WEBHOOK_SECRET = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')) }; npm --prefix services/telegram-telegraph run dev\"",
@@ -60,7 +60,7 @@
     "system:bootstrap": "concurrently -k -n OPS,WEB -c cyan,green --restart-tries 50 --restart-after 2000 \"npm run svc:ops:dev\" \"npm run preview:safe\"",
     "svc:api:build": "npm --prefix services/api run build",
     "svc:api:start": "npm --prefix services/api run start",
-    "svc:api:dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not $env:JWT_SECRET) { $env:JWT_SECRET = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')) }; if (-not $env:SERVICE_TOKEN) { $env:SERVICE_TOKEN = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')) }; if (-not $env:WEBHOOK_SECRET) { $env:WEBHOOK_SECRET = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')) }; if (-not $env:CORS_ORIGIN) { $env:CORS_ORIGIN='http://127.0.0.1:5173' }; if (-not $env:OPS_CONTROL_URL) { $env:OPS_CONTROL_URL='http://127.0.0.1:3115' }; if (-not $env:ADMIN_EMAIL) { $env:ADMIN_EMAIL='admin@localhost.local' }; if (-not $env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD = [guid]::NewGuid().ToString('N') }; npm --prefix services/api run dev\"",
+    "svc:api:dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not $env:JWT_SECRET) { $env:JWT_SECRET = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')) }; if (-not $env:SERVICE_TOKEN) { $env:SERVICE_TOKEN = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')) }; if (-not $env:WEBHOOK_SECRET) { $env:WEBHOOK_SECRET = 'autolinks-dev-local-webhook-secret' }; if (-not $env:CORS_ORIGIN) { $env:CORS_ORIGIN='http://127.0.0.1:5173' }; if (-not $env:OPS_CONTROL_URL) { $env:OPS_CONTROL_URL='http://127.0.0.1:3115' }; if (-not $env:ADMIN_EMAIL) { $env:ADMIN_EMAIL='admin@localhost.local' }; if (-not $env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD = [guid]::NewGuid().ToString('N') }; if (-not $env:WHATSAPP_MICROSERVICE_URL) { $env:WHATSAPP_MICROSERVICE_URL='http://127.0.0.1:3111' }; if (-not $env:TELEGRAM_MICROSERVICE_URL) { $env:TELEGRAM_MICROSERVICE_URL='http://127.0.0.1:3112' }; if (-not $env:SHOPEE_MICROSERVICE_URL) { $env:SHOPEE_MICROSERVICE_URL='http://127.0.0.1:3113' }; if (-not $env:MELI_RPA_URL) { $env:MELI_RPA_URL='http://127.0.0.1:3114' }; if (-not $env:AMAZON_MICROSERVICE_URL) { $env:AMAZON_MICROSERVICE_URL='http://127.0.0.1:3117' }; npm --prefix services/api run dev\"",
     "kiwify:bootstrap": "npm --prefix services/api exec tsx services/api/scripts/bootstrap-kiwify.ts",
     "kiwify:validate:e2e": "npm --prefix services/api exec tsx services/api/scripts/validate-kiwify-e2e.ts",
     "kiwify:validate:lifecycle:e2e": "npm --prefix services/api exec tsx services/api/scripts/validate-kiwify-lifecycle-e2e.ts",
@@ -86,6 +86,7 @@
     "commit:safety": "node scripts/check-commit-safety.mjs",
     "smoke:coolify": "node scripts/smoke-coolify.mjs",
     "ops:verify:global-controls": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-ops-global-controls.ps1"
+    ,"rekey:credentials": "node scripts/reencrypt-credentials.mjs"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.11",
@@ -112,6 +113,7 @@
     "date-fns-tz": "^3.2.0",
     "framer-motion": "^12.34.0",
     "lucide-react": "^0.462.0",
+    "mapa-brasil": "^1.0.6",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.3",

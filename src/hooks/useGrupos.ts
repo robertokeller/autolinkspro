@@ -325,6 +325,7 @@ export function useGrupos() {
 
       qc.invalidateQueries({ queryKey: ["groups"] });
       qc.invalidateQueries({ queryKey: ["master_groups"] });
+      qc.invalidateQueries({ queryKey: ["analytics-admin-groups"] });
 
       if (successCount > 0 && errorCount === 0) {
         toast.success(`Sincronização iniciada para ${successCount} sessão(ões) online.`);

@@ -150,4 +150,5 @@ export const Pages = {
   AdminKiwify: lazyPage("AdminKiwify", "/src/pages/admin/AdminKiwify.tsx", () => import("@/pages/admin/AdminKiwify")),
   Ajuda: lazyPage("Ajuda", "/src/pages/ajuda/Ajuda.tsx", () => import("@/pages/ajuda/Ajuda")),
   Afiliado: lazyPage("Afiliado", "/src/pages/afiliado/Afiliado.tsx", () => import("@/pages/afiliado/Afiliado")),
+  Metricas: lazyPage("Metricas", "/src/pages/Metricas.tsx", () => import("@/pages/Metricas")),
 } as const;

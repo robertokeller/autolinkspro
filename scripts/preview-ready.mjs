@@ -17,9 +17,25 @@ const npmCliPath = process.env.npm_execpath || "";
 const LOCAL_HOST = "127.0.0.1";
 const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 const ALLOW_PARTIAL_SERVICES = String(process.env.PREVIEW_ALLOW_PARTIAL_SERVICES || "").trim() === "1";
+const WHATSAPP_ENV_PATH = path.resolve(process.cwd(), "services/whatsapp-baileys/.env");
+
+function readWhatsappServiceWebhookSecret() {
+  try {
+    if (!existsSync(WHATSAPP_ENV_PATH)) return "";
+    const raw = readFileSync(WHATSAPP_ENV_PATH, "utf8");
+    const match = raw.match(/^\s*WEBHOOK_SECRET\s*=\s*(.+)\s*$/m);
+    if (!match?.[1]) return "";
+    return String(match[1]).trim().replace(/^['"]|['"]$/g, "");
+  } catch {
+    return "";
+  }
+}
+
+const WHATSAPP_SERVICE_WEBHOOK_SECRET = readWhatsappServiceWebhookSecret();
 const PREVIEW_WEBHOOK_SECRET = String(
   process.env.WEBHOOK_SECRET
   || process.env.PREVIEW_WEBHOOK_SECRET
+  || WHATSAPP_SERVICE_WEBHOOK_SECRET
   || "autolinks-preview-webhook-local",
 ).trim();
 const PREVIEW_JWT_SECRET = String(process.env.JWT_SECRET || randomBytes(32).toString("hex")).trim();
@@ -27,7 +43,8 @@ const PREVIEW_SERVICE_TOKEN = String(process.env.SERVICE_TOKEN || "autolinks-pre
 const PREVIEW_OPS_CONTROL_TOKEN = String(process.env.OPS_CONTROL_TOKEN || "autolinks-preview-ops-token-local").trim();
 const PREVIEW_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || randomBytes(18).toString("hex")).trim();
 const USING_FALLBACK_PREVIEW_WEBHOOK_SECRET = !String(process.env.WEBHOOK_SECRET || "").trim()
-  && !String(process.env.PREVIEW_WEBHOOK_SECRET || "").trim();
+  && !String(process.env.PREVIEW_WEBHOOK_SECRET || "").trim()
+  && !String(WHATSAPP_SERVICE_WEBHOOK_SECRET || "").trim();
 const OPS_CONFIG_DIR = path.resolve(process.cwd(), ".ops");
 const OPS_PORTS_CONFIG_PATH = path.join(OPS_CONFIG_DIR, "service-ports.json");
 const STACK_RESERVED_PORTS = new Set([3000, 3111, 3112, 3113, 3114, 3115, 3116, 3117]);

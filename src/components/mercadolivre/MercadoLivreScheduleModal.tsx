@@ -55,7 +55,7 @@ function dataUrlToBase64(dataUrl: string): string {
 async function fetchImageAsAttachment(imageUrl: string, fileName: string): Promise<ScheduledMediaAttachment> {
   const target = String(imageUrl || "").trim();
   if (!/^https?:\/\//i.test(target)) {
-    throw new Error("URL de imagem invalida para anexo");
+    throw new Error("URL de imagem inválida para anexo");
   }
 
   const response = await fetch(target);
@@ -80,7 +80,7 @@ async function fetchImageAsAttachment(imageUrl: string, fileName: string): Promi
 
   const base64 = dataUrlToBase64(dataUrl);
   if (!base64) {
-    throw new Error("Conteudo da imagem invalido");
+    throw new Error("Conteúdo da imagem inválido");
   }
 
   return {
@@ -298,11 +298,11 @@ export function MercadoLivreScheduleModal({
       return;
     }
     if (!messageContent.trim()) {
-      toast.error("Escreva o conteudo da mensagem");
+      toast.error("Escreva o conteúdo da mensagem");
       return;
     }
     if (!scheduledAt) {
-      toast.error("Escolha a data e o horario");
+      toast.error("Escolha a data e o horário");
       return;
     }
     if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
@@ -310,11 +310,11 @@ export function MercadoLivreScheduleModal({
       return;
     }
     if (requiresImageAttachment && preparingImageAttachment) {
-      toast.error("Aguarde, a imagem ainda esta sendo preparada");
+      toast.error("Aguarde, a imagem ainda está sendo preparada");
       return;
     }
     if (requiresImageAttachment && !imageAttachment) {
-      toast.error("Esse agendamento precisa de imagem e ela nao esta disponivel");
+      toast.error("Esse agendamento precisa de imagem e ela não está disponível");
       return;
     }
 
@@ -442,7 +442,7 @@ export function MercadoLivreScheduleModal({
               className="min-h-[100px]"
             />
             <p className="text-xs text-muted-foreground">
-              O texto ja vem pronto quando voce escolhe um template. Voce pode ajustar antes de agendar.
+              O texto já vem pronto quando você escolhe um template. Você pode ajustar antes de agendar.
             </p>
           </div>
 
@@ -454,18 +454,18 @@ export function MercadoLivreScheduleModal({
           />
 
           <div className="space-y-2">
-            <Label>Sessao *</Label>
+            <Label>Sessão *</Label>
             {hasSingleAvailableSession ? (
-              <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
-                {availableSessions[0]?.label || "Nenhuma sessao conectada"}
+                <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                {availableSessions[0]?.label || "Nenhuma sessão conectada"}
               </div>
             ) : (
-              <SessionSelect
+                <SessionSelect
                 value={selectedSessionId}
                 onValueChange={handleSessionChange}
                 sessions={availableSessions}
-                placeholder="Escolha uma sessao..."
-                emptyLabel="Nenhuma sessao conectada"
+                placeholder="Escolha uma sessão..."
+                emptyLabel="Nenhuma sessão conectada"
               />
             )}
           </div>
@@ -474,7 +474,7 @@ export function MercadoLivreScheduleModal({
             <Label className="text-xs">Grupos</Label>
             {!effectiveSessionId ? (
               <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                Selecione uma sessao para listar os grupos disponiveis.
+                Selecione uma sessão para listar os grupos disponíveis.
               </div>
             ) : (
               <>
@@ -488,7 +488,7 @@ export function MercadoLivreScheduleModal({
                   }))}
                   placeholder="Escolher grupos"
                   selectedLabel={(count) => `${count} grupo(s)`}
-                  emptyMessage="Nenhum grupo nessa sessao"
+                  emptyMessage="Nenhum grupo nessa sessão"
                   title="Grupos diretos"
                   maxHeightClassName="max-h-56"
                 />
@@ -503,7 +503,7 @@ export function MercadoLivreScheduleModal({
                   }))}
                   placeholder="Escolher grupos mestre"
                   selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
-                  emptyMessage="Nenhum grupo mestre nessa sessao"
+                  emptyMessage="Nenhum grupo mestre nessa sessão"
                   title="Grupos mestre"
                   maxHeightClassName="max-h-56"
                 />

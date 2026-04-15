@@ -267,7 +267,7 @@ export default function AdminAccess() {
         })),
       });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Nao foi possivel salvar niveis de acesso");
+      toast.error(error instanceof Error ? error.message : "Não foi possível salvar níveis de acesso");
       return;
     }
 

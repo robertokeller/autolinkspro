@@ -689,7 +689,8 @@ export function SessoesWhatsApp({
           <AlertDialogHeader>
             <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
             <AlertDialogDescription>
-              A conta <strong>{deleteSession?.name}</strong> e os grupos dela vão ser removidos. Não tem como desfazer.
+              A conta <strong>{deleteSession?.name}</strong> será removida junto com todo o histórico desta sessão
+              (grupos, membros e dados sincronizados). Essa ação é permanente e não pode ser desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">

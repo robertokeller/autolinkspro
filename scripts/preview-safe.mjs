@@ -50,7 +50,20 @@ async function findPreviewPort(host, startPort, maxAttempts = 30) {
 }
 
 async function main() {
-  const host = parseArgValue("host") || parsePositionalHost() || process.env.PREVIEW_HOST || "0.0.0.0";
+  const rawHost = parseArgValue("host") || parsePositionalHost() || process.env.PREVIEW_HOST || "0.0.0.0";
+  let host = String(rawHost || "").trim();
+  // Normalize accidental full-URL or malformed-protocol inputs (e.g. "http://127.0.0.1" or "http//127.0.0.1")
+  if (/^https?:\/\//i.test(host) || /^http:\/\//i.test(host) || /^http\/\//i.test(host)) {
+    // Fix common typo where ':' after 'http' is missing
+    host = host.replace(/^http\/\//i, "http://");
+    try {
+      const parsed = new URL(host);
+      host = parsed.hostname;
+    } catch {
+      // Fallback: strip protocol and path, keep host portion
+      host = host.replace(/^https?:\/\//i, "").split("/")[0].split(":")[0];
+    }
+  }
   const positionalPort = parsePositionalPort();
   const startPort = Number(parseArgValue("port") || positionalPort || process.env.PREVIEW_PORT || "5173");
   const strict = process.argv.includes("--strictPort");

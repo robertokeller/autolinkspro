@@ -2,7 +2,7 @@ import { invokeBackendRpc } from "@/integrations/backend/rpc";
 
 type ChannelPlatform = "whatsapp" | "telegram";
 
-type WhatsAppAction = "connect" | "disconnect" | "sync_groups" | "group_invite" | "send_message" | "poll_events" | "poll_events_all" | "health";
+type WhatsAppAction = "connect" | "disconnect" | "delete" | "sync_groups" | "group_invite" | "send_message" | "poll_events" | "poll_events_all" | "health";
 type TelegramAction =
   | "send_code"
   | "verify_code"

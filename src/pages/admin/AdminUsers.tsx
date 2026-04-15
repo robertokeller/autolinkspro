@@ -29,7 +29,7 @@ import { triggerGlobalResyncPulse } from "@/lib/admin-shared";
 import { backend } from "@/integrations/backend/client";
 import { formatBRT } from "@/lib/timezone";
 import { toast } from "sonner";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { InlineLoadingState } from "@/components/InlineLoadingState";
 import { useAdminControlPlane } from "@/hooks/useAdminControlPlane";
 import { useAuth } from "@/contexts/AuthContext";
 import type { ManagedPlan } from "@/lib/admin-control-plane";
@@ -969,7 +969,7 @@ export default function AdminUsers() {
             )}
             {loading && (
               <div className="p-6">
-                <RoutePendingState label="Carregando..." />
+                <InlineLoadingState label="Carregando..." />
               </div>
             )}
             {!loading && filtered.map((user) => {

@@ -23,6 +23,7 @@ import cors from "cors";
 import pino from "pino";
 import QRCode from "qrcode";
 import makeWASocket, {
+  areJidsSameUser,
   DisconnectReason,
   downloadContentFromMessage,
   downloadMediaMessage,
@@ -32,6 +33,21 @@ import makeWASocket, {
   type WASocket,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
+
+// Analytics module
+import {
+  setupAnalyticsCollector,
+  scheduleDailySnapshots,
+  scheduleRecaptureDispatcher,
+  captureAllGroupSnaphots,
+  calculateComposition,
+  calculateGeography,
+  calculateDailyChurn,
+  calculateChurnTrends,
+  calculateRetention,
+  calculateCrossGroup,
+  calculateHealthScore,
+} from "./analytics/index.js";
 
 type AuthMethod = "qr" | "pairing";
 
@@ -53,7 +69,7 @@ interface IntegrationEvent {
   data: Record<string, unknown>;
 }
 
-interface SessionState {
+export interface SessionState {
   config: SessionConfig;
   socket: WASocket | null;
   status: SessionStatus;
@@ -398,6 +414,38 @@ function toPhoneFromJid(jid?: string | null): string {
   const number = first.split("@")[0] || "";
   if (!number) return "";
   return number.startsWith("+") ? number : `+${number}`;
+}
+
+function normalizeIdentityFromJid(jid?: string | null): string {
+  const raw = String(jid || "").trim().toLowerCase();
+  if (!raw) return "";
+  const [userPartRaw = "", hostPart = ""] = raw.split("@");
+  const userPart = String(userPartRaw || "").split(":")[0] || "";
+  const digits = userPart.replace(/\D/g, "");
+  if (digits) return `phone:${digits}`;
+  return hostPart ? `${userPart}@${hostPart}` : userPart;
+}
+
+function areSameJidIdentity(a?: string | null, b?: string | null): boolean {
+  const aIdentity = normalizeIdentityFromJid(a);
+  const bIdentity = normalizeIdentityFromJid(b);
+  if (aIdentity && bIdentity) return aIdentity === bIdentity;
+  return false;
+}
+
+function buildJidFromPhone(raw: unknown): string {
+  const digits = String(raw || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return `${digits}@s.whatsapp.net`;
+}
+
+function matchesAnyIdentity(candidate: unknown, identities: string[]): boolean {
+  const candidateJid = String(candidate || "").trim();
+  if (!candidateJid) return false;
+  return identities.some((identity) => {
+    if (!identity) return false;
+    return areJidsSameUser(candidateJid, identity) || areSameJidIdentity(candidateJid, identity);
+  });
 }
 
 function normalizePairingPhone(phone: string): string {
@@ -1265,18 +1313,95 @@ async function resolveGroupName(state: SessionState, groupJid: string): Promise<
   }
 }
 
-async function syncGroups(state: SessionState): Promise<{ count: number; groups: Array<{ id: string; name: string; memberCount: number }> }> {
+async function syncGroups(state: SessionState): Promise<{
+  count: number;
+  groups: Array<{
+    id: string;
+    name: string;
+    memberCount: number;
+    owner?: string;
+    isAdmin?: boolean;
+    inviteCode?: string;
+    announce?: boolean;
+    restrict?: boolean;
+    size?: number;
+    creation?: number;
+    desc?: string;
+  }>;
+}> {
   if (!state.socket || state.status !== "online") {
     throw new Error("Session is not online");
   }
 
   const groupsRaw = await state.socket.groupFetchAllParticipating();
+  const myUser = (state.socket as unknown as { user?: { id?: string; lid?: string; phoneNumber?: string; pn?: string } })?.user;
+  const myJid = String(myUser?.id || "").trim();
+  const myLid = String(myUser?.lid || "").trim();
+  const myPhoneJid = buildJidFromPhone(myUser?.phoneNumber || myUser?.pn);
+  const myIdentityCandidates = [myJid, myLid, myPhoneJid].filter(Boolean);
+  const myPhone = toPhoneFromJid(myJid).replace(/\D/g, "");
+
   const groups = Object.entries(groupsRaw).map(([id, group]) => {
-    const groupData = group as { subject?: string; participants?: unknown[] };
-    const name = groupData.subject || id;
-    const memberCount = Array.isArray(groupData.participants) ? groupData.participants.length : 0;
+    const g = group as unknown as Record<string, unknown>;
+    const name = String(g.subject || id);
+    const participants = Array.isArray(g.participants) ? g.participants : [];
+    const memberCount = participants.length;
+
+    // Check if our user is admin in this group
+    const hasParticipantAdminRole = participants.some((participantRow) => {
+      if (!participantRow || typeof participantRow !== "object") return false;
+      const p = participantRow as Record<string, unknown>;
+      const adminRaw = p.admin;
+      const isAdminRole = adminRaw === true || adminRaw === "admin" || adminRaw === "superadmin";
+      if (!isAdminRole) return false;
+
+      const participantCandidates = [
+        String(p.id ?? "").trim(),
+        String(p.jid ?? "").trim(),
+        String(p.lid ?? "").trim(),
+        buildJidFromPhone(p.phoneNumber),
+        buildJidFromPhone(p.pn),
+      ].filter(Boolean);
+
+      for (const participantCandidate of participantCandidates) {
+        if (matchesAnyIdentity(participantCandidate, myIdentityCandidates)) return true;
+        const participantPhone = toPhoneFromJid(participantCandidate).replace(/\D/g, "");
+        if (myPhone && participantPhone && participantPhone === myPhone) return true;
+      }
+      return false;
+    });
+
+    const owner = String(g.owner || "");
+    const ownerPn = String(g.ownerPn ?? g.owner_pn ?? "").trim();
+    const ownerLid = String(g.ownerLid ?? g.owner_lid ?? "").trim();
+    const ownerPhone = toPhoneFromJid(owner).replace(/\D/g, "");
+    const isOwner = matchesAnyIdentity(owner, myIdentityCandidates)
+      || matchesAnyIdentity(ownerPn, myIdentityCandidates)
+      || matchesAnyIdentity(ownerLid, myIdentityCandidates)
+      || (!!myPhone && !!ownerPhone && ownerPhone === myPhone);
+    const isAdmin = hasParticipantAdminRole || isOwner;
+    const inviteCode = String(g.inviteCode || "");
+    const announce = Boolean(g.announce);
+    const restrict = Boolean(g.restrict);
+    const size = Number(g.size || memberCount);
+    const creation = Number(g.creation || 0);
+    const desc = String(g.desc || "");
+
     state.groupNames.set(id, name);
-    return { id, name, memberCount };
+
+    return {
+      id,
+      name,
+      memberCount,
+      owner: owner || undefined,
+      isAdmin: isAdmin || undefined,
+      inviteCode: inviteCode || undefined,
+      announce,
+      restrict,
+      size,
+      creation,
+      desc,
+    };
   });
 
   await emitWebhook(state, "groups_sync", { groups });
@@ -1443,6 +1568,25 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
           await syncGroups(state);
         } catch (error) {
           logger.warn({ sessionId, error: sanitizeError(error) }, "automatic group sync failed");
+        }
+
+        // Setup analytics collector for real-time event tracking
+        try {
+          setupAnalyticsCollector(state, socket);
+          scheduleDailySnapshots(state);
+          logger.info({ sessionId }, "analytics collector initialized");
+        } catch (error) {
+          logger.warn({ sessionId, error: sanitizeError(error) }, "analytics collector setup failed");
+        }
+
+        // Start recapture dispatcher once per process (idempotent: setTimeout + unref)
+        try {
+          scheduleRecaptureDispatcher(
+            (sid) => sessionStates.get(sid),
+            () => Array.from(sessionStates.values()),
+          );
+        } catch (error) {
+          logger.warn({ sessionId, error: sanitizeError(error) }, "recapture dispatcher setup failed");
         }
 
         return;
@@ -2004,6 +2148,12 @@ app.post("/api/sessions/:sessionId/sync-groups", async (req: Request<{ sessionId
     }
 
     const result = await syncGroups(state);
+
+    // Captura snapshots analytics de todos os grupos após sincronização (fire-and-forget)
+    captureAllGroupSnaphots(state).catch(err =>
+      logger.warn({ sessionId, err: String(err) }, "snapshot capture failed after sync-groups")
+    );
+
     res.json({ ok: true, groups: result.groups, count: result.count });
   } catch (error) {
     res.status(500).json({ error: sanitizeError(error) });
@@ -2243,6 +2393,108 @@ async function shutdown(signal: string): Promise<void> {
 
   process.exit(0);
 }
+
+// ═══════════════════════════════════════════════════════════
+// ANALYTICS ENDPOINTS
+// ═══════════════════════════════════════════════════════════
+
+app.get("/api/analytics/groups/:groupId/composition", async (req, res) => {
+  res.status(410).json({ error: "Endpoint descontinuado: detalhes por grupo removidos" });
+});
+
+app.get("/api/analytics/groups/:groupId/geography", async (req, res) => {
+  res.status(410).json({ error: "Endpoint descontinuado: detalhes por grupo removidos" });
+});
+
+app.get("/api/analytics/groups/:groupId/churn/daily", async (req, res) => {
+  res.status(410).json({ error: "Endpoint descontinuado: detalhes por grupo removidos" });
+});
+
+app.get("/api/analytics/groups/:groupId/churn/trends", async (req, res) => {
+  res.status(410).json({ error: "Endpoint descontinuado: detalhes por grupo removidos" });
+});
+
+app.get("/api/analytics/groups/:groupId/churn/retention", async (req, res) => {
+  res.status(410).json({ error: "Endpoint descontinuado: detalhes por grupo removidos" });
+});
+
+app.get("/api/analytics/groups/:groupId/health", async (req: Request<{ groupId: string }>, res) => {
+  const requestUserId = readRequestUserId(req, res);
+  if (!requestUserId) return;
+
+  const { groupId } = req.params;
+  const days = Number(req.query.days) || 30;
+  const sessionId = String(req.query.sessionId || "").trim();
+
+  try {
+    if (sessionId) {
+      const state = await loadStateFromDisk(sessionId);
+      if (!state || state.config.userId !== requestUserId) {
+        res.status(403).json({ error: "Acesso negado" });
+        return;
+      }
+    }
+
+    const health = await calculateHealthScore(groupId, days);
+    res.json({ ok: true, data: health });
+  } catch (error) {
+    res.status(500).json({ error: sanitizeError(error) });
+  }
+});
+
+app.get("/api/analytics/groups/:groupId/summary", async (req: Request<{ groupId: string }>, res) => {
+  const requestUserId = readRequestUserId(req, res);
+  if (!requestUserId) return;
+
+  const { groupId } = req.params;
+  const days = Number(req.query.days) || 30;
+  const sessionId = String(req.query.sessionId || "").trim();
+
+  try {
+    if (sessionId) {
+      const state = await loadStateFromDisk(sessionId);
+      if (!state || state.config.userId !== requestUserId) {
+        res.status(403).json({ error: "Acesso negado" });
+        return;
+      }
+    }
+
+    const [composition, geography, churn, trends, retention, health] = await Promise.all([
+      calculateComposition(groupId),
+      calculateGeography(groupId),
+      calculateDailyChurn(groupId, days),
+      calculateChurnTrends(groupId),
+      calculateRetention(groupId),
+      calculateHealthScore(groupId, days),
+    ]);
+
+    res.json({
+      ok: true,
+      data: {
+        composition,
+        geography,
+        churn,
+        trends,
+        retention,
+        health,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: sanitizeError(error) });
+  }
+});
+
+app.get("/api/analytics/cross-group/overlapping", async (req, res) => {
+  const requestUserId = readRequestUserId(req, res);
+  if (!requestUserId) return;
+
+  try {
+    const crossGroup = await calculateCrossGroup();
+    res.json({ ok: true, data: crossGroup });
+  } catch (error) {
+    res.status(500).json({ error: sanitizeError(error) });
+  }
+});
 
 async function main() {
   startMediaCleanupLoop();

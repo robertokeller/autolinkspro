@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { InlineLoadingState } from "@/components/InlineLoadingState";
 import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import type { Tables } from "@/integrations/backend/types";
@@ -435,7 +435,7 @@ export default function AdminLogs() {
         <CardContent className="p-0">
           {loading ? (
             <div className="p-6">
-              <RoutePendingState label="Carregando..." />
+              <InlineLoadingState label="Carregando..." />
             </div>
           ) : filteredLogs.length === 0 ? (
             <EmptyState

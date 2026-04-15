@@ -7,8 +7,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/EmptyState";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { PageWrapper } from "@/components/PageWrapper";
 import { MercadoLivreScheduleModal } from "@/components/mercadolivre/MercadoLivreScheduleModal";
+import { AmazonProductCard, type AmazonVitrineItem } from "@/components/amazon/AmazonProductCard";
 import { useAuth } from "@/contexts/AuthContext";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { useAmazonAffiliateTag } from "@/hooks/useAmazonAffiliateTag";
@@ -378,12 +379,9 @@ export default function AmazonVitrine() {
     }
   };
 
-  if (isLoading && !data) {
-    return <RoutePendingState label="Carregando vitrine Amazon..." />;
-  }
-
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-5 pb-[calc(var(--safe-area-bottom)+0.5rem)] sm:space-y-6">
+    <PageWrapper fallbackLabel="Carregando vitrine Amazon...">
+      <div className="mx-auto w-full max-w-7xl space-y-5 pb-[calc(var(--safe-area-bottom)+0.5rem)] sm:space-y-6">
       <PageHeader
         title="Vitrine de ofertas"
         description="Produtos em destaque com links de afiliado"
@@ -448,117 +446,16 @@ export default function AmazonVitrine() {
 
         {!error && payload.items.length > 0 && (
           <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
-            {payload.items.map((item) => {
-              const converting = convertingProductId === item.id;
-              const scheduling = schedulingProductId === item.id;
-              const discountPercent = calculateDiscountPercent(item.oldPrice, item.price);
-              const installmentsText = normalizeInstallmentsText(item.installmentsText ?? "");
-
-              return (
-                <Card
-                  key={item.id}
-                  className="glass animate-card-in group flex h-full flex-col overflow-hidden transition-all duration-200 hover:shadow-lg"
-                >
-                  <div className="relative aspect-square overflow-hidden bg-muted/50">
-                    <img
-                      src={item.imageUrl}
-                      alt={item.title}
-                      loading="lazy"
-                      className="h-full w-full object-contain p-2 transition-transform duration-300 group-hover:scale-105"
-                      onError={(event) => { event.currentTarget.src = "/placeholder.svg"; }}
-                    />
-
-                    {discountPercent > 0 && (
-                      <Badge className="absolute right-2 top-2 bg-destructive text-xs font-bold text-destructive-foreground shadow-md">
-                        -{discountPercent}%
-                      </Badge>
-                    )}
-                  </div>
-
-                  <CardContent className="flex flex-1 flex-col space-y-2 p-2.5 min-[420px]:space-y-2.5 min-[420px]:p-3 sm:p-3.5">
-                    <p className="line-clamp-2 min-h-[2.25rem] text-xs font-medium leading-snug min-[420px]:min-h-[2.5rem] min-[420px]:text-sm">
-                      {item.title}
-                    </p>
-
-                    <div className="space-y-1.5">
-                      <div className="space-y-0.5">
-                        {item.oldPrice && (
-                          <p className="text-2xs text-muted-foreground line-through min-[420px]:text-xs">
-                            {formatPrice(item.oldPrice)}
-                          </p>
-                        )}
-                        <p className="text-sm font-bold text-primary min-[420px]:text-base">
-                          {formatPrice(item.price)}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2">
-                        {item.seller ? (
-                          <p className="line-clamp-1 flex min-w-0 flex-1 items-center gap-1 text-xs text-muted-foreground">
-                            <Store className="h-3 w-3 shrink-0" />
-                            <span className="truncate">{item.seller}</span>
-                          </p>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Amazon</span>
-                        )}
-                      </div>
-
-                      {installmentsText && (
-                        <p className="line-clamp-1 text-2xs text-muted-foreground min-[420px]:text-xs">{installmentsText}</p>
-                      )}
-                    </div>
-
-                    <div className="mt-auto flex w-full flex-col gap-2 pt-3">
-                      <Button
-                        size="sm"
-                        className="w-full text-xs font-medium"
-                        disabled={converting || !hasAmazonTagConfigured}
-                        onClick={() => { void handleConvertClick(item); }}
-                      >
-                        {converting ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Convertendo...
-                          </>
-                        ) : (
-                          "Converter Link"
-                        )}
-                      </Button>
-
-                      <div className="flex w-full items-center gap-2">
-                        <Button asChild size="sm" variant="outline" className="flex-1 text-xs font-medium">
-                          <a href={item.productUrl} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="mr-2 h-3.5 w-3.5" />
-                            Anúncio
-                          </a>
-                        </Button>
-
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="flex-1 text-xs font-medium"
-                          title="Agendar envio"
-                          disabled={scheduling || !hasAmazonTagConfigured}
-                          onClick={() => { void handleScheduleClick(item); }}
-                        >
-                          {scheduling ? (
-                            <>
-                              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                              Processando...
-                            </>
-                          ) : (
-                            <>
-                              <CalendarDays className="mr-2 h-3.5 w-3.5" />
-                              Agendar
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
+            {payload.items.map((item) => (
+              <AmazonProductCard
+                key={item.id}
+                item={item}
+                onConvert={handleConvertClick}
+                onSchedule={handleScheduleClick}
+                isConverting={convertingProductId === item.id}
+                isScheduling={schedulingProductId === item.id}
+              />
+            ))}
           </div>
         )}
 
@@ -649,6 +546,7 @@ export default function AmazonVitrine() {
         marketplaceLabel="Amazon"
         product={scheduleProduct || undefined}
       />
-    </div>
+      </div>
+    </PageWrapper>
   );
 }

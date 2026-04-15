@@ -31,15 +31,33 @@ interface RefreshSessionInput extends RefreshOptions {
   sessionId: string;
 }
 
-function mapRowToSession(row: WhatsAppSessionRow, runtimeStatus?: SessionStatus): WhatsAppSession {
-  const status = runtimeStatus ?? normalizeSessionStatus(row.status);
+interface RuntimeHealthSnapshot {
+  statusBySession: Map<string, SessionStatus>;
+  sessionsSeen: Set<string>;
+  hasSessionDetails: boolean;
+}
+
+function mapRowToSession(
+  row: WhatsAppSessionRow,
+  runtime: RuntimeHealthSnapshot,
+): WhatsAppSession {
+  const dbStatus = normalizeSessionStatus(row.status);
+  const sessionId = String(row.id || "").trim();
+  const runtimeStatus = sessionId ? runtime.statusBySession.get(sessionId) : undefined;
+  const runtimeKnowsSession = sessionId ? runtime.sessionsSeen.has(sessionId) : false;
+  const dbLooksConnected = dbStatus === "online" || dbStatus === "connecting" || dbStatus === "qr_code" || dbStatus === "pairing_code";
+  const missingInRuntime = runtime.hasSessionDetails && !runtimeKnowsSession;
+  const status = runtimeStatus ?? (missingInRuntime && dbLooksConnected ? "warning" : dbStatus);
   const qrOrPairing = row.qr_code?.trim() ? row.qr_code : null;
   const qrCode = status === "qr_code" && qrOrPairing ? qrOrPairing : null;
+  const runtimeMissingMessage = "Sessão não está ativa no runtime atual. Refaça a conexão.";
   const errorMessage = status === "online"
     ? null
-    : row.error_message?.trim()
-      ? row.error_message
-      : null;
+    : missingInRuntime && dbLooksConnected
+      ? runtimeMissingMessage
+      : row.error_message?.trim()
+        ? row.error_message
+        : null;
 
   return {
     id: row.id,
@@ -55,7 +73,7 @@ function mapRowToSession(row: WhatsAppSessionRow, runtimeStatus?: SessionStatus)
   };
 }
 
-async function invokeWhatsappConnect(sessionId: string, action: "connect" | "disconnect" | "sync_groups") {
+async function invokeWhatsappConnect(sessionId: string, action: "connect" | "disconnect" | "delete" | "sync_groups") {
   return invokeWhatsAppAction<Record<string, unknown>>(action, { sessionId });
 }
 
@@ -86,22 +104,34 @@ export function useWhatsAppSessions() {
     staleTime: 5_000,
   });
 
-  const { data: runtimeStatusBySession = new Map<string, SessionStatus>() } = useQuery({
+  const emptyRuntimeSnapshot: RuntimeHealthSnapshot = {
+    statusBySession: new Map<string, SessionStatus>(),
+    sessionsSeen: new Set<string>(),
+    hasSessionDetails: false,
+  };
+
+  const { data: runtimeSnapshot = emptyRuntimeSnapshot } = useQuery({
     queryKey: ["whatsapp-runtime-health", user?.id],
     queryFn: async () => {
       const payload = await invokeWhatsAppAction<Record<string, unknown>>("health");
       const runtimeSessions = Array.isArray(payload.sessions) ? payload.sessions : [];
-      const statusMap = new Map<string, SessionStatus>();
+      const statusBySession = new Map<string, SessionStatus>();
+      const sessionsSeen = new Set<string>();
 
       for (const item of runtimeSessions) {
         if (!item || typeof item !== "object") continue;
         const row = item as Record<string, unknown>;
         const sessionId = String(row.sessionId ?? row.id ?? "").trim();
         if (!sessionId) continue;
-        statusMap.set(sessionId, normalizeSessionStatus(String(row.status ?? "")));
+        sessionsSeen.add(sessionId);
+        statusBySession.set(sessionId, normalizeSessionStatus(String(row.status ?? "")));
       }
 
-      return statusMap;
+      return {
+        statusBySession,
+        sessionsSeen,
+        hasSessionDetails: Array.isArray(payload.sessions),
+      } satisfies RuntimeHealthSnapshot;
     },
     enabled: !!user,
     refetchInterval: () => (document.visibilityState === "visible" ? 10_000 : false),
@@ -109,8 +139,8 @@ export function useWhatsAppSessions() {
   });
 
   const sessions = useMemo(
-    () => sessionRows.map((row) => mapRowToSession(row, runtimeStatusBySession.get(String(row.id)))),
-    [sessionRows, runtimeStatusBySession],
+    () => sessionRows.map((row) => mapRowToSession(row, runtimeSnapshot)),
+    [sessionRows, runtimeSnapshot],
   );
 
   const invalidateSessions = () => {
@@ -266,6 +296,7 @@ export function useWhatsAppSessions() {
       invalidateSessions();
       qc.invalidateQueries({ queryKey: ["groups"] });
       qc.invalidateQueries({ queryKey: ["master_groups"] });
+      qc.invalidateQueries({ queryKey: ["analytics-admin-groups"] });
 
       const blockedGroups = Number((data as Record<string, unknown> | undefined)?.blockedGroups || 0);
       if (blockedGroups > 0) {
@@ -308,33 +339,12 @@ export function useWhatsAppSessions() {
   const deleteSessionMutation = useMutation({
     mutationFn: async (sessionId: string) => {
       if (!user) throw new Error("Usuário não autenticado");
-
-      await invokeWhatsappConnect(sessionId, "disconnect").catch(() => undefined);
-
-      // Soft-delete groups: preserve UUIDs (routes reference them) by nullifying session_id
-      // and recording deleted_at. Groups disappear from the UI but the rows remain in the DB for
-      // 3 days. upsertGroup's deadCrossMatch logic re-associates them when the same external_id
-      // is synced under a new session, clearing deleted_at and restoring routes automatically.
-      const { error: groupsError } = await backend
-        .from("groups")
-        .update({ session_id: null, deleted_at: new Date().toISOString() })
-        .eq("platform", "whatsapp")
-        .eq("session_id", sessionId)
-        .eq("user_id", user.id);
-
-      if (groupsError) throw groupsError;
-
-      const { error: deleteError } = await backend
-        .from("whatsapp_sessions")
-        .delete()
-        .eq("id", sessionId)
-        .eq("user_id", user.id);
-
-      if (deleteError) throw deleteError;
+      await invokeWhatsappConnect(sessionId, "delete");
     },
     onSuccess: () => {
       invalidateSessions();
       qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["master_groups"] });
       toast.success("Sessão removida");
     },
     onError: (err: unknown) => {

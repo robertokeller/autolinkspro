@@ -14,7 +14,7 @@ type BottomNavItem = {
 
 const baseItems: BottomNavItem[] = [
   {
-    label: "Inicio",
+    label: "Início",
     href: ROUTES.app.dashboard,
     icon: LayoutDashboard,
     isActive: (path) => path === ROUTES.app.dashboard,

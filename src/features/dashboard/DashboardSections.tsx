@@ -123,15 +123,21 @@ export function DashboardMetricCards({
                   </CardContent>
                 </Card>
               ))
-            : metricCards.map((item) => (
-                <Card key={item.label} className="glass min-w-[164px] max-w-[220px] border-border/60 min-[420px]:min-w-[210px] min-[420px]:max-w-[250px]">
-                  <CardContent className="flex min-h-[136px] flex-col items-center justify-between gap-2 p-3 text-center min-[420px]:min-h-[144px] min-[420px]:p-4">
-                    <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl", accentBg[item.accent])}>
-                      <item.icon className="h-4 w-4" />
+            : metricCards.map((item, idx) => (
+                <Card 
+                  key={item.label} 
+                  className="glass glass-hover min-w-[170px] max-w-[220px] border-border/50 min-[420px]:min-w-[210px] min-[420px]:max-w-[250px] animate-card-in"
+                  style={{ animationDelay: `${idx * 50}ms` }}
+                >
+                  <CardContent className="flex min-h-[140px] flex-col items-center justify-between gap-1.5 p-3.5 text-center min-[420px]:min-h-[150px] min-[420px]:p-4">
+                    <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl shadow-sm border border-border/10", accentBg[item.accent])}>
+                      <item.icon className="h-5 w-5" />
                     </div>
-                    <p className="text-2xl font-bold leading-none">{item.value}</p>
-                    <p className="line-clamp-2 text-xs text-muted-foreground">{item.label}</p>
-                    <p className="line-clamp-2 text-xs leading-snug text-muted-foreground/90">{item.help}</p>
+                    <div>
+                      <p className="text-2xl font-extrabold tracking-tight leading-none mb-1">{item.value}</p>
+                      <p className="line-clamp-1 text-2xs font-bold uppercase tracking-widest text-muted-foreground/70">{item.label}</p>
+                    </div>
+                    <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground/60 font-medium">{item.help}</p>
                   </CardContent>
                 </Card>
               ))}
@@ -151,15 +157,21 @@ export function DashboardMetricCards({
               </CardContent>
             </Card>
           ))
-        : metricCards.map((item) => (
-            <Card key={item.label} className="glass group h-full hover:ring-1 hover:ring-primary/20 transition-all">
-              <CardContent className="flex min-h-[148px] flex-col items-center justify-between gap-2 p-3.5 text-center sm:p-4">
-                <div className={cn("h-9 w-9 shrink-0 rounded-xl flex items-center justify-center", accentBg[item.accent])}>
-                  <item.icon className="h-4 w-4" />
+        : metricCards.map((item, idx) => (
+            <Card 
+              key={item.label} 
+              className="glass glass-hover h-full animate-card-in border-border/50"
+              style={{ animationDelay: `${idx * 75}ms` }}
+            >
+              <CardContent className="flex min-h-[160px] flex-col items-center justify-between gap-2 p-4 text-center">
+                <div className={cn("h-11 w-11 shrink-0 rounded-2xl flex items-center justify-center shadow-sm border border-border/10", accentBg[item.accent])}>
+                  <item.icon className="h-5 w-5" />
                 </div>
-                <p className="text-2xl font-bold leading-none">{item.value}</p>
-                <p className="line-clamp-2 text-xs text-muted-foreground">{item.label}</p>
-                <p className="line-clamp-2 text-xs leading-snug text-muted-foreground/80">{item.help}</p>
+                <div>
+                  <p className="text-3xl font-extrabold tracking-tighter leading-none mb-1">{item.value}</p>
+                  <p className="line-clamp-1 text-2xs font-bold uppercase tracking-widest text-muted-foreground/70">{item.label}</p>
+                </div>
+                <p className="line-clamp-2 text-xs leading-snug text-muted-foreground/60 font-medium">{item.help}</p>
               </CardContent>
             </Card>
           ))}
@@ -206,7 +218,7 @@ export function DashboardUsageCard({
                     formatter={(value: number, key: string) => {
                       const labels: Record<string, string> = {
                         totalEnvios: "Envios totais",
-                        automacoes: "Automacoes",
+                        automacoes: "Automações",
                         rotas: "Rotas",
                         agendamentos: "Agendamentos",
                       };
@@ -217,14 +229,20 @@ export function DashboardUsageCard({
                       border: "1px solid hsl(var(--border))",
                       borderRadius: "10px",
                       fontSize: "11px",
+                      padding: "8px 12px",
+                      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.1)",
                     }}
+                    itemStyle={{
+                      padding: "2px 0",
+                    }}
+                    cursor={{ stroke: "hsl(var(--muted-foreground))", strokeWidth: 1, strokeDasharray: "4 4" }}
                   />
-                  <Line type="linear" dataKey="totalEnvios" stroke="hsl(var(--primary))" strokeWidth={3} dot={false} activeDot={{ r: 5 }} />
+                  <Line type="monotone" dataKey="totalEnvios" stroke="hsl(var(--primary))" strokeWidth={3} dot={false} activeDot={{ r: 5, strokeWidth: 2, stroke: "hsl(var(--background))" }} />
                   {!compactDashboard && (
                     <>
-                      <Line type="linear" dataKey="automacoes" stroke="hsl(var(--success))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
-                      <Line type="linear" dataKey="rotas" stroke="hsl(var(--info))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
-                      <Line type="linear" dataKey="agendamentos" stroke="hsl(var(--warning))" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                      <Line type="monotone" dataKey="automacoes" stroke="hsl(var(--success))" strokeWidth={2} dot={false} activeDot={{ r: 3, strokeWidth: 1, stroke: "hsl(var(--background))" }} />
+                      <Line type="monotone" dataKey="rotas" stroke="hsl(var(--info))" strokeWidth={2} dot={false} activeDot={{ r: 3, strokeWidth: 1, stroke: "hsl(var(--background))" }} />
+                      <Line type="monotone" dataKey="agendamentos" stroke="hsl(var(--warning))" strokeWidth={2} dot={false} activeDot={{ r: 3, strokeWidth: 1, stroke: "hsl(var(--background))" }} />
                     </>
                   )}
                 </LineChart>
@@ -237,7 +255,7 @@ export function DashboardUsageCard({
             ) : (
               <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs">
                 <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-primary" />Envios totais</span>
-                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Automacoes</span>
+                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success" />Automações</span>
                 <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-info" />Rotas</span>
                 <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-warning" />Agendamentos</span>
               </div>
@@ -443,16 +461,16 @@ export function DashboardRecentActivity({
         ) : (
           <div className="space-y-1.5">
             {recentActivity.map((item, idx) => (
-              <div key={`${item.text}-${idx}`} className="flex items-center gap-2.5 rounded-xl p-2.5 transition-colors hover:bg-secondary/50 sm:gap-3">
-                <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0 bg-secondary", item.color)}>
-                  <item.Icon className="h-3.5 w-3.5" />
+              <div key={`${item.text}-${idx}`} className="flex items-center gap-2.5 rounded-xl p-2.5 transition-colors hover:bg-secondary/70 sm:gap-3">
+                <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0 bg-secondary/80", item.color)}>
+                  <item.Icon className="h-4 w-4" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="line-clamp-2 text-xs sm:line-clamp-1">{item.text}</p>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="text-xs text-muted-foreground">{item.time} atrás</span>
-                    {item.status === "success" && <Badge variant="outline" className="text-xs h-4 px-1.5 text-success border-success/20">ok</Badge>}
-                    {item.status === "error" && <Badge variant="outline" className="text-xs h-4 px-1.5 text-destructive border-destructive/20">erro</Badge>}
+                  <p className="line-clamp-2 text-[13px] font-medium leading-tight sm:line-clamp-1">{item.text}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[11px] text-muted-foreground/80 font-medium">{item.time} atrás</span>
+                    {item.status === "success" && <Badge variant="outline" className="text-[10px] h-4 px-1.5 py-0 font-bold bg-success/5 text-success border-success/20">ok</Badge>}
+                    {item.status === "error" && <Badge variant="outline" className="text-[10px] h-4 px-1.5 py-0 font-bold bg-destructive/5 text-destructive border-destructive/20">erro</Badge>}
                   </div>
                 </div>
               </div>

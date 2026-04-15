@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { PageLoadingFallback } from "@/components/PageLoadingFallback";
 import { useAuth } from "@/contexts/AuthContext";
 import { useMaintenanceMode } from "@/hooks/useMaintenanceMode";
 import { ROUTES } from "@/lib/routes";
@@ -17,7 +17,7 @@ export default function Maintenance() {
   }, [isAdmin, state.allow_admin_bypass, user]);
 
   if (authLoading || isLoading) {
-    return <RoutePendingState label="Verificando status da plataforma..." />;
+    return <PageLoadingFallback label="Verificando status da plataforma..." />;
   }
 
   if (!state.maintenance_enabled) {

@@ -305,7 +305,7 @@ export default function TemplatesAmazon() {
         || Boolean(firstNonEmptyString(productSnapshot?.imageUrl))
       );
       if (!hasSnapshotCoreFields) {
-        throw new Error("Nao foi possivel extrair os dados do produto Amazon. Tente novamente em alguns instantes.");
+        throw new Error("Não foi possível extrair os dados do produto Amazon. Tente novamente em alguns instantes.");
       }
 
       const productTitle = firstNonEmptyString(productSnapshot?.title, "Oferta Amazon");
@@ -353,14 +353,14 @@ export default function TemplatesAmazon() {
           reviewsCount: productInput.reviewsCount,
         },
       });
-    } catch (error) {
+      } catch (error) {
       const message = error instanceof Error ? String(error.message || "") : "";
       const normalized = message
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
       if (normalized.includes("cache da vitrine") || normalized.includes("atualize a vitrine")) {
-        toast.error("Servico Amazon desatualizado em execucao. Reinicie o runtime para usar extracao direta da pagina do produto.");
+        toast.error("Serviço Amazon desatualizado em execução. Reinicie o runtime para usar extração direta da página do produto.");
       } else {
         toast.error(message || "Não foi possível converter o link.");
       }
@@ -415,7 +415,7 @@ export default function TemplatesAmazon() {
                   Tag Amazon não configurada para conversão.
                 </p>
                 <Link to={ROUTES.app.amazonConfiguracoes} className="font-medium text-primary underline-offset-2 hover:underline">
-                  Abrir configuracoes Amazon
+                  Abrir configurações Amazon
                 </Link>
               </div>
             )}
@@ -636,7 +636,7 @@ export default function TemplatesAmazon() {
               </div>
 
               <div className="space-y-2">
-                <Label>Conteudo</Label>
+                <Label>Conteúdo</Label>
                 <div className="mb-1 flex items-center gap-1">
                   <button
                     type="button"

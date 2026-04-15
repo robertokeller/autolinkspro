@@ -24,7 +24,7 @@ const schema = z
     confirmPassword: z.string(),
   })
   .refine((data) => data.password === data.confirmPassword, {
-    message: "Senhas nao conferem",
+    message: "Senhas não conferem",
     path: ["confirmPassword"],
   });
 

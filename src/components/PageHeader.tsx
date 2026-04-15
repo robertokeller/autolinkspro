@@ -12,15 +12,15 @@ export function PageHeader({ title, description, children }: PageHeaderProps) {
   const compactHeader = viewport.isMobile || (viewport.isTablet && viewport.orientation === "portrait");
 
   return (
-    <header className={cn("mb-4 flex flex-col gap-2.5 sm:mb-6 sm:gap-3", compactHeader && "gap-2")}>
+    <header className={cn("mb-6 flex flex-col gap-4 sm:mb-8 sm:gap-6 animate-fade-in", compactHeader && "gap-3")}>
       <div className="min-w-0">
-        <h1 className={cn("text-xl font-bold leading-tight tracking-tight min-[420px]:text-2xl sm:text-3xl", compactHeader && "text-lg min-[420px]:text-xl")}>{title}</h1>
+        <h1 className={cn("text-2xl font-extrabold leading-tight tracking-tight sm:text-3xl text-foreground", compactHeader && "text-xl")}>{title}</h1>
         {description && (
-          <p className={cn("mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground sm:text-sm", compactHeader && "line-clamp-2")}>{description}</p>
+          <p className={cn("mt-1.5 max-w-3xl text-sm leading-relaxed text-muted-foreground/80 font-medium sm:text-base", compactHeader && "text-xs line-clamp-2")}>{description}</p>
         )}
       </div>
       {children && (
-        <div className={cn("flex w-full flex-wrap items-stretch gap-2 sm:items-center sm:justify-end", compactHeader && "rounded-xl border border-border/60 bg-card/70 p-2.5")}>
+        <div className={cn("flex w-full flex-wrap items-center gap-2.5 sm:justify-end py-1", compactHeader && "rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-3 shadow-premium")}>
           {children}
         </div>
       )}

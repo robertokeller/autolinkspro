@@ -329,12 +329,12 @@ export default function SettingsPage() {
       try {
         parsed = new URL(checkoutUrl);
       } catch {
-        if (!options?.silent) toast.error("Checkout invalido para este plano.");
+        if (!options?.silent) toast.error("Checkout inválido para este plano.");
         return false;
       }
 
       if (parsed.protocol !== "https:") {
-        if (!options?.silent) toast.error("Checkout invalido: use URL https.");
+        if (!options?.silent) toast.error("Checkout inválido: use URL https.");
         return false;
       }
 
@@ -342,7 +342,7 @@ export default function SettingsPage() {
       return true;
     } catch (error) {
       if (!options?.silent) {
-        toast.error(error instanceof Error ? error.message : "Nao foi possivel iniciar o checkout.");
+        toast.error(error instanceof Error ? error.message : "Não foi possível iniciar o checkout.");
       }
       return false;
     }
@@ -906,7 +906,7 @@ export default function SettingsPage() {
                         </ul>
                         {isCurrentPlan && isPlanExpired && (
                           <p className="text-xs text-destructive">
-                            Seu plano atual esta vencido. Renove para reativar envios, automacoes, agendamentos e rotas.
+                            Seu plano atual está vencido. Renove para reativar envios, automações, agendamentos e rotas.
                           </p>
                         )}
                         <Button

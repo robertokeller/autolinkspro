@@ -89,24 +89,24 @@ const MARKETPLACE_COPY: Record<MarketplaceAutomationKind, MarketplaceCopy> = {
   meli: {
     pageDescription: "Seus grupos recebem automaticamente as ofertas da Vitrine Mercado Livre",
     sourceBadge: "Vitrine ML",
-    emptyDescription: "Crie automacoes para enviar ofertas da Vitrine ML sem precisar fazer nada.",
+    emptyDescription: "Crie automações para enviar ofertas da Vitrine ML sem precisar fazer nada.",
     vitrineLabel: "Categorias da Vitrine ML",
     noVitrineError: "Escolha ao menos uma categoria da Vitrine ML",
-    namePlaceholder: "Ex: Eletronicos relampago ML",
-    activationSource: "Piloto automatico ML",
-    activationMessage: "Aba de Piloto automatico ML ativada",
-    deleteDescriptionSuffix: "vai ser apagada e nao ha como desfazer.",
+    namePlaceholder: "Ex: Eletrônicos relâmpago ML",
+    activationSource: "Piloto automático ML",
+    activationMessage: "Aba de Piloto automático ML ativada",
+    deleteDescriptionSuffix: "vai ser apagada e não há como desfazer.",
   },
   amazon: {
     pageDescription: "Seus grupos recebem automaticamente as ofertas da Vitrine Amazon",
     sourceBadge: "Vitrine Amazon",
-    emptyDescription: "Crie automacoes para enviar ofertas da Vitrine Amazon sem precisar fazer nada.",
+    emptyDescription: "Crie automações para enviar ofertas da Vitrine Amazon sem precisar fazer nada.",
     vitrineLabel: "Categorias da Vitrine Amazon",
     noVitrineError: "Escolha ao menos uma categoria da Vitrine Amazon",
-    namePlaceholder: "Ex: Eletronicos relampago Amazon",
-    activationSource: "Piloto automatico Amazon",
-    activationMessage: "Aba de Piloto automatico Amazon ativada",
-    deleteDescriptionSuffix: "vai ser apagada e nao tem como desfazer.",
+    namePlaceholder: "Ex: Eletrônicos relâmpago Amazon",
+    activationSource: "Piloto automático Amazon",
+    activationMessage: "Aba de Piloto automático Amazon ativada",
+    deleteDescriptionSuffix: "vai ser apagada e não tem como desfazer.",
   },
 };
 
@@ -330,8 +330,8 @@ export function MarketplaceAutomacoesPage({
 
   const handleSubmit = async () => {
     const effectiveSessionId = form.sessionId || defaultConnectedSessionId;
-    if (!form.name.trim()) { toast.error("De um nome para a automacao"); return; }
-    if (!effectiveSessionId) { toast.error("Conecte uma sessao de envio"); return; }
+    if (!form.name.trim()) { toast.error("De um nome para a automação"); return; }
+    if (!effectiveSessionId) { toast.error("Conecte uma sessão de envio"); return; }
     if (!form.templateId) { toast.error("Escolha um template de mensagem"); return; }
     if (form.destinationGroupIds.length === 0 && form.masterGroupIds.length === 0) {
       toast.error("Escolha pelo menos um grupo de destino");
@@ -345,7 +345,7 @@ export function MarketplaceAutomacoesPage({
     const normalizedStart = normalizeScheduleTime(form.activeHoursStart);
     const normalizedEnd = normalizeScheduleTime(form.activeHoursEnd);
     if (!normalizedStart || !normalizedEnd) {
-      toast.error("Horario invalido. Use o formato HH:mm (ex: 09:30)");
+      toast.error("Horário inválido. Use o formato HH:mm (ex: 09:30)");
       return;
     }
 
@@ -423,7 +423,7 @@ export function MarketplaceAutomacoesPage({
 
   return (
     <div className="ds-page">
-      <PageHeader title="Piloto automatico" description={copy.pageDescription}>
+      <PageHeader title="Piloto automático" description={copy.pageDescription}>
         <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
           <Button
             size="sm"
@@ -433,7 +433,7 @@ export function MarketplaceAutomacoesPage({
             disabled={automations.length === 0 || isHeaderActionPending}
           >
             <RefreshCw className="mr-1.5 h-4 w-4" />
-            {isRefreshingAll ? "Atualizando..." : "Atualizar automacoes"}
+            {isRefreshingAll ? "Atualizando..." : "Atualizar automações"}
           </Button>
           <Button
             size="sm"
@@ -447,11 +447,11 @@ export function MarketplaceAutomacoesPage({
               ? (shouldPauseAll ? "Pausando..." : "Retomando...")
               : isSyncingRoutes
                 ? "Atualizando rotas..."
-                : (shouldPauseAll ? "Pausar automacoes" : "Retomar automacoes")}
+                : (shouldPauseAll ? "Pausar automações" : "Retomar automações")}
           </Button>
           <Button size="sm" className="w-full sm:w-auto" onClick={openCreate}>
             <Plus className="mr-1.5 h-4 w-4" />
-            Nova automacao
+            Nova automação
           </Button>
         </div>
       </PageHeader>
@@ -523,7 +523,7 @@ export function MarketplaceAutomacoesPage({
                         {tabLabelByKey.get(tabKey) || tabKey}
                       </Badge>
                     ))}
-                    {sessionLabel && <Badge variant="secondary" className="text-xs">Sessao: {sessionLabel}</Badge>}
+                    {sessionLabel && <Badge variant="secondary" className="text-xs">Sessão: {sessionLabel}</Badge>}
                     {templateLabel && <Badge variant="secondary" className="text-xs">Template: {templateLabel}</Badge>}
                     {groupCount > 0 && <Badge variant="secondary" className="text-xs">Grupos: {groupCount} grupo(s)</Badge>}
                     {keywordFilters.positiveKeywords.length > 0 && (
@@ -543,7 +543,7 @@ export function MarketplaceAutomacoesPage({
                     {automation.last_run_at && (
                       <span className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
-                        Ultimo: {formatSystem(automation.last_run_at, "dd/MM HH:mm")}
+                        Último: {formatSystem(automation.last_run_at, "dd/MM HH:mm")}
                       </span>
                     )}
                   </div>
@@ -555,9 +555,9 @@ export function MarketplaceAutomacoesPage({
       ) : (
         <EmptyState
           icon={Bot}
-          title="Nenhuma automacao ainda"
+          title="Nenhuma automação ainda"
           description={copy.emptyDescription}
-          actionLabel="Criar automacao"
+          actionLabel="Criar automação"
           onAction={openCreate}
         />
       )}
@@ -565,9 +565,9 @@ export function MarketplaceAutomacoesPage({
       <AlertDialog open={!!deleteId} onOpenChange={(open) => { if (!open) setDeleteId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apagar automacao?</AlertDialogTitle>
+            <AlertDialogTitle>Apagar automação?</AlertDialogTitle>
             <AlertDialogDescription>
-              A automacao <strong>{automations.find((item) => item.id === deleteId)?.name}</strong> {copy.deleteDescriptionSuffix}
+              A automação <strong>{automations.find((item) => item.id === deleteId)?.name}</strong> {copy.deleteDescriptionSuffix}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -588,7 +588,7 @@ export function MarketplaceAutomacoesPage({
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className="max-h-[90dvh] w-[min(calc(100vw-1rem),48rem)] overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           <DialogHeader>
-            <DialogTitle>{editingId ? "Editar automacao" : "Nova automacao"}</DialogTitle>
+            <DialogTitle>{editingId ? "Editar automação" : "Nova automação"}</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-5">
@@ -603,10 +603,10 @@ export function MarketplaceAutomacoesPage({
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2 rounded-lg border bg-muted/20 p-4">
-                <Label>Horario que funciona (fuso do sistema)</Label>
+                <Label>Horário que funciona (fuso do sistema)</Label>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <span className="text-xs text-muted-foreground">Inicio</span>
+                    <span className="text-xs text-muted-foreground">Início</span>
                     <Input
                       type="text"
                       inputMode="numeric"
@@ -658,14 +658,14 @@ export function MarketplaceAutomacoesPage({
             </div>
 
             <div className="space-y-2">
-              <Label>Filtros de oferta <span className="font-normal text-muted-foreground">(nao precisa preencher)</span></Label>
+              <Label>Filtros de oferta <span className="font-normal text-muted-foreground">(não precisa preencher)</span></Label>
               <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Preco minimo (R$)</span>
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground">Preço mínimo (R$)</span>
                   <Input type="number" placeholder="Ex: 10" value={form.minPrice} onChange={(event) => setForm({ ...form, minPrice: event.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Preco maximo (R$)</span>
+                    <span className="text-xs text-muted-foreground">Preço máximo (R$)</span>
                   <Input type="number" placeholder="Ex: 500" value={form.maxPrice} onChange={(event) => setForm({ ...form, maxPrice: event.target.value })} />
                 </div>
               </div>
@@ -683,7 +683,7 @@ export function MarketplaceAutomacoesPage({
                 }))}
                 placeholder="Escolha as categorias da vitrine..."
                 selectedLabel={(count) => `${count} categoria(s) da vitrine`}
-                emptyMessage="Nenhuma categoria disponivel"
+                emptyMessage="Nenhuma categoria disponível"
                 title="Categorias da vitrine"
               />
             </div>
@@ -703,7 +703,7 @@ export function MarketplaceAutomacoesPage({
                     onChange={(event) => setForm({ ...form, positiveKeywords: event.target.value })}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Separe por virgula. A automacao so envia se a oferta tiver pelo menos uma dessas palavras.
+                    Separe por vírgula. A automação só envia se a oferta tiver pelo menos uma dessas palavras.
                   </p>
                 </div>
                 <div className="space-y-2 rounded-md border bg-muted/20 p-3">
@@ -718,25 +718,25 @@ export function MarketplaceAutomacoesPage({
                     onChange={(event) => setForm({ ...form, negativeKeywords: event.target.value })}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Separe por virgula. Se a oferta tiver qualquer uma dessas palavras, ela e descartada.
+                    Separe por vírgula. Se a oferta tiver qualquer uma dessas palavras, ela é descartada.
                   </p>
                 </div>
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Sessao de envio *</Label>
+              <Label>Sessão de envio *</Label>
               {hasSingleConnectedSession ? (
                 <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
-                  {connectedSessions[0]?.label || "Nenhuma sessao conectada"}
+                  {connectedSessions[0]?.label || "Nenhuma sessão conectada"}
                 </div>
               ) : (
                 <SessionSelect
                   value={form.sessionId}
                   onValueChange={handleSessionChange}
                   sessions={connectedSessions}
-                  placeholder="Escolha uma sessao..."
-                  emptyLabel="Nenhuma sessao conectada"
+                  placeholder="Escolha uma sessão..."
+                  emptyLabel="Nenhuma sessão conectada"
                 />
               )}
             </div>
@@ -755,7 +755,7 @@ export function MarketplaceAutomacoesPage({
                     }))}
                     placeholder="Escolha os grupos"
                     selectedLabel={(count) => `${count} grupo(s)`}
-                    emptyMessage="Nenhum grupo nessa sessao"
+                    emptyMessage="Nenhum grupo nessa sessão"
                     title="Grupos"
                   />
                 </div>
@@ -773,7 +773,7 @@ export function MarketplaceAutomacoesPage({
                       }))}
                       placeholder="Escolher grupos mestres"
                       selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
-                      emptyMessage="Nenhum grupo mestre nessa sessao"
+                      emptyMessage="Nenhum grupo mestre nessa sessão"
                       title="Grupos mestre"
                     />
                   </div>
@@ -803,7 +803,7 @@ export function MarketplaceAutomacoesPage({
           <DialogFooter className="pt-2">
             <Button variant="outline" onClick={() => setShowModal(false)}>Cancelar</Button>
             <Button onClick={() => { void handleSubmit(); }} disabled={submitting}>
-              {submitting ? "Salvando..." : editingId ? "Salvar" : "Criar automacao"}
+              {submitting ? "Salvando..." : editingId ? "Salvar" : "Criar automação"}
             </Button>
           </DialogFooter>
         </DialogContent>

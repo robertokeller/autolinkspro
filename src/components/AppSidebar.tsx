@@ -20,6 +20,7 @@ import {
   Bot,
   ShoppingCart,
   Handshake,
+  BarChart3,
 } from "lucide-react";
 import { TelegramIcon, WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
 import {
@@ -67,6 +68,11 @@ const amazonSubNav = [
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.amazonConfiguracoes },
 ];
 
+const whatsappSubNav = [
+  { title: "Métricas", icon: BarChart3, href: ROUTES.app.metricas },
+  { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.connectionsWhatsApp },
+];
+
 export function AppSidebar() {
   const location = useLocation();
   const isMobile = useIsMobile();
@@ -92,6 +98,7 @@ export function AppSidebar() {
     || location.pathname === ROUTES.app.vitrineMl
     || location.pathname === ROUTES.app.automacoesMeli
     || location.pathname === ROUTES.app.templatesMeli;
+  const isWhatsAppActive = location.pathname.startsWith(ROUTES.app.whatsappRoot);
   const isAmazonActive = location.pathname.startsWith(ROUTES.app.amazonRoot)
     || location.pathname === ROUTES.app.vitrineAmazon
     || location.pathname === ROUTES.app.automacoesamazon
@@ -99,6 +106,7 @@ export function AppSidebar() {
 
   const [isShopeeOpen, setIsShopeeOpen] = useState(isShopeeActive);
   const [isMeliOpen, setIsMeliOpen] = useState(isMeliActive);
+  const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(isWhatsAppActive);
   const [isAmazonOpen, setIsAmazonOpen] = useState(isAmazonActive);
 
   useEffect(() => {
@@ -108,6 +116,10 @@ export function AppSidebar() {
   useEffect(() => {
     if (isMeliActive) setIsMeliOpen(true);
   }, [isMeliActive]);
+
+  useEffect(() => {
+    if (isWhatsAppActive) setIsWhatsAppOpen(true);
+  }, [isWhatsAppActive]);
 
   useEffect(() => {
     if (isAmazonActive) setIsAmazonOpen(true);
@@ -170,7 +182,7 @@ export function AppSidebar() {
       <SidebarContent className={navigationLocked ? "pointer-events-none select-none opacity-60" : undefined}>
         {navigationLocked && (
           <div className="px-3 py-2 text-xs text-warning">
-            Plano vencido. Menu bloqueado ate a renovacao.
+            Plano vencido. Menu bloqueado até a renovação.
           </div>
         )}
         <SidebarGroup>
@@ -324,6 +336,7 @@ export function AppSidebar() {
                 </SidebarMenuButton>
               </SidebarMenuItem>
               )}
+
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -356,14 +369,31 @@ export function AppSidebar() {
               </SidebarMenuItem>
               )}
 
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.connectionsWhatsApp)} tooltip="WhatsApp">
-                  <Link to={ROUTES.app.connectionsWhatsApp} onClick={closeMobileSidebar}>
-                    <WhatsAppIcon className="h-4 w-4" />
-                    <span>WhatsApp</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              <Collapsible asChild open={isWhatsAppOpen} onOpenChange={setIsWhatsAppOpen} className="group/collapsible">
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton tooltip="WhatsApp" isActive={isWhatsAppActive}>
+                      <WhatsAppIcon className="h-4 w-4" />
+                      <span>WhatsApp</span>
+                      <ChevronRight className="ml-auto h-4 w-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      {whatsappSubNav.map((item) => (
+                        <SidebarMenuSubItem key={item.href}>
+                          <SidebarMenuSubButton asChild isActive={location.pathname === item.href}>
+                            <Link to={item.href} onClick={closeMobileSidebar}>
+                              <item.icon className="h-4 w-4" />
+                              <span>{item.title}</span>
+                            </Link>
+                          </SidebarMenuSubButton>
+                        </SidebarMenuSubItem>
+                      ))}
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
 
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive(ROUTES.app.connectionsMasterGroups)} tooltip="Grupos Mestres">

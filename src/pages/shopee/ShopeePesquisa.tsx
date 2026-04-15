@@ -19,7 +19,7 @@ import { toast } from "sonner";
 import { SHOPEE_CATEGORIES, deduplicateProducts, type ShopeeCategory } from "@/lib/shopee-categories";
 import { toScheduleProduct } from "@/lib/schedule-product-helpers";
 import { cn } from "@/lib/utils";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { PageWrapper } from "@/components/PageWrapper";
 import { useViewportProfile } from "@/hooks/useViewportProfile";
 
 function isEligibleAffiliateProduct(product: ShopeeProduct): boolean {
@@ -301,12 +301,9 @@ export default function ShopeePesquisa() {
     return true;
   });
 
-  if (isLoading) {
-    return <RoutePendingState label="Carregando pesquisa..." />;
-  }
-
   return (
-    <div className="ds-page space-y-6">
+    <PageWrapper fallbackLabel="Carregando pesquisa...">
+      <div className="ds-page space-y-6">
       <PageHeader title="Pesquisa de ofertas" description="Navegue por categorias ou busque por nome de produto" />
       {!isConfigured && <ShopeeCredentialsBanner />}
 
@@ -587,6 +584,7 @@ export default function ShopeePesquisa() {
         onOpenChange={(open) => { if (!open) setScheduleProduct(null); }}
         product={scheduleProduct ? toScheduleProduct(scheduleProduct) : undefined}
       />
-    </div>
+      </div>
+    </PageWrapper>
   );
 }

@@ -50,10 +50,10 @@ function extractBackendErrorMessage(error: BackendErrorLike, fallback: string): 
   const raw = typeof error?.message === "string" ? error.message.trim() : "";
   if (!raw) return fallback;
   if (/^n[aã]o autenticado$/i.test(raw) || /^not authenticated$/i.test(raw)) {
-    return "Sessao expirada. Faca login novamente.";
+    return "Sessão expirada. Faça login novamente.";
   }
   if (/origem da requisi[cç][aã]o n[aã]o autorizada/i.test(raw)) {
-    return "Origem da requisicao nao autorizada. Abra app e API no mesmo host (localhost ou 127.0.0.1).";
+    return "Origem da requisição não autorizada. Abra app e API no mesmo host (localhost ou 127.0.0.1).";
   }
   return raw;
 }
@@ -103,7 +103,7 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
     const { data, error } = await backend
       .from("shopee_automations")
       .select("id, destination_group_ids, master_group_ids, config");
-    throwIfBackendError(error, "Falha ao validar limites de automacoes");
+      throwIfBackendError(error, "Falha ao validar limites de automações");
 
     const rows = ((data ?? []) as AutomationSnapshotRow[])
       .filter((row) => !!String(row.id || "").trim());
@@ -126,7 +126,7 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
         .from("shopee_automations")
         .select("*")
         .order("created_at", { ascending: false });
-      throwIfBackendError(error, "Falha ao listar automacoes");
+        throwIfBackendError(error, "Falha ao listar automações");
       return filterMarketplaceAutomations((data ?? []) as MarketplaceAutomationRow[], marketplace);
     },
     enabled: !!user,
@@ -142,7 +142,7 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
           .select("plan_id")
           .eq("user_id", user.id)
           .maybeSingle();
-        throwIfBackendError(profileError, "Falha ao validar plano do usuario");
+        throwIfBackendError(profileError, "Falha ao validar plano do usuário");
 
         const planId = normalizePlanId(profile?.plan_id);
         if (!planId) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
@@ -157,8 +157,8 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
           : limits.automations;
 
         if (maxAutomations !== -1 && marketplaceAutomations.length >= maxAutomations) {
-          const scopeLabel = marketplace === "meli" ? "automacoes Mercado Livre" : `automacoes ${marketplaceLabel}`;
-          throw new Error(`Limite de ${scopeLabel} atingido para o seu nivel de acesso.`);
+          const scopeLabel = marketplace === "meli" ? "automações Mercado Livre" : `automações ${marketplaceLabel}`;
+          throw new Error(`Limite de ${scopeLabel} atingido para o seu nível de acesso.`);
         }
 
         const maxGroupSlots = limits?.groupsPerAutomation ?? 0;
@@ -170,7 +170,7 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
           const slotsNew = (input.destinationGroupIds || []).length + (input.masterGroupIds || []).length;
           if (slotsUsed + slotsNew > maxGroupSlots) {
             throw new Error(
-              `Limite de grupos atingido. Seu plano permite ${maxGroupSlots} grupo(s) no total entre todas as automacoes. Voce ja usa ${slotsUsed} e tentou adicionar mais ${slotsNew}.`,
+              `Limite de grupos atingido. Seu plano permite ${maxGroupSlots} grupo(s) no total entre todas as automações. Você já usa ${slotsUsed} e tentou adicionar mais ${slotsNew}.`,
             );
           }
         }
@@ -201,14 +201,14 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
         active_hours_end: input.activeHoursEnd || "20:00",
         config,
       });
-      throwIfBackendError(error, "Falha ao criar automacao");
+      throwIfBackendError(error, "Falha ao criar automação");
     },
     onSuccess: () => {
       invalidateAutomationQueries();
-      toast.success("Automacao criada!");
-      if (user) logHistorico(user.id, "automation_run", marketplaceLabel, "", "success", `Automacao ${marketplaceShortLabel} criada`);
+      toast.success("Automação criada!");
+      if (user) logHistorico(user.id, "automation_run", marketplaceLabel, "", "success", `Automação ${marketplaceShortLabel} criada`);
     },
-    onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Erro ao criar automacao"),
+    onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Erro ao criar automação"),
   });
 
   const updateMutation = useMutation({
@@ -222,7 +222,7 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
           .select("plan_id")
           .eq("user_id", user.id)
           .maybeSingle();
-        throwIfBackendError(profileError, "Falha ao validar plano do usuario");
+        throwIfBackendError(profileError, "Falha ao validar plano do usuário");
 
         const planId = normalizePlanId(profile?.plan_id);
         if (!planId) throw new Error(PLAN_SYNC_ERROR_MESSAGE);
@@ -241,7 +241,7 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
             + (input.masterGroupIds ?? ((currentAutomation?.master_group_ids as string[]) || [])).length;
           if (slotsUsedByOthers + nextSlots > maxGroupSlots) {
             throw new Error(
-              `Limite de grupos atingido. Seu plano permite ${maxGroupSlots} grupo(s) no total entre todas as automacoes. As outras automacoes ja usam ${slotsUsedByOthers}.`,
+              `Limite de grupos atingido. Seu plano permite ${maxGroupSlots} grupo(s) no total entre todas as automações. As outras automações já usam ${slotsUsedByOthers}.`,
             );
           }
         }
@@ -289,16 +289,16 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
         .from("shopee_automations")
         .update(updates)
         .eq("id", id);
-      throwIfBackendError(error, "Falha ao atualizar automacao");
+      throwIfBackendError(error, "Falha ao atualizar automação");
     },
     onSuccess: async (_, variables) => {
       invalidateAutomationQueries();
-      toast.success("Automacao atualizada!");
+      toast.success("Automação atualizada!");
       if (user) {
         await logHistorico(user.id, "automation_run", marketplaceLabel, variables.id, "info", `Automacao ${marketplaceShortLabel} atualizada`);
       }
     },
-    onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Erro ao atualizar automacao"),
+    onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Erro ao atualizar automação"),
   });
 
   const toggleMutation = useMutation({
@@ -308,13 +308,13 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
         .from("shopee_automations")
         .update({ is_active: !isActive })
         .eq("id", id);
-      throwIfBackendError(error, "Falha ao alterar status da automacao");
+      throwIfBackendError(error, "Falha ao alterar status da automação");
     },
     onSuccess: async (_, variables) => {
       invalidateAutomationQueries();
       if (user) {
         const nextState = variables.isActive ? "pausada" : "retomada";
-        await logHistorico(user.id, "automation_run", marketplaceLabel, variables.id, "info", `Automacao ${marketplaceShortLabel} ${nextState}`);
+        await logHistorico(user.id, "automation_run", marketplaceLabel, variables.id, "info", `Automação ${marketplaceShortLabel} ${nextState}`);
       }
     },
   });
@@ -323,13 +323,13 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
     mutationFn: async (id: string) => {
       if (!user) throw new Error("Not authenticated");
       const { error } = await backend.from("shopee_automations").delete().eq("id", id);
-      throwIfBackendError(error, "Falha ao excluir automacao");
+      throwIfBackendError(error, "Falha ao excluir automação");
     },
     onSuccess: async (_, deletedId) => {
       invalidateAutomationQueries();
-      toast.success("Automacao excluida");
+      toast.success("Automação excluída");
       if (user) {
-        await logHistorico(user.id, "automation_run", marketplaceLabel, deletedId, "warning", `Automacao ${marketplaceShortLabel} removida`);
+        await logHistorico(user.id, "automation_run", marketplaceLabel, deletedId, "warning", `Automação ${marketplaceShortLabel} removida`);
       }
     },
   });
@@ -366,16 +366,16 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
         .update({ is_active: false })
         .in("id", automationIds)
         .eq("is_active", true);
-      throwIfBackendError(error, "Falha ao pausar automacoes");
+      throwIfBackendError(error, "Falha ao pausar automações");
     },
     onSuccess: async () => {
       invalidateAutomationQueries();
-      toast.success("Todas as automacoes foram pausadas");
+      toast.success("Todas as automações foram pausadas");
       if (user) {
-        await logHistorico(user.id, "automation_run", marketplaceLabel, "-", "info", `Acao em massa: pausar automacoes ${marketplaceShortLabel}`);
+        await logHistorico(user.id, "automation_run", marketplaceLabel, "-", "info", `Ação em massa: pausar automações ${marketplaceShortLabel}`);
       }
     },
-    onError: () => toast.error("Erro ao pausar automacoes"),
+    onError: () => toast.error("Erro ao pausar automações"),
   });
 
   const resumeAllMutation = useMutation({
@@ -387,16 +387,16 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
         .update({ is_active: true })
         .in("id", automationIds)
         .eq("is_active", false);
-      throwIfBackendError(error, "Falha ao retomar automacoes");
+      throwIfBackendError(error, "Falha ao retomar automações");
     },
     onSuccess: async () => {
       invalidateAutomationQueries();
-      toast.success("Todas as automacoes foram retomadas");
+      toast.success("Todas as automações foram retomadas");
       if (user) {
-        await logHistorico(user.id, "automation_run", marketplaceLabel, "-", "info", `Acao em massa: retomar automacoes ${marketplaceShortLabel}`);
+        await logHistorico(user.id, "automation_run", marketplaceLabel, "-", "info", `Ação em massa: retomar automações ${marketplaceShortLabel}`);
       }
     },
-    onError: () => toast.error("Erro ao retomar automacoes"),
+    onError: () => toast.error("Erro ao retomar automações"),
   });
 
   const refreshAllMutation = useMutation({
@@ -427,22 +427,22 @@ export function useMarketplaceAutomacoes(marketplace: MarketplaceAutomationKind)
     onSuccess: async (result) => {
       invalidateAutomationQueries();
       if (!result?.refreshed) {
-        toast.info("Nao ha automacoes ativas para atualizar");
+        toast.info("Não há automações ativas para atualizar");
         return;
       }
-      toast.success("Automacoes atualizadas: pausadas e retomadas");
+      toast.success("Automações atualizadas: pausadas e retomadas");
       if (user) {
-        await logHistorico(user.id, "automation_run", marketplaceLabel, "-", "info", `Acao em massa: atualizar automacoes ${marketplaceShortLabel}`);
+        await logHistorico(user.id, "automation_run", marketplaceLabel, "-", "info", `Ação em massa: atualizar automações ${marketplaceShortLabel}`);
       }
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : "unknown_error";
       if (message === "pause_failed") {
-        toast.error("Nao foi possivel pausar todas as automacoes");
+        toast.error("Não foi possível pausar todas as automações");
       } else if (message === "resume_failed") {
-        toast.error("As automacoes foram pausadas, mas nao foi possivel retomar todas");
+        toast.error("As automações foram pausadas, mas não foi possível retomar todas");
       } else {
-        toast.error("Erro ao atualizar automacoes");
+        toast.error("Erro ao atualizar automações");
       }
       invalidateAutomationQueries();
     },

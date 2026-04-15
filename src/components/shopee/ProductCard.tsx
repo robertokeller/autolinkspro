@@ -78,13 +78,13 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
   };
 
   return (
-    <Card className="glass animate-card-in flex flex-col overflow-hidden transition-all duration-200 group hover:shadow-lg">
+    <Card className="glass animate-card-in flex flex-col overflow-hidden transition-all duration-300 group hover:shadow-xl hover:-translate-y-1 hover:border-primary/20 cursor-pointer">
       {/* Image */}
-      <div className="relative aspect-square overflow-hidden bg-muted/50">
+      <div className="relative aspect-square overflow-hidden bg-secondary/20 m-1.5 rounded-lg border border-border/5">
         <img
           src={product.imageUrl || "/placeholder.svg"}
           alt={product.title}
-          className="h-full w-full object-contain p-2 transition-transform duration-300 group-hover:scale-105"
+          className="h-full w-full object-contain p-2 scale-110"
           onError={(e) => { e.currentTarget.src = "/placeholder.svg"; }}
           loading={priorityImage ? "eager" : "lazy"}
           decoding="async"
@@ -102,7 +102,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
         )}
       </div>
 
-      <CardContent className="flex flex-1 flex-col space-y-2 p-2.5 min-[420px]:space-y-2.5 min-[420px]:p-3 sm:p-3.5">
+      <CardContent className="flex flex-1 flex-col space-y-2 p-2.5 pt-1.5 min-[420px]:space-y-2.5 min-[420px]:p-3 min-[420px]:pt-2 sm:p-3.5 sm:pt-2.5">
         {/* Title */}
         <p className="min-h-[2.25rem] text-xs font-medium leading-snug line-clamp-2 min-[420px]:min-h-[2.5rem] min-[420px]:text-sm">
           {product.title}

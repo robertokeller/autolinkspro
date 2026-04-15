@@ -12,6 +12,14 @@ export function ProtectedAppRoutes() {
         <Route path={ROUTES.app.dashboard} element={<Pages.Dashboard />} />
         <Route
           path={ROUTES.app.connectionsRoot}
+          element={<Navigate to={ROUTES.app.connectionsMasterGroups} replace />}
+        />
+        <Route
+          path={ROUTES.app.whatsappRoot}
+          element={<Navigate to={ROUTES.app.connectionsWhatsApp} replace />}
+        />
+        <Route
+          path={ROUTES.app.connectionsWhatsAppLegacy}
           element={<Navigate to={ROUTES.app.connectionsWhatsApp} replace />}
         />
         <Route path={ROUTES.app.connectionsWhatsApp} element={<Pages.ConexoesWhatsApp />} />
@@ -151,6 +159,11 @@ export function ProtectedAppRoutes() {
         <Route path={ROUTES.app.account} element={<Pages.Configuracoes />} />
         <Route path={ROUTES.app.ajuda} element={<Pages.Ajuda />} />
         <Route path={ROUTES.app.afiliado} element={<Pages.Afiliado />} />
+        <Route
+          path={ROUTES.app.metricasLegacy}
+          element={<Navigate to={ROUTES.app.metricas} replace />}
+        />
+        <Route path={ROUTES.app.metricas} element={<Pages.Metricas />} />
       </Route>
     </Route>
   );

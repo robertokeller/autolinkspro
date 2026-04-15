@@ -23,7 +23,7 @@ import { MobileBottomNav } from "@/components/MobileBottomNav";
 export function AppLayout() {
   const location = useLocation();
   const { isPlanExpired } = useAccessControl();
-  const pageName = APP_ROUTE_TITLES[location.pathname] || "Pagina";
+  const pageName = APP_ROUTE_TITLES[location.pathname] || "Página";
   const viewport = useViewportProfile();
   const compactHeader = viewport.isTiny || viewport.isMobileLike;
   const showMobileBottomNav = viewport.isMobileLike && !isPlanExpired;

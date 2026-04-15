@@ -282,7 +282,7 @@ export default function Dashboard() {
       accent: "warning",
     },
     {
-      label: "Automacoes ativas",
+      label: "Automações ativas",
       value: String(analytics.activeAutomations),
       help: `${automationList.length} criada(s) no total`,
       icon: Bot,
@@ -331,7 +331,7 @@ export default function Dashboard() {
         "linkHub",
         {
           label: "Gerir Link Hub",
-          desc: `${analytics.activeLinkHubPages} pagina(s) ativa(s)`,
+          desc: `${analytics.activeLinkHubPages} página(s) ativa(s)`,
           icon: LinkIcon,
           href: ROUTES.app.linkHub,
           accent: "info",
@@ -574,16 +574,16 @@ export default function Dashboard() {
   ];
 
   const serviceFeatureAccess = useMemo(() => {
-    const resolve = (feature: AppFeature) => {
+      const resolve = (feature: AppFeature) => {
       if (canAccess(feature)) return { enabled: true, note: "" };
       const policy = getFeaturePolicy(feature);
       const blockedMessage = sanitizeError(policy.blockedMessage);
       if (policy.mode === "hidden") {
-        return { enabled: false, note: "Nao faz parte do seu plano atual." };
+        return { enabled: false, note: "Não faz parte do seu plano atual." };
       }
       return {
         enabled: false,
-        note: blockedMessage || "Nao faz parte do seu plano atual.",
+        note: blockedMessage || "Não faz parte do seu plano atual.",
       };
     };
 
@@ -608,7 +608,7 @@ export default function Dashboard() {
       return {
         ...card,
         details: access.note,
-        statusText: "Nao incluido no plano",
+        statusText: "Não incluído no plano",
         statusTone: "muted" as HealthBadgeTone,
       };
     }),
@@ -624,9 +624,9 @@ export default function Dashboard() {
           <section className="rounded-2xl border border-destructive/35 bg-destructive/5 p-4 sm:p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-sm font-semibold text-destructive">Seu plano venceu e o envio automatico foi interrompido</p>
+                <p className="text-sm font-semibold text-destructive">Seu plano venceu e o envio automático foi interrompido</p>
                 <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-                  Rotas, automacoes e agendamentos ficam pausados ate a renovacao. Escolha um plano para reativar tudo com seguranca.
+                  Rotas, automações e agendamentos ficam pausados até a renovação. Escolha um plano para reativar tudo com segurança.
                 </p>
               </div>
               <Link

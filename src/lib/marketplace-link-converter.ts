@@ -90,7 +90,7 @@ async function fallbackConvertMarketplaceLink(input: ConvertMarketplaceLinkInput
   const sourceUrl = normalizeUrlInput(input.url);
   const marketplace = detectMarketplace(sourceUrl);
   if (!marketplace) {
-    throw new Error("Marketplace nao suportado. Use links da Shopee, Mercado Livre ou Amazon.");
+    throw new Error("Marketplace não suportado. Use links da Shopee, Mercado Livre ou Amazon.");
   }
 
   if (marketplace === "amazon") {

@@ -125,6 +125,11 @@ export default {
         "card-in": "card-in 0.35s ease-out both",
         wiggle: "wiggle 0.6s ease-in-out infinite alternate",
       },
+      boxShadow: {
+        premium: "0 8px 30px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.03)",
+        "premium-hover": "0 20px 40px rgba(0, 0, 0, 0.06), 0 8px 16px rgba(0, 0, 0, 0.04)",
+        glass: "inset 0 0 0 1px rgba(255, 255, 255, 0.1)",
+      },
     },
   },
   plugins: [tailwindcssAnimate],

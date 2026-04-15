@@ -94,7 +94,7 @@ export default function Login() {
       toast.error(error.message);
       return;
     }
-    toast.success("Se a conta existir e ainda nao estiver confirmada, enviamos um novo link.");
+    toast.success("Se a conta existir e ainda não estiver confirmada, enviamos um novo link.");
   };
 
   const handleLogin = async (event: React.FormEvent) => {
@@ -119,14 +119,14 @@ export default function Login() {
 
       if (error) {
         const msg = error.message || "";
-        if (
+          if (
           msg === "Email not confirmed" ||
           msg.toLowerCase().includes("email not confirmed") ||
           msg.toLowerCase().includes("email_not_confirmed") ||
           msg.toLowerCase().includes("ainda nao confirmado")
         ) {
           setPendingVerificationEmail(emailValue);
-          toast.error("E-mail ainda nao confirmado. Use o botao para reenviar o link.");
+          toast.error("E-mail ainda não confirmado. Use o botão para reenviar o link.");
           return;
         }
 
@@ -205,7 +205,7 @@ export default function Login() {
               disabled={resendLoading}
             >
               {resendLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Reenviar verificacao de e-mail
+              Reenviar verificação de e-mail
             </Button>
           ) : null}
 

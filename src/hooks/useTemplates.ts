@@ -119,11 +119,11 @@ export function useTemplates(scope: TemplateScope = "shopee") {
 
   const createTemplate = useCallback(async (name: string, content: string, category: TemplateCategory) => {
     if (!user) {
-      toast.error("Usuario nao autenticado");
+      toast.error("Usuário não autenticado");
       return null;
     }
     if (!name || !content) {
-      toast.error("Preencha nome e conteudo");
+      toast.error("Preencha nome e conteúdo");
       return null;
     }
 
@@ -135,7 +135,7 @@ export function useTemplates(scope: TemplateScope = "shopee") {
         .maybeSingle();
 
       if (profileError) {
-        toast.error(profileError.message || "Falha ao validar plano do usuario");
+        toast.error(profileError.message || "Falha ao validar plano do usuário");
         return null;
       }
 
@@ -152,9 +152,9 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       }
 
       const maxTemplates = limits.templates ?? 0;
-      if (maxTemplates !== -1 && templates.length >= maxTemplates) {
+        if (maxTemplates !== -1 && templates.length >= maxTemplates) {
         const scopeLabel = scope === "amazon" ? "Amazon" : scope === "meli" ? "Mercado Livre" : "Shopee";
-        toast.error(`Limite de templates ${scopeLabel} atingido para o seu nivel de acesso.`);
+        toast.error(`Limite de templates ${scopeLabel} atingido para o seu nível de acesso.`);
         return null;
       }
     }
@@ -210,7 +210,7 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     updates: Partial<Pick<Template, "name" | "content" | "category">>,
   ): Promise<boolean> => {
     if (!user) {
-      toast.error("Usuario nao autenticado");
+      toast.error("Usuário não autenticado");
       return false;
     }
 
@@ -266,7 +266,7 @@ export function useTemplates(scope: TemplateScope = "shopee") {
 
   const deleteTemplate = useCallback(async (id: string) => {
     if (!user) {
-      toast.error("Usuario nao autenticado");
+      toast.error("Usuário não autenticado");
       return;
     }
 

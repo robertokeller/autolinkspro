@@ -55,6 +55,9 @@ type TableMap = {
     session_id: string | null;
     member_count: number;
     external_id: string | null;
+    is_admin: boolean;
+    owner_jid: string;
+    invite_code: string;
     deleted_at: string | null;
   }>;
   history_entries: TableDef<{

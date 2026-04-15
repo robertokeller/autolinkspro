@@ -323,7 +323,9 @@ const MAX_MELI_COOKIE_DOMAIN_LENGTH = 255;
 const MAX_MELI_COOKIE_PATH_LENGTH = 512;
 const MELI_COOKIE_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const MELI_COOKIE_DOMAIN_PATTERN = /^[A-Za-z0-9.-]+$/;
+// eslint-disable-next-line no-control-regex -- explicit control-char guard for cookie metadata validation
 const MELI_COOKIE_CONTROL_CHAR_PATTERN = /[\u0000-\u001F\u007F]/;
+// eslint-disable-next-line no-control-regex -- explicit NUL/CR/LF guard for cookie value sanitization
 const MELI_COOKIE_VALUE_FORBIDDEN_PATTERN = /[;\r\n\u0000]/;
 const MELI_COOKIE_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MERCADO_LIVRE_ALLOWED_URL_HOSTS = new Set([
@@ -1320,7 +1322,7 @@ function buildRouteTemplatePlaceholderData(
 
     for (const line of lines) {
       const cleaned = line
-        .replace(/[\*_~`]/g, "")
+        .replace(/[*_~`]/g, "")
         .replace(/\s{2,}/g, " ")
         .trim();
       if (cleaned.length >= 3) return cleaned;
@@ -1366,7 +1368,7 @@ function buildRouteTemplatePlaceholderData(
   };
 
   const extractRatingFallback = (text: string): number => {
-    const explicit = text.match(/nota\s*[:\-]?\s*([0-5](?:[.,][0-9])?)/i);
+    const explicit = text.match(/nota\s*[:-]?\s*([0-5](?:[.,][0-9])?)/i);
     if (explicit?.[1]) {
       const value = Number(explicit[1].replace(",", "."));
       if (Number.isFinite(value) && value > 0) return value;
@@ -1769,6 +1771,35 @@ async function proxyMicroservice(baseUrl, path, method, body, extraHeaders = {},
   }
 }
 
+function unwrapAnalyticsPayload<T = unknown>(payload: unknown): T {
+  if (!payload || typeof payload !== "object") return payload as T;
+  if (!("data" in payload)) return payload as T;
+
+  const wrapped = payload as Record<string, unknown>;
+  return (wrapped.data ?? payload) as T;
+}
+
+function formatPermanenceMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h < 24) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  const d = Math.floor(h / 24);
+  const rh = h % 24;
+  return rh > 0 ? `${d}d ${rh}h` : `${d}d`;
+}
+
+function stripSessionIdQueryParam(pathWithQuery: string): string {
+  const value = String(pathWithQuery || "");
+  if (!value.includes("sessionId=")) return value;
+  const [pathname, search = ""] = value.split("?");
+  if (!search) return pathname;
+  const params = new URLSearchParams(search);
+  params.delete("sessionId");
+  const next = params.toString();
+  return next ? `${pathname}?${next}` : pathname;
+}
+
 function isTransientMicroserviceError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const row = error as Record<string, unknown>;
@@ -1849,6 +1880,11 @@ function buildUserScopedHeaders(userId: string) {
 const MELI_SESSION_COOKIES_PROVIDER = "meli_session_cookies";
 const LEGACY_MELI_AUTO_NAME_REGEX = /^conta\s+[0-9a-f]{8}$/i;
 let meliSessionCookiesColumnAvailable: boolean | null = null;
+let groupsAdminColumnsAvailable: boolean | null = null;
+let groupMemberHistoryTableAvailable: boolean | null = null;
+let groupMemberHistoryMissingPolicyWarningShown = false;
+let groupMemberHistoryWriteBlockedWarningShown = false;
+let groupMemberHistoryWriteBlocked = false;
 
 function isLegacyMeliAutoSessionName(raw: unknown): boolean {
   return LEGACY_MELI_AUTO_NAME_REGEX.test(String(raw || "").trim());
@@ -2018,6 +2054,168 @@ async function hasMeliSessionCookiesColumn(): Promise<boolean> {
   }
 
   return meliSessionCookiesColumnAvailable;
+}
+
+async function hasGroupsAdminColumns(): Promise<boolean> {
+  if (groupsAdminColumnsAvailable != null) return groupsAdminColumnsAvailable;
+
+  try {
+    const row = await queryOne<{ has_columns: boolean }>(
+      `SELECT (
+         EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'groups'
+              AND column_name = 'is_admin'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'groups'
+              AND column_name = 'owner_jid'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'groups'
+              AND column_name = 'invite_code'
+         )
+       ) AS has_columns`,
+      [],
+    );
+    groupsAdminColumnsAvailable = row?.has_columns === true;
+  } catch {
+    // Prefer compatibility path when metadata cannot be read.
+    groupsAdminColumnsAvailable = false;
+  }
+
+  return groupsAdminColumnsAvailable;
+}
+
+function isMissingGroupsAdminColumnsError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: unknown; message?: unknown };
+  const code = String(err.code ?? "").trim();
+  const message = String(err.message ?? "").trim().toLowerCase();
+
+  if (code === "42703" && (message.includes("is_admin") || message.includes("owner_jid") || message.includes("invite_code"))) {
+    return true;
+  }
+  return (
+    message.includes(`column "is_admin" of relation "groups" does not exist`)
+    || message.includes(`column "owner_jid" of relation "groups" does not exist`)
+    || message.includes(`column "invite_code" of relation "groups" does not exist`)
+  );
+}
+
+async function hasGroupMemberHistoryTable(): Promise<boolean> {
+  if (groupMemberHistoryTableAvailable != null) return groupMemberHistoryTableAvailable;
+  try {
+    const row = await queryOne<{ exists: boolean; has_policies: boolean }>(
+      `SELECT
+         EXISTS (
+           SELECT 1
+             FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'group_member_history_daily'
+         ) AS exists,
+         EXISTS (
+           SELECT 1
+             FROM pg_policies
+            WHERE schemaname = 'public'
+              AND tablename = 'group_member_history_daily'
+         ) AS has_policies`,
+      [],
+    );
+    const tableExists = row?.exists === true;
+    const hasPolicies = row?.has_policies === true;
+    if (tableExists && !hasPolicies && !groupMemberHistoryMissingPolicyWarningShown) {
+      console.warn(
+        "[analytics] group_member_history_daily exists but has no RLS policies; snapshot writes are disabled until migrations are applied.",
+      );
+      groupMemberHistoryMissingPolicyWarningShown = true;
+    }
+    groupMemberHistoryTableAvailable = tableExists && hasPolicies;
+  } catch {
+    groupMemberHistoryTableAvailable = false;
+  }
+  return groupMemberHistoryTableAvailable;
+}
+
+function isMissingGroupMemberHistoryTableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: unknown; message?: unknown };
+  const code = String(err.code ?? "").trim();
+  const message = String(err.message ?? "").trim().toLowerCase();
+  return (
+    code === "42P01"
+    || message.includes(`relation "group_member_history_daily" does not exist`)
+  );
+}
+
+function isGroupMemberHistoryRlsPolicyError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: unknown; message?: unknown };
+  const code = String(err.code ?? "").trim();
+  const message = String(err.message ?? "").trim().toLowerCase();
+  if (code !== "42501") return false;
+  return (
+    message.includes("group_member_history_daily")
+    && (
+      message.includes("row-level security policy")
+      || message.includes("permission denied")
+    )
+  );
+}
+
+async function upsertGroupMemberHistoryDaily(input: {
+  userId: string;
+  groupId: string;
+  sessionId: string;
+  memberCount: number;
+}): Promise<void> {
+  if (groupMemberHistoryWriteBlocked) return;
+  if (!await hasGroupMemberHistoryTable()) return;
+
+  const safeMemberCount = Number.isFinite(input.memberCount) ? Math.max(0, Math.trunc(input.memberCount)) : 0;
+  try {
+    await execute(
+      `INSERT INTO group_member_history_daily (user_id, group_id, snapshot_date, member_count, session_id, captured_at, source)
+       VALUES ($1, $2, NOW()::date, $3, $4, NOW(), 'group_sync')
+       ON CONFLICT (group_id, snapshot_date)
+       DO UPDATE SET
+         member_count = EXCLUDED.member_count,
+         session_id = COALESCE(EXCLUDED.session_id, group_member_history_daily.session_id),
+         captured_at = EXCLUDED.captured_at,
+         source = EXCLUDED.source,
+         updated_at = NOW()`,
+      [
+        input.userId,
+        input.groupId,
+        safeMemberCount,
+        isUuid(input.sessionId) ? input.sessionId : null,
+      ],
+    );
+  } catch (error) {
+    if (isMissingGroupMemberHistoryTableError(error)) {
+      groupMemberHistoryTableAvailable = false;
+      return;
+    }
+    if (isGroupMemberHistoryRlsPolicyError(error)) {
+      groupMemberHistoryWriteBlocked = true;
+      if (!groupMemberHistoryWriteBlockedWarningShown) {
+        console.warn(
+          "[analytics] group_member_history_daily blocked by RLS policy; skipping snapshot writes to avoid breaking group sync.",
+        );
+        groupMemberHistoryWriteBlockedWarningShown = true;
+      }
+      return;
+    }
+    throw error;
+  }
 }
 
 async function maybeAlignMeliCookiesBackupOwner(userId: string, sessionId: string): Promise<void> {
@@ -3244,67 +3442,167 @@ async function upsertGroupRow(input: {
   externalId: string;
   name: string;
   memberCount: number;
-}): Promise<void> {
+  isAdmin?: boolean;
+  ownerJid?: string;
+  inviteCode?: string;
+}): Promise<string | null> {
   const externalId = String(input.externalId || "").trim();
-  if (!externalId) return;
+  if (!externalId) return null;
   const normalizedName = String(input.name || "").trim();
-  if (!normalizedName) return;
+  if (!normalizedName) return null;
   const memberCount = Number.isFinite(input.memberCount) ? Math.max(0, Math.trunc(input.memberCount)) : 0;
-
-  // Determine if this is an insert or update for audit logging
-  const existing = await queryOne<{ id: string }>(
-    `SELECT id FROM groups WHERE user_id = $1 AND session_id = $2 AND external_id = $3 AND deleted_at IS NULL`,
-    [input.userId, input.sessionId, externalId]
-  );
+  const isAdmin = Boolean(input.isAdmin);
+  const ownerJid = String(input.ownerJid || "").trim();
+  const inviteCode = String(input.inviteCode || "").trim();
+  let useGroupAdminColumns = await hasGroupsAdminColumns();
+  let resolvedGroupId = "";
 
   // If a group changed external_id in the provider, recover the previously saved row
   // by matching the same session + normalized name before regular upsert by external_id.
-  await execute(
-    `UPDATE groups g
-     SET external_id = $1,
-         name = $2,
-         member_count = $3,
-         deleted_at = NULL,
-         updated_at = NOW()
-     WHERE g.id = (
-       SELECT g1.id
-       FROM groups g1
-       WHERE g1.user_id = $4
-         AND g1.platform = $5
-         AND g1.session_id = $6
-         AND g1.deleted_at IS NULL
-         AND LOWER(TRIM(g1.name)) = LOWER(TRIM($2))
-         AND g1.external_id <> $1
-         AND NOT EXISTS (
-           SELECT 1
-           FROM groups g2
-           WHERE g2.user_id = $4
-             AND g2.platform = $5
-             AND g2.session_id = $6
-             AND g2.external_id = $1
-             AND g2.deleted_at IS NULL
-         )
-       ORDER BY g1.updated_at DESC NULLS LAST
-       LIMIT 1
-     )`,
-    [externalId, normalizedName, memberCount, input.userId, input.platform, input.sessionId],
-  );
+  if (useGroupAdminColumns) {
+    try {
+      await execute(
+        `UPDATE groups g
+         SET external_id = $1,
+             name = $2,
+             member_count = $3,
+             is_admin = $7,
+             owner_jid = $8,
+             invite_code = $9,
+             deleted_at = NULL,
+             updated_at = NOW()
+         WHERE g.id = (
+           SELECT g1.id
+           FROM groups g1
+           WHERE g1.user_id = $4
+             AND g1.platform = $5
+             AND g1.session_id = $6
+             AND g1.deleted_at IS NULL
+             AND LOWER(TRIM(g1.name)) = LOWER(TRIM($2))
+             AND g1.external_id <> $1
+             AND NOT EXISTS (
+               SELECT 1
+               FROM groups g2
+               WHERE g2.user_id = $4
+                 AND g2.platform = $5
+                 AND g2.session_id = $6
+                 AND g2.external_id = $1
+                 AND g2.deleted_at IS NULL
+             )
+           ORDER BY g1.updated_at DESC NULLS LAST
+           LIMIT 1
+         )`,
+        [externalId, normalizedName, memberCount, input.userId, input.platform, input.sessionId, isAdmin, ownerJid, inviteCode],
+      );
+    } catch (error) {
+      if (!isMissingGroupsAdminColumnsError(error)) throw error;
+      groupsAdminColumnsAvailable = false;
+      useGroupAdminColumns = false;
+    }
+  }
+
+  if (!useGroupAdminColumns) {
+    await execute(
+      `UPDATE groups g
+       SET external_id = $1,
+           name = $2,
+           member_count = $3,
+           deleted_at = NULL,
+           updated_at = NOW()
+       WHERE g.id = (
+         SELECT g1.id
+         FROM groups g1
+         WHERE g1.user_id = $4
+           AND g1.platform = $5
+           AND g1.session_id = $6
+           AND g1.deleted_at IS NULL
+           AND LOWER(TRIM(g1.name)) = LOWER(TRIM($2))
+           AND g1.external_id <> $1
+           AND NOT EXISTS (
+             SELECT 1
+             FROM groups g2
+             WHERE g2.user_id = $4
+               AND g2.platform = $5
+               AND g2.session_id = $6
+               AND g2.external_id = $1
+               AND g2.deleted_at IS NULL
+           )
+         ORDER BY g1.updated_at DESC NULLS LAST
+         LIMIT 1
+       )`,
+      [externalId, normalizedName, memberCount, input.userId, input.platform, input.sessionId],
+    );
+  }
 
   const groupId = uuid();
-  await execute(
-    `INSERT INTO groups (id, user_id, name, platform, member_count, session_id, external_id, deleted_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NOW())
-     ON CONFLICT (user_id, session_id, external_id)
-     DO UPDATE SET
-       name = EXCLUDED.name,
-       member_count = EXCLUDED.member_count,
-       deleted_at = NULL,
-       updated_at = NOW()`,
-    [groupId, input.userId, normalizedName, input.platform, memberCount, input.sessionId, externalId],
-  );
+  if (useGroupAdminColumns) {
+    try {
+      const upserted = await queryOne<{ id: string }>(
+        `INSERT INTO groups (id, user_id, name, platform, member_count, session_id, external_id, is_admin, owner_jid, invite_code, deleted_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,NOW())
+         ON CONFLICT (user_id, session_id, external_id)
+         DO UPDATE SET
+           name = EXCLUDED.name,
+           member_count = EXCLUDED.member_count,
+           is_admin = EXCLUDED.is_admin,
+           owner_jid = EXCLUDED.owner_jid,
+           invite_code = EXCLUDED.invite_code,
+           deleted_at = NULL,
+           updated_at = NOW()
+         RETURNING id`,
+        [groupId, input.userId, normalizedName, input.platform, memberCount, input.sessionId, externalId, isAdmin, ownerJid, inviteCode],
+      );
+      resolvedGroupId = String(upserted?.id || "").trim();
+    } catch (error) {
+      if (!isMissingGroupsAdminColumnsError(error)) throw error;
+      groupsAdminColumnsAvailable = false;
+      useGroupAdminColumns = false;
+    }
+  }
+
+  if (!useGroupAdminColumns) {
+    const upserted = await queryOne<{ id: string }>(
+      `INSERT INTO groups (id, user_id, name, platform, member_count, session_id, external_id, deleted_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NOW())
+       ON CONFLICT (user_id, session_id, external_id)
+       DO UPDATE SET
+         name = EXCLUDED.name,
+         member_count = EXCLUDED.member_count,
+         deleted_at = NULL,
+         updated_at = NOW()
+       RETURNING id`,
+      [groupId, input.userId, normalizedName, input.platform, memberCount, input.sessionId, externalId],
+    );
+    resolvedGroupId = String(upserted?.id || "").trim();
+  }
+
+  if (!resolvedGroupId) {
+    const row = await queryOne<{ id: string }>(
+      `SELECT id
+         FROM groups
+        WHERE user_id = $1
+          AND session_id = $2
+          AND external_id = $3
+          AND platform = $4
+          AND deleted_at IS NULL
+        LIMIT 1`,
+      [input.userId, input.sessionId, externalId, input.platform],
+    );
+    resolvedGroupId = String(row?.id || "").trim();
+  }
+
+  if (input.platform === "whatsapp" && resolvedGroupId) {
+    await upsertGroupMemberHistoryDaily({
+      userId: input.userId,
+      groupId: resolvedGroupId,
+      sessionId: input.sessionId,
+      memberCount,
+    });
+  }
 
   // Audit: group sync is high-volume and has no req context — logged by the
   // calling route handler if needed. No per-group audit entry to avoid spam.
+  return resolvedGroupId || null;
 }
 
 async function refreshTelegramHealthState(userId: string): Promise<number> {
@@ -3393,13 +3691,17 @@ function normalizeGroupNameKey(name: unknown): string {
 
 async function reconcileWhatsAppSessionsFromHealth(userId: string) {
   if (!WHATSAPP_URL) return { reconciled: 0, online: false };
+  const normalizedUserId = String(userId || "").trim().toLowerCase();
+  if (!normalizedUserId) return { reconciled: 0, online: false };
 
+  const reconcileHeaders: Record<string, string> = { ...buildUserScopedHeaders(normalizedUserId) };
+  if (WEBHOOK_SECRET) reconcileHeaders["x-webhook-secret"] = WEBHOOK_SECRET;
   const health = await proxyMicroservice(
     WHATSAPP_URL,
     "/health",
     "GET",
     null,
-    buildUserScopedHeaders(userId),
+    reconcileHeaders,
     6000,
   );
   if (health.error) {
@@ -3415,7 +3717,7 @@ async function reconcileWhatsAppSessionsFromHealth(userId: string) {
   for (const row of sessionsRaw) {
     if (!row || typeof row !== "object") continue;
     const item = row as Record<string, unknown>;
-    if (String(item.userId ?? "") !== userId) continue;
+    if (String(item.userId ?? item.user_id ?? "").trim().toLowerCase() !== normalizedUserId) continue;
     const sessionId = String(item.sessionId ?? "").trim();
     if (!sessionId) continue;
     statusBySessionId.set(sessionId, {
@@ -3432,7 +3734,7 @@ async function reconcileWhatsAppSessionsFromHealth(userId: string) {
     qr_code: string | null;
   }>(
     "SELECT id, status, connected_at, error_message, qr_code FROM whatsapp_sessions WHERE user_id = $1",
-    [userId],
+    [normalizedUserId],
   );
   let reconciled = 0;
 
@@ -3473,7 +3775,7 @@ async function reconcileWhatsAppSessionsFromHealth(userId: string) {
            error_message = CASE WHEN $1 = 'warning' THEN error_message ELSE '' END,
            updated_at = NOW()
        WHERE id = $3 AND user_id = $4`,
-      [fromHealth.status, connectedAt, sessionId, userId],
+      [fromHealth.status, connectedAt, sessionId, normalizedUserId],
     );
     reconciled += 1;
   }
@@ -3510,6 +3812,7 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
 
   const remoteExternalIds = new Set<string>();
   const claimedExistingIds = new Set<string>();
+  let useGroupAdminColumns = await hasGroupsAdminColumns();
 
   for (const row of remoteGroups) {
     if (!row || typeof row !== "object") continue;
@@ -3531,6 +3834,9 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
         externalId,
         name,
         memberCount,
+        isAdmin: Boolean(group.isAdmin),
+        ownerJid: String(group.owner || ""),
+        inviteCode: String(group.inviteCode || ""),
       });
       continue;
     }
@@ -3541,16 +3847,48 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
 
     if (available.length === 1) {
       const candidate = available[0];
-      await execute(
-        `UPDATE groups
-         SET external_id = $1,
-             name = $2,
-             member_count = $3,
-             deleted_at = NULL,
-             updated_at = NOW()
-         WHERE id = $4 AND user_id = $5`,
-        [externalId, name, Number.isFinite(memberCount) ? Math.max(0, Math.trunc(memberCount)) : 0, candidate.id, userId],
-      );
+      const normalizedMemberCount = Number.isFinite(memberCount) ? Math.max(0, Math.trunc(memberCount)) : 0;
+      if (useGroupAdminColumns) {
+        try {
+          await execute(
+            `UPDATE groups
+             SET external_id = $1,
+                 name = $2,
+                 member_count = $3,
+                 is_admin = $6,
+                 owner_jid = $7,
+                 invite_code = $8,
+                 deleted_at = NULL,
+                 updated_at = NOW()
+             WHERE id = $4 AND user_id = $5`,
+            [externalId, name, normalizedMemberCount, candidate.id, userId, Boolean(group.isAdmin), String(group.owner || ""), String(group.inviteCode || "")],
+          );
+        } catch (error) {
+          if (!isMissingGroupsAdminColumnsError(error)) throw error;
+          groupsAdminColumnsAvailable = false;
+          useGroupAdminColumns = false;
+        }
+      }
+
+      if (!useGroupAdminColumns) {
+        await execute(
+          `UPDATE groups
+           SET external_id = $1,
+               name = $2,
+               member_count = $3,
+               deleted_at = NULL,
+               updated_at = NOW()
+           WHERE id = $4 AND user_id = $5`,
+          [externalId, name, normalizedMemberCount, candidate.id, userId],
+        );
+      }
+
+      await upsertGroupMemberHistoryDaily({
+        userId,
+        groupId: candidate.id,
+        sessionId,
+        memberCount: normalizedMemberCount,
+      });
       claimedExistingIds.add(candidate.id);
       continue;
     }
@@ -3562,8 +3900,273 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
       externalId,
       name,
       memberCount,
+      isAdmin: Boolean(group.isAdmin),
+      ownerJid: String(group.owner || ""),
+      inviteCode: String(group.inviteCode || ""),
     });
   }
+}
+
+async function syncWhatsAppSessionGroups(input: {
+  userId: string;
+  sessionId: string;
+  includeEventPoll?: boolean;
+  timeoutMs?: number;
+}): Promise<{
+  remoteGroups: Array<Record<string, unknown>>;
+  count: number;
+  events: number;
+  inviteSync: { checked: number; updated: number; failed: number };
+}> {
+  const timeoutMs = Number.isFinite(input.timeoutMs)
+    ? Math.max(5_000, Math.trunc(Number(input.timeoutMs)))
+    : 45_000;
+
+  const upstream = await proxyMicroservice(
+    WHATSAPP_URL,
+    `/api/sessions/${encodeURIComponent(input.sessionId)}/sync-groups`,
+    "POST",
+    { sessionId: input.sessionId },
+    buildUserScopedHeaders(input.userId),
+    timeoutMs,
+  );
+  if (upstream.error) {
+    throw new Error(upstream.error.message || "Falha ao sincronizar grupos da sessão");
+  }
+
+  const remoteGroups: Array<Record<string, unknown>> =
+    (upstream.data && typeof upstream.data === "object" && Array.isArray((upstream.data as Record<string, unknown>).groups))
+      ? ((upstream.data as Record<string, unknown>).groups as Array<Record<string, unknown>>)
+      : [];
+
+  await syncWhatsAppGroupsWithReconciliation(input.userId, input.sessionId, remoteGroups);
+  const inviteSync = await syncMasterGroupWhatsAppInviteLinks(input.userId, input.sessionId).catch(() => ({ checked: 0, updated: 0, failed: 0 }));
+  const events = input.includeEventPoll
+    ? await pollWhatsAppEventsForSession(input.userId, input.sessionId).catch(() => 0)
+    : 0;
+
+  return {
+    remoteGroups,
+    count: remoteGroups.length,
+    events,
+    inviteSync,
+  };
+}
+
+async function loadWhatsAppMembersEvolution(input: {
+  userId: string;
+  scope: string;
+  days: number;
+  scopeGroupIds: string[];
+}): Promise<{
+  scope: "all" | "group";
+  groupId: string | null;
+  days: number;
+  fromDate: string;
+  toDate: string;
+  series: Array<{ date: string; members: number; groupsRepresented: number }>;
+  summary: {
+    groupsCount: number;
+    snapshotsInWindow: number;
+    daysWithData: number;
+    coveragePercent: number;
+    startMembers: number;
+    endMembers: number;
+    delta: number;
+    deltaPercent: number;
+  };
+}> {
+  const safeDays = Math.max(1, Math.min(365, toInt(input.days, 30)));
+  const rawScope = String(input.scope || "all").trim();
+  const selectedGroupId = rawScope !== "all" && isUuid(rawScope) ? rawScope : "";
+  const scope: "all" | "group" = selectedGroupId ? "group" : "all";
+  const requestedGroupIds = Array.from(new Set(input.scopeGroupIds.filter(isUuid)));
+
+  const today = new Date();
+  const endDate = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  const startDate = new Date(endDate);
+  startDate.setUTCDate(startDate.getUTCDate() - (safeDays - 1));
+
+  const fromDate = startDate.toISOString().slice(0, 10);
+  const toDate = endDate.toISOString().slice(0, 10);
+  const dateKeys: string[] = [];
+  for (let i = 0; i < safeDays; i++) {
+    const d = new Date(startDate);
+    d.setUTCDate(startDate.getUTCDate() + i);
+    dateKeys.push(d.toISOString().slice(0, 10));
+  }
+
+  let groups: Array<{ id: string; member_count: number }> = [];
+  if (scope === "group") {
+    groups = await query<{ id: string; member_count: number }>(
+      `SELECT id, COALESCE(member_count, 0)::int AS member_count
+         FROM groups
+        WHERE user_id = $1
+          AND platform = 'whatsapp'
+          AND deleted_at IS NULL
+          AND id = $2::uuid
+        LIMIT 1`,
+      [input.userId, selectedGroupId],
+    );
+  } else if (requestedGroupIds.length > 0) {
+    groups = await query<{ id: string; member_count: number }>(
+      `SELECT id, COALESCE(member_count, 0)::int AS member_count
+         FROM groups
+        WHERE user_id = $1
+          AND platform = 'whatsapp'
+          AND deleted_at IS NULL
+          AND id = ANY($2::uuid[])`,
+      [input.userId, requestedGroupIds],
+    );
+  } else {
+    groups = await query<{ id: string; member_count: number }>(
+      `SELECT id, COALESCE(member_count, 0)::int AS member_count
+         FROM groups
+        WHERE user_id = $1
+          AND platform = 'whatsapp'
+          AND deleted_at IS NULL`,
+      [input.userId],
+    );
+  }
+
+  if (groups.length === 0) {
+    const emptySeries = dateKeys.map((date) => ({ date, members: 0, groupsRepresented: 0 }));
+    return {
+      scope,
+      groupId: scope === "group" ? selectedGroupId : null,
+      days: safeDays,
+      fromDate,
+      toDate,
+      series: emptySeries,
+      summary: {
+        groupsCount: 0,
+        snapshotsInWindow: 0,
+        daysWithData: 0,
+        coveragePercent: 0,
+        startMembers: 0,
+        endMembers: 0,
+        delta: 0,
+        deltaPercent: 0,
+      },
+    };
+  }
+
+  const groupIds = groups.map((group) => group.id);
+  const currentMemberCount = new Map<string, number>(
+    groups.map((group) => [group.id, Math.max(0, toInt(group.member_count, 0))]),
+  );
+
+  const historyRows = await query<{
+    group_id: string;
+    snapshot_date: string;
+    member_count: number;
+  }>(
+    `SELECT
+       group_id::text AS group_id,
+       snapshot_date::text AS snapshot_date,
+       COALESCE(member_count, 0)::int AS member_count
+       FROM group_member_history_daily
+      WHERE user_id = $1
+        AND group_id = ANY($2::uuid[])
+        AND snapshot_date BETWEEN $3::date AND $4::date
+      ORDER BY group_id, snapshot_date`,
+    [input.userId, groupIds, fromDate, toDate],
+  );
+
+  const baselineRows = await query<{
+    group_id: string;
+    member_count: number;
+  }>(
+    `SELECT DISTINCT ON (group_id)
+       group_id::text AS group_id,
+       COALESCE(member_count, 0)::int AS member_count
+       FROM group_member_history_daily
+      WHERE user_id = $1
+        AND group_id = ANY($2::uuid[])
+        AND snapshot_date < $3::date
+      ORDER BY group_id, snapshot_date DESC`,
+    [input.userId, groupIds, fromDate],
+  );
+
+  const historyByGroup = new Map<string, Map<string, number>>();
+  for (const row of historyRows) {
+    const gid = String(row.group_id || "").trim();
+    const day = String(row.snapshot_date || "").trim();
+    if (!gid || !day) continue;
+    let bucket = historyByGroup.get(gid);
+    if (!bucket) {
+      bucket = new Map<string, number>();
+      historyByGroup.set(gid, bucket);
+    }
+    bucket.set(day, Math.max(0, toInt(row.member_count, 0)));
+  }
+
+  const baselineByGroup = new Map<string, number>();
+  for (const row of baselineRows) {
+    const gid = String(row.group_id || "").trim();
+    if (!gid) continue;
+    baselineByGroup.set(gid, Math.max(0, toInt(row.member_count, 0)));
+  }
+
+  const totalsByDate = new Map<string, number>(dateKeys.map((day) => [day, 0]));
+  const representedByDate = new Map<string, number>(dateKeys.map((day) => [day, 0]));
+  const todayKey = toDate;
+
+  for (const gid of groupIds) {
+    const perDay = historyByGroup.get(gid) || new Map<string, number>();
+    const hasAnyHistoricalData = perDay.size > 0 || baselineByGroup.has(gid);
+    let carry: number | null = baselineByGroup.has(gid) ? baselineByGroup.get(gid)! : null;
+
+    for (const day of dateKeys) {
+      if (perDay.has(day)) {
+        carry = perDay.get(day)!;
+      }
+
+      let value: number | null = carry;
+      if (!hasAnyHistoricalData && day === todayKey) {
+        value = currentMemberCount.get(gid) ?? 0;
+      }
+
+      if (value !== null) {
+        totalsByDate.set(day, (totalsByDate.get(day) || 0) + Math.max(0, value));
+        representedByDate.set(day, (representedByDate.get(day) || 0) + 1);
+      }
+    }
+  }
+
+  const series = dateKeys.map((date) => ({
+    date,
+    members: Math.max(0, toInt(totalsByDate.get(date), 0)),
+    groupsRepresented: Math.max(0, toInt(representedByDate.get(date), 0)),
+  }));
+
+  const startMembers = series[0]?.members ?? 0;
+  const endMembers = series[series.length - 1]?.members ?? 0;
+  const delta = endMembers - startMembers;
+  const deltaPercent = startMembers > 0
+    ? Number(((delta / startMembers) * 100).toFixed(1))
+    : (endMembers > 0 ? 100 : 0);
+  const daysWithData = series.filter((row) => row.groupsRepresented > 0).length;
+  const coveragePercent = Number(((daysWithData / Math.max(1, series.length)) * 100).toFixed(1));
+
+  return {
+    scope,
+    groupId: scope === "group" ? selectedGroupId : null,
+    days: safeDays,
+    fromDate,
+    toDate,
+    series,
+    summary: {
+      groupsCount: groupIds.length,
+      snapshotsInWindow: historyRows.length,
+      daysWithData,
+      coveragePercent,
+      startMembers,
+      endMembers,
+      delta,
+      deltaPercent,
+    },
+  };
 }
 
 async function syncMasterGroupWhatsAppInviteLinks(userId: string, sessionId: string): Promise<{ checked: number; updated: number; failed: number }> {
@@ -3806,6 +4409,9 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
             externalId: String(group.id ?? ""),
             name: String(group.name ?? group.id ?? "Grupo"),
             memberCount: Number(group.memberCount ?? group.member_count ?? group.participantsCount ?? 0),
+            isAdmin: Boolean(group.isAdmin),
+            ownerJid: String(group.owner ?? ""),
+            inviteCode: String(group.inviteCode ?? ""),
           });
           groupsSynced += 1;
         }
@@ -4126,7 +4732,7 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
   return { groupsSynced };
 }
 
-const ROUTE_LINK_REGEX = /https?:\/\/[^\s<>"'(){}|\\^`\[\]]+/gi;
+const ROUTE_LINK_REGEX = /https?:\/\/[^\s<>"'(){}|\\^`[\]]+/gi;
 
 const ROUTE_PARTNER_MARKETPLACE_PATTERNS: Record<string, RegExp[]> = {
   shopee: [/shopee\.com(\.\w+)?/i, /shope\.ee/i, /s\.shopee\./i],
@@ -5513,9 +6119,15 @@ async function loadOnlineSessionsFromConnectorHealth(input: {
 }): Promise<ChannelPollSessionRow[]> {
   const baseUrl = input.platform === "whatsapp" ? WHATSAPP_URL : TELEGRAM_URL;
   if (!baseUrl) return [];
+  const requesterUserId = String(input.requesterUserId || "").trim().toLowerCase();
 
-  const headers = input.canRunGlobal ? {} : buildUserScopedHeaders(input.requesterUserId);
-  const upstream = await proxyMicroservice(baseUrl, "/health", "GET", null, headers, 6_000);
+  const userHeaders = input.canRunGlobal ? {} : buildUserScopedHeaders(requesterUserId || input.requesterUserId);
+  // The Baileys/Telegram health endpoint returns full session details only when
+  // the shared WEBHOOK_SECRET is present; without it the response contains only
+  // aggregate counts and session-level filtering cannot work.
+  const healthHeaders: Record<string, string> = { ...userHeaders };
+  if (WEBHOOK_SECRET) healthHeaders["x-webhook-secret"] = WEBHOOK_SECRET;
+  const upstream = await proxyMicroservice(baseUrl, "/health", "GET", null, healthHeaders, 6_000);
   if (upstream.error) return [];
 
   const payload = (upstream.data && typeof upstream.data === "object")
@@ -5529,9 +6141,9 @@ async function loadOnlineSessionsFromConnectorHealth(input: {
     const row = raw as Record<string, unknown>;
 
     const sessionId = String(row.sessionId ?? row.id ?? "").trim();
-    const userId = String(row.userId ?? row.user_id ?? "").trim();
+    const userId = String(row.userId ?? row.user_id ?? "").trim().toLowerCase();
     if (!sessionId || !userId) continue;
-    if (!input.canRunGlobal && userId !== input.requesterUserId) continue;
+    if (!input.canRunGlobal && requesterUserId && userId !== requesterUserId) continue;
 
     const status = String(row.status ?? "").trim().toLowerCase();
     const online = status === "online" || row.online === true;
@@ -6336,9 +6948,9 @@ async function hasCrossAccountActiveWhatsAppPhone(phone: string, userId: string,
     `SELECT id
        FROM whatsapp_sessions
       WHERE phone = $1
-        AND user_id <> $2
+        AND user_id::text <> $2
         AND status IN ('online', 'connecting', 'qr_code', 'pairing_code')
-        AND ($3 = '' OR id <> $3)
+        AND ($3 = '' OR id::text <> $3)
       LIMIT 1`,
     [normalizedPhone, userId, sessionId],
   );
@@ -6352,9 +6964,9 @@ async function hasCrossAccountActiveTelegramPhone(phone: string, userId: string,
     `SELECT id
        FROM telegram_sessions
       WHERE phone = $1
-        AND user_id <> $2
+        AND user_id::text <> $2
         AND status IN ('online', 'connecting', 'awaiting_code', 'awaiting_password')
-        AND ($3 = '' OR id <> $3)
+        AND ($3 = '' OR id::text <> $3)
       LIMIT 1`,
     [normalizedPhone, userId, sessionId],
   );
@@ -7007,12 +7619,861 @@ rpcRouter.post("/rpc", async (req, res) => {
         fail(res, `Falha ao purgar historico: ${msg}`, 500); return;
       }
     }
+    // ── analytics-sync-all-groups: sync groups from all online WA sessions ──
+    if (funcName === "analytics-sync-all-groups") {
+      await reconcileWhatsAppSessionsFromHealth(userId).catch(() => ({ reconciled: 0, online: false }));
+
+      const dbSessions = await query<{ id: string; name: string; status: string | null }>(
+        `SELECT id, name, status FROM whatsapp_sessions WHERE user_id = $1`,
+        [userId],
+      );
+      const dbById = new Map<string, { id: string; name: string; status: string | null }>();
+      for (const session of dbSessions) {
+        const sessionId = String(session?.id || "").trim();
+        if (!sessionId) continue;
+        dbById.set(sessionId, session);
+      }
+
+      let runtimeHealthSucceeded = false;
+      const runtimeOnlineRows = await loadOnlineSessionsFromConnectorHealth({
+        platform: "whatsapp",
+        requesterUserId: userId,
+        canRunGlobal: false,
+      }).then((rows) => { runtimeHealthSucceeded = true; return rows; }).catch(() => []);
+
+      const onlineSessionsMap = new Map<string, { id: string; name: string; source: "runtime" | "db" | "probe" }>();
+      for (const runtimeRow of runtimeOnlineRows) {
+        const sessionId = String(runtimeRow?.id || "").trim();
+        if (!sessionId) continue;
+        const dbSession = dbById.get(sessionId);
+        if (!dbSession) continue;
+        onlineSessionsMap.set(sessionId, {
+          id: sessionId,
+          name: String(dbSession.name || sessionId),
+          source: "runtime",
+        });
+      }
+
+      // DB-status fallback: only use when the runtime health check itself failed
+      // (Baileys unreachable). If Baileys responded but reported no online sessions
+      // for this user, honour that — don't try sessions that are genuinely offline.
+      if (onlineSessionsMap.size === 0 && !runtimeHealthSucceeded) {
+        for (const dbSession of dbSessions) {
+          const sessionId = String(dbSession?.id || "").trim();
+          if (!sessionId) continue;
+          if (normalizeWhatsAppStatus(dbSession.status) !== "online") continue;
+          onlineSessionsMap.set(sessionId, {
+            id: sessionId,
+            name: String(dbSession?.name || sessionId),
+            source: "db",
+          });
+        }
+      }
+
+      let sessionsToSync = Array.from(onlineSessionsMap.values());
+      let discoveryMode: "runtime_or_db" | "probe_all" = "runtime_or_db";
+      if (sessionsToSync.length === 0) {
+        const probeMap = new Map<string, { id: string; name: string; source: "probe" }>();
+        for (const dbSession of dbSessions) {
+          const sessionId = String(dbSession?.id || "").trim();
+          if (!sessionId) continue;
+          probeMap.set(sessionId, {
+            id: sessionId,
+            name: String(dbSession?.name || sessionId),
+            source: "probe",
+          });
+        }
+        sessionsToSync = Array.from(probeMap.values());
+        discoveryMode = "probe_all";
+      }
+
+      if (sessionsToSync.length === 0) {
+        ok(res, {
+          success: false,
+          sessionsSynced: 0,
+          totalGroups: 0,
+          errors: ["Nenhuma sessao WhatsApp cadastrada para sincronizacao."],
+          sessionsEvaluated: 0,
+          runtimeOnline: 0,
+          sessionDiscoveryMode: discoveryMode,
+        });
+        return;
+      }
+
+      const settled = await Promise.allSettled(
+        sessionsToSync.map((session) =>
+          syncWhatsAppSessionGroups({
+            userId,
+            sessionId: session.id,
+            includeEventPoll: true,
+            timeoutMs: 45_000,
+          }).then((r) => ({ session, result: r })),
+        ),
+      );
+
+      let totalGroups = 0;
+      let sessionsSynced = 0;
+      const errors: string[] = [];
+
+      for (let index = 0; index < settled.length; index += 1) {
+        const outcome = settled[index];
+        const session = sessionsToSync[index];
+        if (outcome.status === "fulfilled") {
+          totalGroups += outcome.value.result.count;
+          sessionsSynced += 1;
+        } else {
+          errors.push(`${session?.name || session?.id || "??"}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`);
+        }
+      }
+
+      ok(res, {
+        success: sessionsSynced > 0,
+        sessionsSynced,
+        totalGroups,
+        errors,
+        sessionsEvaluated: sessionsToSync.length,
+        runtimeOnline: runtimeOnlineRows.length,
+        sessionDiscoveryMode: discoveryMode,
+      });
+      return;
+    }
+
+    // ── analytics-admin-groups: fetch WA groups where user is admin ──
+    // Reads directly from DB — no synchronous WhatsApp probe.
+    // Strict mode: only admin groups are returned.
+    if (funcName === "analytics-admin-groups") {
+      const hasAdminColumns = await hasGroupsAdminColumns();
+      const baseGroups = await query<{
+        id: string;
+        name: string;
+        external_id: string;
+        member_count: number;
+        session_id: string | null;
+        is_admin: boolean;
+        owner_jid: string;
+        invite_code: string;
+        invite_link: string;
+      }>(
+        `SELECT
+           g.id,
+           g.name,
+           COALESCE(g.external_id, '') AS external_id,
+           COALESCE(g.member_count, 0)::int AS member_count,
+           g.session_id,
+           COALESCE((to_jsonb(g)->>'is_admin')::boolean, FALSE) AS is_admin,
+           COALESCE(to_jsonb(g)->>'owner_jid', '') AS owner_jid,
+           COALESCE(to_jsonb(g)->>'invite_code', '') AS invite_code,
+           COALESCE(NULLIF(to_jsonb(g)->>'invite_link', ''), '') AS invite_link
+           FROM groups g
+          WHERE g.user_id = $1
+            AND g.platform = 'whatsapp'
+            AND g.deleted_at IS NULL
+          ORDER BY g.name`,
+        [userId],
+      );
+
+      const displayGroups = hasAdminColumns
+        ? baseGroups.filter((g) => Boolean(g.is_admin))
+        : [];
+      const adminFilterMode = hasAdminColumns ? "strict" : "schema_missing_admin_columns";
+
+      ok(res, {
+        groups: displayGroups.map(g => ({
+          id: g.id,
+          name: g.name,
+          externalId: g.external_id,
+          memberCount: g.member_count,
+          sessionId: g.session_id || "",
+          isAdmin: Boolean(g.is_admin),
+          ownerJid: g.owner_jid,
+          inviteCode: g.invite_code,
+          inviteLink: g.invite_link || null,
+        })),
+        adminGroupsCount: displayGroups.length,
+        adminFilterMode,
+      });
+      return;
+    }
+
+    if (funcName === "analytics-members-evolution") {
+      const rawScope    = String(params.scope || "all").trim();
+      const rawDays     = Math.max(1, Math.min(365, toInt(params.days, 30)));
+      const rawGroupIds = Array.isArray(params.scopeGroupIds)
+        ? params.scopeGroupIds.map((id: unknown) => String(id).trim()).filter(isUuid)
+        : [];
+
+      const result = await loadWhatsAppMembersEvolution({
+        userId,
+        scope: rawScope,
+        days: rawDays,
+        scopeGroupIds: rawGroupIds,
+      });
+
+      ok(res, result);
+      return;
+    }
+
+    // ── analytics-store-movement ──────────────────────────────────────────────
+    // Called exclusively by the WhatsApp Baileys service (service-secret auth).
+    // Inserts a member event and auto-correlates permanence time when a matching
+    // entry is found for a leaving member.
+    if (funcName === "analytics-store-movement") {
+      if (!isService && !effectiveAdmin) {
+        fail(res, "Não autorizado", 403);
+        return;
+      }
+
+      const groupExternalId = String(params.groupExternalId || "").trim();
+      const eventType       = String(params.eventType || "").trim();
+      const memberPhone     = String(params.memberPhone || "").trim();
+      const authorPhone     = String(params.authorPhone || "").trim();
+      const eventTimestamp  = String(params.eventTimestamp || new Date().toISOString()).trim();
+      const sessionId       = params.sessionId ? String(params.sessionId).trim() : null;
+
+      const validTypes = ["member_joined", "member_left", "member_removed"];
+      if (!groupExternalId || !validTypes.includes(eventType) || !memberPhone) {
+        fail(res, "Parâmetros inválidos para analytics-store-movement", 400);
+        return;
+      }
+
+      // Resolve group UUID from external_id (WhatsApp JID)
+      // We don't know the userId here — it's a service call — so we find the group
+      // by external_id without scoping to a single user (service is trusted).
+      const groupRow = await queryOne<{ id: string; user_id: string; session_id: string | null }>(
+        `SELECT id, user_id, session_id FROM groups
+          WHERE external_id = $1 AND platform = 'whatsapp' AND deleted_at IS NULL
+          LIMIT 1`,
+        [groupExternalId],
+      );
+      if (!groupRow) {
+        // Group not yet synced — silently ignore
+        ok(res, { stored: false, reason: "group_not_found" });
+        return;
+      }
+
+      const groupUUID = groupRow.id;
+      const ownerUserId = groupRow.user_id;
+
+      // Insert the movement row
+      const inserted = await queryOne<{ id: string }>(
+        `INSERT INTO group_member_movements
+           (user_id, group_id, event_type, member_phone, author_phone, event_timestamp, session_id)
+         VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7)
+         RETURNING id`,
+        [ownerUserId, groupUUID, eventType, memberPhone, authorPhone, eventTimestamp, sessionId],
+      );
+      if (!inserted) {
+        fail(res, "Falha ao inserir movimento");
+        return;
+      }
+      const newId = inserted.id;
+
+      // For departures, try to find and correlate the last entry from same member
+      if (eventType === "member_left" || eventType === "member_removed") {
+        const entryRow = await queryOne<{ id: string; event_timestamp: string }>(
+          `SELECT id, event_timestamp
+             FROM group_member_movements
+            WHERE group_id = $1
+              AND member_phone = $2
+              AND event_type = 'member_joined'
+              AND entry_event_id IS NULL
+            ORDER BY event_timestamp DESC
+            LIMIT 1`,
+          [groupUUID, memberPhone],
+        );
+        if (entryRow) {
+          const entryTime  = new Date(entryRow.event_timestamp).getTime();
+          const exitTime   = new Date(eventTimestamp).getTime();
+          const diffMinutes = Math.max(0, Math.round((exitTime - entryTime) / 60000));
+
+          // Update exit row with permanence and link to entry
+          await execute(
+            `UPDATE group_member_movements
+                SET time_permanence_minutes = $1, entry_event_id = $2
+              WHERE id = $3`,
+            [diffMinutes, entryRow.id, newId],
+          );
+          // Also back-link the entry row so it knows about exit
+          await execute(
+            `UPDATE group_member_movements SET entry_event_id = $1 WHERE id = $2 AND entry_event_id IS NULL`,
+            [newId, entryRow.id],
+          );
+        }
+
+        // If an active recapture rule exists, enqueue the message
+        const rule = await queryOne<{ id: string; delay_hours: number; message_template: string }>(
+          `SELECT id, delay_hours, message_template
+             FROM group_recapture_rules
+            WHERE group_id = $1 AND active = true
+            LIMIT 1`,
+          [groupUUID],
+        );
+        if (rule && rule.message_template.trim()) {
+          const scheduledAt = new Date(
+            new Date(eventTimestamp).getTime() + rule.delay_hours * 3_600_000,
+          ).toISOString();
+          await execute(
+            `INSERT INTO group_recapture_queue
+               (user_id, group_id, movement_id, rule_id, member_phone, scheduled_at)
+             VALUES ($1, $2, $3, $4, $5, $6::timestamptz)`,
+            [ownerUserId, groupUUID, newId, rule.id, memberPhone, scheduledAt],
+          );
+        }
+      }
+
+      ok(res, { stored: true, movementId: newId });
+      return;
+    }
+
+    // ── analytics-cross-group-overlap ──────────────────────────────────────────
+    // Counts phones currently present in more than one of the scoped groups.
+    // "Currently present" = last event for that (phone, group) pair is member_joined.
+    if (funcName === "analytics-cross-group-overlap") {
+      const rawGroupIds = Array.isArray(params.scopeGroupIds)
+        ? (params.scopeGroupIds as unknown[]).map((id) => String(id).trim()).filter(isUuid)
+        : [];
+      const overlapDays = Math.max(1, Math.min(365, toInt(params.days, 30)));
+
+      // Resolve scope: requested IDs or all user groups
+      let scopeIds: string[] = rawGroupIds;
+      if (scopeIds.length === 0) {
+        const allRows = await query<{ id: string }>(
+          `SELECT id FROM groups WHERE user_id = $1 AND platform = 'whatsapp' AND deleted_at IS NULL`,
+          [userId],
+        );
+        scopeIds = allRows.map((r) => r.id);
+      }
+
+      if (scopeIds.length < 2) {
+        ok(res, {
+          overlapCount: 0,
+          maxGroupsPerMember: 0,
+          avgGroupsPerMember: 0,
+          analyzedGroups: scopeIds.length,
+          hasData: false,
+        });
+        return;
+      }
+
+      const row = await queryOne<{
+        overlap_count: number;
+        max_count: number;
+        avg_count: number;
+        total_phones: number;
+      }>(
+        `WITH current_membership AS (
+           SELECT DISTINCT ON (member_phone, group_id)
+             member_phone,
+             group_id,
+             event_type
+           FROM group_member_movements
+           WHERE user_id = $1
+             AND group_id = ANY($2::uuid[])
+             AND event_timestamp >= NOW() - ($3 * INTERVAL '1 day')
+           ORDER BY member_phone, group_id, event_timestamp DESC
+         ),
+         active AS (
+           SELECT member_phone, group_id
+           FROM current_membership
+           WHERE event_type = 'member_joined'
+         ),
+         phone_totals AS (
+           SELECT member_phone, COUNT(DISTINCT group_id)::int AS cnt
+           FROM active
+           GROUP BY member_phone
+         ),
+         overlap AS (
+           SELECT member_phone, cnt
+           FROM phone_totals
+           WHERE cnt > 1
+         )
+         SELECT
+           COUNT(*)::int                            AS overlap_count,
+           COALESCE(MAX(cnt), 0)::int               AS max_count,
+           COALESCE(ROUND(AVG(cnt)::numeric, 1), 0) AS avg_count,
+           (SELECT COUNT(DISTINCT member_phone)::int FROM phone_totals) AS total_phones
+         FROM overlap`,
+        [userId, scopeIds, overlapDays],
+      );
+
+      ok(res, {
+        overlapCount:        row?.overlap_count      ?? 0,
+        maxGroupsPerMember:  row?.max_count          ?? 0,
+        avgGroupsPerMember:  Number(row?.avg_count   ?? 0),
+        totalPhonesAnalyzed: row?.total_phones       ?? 0,
+        analyzedGroups:      scopeIds.length,
+        hasData:             (row?.overlap_count     ?? 0) > 0,
+      });
+      return;
+    }
+
+    // ── analytics-movement-history ────────────────────────────────────────────
+    // Returns a paginated feed of member movement events for a group.
+    if (funcName === "analytics-movement-history") {
+      const groupUuid  = String(params.groupId    || "").trim();
+      const days       = Math.min(365, Math.max(1, Number(params.days)  || 30));
+      const eventType  = String(params.eventType  || "all").trim();  // all | joined | left
+      const page       = Math.max(0, Number(params.page)  || 0);
+      const limit      = Math.min(100, Math.max(1, Number(params.limit) || 50));
+      const offset     = page * limit;
+
+      if (!groupUuid) { fail(res, "groupId obrigatório", 400); return; }
+
+      // Ownership check (404 not 403 — don't reveal existence)
+      const groupOwned = await queryOne<{ id: string }>(
+        `SELECT id FROM groups WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [groupUuid, userId],
+      );
+      if (!groupOwned) { fail(res, "Grupo não encontrado", 404); return; }
+
+      const validTypes = ["member_joined", "member_left", "member_removed"];
+      const typeFilter = validTypes.includes(eventType)
+        ? `AND event_type = '${eventType}'`
+        : eventType === "left"
+          ? `AND event_type IN ('member_left', 'member_removed')`
+          : "";
+
+      const items = await query<{
+        id: string;
+        event_type: string;
+        member_phone: string;
+        author_phone: string;
+        event_timestamp: string;
+        time_permanence_minutes: number | null;
+        entry_event_id: string | null;
+        session_id: string | null;
+      }>(
+        `SELECT id, event_type, member_phone, author_phone, event_timestamp,
+                time_permanence_minutes, entry_event_id, session_id
+           FROM group_member_movements
+          WHERE group_id = $1
+            AND user_id  = $2
+            AND event_timestamp >= NOW() - ($3 || ' days')::interval
+            ${typeFilter}
+          ORDER BY event_timestamp DESC
+          LIMIT $4 OFFSET $5`,
+        [groupUuid, userId, String(days), limit, offset],
+      );
+
+      const countRow = await queryOne<{ total: string }>(
+        `SELECT COUNT(*) AS total
+           FROM group_member_movements
+          WHERE group_id = $1
+            AND user_id  = $2
+            AND event_timestamp >= NOW() - ($3 || ' days')::interval
+            ${typeFilter}`,
+        [groupUuid, userId, String(days)],
+      );
+
+      ok(res, {
+        items: items.map((row) => ({
+          id: row.id,
+          groupId: groupUuid,
+          eventType: row.event_type,
+          memberPhone: row.member_phone,
+          authorPhone: row.author_phone || null,
+          eventTimestamp: row.event_timestamp,
+          timePermanenceMinutes: row.time_permanence_minutes ?? null,
+          entryEventId: row.entry_event_id ?? null,
+          sessionId: row.session_id ?? null,
+        })),
+        total: Number(countRow?.total ?? 0),
+        page,
+        limit,
+      });
+      return;
+    }
+
+    // ── analytics-movement-kpis ───────────────────────────────────────────────
+    // Aggregate KPIs for the history tab header cards.
+    if (funcName === "analytics-movement-kpis") {
+      const groupUuid = String(params.groupId || "").trim();
+      const days      = Math.min(365, Math.max(1, Number(params.days) || 30));
+
+      if (!groupUuid) { fail(res, "groupId obrigatório", 400); return; }
+
+      const groupOwned = await queryOne<{ id: string }>(
+        `SELECT id FROM groups WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [groupUuid, userId],
+      );
+      if (!groupOwned) { fail(res, "Grupo não encontrado", 404); return; }
+
+      const kpiRow = await queryOne<{
+        total_joins: string;
+        total_leaves: string;
+        avg_perm: string | null;
+        median_perm: string | null;
+        max_perm: string | null;
+        exits_under_24h: string;
+        exits_under_7d: string;
+      }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE event_type = 'member_joined') AS total_joins,
+           COUNT(*) FILTER (WHERE event_type IN ('member_left', 'member_removed')) AS total_leaves,
+           AVG(time_permanence_minutes) FILTER (WHERE time_permanence_minutes IS NOT NULL) AS avg_perm,
+           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY time_permanence_minutes)
+             FILTER (WHERE time_permanence_minutes IS NOT NULL) AS median_perm,
+           MAX(time_permanence_minutes) FILTER (WHERE time_permanence_minutes IS NOT NULL) AS max_perm,
+           COUNT(*) FILTER (
+             WHERE event_type IN ('member_left', 'member_removed')
+               AND time_permanence_minutes IS NOT NULL
+               AND time_permanence_minutes < 1440
+           ) AS exits_under_24h,
+           COUNT(*) FILTER (
+             WHERE event_type IN ('member_left', 'member_removed')
+               AND time_permanence_minutes IS NOT NULL
+               AND time_permanence_minutes < 10080
+           ) AS exits_under_7d
+         FROM group_member_movements
+        WHERE group_id = $1
+          AND user_id  = $2
+          AND event_timestamp >= NOW() - ($3 || ' days')::interval`,
+        [groupUuid, userId, String(days)],
+      );
+
+      const avgMin = kpiRow?.avg_perm != null ? Math.round(Number(kpiRow.avg_perm)) : null;
+
+      ok(res, {
+        totalJoins:              Number(kpiRow?.total_joins ?? 0),
+        totalLeaves:             Number(kpiRow?.total_leaves ?? 0),
+        avgPermanenceMinutes:    avgMin,
+        avgPermanenceFormatted:  avgMin != null ? formatPermanenceMinutes(avgMin) : null,
+        medianPermanenceMinutes: kpiRow?.median_perm != null ? Math.round(Number(kpiRow.median_perm)) : null,
+        maxPermanenceMinutes:    kpiRow?.max_perm    != null ? Math.round(Number(kpiRow.max_perm))    : null,
+        exitsUnder24h:           Number(kpiRow?.exits_under_24h ?? 0),
+        exitsUnder7d:            Number(kpiRow?.exits_under_7d  ?? 0),
+      });
+      return;
+    }
+
+    // ── analytics-recapture-rule-save ─────────────────────────────────────────
+    // Upsert a recapture rule for a group (one per group).
+    if (funcName === "analytics-recapture-rule-save") {
+      const groupUuid      = String(params.groupId         || "").trim();
+      const delayHours     = Math.max(0, Number(params.delayHours) || 0);
+      const messageTemplate = String(params.messageTemplate || "").trim();
+      const active         = params.active !== false; // default true
+      const sessionWaId    = params.sessionWaId ? String(params.sessionWaId).trim() : null;
+
+      if (!groupUuid) { fail(res, "groupId obrigatório", 400); return; }
+
+      const groupOwned = await queryOne<{ id: string }>(
+        `SELECT id FROM groups WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [groupUuid, userId],
+      );
+      if (!groupOwned) { fail(res, "Grupo não encontrado", 404); return; }
+
+      // Validate the chosen session belongs to this user
+      if (sessionWaId) {
+        const sessionOwned = await queryOne<{ id: string }>(
+          `SELECT id FROM whatsapp_sessions WHERE id = $1 AND user_id = $2`,
+          [sessionWaId, userId],
+        );
+        if (!sessionOwned) { fail(res, "Sessão não encontrada", 404); return; }
+      }
+
+      const saved = await queryOne<{
+        id: string; delay_hours: number; message_template: string;
+        active: boolean; session_wa_id: string | null; created_at: string; updated_at: string;
+      }>(
+        `INSERT INTO group_recapture_rules (user_id, group_id, delay_hours, message_template, active, session_wa_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (group_id) DO UPDATE
+           SET delay_hours      = EXCLUDED.delay_hours,
+               message_template = EXCLUDED.message_template,
+               active           = EXCLUDED.active,
+               session_wa_id    = EXCLUDED.session_wa_id,
+               updated_at       = NOW()
+         RETURNING id, delay_hours, message_template, active, session_wa_id, created_at, updated_at`,
+        [userId, groupUuid, delayHours, messageTemplate, active, sessionWaId],
+      );
+
+      ok(res, {
+        id: saved?.id,
+        groupId: groupUuid,
+        delayHours: saved?.delay_hours ?? delayHours,
+        messageTemplate: saved?.message_template ?? messageTemplate,
+        active: saved?.active ?? active,
+        sessionWaId: saved?.session_wa_id ?? null,
+        createdAt: saved?.created_at,
+        updatedAt: saved?.updated_at,
+      });
+      return;
+    }
+
+    // ── analytics-recapture-queue ─────────────────────────────────────────────
+    // Returns the rule config + pending and recently processed queue items.
+    if (funcName === "analytics-recapture-queue") {
+      const groupUuid = String(params.groupId || "").trim();
+      if (!groupUuid) { fail(res, "groupId obrigatório", 400); return; }
+
+      const groupOwned = await queryOne<{ id: string }>(
+        `SELECT id FROM groups WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [groupUuid, userId],
+      );
+      if (!groupOwned) { fail(res, "Grupo não encontrado", 404); return; }
+
+      const rule = await queryOne<{
+        id: string; delay_hours: number; message_template: string;
+        active: boolean; session_wa_id: string | null; created_at: string; updated_at: string;
+      }>(
+        `SELECT id, delay_hours, message_template, active, session_wa_id, created_at, updated_at
+           FROM group_recapture_rules WHERE group_id = $1 AND user_id = $2`,
+        [groupUuid, userId],
+      );
+
+      const pending = await query<{
+        id: string; member_phone: string; scheduled_at: string;
+        status: string; sent_at: string | null; error_message: string;
+        movement_id: string;
+      }>(
+        `SELECT id, member_phone, scheduled_at, status, sent_at, error_message, movement_id
+           FROM group_recapture_queue
+          WHERE group_id = $1 AND user_id = $2 AND status = 'pending'
+          ORDER BY scheduled_at ASC LIMIT 100`,
+        [groupUuid, userId],
+      );
+
+      const recent = await query<{
+        id: string; member_phone: string; scheduled_at: string;
+        status: string; sent_at: string | null; error_message: string;
+        movement_id: string;
+      }>(
+        `SELECT id, member_phone, scheduled_at, status, sent_at, error_message, movement_id
+           FROM group_recapture_queue
+          WHERE group_id = $1 AND user_id = $2 AND status IN ('sent', 'failed')
+          ORDER BY COALESCE(sent_at, scheduled_at) DESC LIMIT 50`,
+        [groupUuid, userId],
+      );
+
+      const mapItem = (row: typeof pending[0]) => ({
+        id: row.id,
+        groupId: groupUuid,
+        movementId: row.movement_id,
+        memberPhone: row.member_phone,
+        scheduledAt: row.scheduled_at,
+        sentAt: row.sent_at ?? null,
+        status: row.status,
+        errorMessage: row.error_message || "",
+      });
+
+      ok(res, {
+        rule: rule
+          ? {
+              id: rule.id,
+              groupId: groupUuid,
+              delayHours: rule.delay_hours,
+              messageTemplate: rule.message_template,
+              active: rule.active,
+              sessionWaId: rule.session_wa_id ?? null,
+              createdAt: rule.created_at,
+              updatedAt: rule.updated_at,
+            }
+          : null,
+        pending: pending.map(mapItem),
+        recent: recent.map(mapItem),
+      });
+      return;
+    }
+
+    // ── analytics-recapture-process-batch ────────────────────────────────────
+    // Called by the Baileys recapture-dispatcher to get the next batch of items
+    // to send. Only service / trusted backend callers.
+    if (funcName === "analytics-recapture-process-batch") {
+      if (!isService && !effectiveAdmin) {
+        fail(res, "Não autorizado", 403);
+        return;
+      }
+
+      const batch = await query<{
+        id: string;
+        member_phone: string;
+        message_template: string;
+        external_id: string;
+        session_id: string | null;
+        time_permanence_minutes: number | null;
+      }>(
+        `SELECT q.id, q.member_phone, r.message_template,
+                g.external_id, COALESCE(r.session_wa_id, g.session_id) AS session_id,
+                m.time_permanence_minutes
+           FROM group_recapture_queue q
+           JOIN group_recapture_rules r ON r.id = q.rule_id
+           JOIN groups                g ON g.id = q.group_id AND g.deleted_at IS NULL
+           JOIN group_member_movements m ON m.id = q.movement_id
+          WHERE q.status = 'pending'
+            AND q.scheduled_at <= NOW()
+          ORDER BY q.scheduled_at ASC
+          LIMIT 20`,
+        [],
+      );
+
+      ok(res, batch.map((row) => ({
+        queueId:                row.id,
+        memberPhone:            row.member_phone,
+        messageTemplate:        row.message_template,
+        groupExternalId:        row.external_id,
+        sessionId:              row.session_id ?? null,
+        timePermanenceMinutes:  row.time_permanence_minutes ?? null,
+      })));
+      return;
+    }
+
+    // ── analytics-recapture-mark-sent ─────────────────────────────────────────
+    // Called by the Baileys recapture-dispatcher after each send attempt.
+    if (funcName === "analytics-recapture-mark-sent") {
+      if (!isService && !effectiveAdmin) {
+        fail(res, "Não autorizado", 403);
+        return;
+      }
+
+      const queueId     = String(params.queueId      || "").trim();
+      const status      = String(params.status        || "").trim();
+      const errorMessage = String(params.errorMessage || "").trim().slice(0, 500);
+
+      if (!queueId || !["sent", "failed"].includes(status)) {
+        fail(res, "Parâmetros inválidos para analytics-recapture-mark-sent", 400);
+        return;
+      }
+
+      await execute(
+        `UPDATE group_recapture_queue
+            SET status = $1, sent_at = NOW(), error_message = $2
+          WHERE id = $3`,
+        [status, errorMessage, queueId],
+      );
+
+      ok(res, { updated: true });
+      return;
+    }
+
+    // ── Analytics RPC proxy functions ──────────────────────────────────────────
+    // These proxy calls go through the Baileys service with proper auth headers
+    const analyticsRpcActions: string[] = [
+      "analytics-composition",
+      "analytics-geography",
+      "analytics-churn-daily",
+      "analytics-churn-trends",
+      "analytics-churn-retention",
+      "analytics-health-score",
+      "analytics-group-summary",
+    ];
+
+    if (analyticsRpcActions.includes(funcName)) {
+      if (!WHATSAPP_URL) {
+        fail(res, "WHATSAPP_MICROSERVICE_URL não definido");
+        return;
+      }
+
+      const groupUuid = String(params.groupId || "").trim();
+      const days = Number(params.days) || 30;
+
+      if (!groupUuid) {
+        fail(res, "groupId obrigatório", 400);
+        return;
+      }
+
+      // Resolve external_id (WhatsApp JID) e session_id para o grupo
+      const groupRow = await queryOne<{ external_id: string; session_id: string }>(
+        `SELECT external_id, session_id FROM groups
+         WHERE id = $1 AND user_id = $2 AND platform = 'whatsapp' AND deleted_at IS NULL`,
+        [groupUuid, userId],
+      );
+
+      if (!groupRow) {
+        fail(res, "Grupo não encontrado", 404);
+        return;
+      }
+
+      const externalId = String(groupRow.external_id || "").trim();
+      const sessionId  = String(groupRow.session_id  || "").trim();
+
+      if (!externalId) {
+        fail(res, "Grupo sem external_id — sincronize novamente", 422);
+        return;
+      }
+
+      const sessionQuery = sessionId ? `sessionId=${encodeURIComponent(sessionId)}` : "";
+
+      // Mapeia função → endpoint Baileys usando o WhatsApp JID correto
+      const endpointMap: Record<string, string> = {
+        "analytics-composition":    `/api/analytics/groups/${encodeURIComponent(externalId)}/composition${sessionQuery ? `?${sessionQuery}` : ""}`,
+        "analytics-geography":      `/api/analytics/groups/${encodeURIComponent(externalId)}/geography${sessionQuery ? `?${sessionQuery}` : ""}`,
+        "analytics-churn-daily":    `/api/analytics/groups/${encodeURIComponent(externalId)}/churn/daily?days=${days}${sessionQuery ? `&${sessionQuery}` : ""}`,
+        "analytics-churn-trends":   `/api/analytics/groups/${encodeURIComponent(externalId)}/churn/trends${sessionQuery ? `?${sessionQuery}` : ""}`,
+        "analytics-churn-retention":`/api/analytics/groups/${encodeURIComponent(externalId)}/churn/retention${sessionQuery ? `?${sessionQuery}` : ""}`,
+        "analytics-health-score":   `/api/analytics/groups/${encodeURIComponent(externalId)}/health?days=${days}${sessionQuery ? `&${sessionQuery}` : ""}`,
+        "analytics-group-summary":  `/api/analytics/groups/${encodeURIComponent(externalId)}/summary?days=${days}${sessionQuery ? `&${sessionQuery}` : ""}`,
+      };
+
+      const endpoint = endpointMap[funcName];
+      if (!endpoint) {
+        fail(res, `Função de analytics não mapeada: ${funcName}`);
+        return;
+      }
+
+      const r = await proxyMicroservice(
+        WHATSAPP_URL,
+        endpoint,
+        "GET",
+        null,
+        buildUserScopedHeaders(userId),
+      );
+
+      let resolved = r;
+      if (
+        resolved.error
+        && sessionId
+        && resolved.error.status === 404
+      ) {
+        const normalizedError = String(resolved.error.message || "").toLowerCase();
+        const canRetryWithoutSession = (
+          normalizedError.includes("grupo nao encontrado")
+          || normalizedError.includes("grupo não encontrado")
+          || normalizedError.includes("group not found")
+        );
+
+        if (canRetryWithoutSession) {
+          const retryEndpoint = stripSessionIdQueryParam(endpoint);
+          if (retryEndpoint !== endpoint) {
+            resolved = await proxyMicroservice(
+              WHATSAPP_URL,
+              retryEndpoint,
+              "GET",
+              null,
+              buildUserScopedHeaders(userId),
+            );
+          }
+        }
+      }
+
+      if (resolved.error) {
+        fail(res, resolved.error.message || "Falha ao buscar métricas", 502);
+        return;
+      }
+
+      ok(res, unwrapAnalyticsPayload(resolved.data));
+      return;
+    }
+
 if (funcName === "whatsapp-connect") {
       const action = String(params.action ?? "");
       const sessionId = String(params.sessionId ?? "");
+      // Ownership guard: verify session belongs to this user before any session-specific action
+      if (sessionId && action !== "health" && action !== "poll_events_all") {
+        const ownedWa = await queryOne("SELECT id FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
+        if (!ownedWa) { fail(res, "Sessão não encontrada"); return; }
+      }
       if (!WHATSAPP_URL) {
         if (action === "health") { ok(res, { online: false, url: "", uptimeSec: null, sessions: [], error: "WHATSAPP_MICROSERVICE_URL não definido" }); return; }
         if (action === "poll_events_all" || action === "poll_events") { ok(res, { success: true, sessions: 0, events: 0 }); return; }
+        if (action === "delete") {
+          await execute(
+            "DELETE FROM whatsapp_sessions WHERE id = $1 AND user_id = $2",
+            [sessionId, userId],
+          );
+          ok(res, { success: true, status: "deleted", runtimeCleanup: "skipped", runtimeError: "WHATSAPP_MICROSERVICE_URL não definido" });
+          return;
+        }
         fail(res, "WHATSAPP_MICROSERVICE_URL não definido"); return;
       }
       if (action === "health") {
@@ -7062,11 +8523,6 @@ if (funcName === "whatsapp-connect") {
           healthFallbackAdded: Math.max(0, sessions.length - dbRows.length),
         }); return;
       }
-      // Ownership guard: verify session belongs to this user before any session-specific action
-      if (sessionId && action !== "health" && action !== "poll_events_all") {
-        const ownedWa = await queryOne("SELECT id FROM whatsapp_sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
-        if (!ownedWa) { fail(res, "Sessão não encontrada"); return; }
-      }
       if (action === "poll_events") {
         const events = await pollWhatsAppEventsForSession(userId, sessionId);
         ok(res, { success: true, events }); return;
@@ -7112,27 +8568,51 @@ if (funcName === "whatsapp-connect") {
         await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
         ok(res, { success: true, status: "offline" }); return;
       }
-      if (action === "sync_groups") {
+      if (action === "delete") {
         const waHeaders = buildUserScopedHeaders(userId);
-        const r = await proxyMicroservice(
+        const disconnect = await proxyMicroservice(
           WHATSAPP_URL,
-          `/api/sessions/${encodeURIComponent(sessionId)}/sync-groups`,
+          `/api/sessions/${encodeURIComponent(sessionId)}/disconnect`,
           "POST",
           { sessionId },
           waHeaders,
         );
-        if (r.error) { fail(res, r.error.message); return; }
-        const remoteGroups: Array<Record<string, unknown>> = (r.data && typeof r.data === "object" && Array.isArray((r.data as Record<string, unknown>).groups))
-          ? ((r.data as Record<string, unknown>).groups as Array<Record<string, unknown>>)
-          : [];
-        await syncWhatsAppGroupsWithReconciliation(userId, sessionId, remoteGroups);
-        const inviteSync = await syncMasterGroupWhatsAppInviteLinks(userId, sessionId).catch(() => ({ checked: 0, updated: 0, failed: 0 }));
-        const events = await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
+
+        await execute(
+          "DELETE FROM whatsapp_sessions WHERE id = $1 AND user_id = $2",
+          [sessionId, userId],
+        );
+
+        if (disconnect.error) {
+          ok(res, {
+            success: true,
+            status: "deleted",
+            runtimeCleanup: "failed",
+            runtimeError: disconnect.error.message || "Falha ao encerrar runtime do WhatsApp",
+          });
+          return;
+        }
+
+        ok(res, { success: true, status: "deleted", runtimeCleanup: "ok" });
+        return;
+      }
+      if (action === "sync_groups") {
+        let syncResult: Awaited<ReturnType<typeof syncWhatsAppSessionGroups>>;
+        try {
+          syncResult = await syncWhatsAppSessionGroups({
+            userId,
+            sessionId,
+            includeEventPoll: true,
+          });
+        } catch (error) {
+          fail(res, error instanceof Error ? error.message : String(error));
+          return;
+        }
         ok(res, {
           success: true,
-          count: remoteGroups.length,
-          events,
-          masterGroupInviteSync: inviteSync,
+          count: syncResult.count,
+          events: syncResult.events,
+          masterGroupInviteSync: syncResult.inviteSync,
         }); return;
       }
       if (action === "group_invite") {
@@ -13504,3 +14984,38 @@ if (funcName === "admin-users") {
     res.status(500).json({ data: null, error: { message: msg } });
   }
 });
+
+// ── analytics RPC proxy ──────────────────────────────────────────────────
+async function proxyAnalytics(
+  req: Request,
+  res: Response,
+  path: string,
+  method: string = "GET",
+  body: unknown = null
+): Promise<void> {
+  if (!WHATSAPP_URL) {
+    fail(res, "WHATSAPP_MICROSERVICE_URL não definido");
+    return;
+  }
+  try {
+    const headers: Record<string, string> = {
+      "x-webhook-secret": WEBHOOK_SECRET,
+    };
+    const url = `${WHATSAPP_URL}${path}`;
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      fail(res, data?.error || "Falha no serviço de analytics", response.status);
+      return;
+    }
+    ok(res, data);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    fail(res, `Erro ao comunicar com serviço WhatsApp: ${msg}`, 502);
+  }
+}

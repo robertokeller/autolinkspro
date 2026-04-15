@@ -8,7 +8,7 @@ import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
 import { ProductCard, ProductCardSkeleton, type ShopeeProduct } from "@/components/shopee/ProductCard";
 import { EmptyState } from "@/components/EmptyState";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import { RoutePendingState } from "@/components/RoutePendingState";
+import { PageWrapper } from "@/components/PageWrapper";
 import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { toScheduleProduct } from "@/lib/schedule-product-helpers";
@@ -176,15 +176,12 @@ export default function ShopeeVitrine() {
     if (state) fetchTab(activeTab, state.page + 1, true);
   };
 
-  if (isLoading) {
-    return <RoutePendingState label="Carregando vitrine..." />;
-  }
-
   const state = tabs[activeTab] || emptyTab;
   const anyLoading = state.loading;
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-5 pb-[calc(var(--safe-area-bottom)+0.5rem)] sm:space-y-6">
+    <PageWrapper fallbackLabel="Carregando vitrine...">
+      <div className="mx-auto w-full max-w-7xl space-y-5 pb-[calc(var(--safe-area-bottom)+0.5rem)] sm:space-y-6">
       <PageHeader title="Vitrine de ofertas" description="Produtos em destaque com links de afiliado">
         {isConfigured && (
           <Button size="sm" variant="outline" onClick={refreshCurrent} disabled={anyLoading}>
@@ -258,6 +255,7 @@ export default function ShopeeVitrine() {
         onOpenChange={(open) => { if (!open) setScheduleProduct(null); }}
         product={scheduleProduct ? toScheduleProduct(scheduleProduct) : undefined}
       />
-    </div>
+      </div>
+    </PageWrapper>
   );
 }

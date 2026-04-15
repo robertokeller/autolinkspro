@@ -41,7 +41,7 @@ function shouldRebindLocalApiHost(target: URL): boolean {
   return true;
 }
 
-const SESSION_COOKIE_HELP = "Login nao persistiu sessao (cookie bloqueado). Em local, abra o app no mesmo host da API (localhost/127.0.0.1/IP). Em producao, verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL.";
+const SESSION_COOKIE_HELP = "Login não persistiu sessão (cookie bloqueado). Em local, abra o app no mesmo host da API (localhost/127.0.0.1/IP). Em produção, verifique AUTH_COOKIE_DOMAIN, CORS_ORIGIN, APP_PUBLIC_URL e API_PUBLIC_URL.";
 const API_OVERLOAD_MESSAGE = "Servidor temporariamente sobrecarregado. Aguarde alguns segundos e tente novamente.";
 
 let apiOverloadUntilMs = 0;
@@ -565,7 +565,11 @@ const functions = {
             ? 60_000
           : name === "admin-maintenance"
             ? 20_000
-            : 15_000;
+          : name === "analytics-sync-all-groups"
+            ? 180_000
+            : name === "analytics-admin-groups"
+              ? 20_000
+              : 15_000;
     try {
       const res = await apiFetch("/functions/v1/rpc", { method: "POST", body }, timeoutMs);
       return { data: res.data ?? null, error: res.error ?? null };

@@ -29,6 +29,7 @@ _tmp_*/
 .claude/
 .ai/
 .copilot/
+.qwen/
 .synnacode/
 SKILL.md
 modules/
@@ -57,6 +58,9 @@ services/.analytics/
 # Audit reports and deployment guides (contain security details)
 AUDIT_REPORT_COMPLETE.md
 DEPLOY_GUIDE.md
+SECURITY_AUDIT_*.md
+SECURITY_FIXES_REPORT.md
+FINAL_REPORT.md
 
 # Production env template (contains security guidance)
 .env.production.template

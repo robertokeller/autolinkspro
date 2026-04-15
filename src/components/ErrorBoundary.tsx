@@ -58,7 +58,7 @@ export class ErrorBoundary extends Component<Props, State> {
               this.setState({ error: null });
             }}
           >
-            {isRecoverableDynamicImportError ? "Recarregar pagina" : "Tentar novamente"}
+            {isRecoverableDynamicImportError ? "Recarregar página" : "Tentar novamente"}
           </button>
         </div>
       );

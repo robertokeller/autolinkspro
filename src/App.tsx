@@ -10,6 +10,7 @@ import { ShopeeLinkModuleProvider } from "@/contexts/ShopeeLinkModuleContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SystemRuntime } from "@/components/SystemRuntime";
 import { ViewportAdaptationProvider } from "@/components/ViewportAdaptationProvider";
+import { PageLoadingProvider } from "@/contexts/PageLoadingContext";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,19 +26,21 @@ const App = () => (
     <ViewportAdaptationProvider>
       <ThemeProvider defaultTheme="dark">
         <AuthProvider>
-          <QueryClientProvider client={queryClient}>
-            <TemplateModuleProvider>
-              <ShopeeLinkModuleProvider>
-                <TooltipProvider>
-                  <Sonner />
-                  <BrowserRouter>
-                    <SystemRuntime />
-                    <AppRoutes />
-                  </BrowserRouter>
-                </TooltipProvider>
-              </ShopeeLinkModuleProvider>
-            </TemplateModuleProvider>
-          </QueryClientProvider>
+          <PageLoadingProvider>
+            <QueryClientProvider client={queryClient}>
+              <TemplateModuleProvider>
+                <ShopeeLinkModuleProvider>
+                  <TooltipProvider>
+                    <Sonner />
+                    <BrowserRouter>
+                      <SystemRuntime />
+                      <AppRoutes />
+                    </BrowserRouter>
+                  </TooltipProvider>
+                </ShopeeLinkModuleProvider>
+              </TemplateModuleProvider>
+            </QueryClientProvider>
+          </PageLoadingProvider>
         </AuthProvider>
       </ThemeProvider>
     </ViewportAdaptationProvider>
