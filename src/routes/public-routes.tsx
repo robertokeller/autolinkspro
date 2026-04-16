@@ -15,9 +15,10 @@ export function PublicRoutes() {
       </Route>
       <Route path={ROUTES.auth.verificacaoEmail} element={<Pages.VerificacaoEmail />} />
 
-      {/* These pages are intentionally open: anonymous end-users access them */}
-      <Route path={ROUTES.hubPublic} element={<Pages.LinkHubPublicPage />} />
-      <Route path={ROUTES.masterGroupPublic} element={<Pages.MasterGroupPublicPage />} />
+      <Route element={<RouteGuard allowAdmin />}>
+        <Route path={ROUTES.hubPublic} element={<Pages.LinkHubPublicPage />} />
+        <Route path={ROUTES.masterGroupPublic} element={<Pages.MasterGroupPublicPage />} />
+      </Route>
 
       <Route path={ROUTES.root} element={<Navigate to={ROUTES.home} replace />} />
       <Route path={ROUTES.home} element={<Pages.Index />} />

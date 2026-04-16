@@ -2,7 +2,7 @@
 import bcrypt from "bcryptjs";
 import { v4 as uuid } from "uuid";
 import { pool, query, queryOne, execute, transaction } from "./db.js";
-import { requireAuth, signToken } from "./auth.js";
+import { requireAuth, signToken, setSessionCookie } from "./auth.js";
 import { getPasswordPolicyError } from "./password-policy.js";
 import { decryptCredential, encryptCredential } from "./credential-cipher.js";
 import { consumeRateLimit } from "./rate-limit-store.js";
@@ -52,11 +52,14 @@ async function auditRpcAction(req: Request, action: string, resourceType: string
 }
 
 export const rpcRouter = Router();
-// Public RPC defaults to OFF in production. Enable explicitly via ALLOW_PUBLIC_RPC=true.
-// In development it defaults to ON so link-hub and master-group pages work without auth.
+// Public RPC is opt-in only. Enable explicitly via ALLOW_PUBLIC_RPC=true.
 const _IS_PROD_FOR_RPC = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
-const ALLOW_PUBLIC_RPC = String(process.env.ALLOW_PUBLIC_RPC ?? (_IS_PROD_FOR_RPC ? "false" : "true")).trim().toLowerCase() !== "false";
+const ALLOW_PUBLIC_RPC = String(process.env.ALLOW_PUBLIC_RPC ?? "false").trim().toLowerCase() === "true";
 const IS_PRODUCTION = _IS_PROD_FOR_RPC;
+
+if (IS_PRODUCTION && !ALLOW_PUBLIC_RPC) {
+  console.warn("[rpc] ALLOW_PUBLIC_RPC=false: public Link Hub and master-group invite pages are disabled");
+}
 
 const MAX_URL_LENGTH = Math.max(256, Number(process.env.MAX_URL_LENGTH || "2048") || 2048);
 const WEBHOOK_SECRET = String(process.env.WEBHOOK_SECRET || "").trim();
@@ -100,7 +103,9 @@ const PLAN_EXPIRY_ALLOWED = new Set([
 // â”€â”€ Public: link-hub pages (no authentication required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 rpcRouter.post("/rpc", async (req, res, next) => {
   if (String(req.body?.name ?? "") !== "link-hub-public") { next(); return; }
-  if (!ALLOW_PUBLIC_RPC) {
+  const requesterUserId = String(req.currentUser?.sub ?? "").trim();
+  const requesterIsPrivileged = req.currentUser?.role === "admin" || req.currentUser?.isService === true;
+  if (!ALLOW_PUBLIC_RPC && !requesterUserId) {
     res.status(401).json({ data: null, error: { message: "Autenticação obrigatória" } });
     return;
   }
@@ -111,6 +116,10 @@ rpcRouter.post("/rpc", async (req, res, next) => {
     const page = await queryOne("SELECT slug, title, config, is_active, user_id FROM link_hub_pages WHERE slug = $1 AND is_active = TRUE", [slug]);
     if (!page) { res.json({ data: { page: null, groups: [], groupLabels: {} }, error: null }); return; }
     const ownerUserId = String(page.user_id || "").trim();
+    if (!ALLOW_PUBLIC_RPC && !requesterIsPrivileged && requesterUserId !== ownerUserId) {
+      res.status(403).json({ data: null, error: { message: "Acesso negado" } });
+      return;
+    }
     const resolvePublicInviteUrl = (row: { invite_link?: unknown; external_id?: unknown; platform?: unknown }) => {
       const explicit = String(row.invite_link ?? "").trim();
       if (/^https?:\/\//i.test(explicit)) return explicit;
@@ -206,7 +215,9 @@ rpcRouter.post("/rpc", async (req, res, next) => {
 // Public: resolve and redirect master group invite (no authentication required)
 rpcRouter.post("/rpc", async (req, res, next) => {
   if (String(req.body?.name ?? "") !== "master-group-invite") { next(); return; }
-  if (!ALLOW_PUBLIC_RPC) {
+  const requesterUserId = String(req.currentUser?.sub ?? "").trim();
+  const requesterIsPrivileged = req.currentUser?.role === "admin" || req.currentUser?.isService === true;
+  if (!ALLOW_PUBLIC_RPC && !requesterUserId) {
     res.status(401).json({ data: null, error: { message: "Autenticação obrigatória" } });
     return;
   }
@@ -259,6 +270,11 @@ rpcRouter.post("/rpc", async (req, res, next) => {
 
     if (!masterGroup) {
       res.json({ data: null, error: { message: "Grupo mestre não encontrado" } });
+      return;
+    }
+
+    if (!ALLOW_PUBLIC_RPC && !requesterIsPrivileged && requesterUserId !== String(masterGroup.user_id || "").trim()) {
+      res.status(403).json({ data: null, error: { message: "Acesso negado" } });
       return;
     }
 
@@ -8548,11 +8564,24 @@ if (funcName === "whatsapp-connect") {
           sessionName: String(sess.name ?? sessionId),
         }, waHeaders);
         if (r.error) { fail(res, r.error.message); return; }
-        await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
-        const status = (r.data && typeof r.data === "object" && typeof (r.data as Record<string, unknown>).status === "string")
+        let polledEvents = await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
+        for (let attempt = 0; attempt < 2 && polledEvents <= 0; attempt += 1) {
+          await sleep(700);
+          const extraEvents = await pollWhatsAppEventsForSession(userId, sessionId).catch(() => 0);
+          polledEvents += extraEvents;
+          if (extraEvents > 0) break;
+        }
+
+        const dbState = await queryOne<{ status: string | null }>(
+          "SELECT status FROM whatsapp_sessions WHERE id = $1 AND user_id = $2",
+          [sessionId, userId],
+        );
+        const upstreamStatus = (r.data && typeof r.data === "object" && typeof (r.data as Record<string, unknown>).status === "string")
           ? String((r.data as Record<string, unknown>).status)
-          : "connecting";
-        ok(res, { success: true, status, waiting_webhook: false }); return;
+          : "";
+        const status = normalizeWhatsAppStatus(dbState?.status ?? upstreamStatus ?? "connecting");
+        const waitingWebhook = polledEvents <= 0 && (status === "connecting" || status === "offline");
+        ok(res, { success: true, status, waiting_webhook: waitingWebhook }); return;
       }
       if (action === "disconnect") {
         const waHeaders = buildUserScopedHeaders(userId);
@@ -14504,6 +14533,56 @@ if (funcName === "admin-users") {
         }
         await appendAudit("set_plan_sync_mode", userId, tid, { mode, reason: reason || undefined });
         ok(res, { success: true, plan_sync_mode: mode }); return;
+      }
+      if (action === "impersonate_user") {
+        const tid = String(params.user_id ?? "").trim();
+        if (!tid) { fail(res, "Usuário alvo obrigatório"); return; }
+        if (tid === userId) { fail(res, "Não é permitido entrar como o próprio usuário"); return; }
+
+        const target = await queryOne<{
+          id: string;
+          email: string | null;
+          role: string;
+          account_status: string | null;
+        }>(
+          `SELECT u.id,
+                  u.email,
+                  COALESCE(r.role, 'user') AS role,
+                  COALESCE(NULLIF(u.metadata->>'account_status', ''), 'active') AS account_status
+             FROM users u
+             LEFT JOIN user_roles r ON r.user_id = u.id
+            WHERE u.id = $1`,
+          [tid],
+        );
+        if (!target) { fail(res, "Usuário alvo não encontrado"); return; }
+
+        const targetRole = String(target.role ?? "user") === "admin" ? "admin" : "user";
+        if (targetRole === "admin") { fail(res, "Não é permitido entrar como outra conta admin"); return; }
+
+        const targetStatus = String(target.account_status ?? "active").trim().toLowerCase();
+        if (targetStatus === "blocked" || targetStatus === "archived") {
+          fail(res, "Não é permitido entrar como usuário bloqueado ou arquivado");
+          return;
+        }
+
+        const targetEmail = String(target.email ?? "").trim().toLowerCase();
+        if (!targetEmail) { fail(res, "Email do usuário alvo não encontrado"); return; }
+
+        const impersonationToken = signToken({ sub: target.id, email: targetEmail, role: targetRole });
+        setSessionCookie(res, impersonationToken);
+
+        await appendAudit("impersonate_user", userId, tid, {
+          target_user_id: tid,
+          target_role: targetRole,
+          target_status: targetStatus || "active",
+          initiated_via: "admin_users",
+        });
+
+        ok(res, {
+          ok: true,
+          redirect_url: "/dashboard",
+        });
+        return;
       }
       if (action === "reset_password") {
         const tid = String(params.user_id ?? ""); const pwd = String(params.password ?? "").trim();

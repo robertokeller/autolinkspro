@@ -141,7 +141,8 @@ export function SessoesWhatsApp({
     const shouldPoll =
       authSession.status === "connecting" ||
       authSession.status === "qr_code" ||
-      authSession.status === "pairing_code";
+      authSession.status === "pairing_code" ||
+      authSession.status === "warning";
 
     if (!shouldPoll) return;
 
@@ -590,7 +591,6 @@ export function SessoesWhatsApp({
               <DialogFooter className="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
                 {authSession?.status === "online" ? (
                   <Button className="w-full sm:w-auto"
-                    className="w-full"
                     onClick={() => {
                       setIsSessionFlowOpen(false);
                       resetSessionFlow();

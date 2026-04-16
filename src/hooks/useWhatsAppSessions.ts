@@ -37,6 +37,22 @@ interface RuntimeHealthSnapshot {
   hasSessionDetails: boolean;
 }
 
+const RUNTIME_CONNECT_GRACE_MS = 25_000;
+
+function isWithinRuntimeConnectGrace(row: WhatsAppSessionRow, status: SessionStatus): boolean {
+  if (!(status === "connecting" || status === "qr_code" || status === "pairing_code")) {
+    return false;
+  }
+
+  const updatedAt = String(row.updated_at ?? "").trim();
+  if (!updatedAt) return false;
+
+  const updatedAtMs = Date.parse(updatedAt);
+  if (!Number.isFinite(updatedAtMs)) return false;
+
+  return Date.now() - updatedAtMs <= RUNTIME_CONNECT_GRACE_MS;
+}
+
 function mapRowToSession(
   row: WhatsAppSessionRow,
   runtime: RuntimeHealthSnapshot,
@@ -47,13 +63,15 @@ function mapRowToSession(
   const runtimeKnowsSession = sessionId ? runtime.sessionsSeen.has(sessionId) : false;
   const dbLooksConnected = dbStatus === "online" || dbStatus === "connecting" || dbStatus === "qr_code" || dbStatus === "pairing_code";
   const missingInRuntime = runtime.hasSessionDetails && !runtimeKnowsSession;
-  const status = runtimeStatus ?? (missingInRuntime && dbLooksConnected ? "warning" : dbStatus);
+  const withinRuntimeGrace = missingInRuntime && isWithinRuntimeConnectGrace(row, dbStatus);
+  const shouldWarnMissingRuntime = missingInRuntime && dbLooksConnected && !withinRuntimeGrace;
+  const status = runtimeStatus ?? (shouldWarnMissingRuntime ? "warning" : dbStatus);
   const qrOrPairing = row.qr_code?.trim() ? row.qr_code : null;
   const qrCode = status === "qr_code" && qrOrPairing ? qrOrPairing : null;
   const runtimeMissingMessage = "Sessão não está ativa no runtime atual. Refaça a conexão.";
   const errorMessage = status === "online"
     ? null
-    : missingInRuntime && dbLooksConnected
+    : shouldWarnMissingRuntime
       ? runtimeMissingMessage
       : row.error_message?.trim()
         ? row.error_message
@@ -145,6 +163,7 @@ export function useWhatsAppSessions() {
 
   const invalidateSessions = () => {
     qc.invalidateQueries({ queryKey: ["whatsapp-sessions"] });
+    qc.invalidateQueries({ queryKey: ["whatsapp-runtime-health"] });
   };
 
   const refreshMutation = useMutation({
@@ -152,6 +171,7 @@ export function useWhatsAppSessions() {
       const payload = await invokeWhatsAppAction<Record<string, unknown>>("poll_events_all");
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["whatsapp-sessions"] }),
+        qc.invalidateQueries({ queryKey: ["whatsapp-runtime-health"] }),
         qc.invalidateQueries({ queryKey: ["groups"] }),
         qc.invalidateQueries({ queryKey: ["master_groups"] }),
       ]);
@@ -173,6 +193,7 @@ export function useWhatsAppSessions() {
       const payload = await invokeWhatsAppAction<Record<string, unknown>>("poll_events", { sessionId });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["whatsapp-sessions"] }),
+        qc.invalidateQueries({ queryKey: ["whatsapp-runtime-health"] }),
         qc.invalidateQueries({ queryKey: ["groups"] }),
         qc.invalidateQueries({ queryKey: ["master_groups"] }),
       ]);

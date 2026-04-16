@@ -488,6 +488,10 @@ function setAuthCookie(res: Response, token: string) {
   res.setHeader("Set-Cookie", serializeAuthCookie(token, false, domain));
 }
 
+export function setSessionCookie(res: Response, token: string) {
+  setAuthCookie(res, token);
+}
+
 function clearAuthCookie(res: Response) {
   const req = res.req as Request;
   const domain = resolveCookieDomainForRequest(req);

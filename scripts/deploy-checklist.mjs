@@ -177,6 +177,26 @@ if (enforceRl === "false" && isProd()) {
   );
 }
 
+// 4.1 Public RPC should be explicitly disabled unless intentionally required
+// ─────────────────────────────────────────────────────────────────────────────
+const allowPublicRpc = env("ALLOW_PUBLIC_RPC").toLowerCase();
+if (allowPublicRpc === "true") {
+  warn(
+    "ALLOW_PUBLIC_RPC=true — páginas públicas de convite (link-hub/master-group) ficam acessíveis sem sessão",
+    "Mantenha como false em produção, a menos que esse comportamento seja deliberado",
+  );
+}
+
+// 4.2 Open self-signup is a business-policy choice; warn in production
+// ─────────────────────────────────────────────────────────────────────────────
+const disableSignup = env("DISABLE_SIGNUP").toLowerCase();
+if (isProd() && disableSignup === "false") {
+  warn(
+    "DISABLE_SIGNUP=false em produção — novos usuários podem criar conta sem provisionamento administrativo",
+    "Defina DISABLE_SIGNUP=true se a operação deve ser fechada com onboarding via admin",
+  );
+}
+
 // 5. LOG_HASH_SALT não pode ser o padrão público
 // ─────────────────────────────────────────────────────────────────────────────
 const logSalt = env("LOG_HASH_SALT");

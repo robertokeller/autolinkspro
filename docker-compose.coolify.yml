@@ -290,12 +290,15 @@ services:
       PORT: 3116
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DB_SSL: ${DB_SSL:-true}
-      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-true}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?CREDENTIAL_ENCRYPTION_KEY is required}
       CREDENTIAL_CIPHER_SALT: ${CREDENTIAL_CIPHER_SALT:?CREDENTIAL_CIPHER_SALT is required}
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      # Keep public RPC disabled by default in production.
+      # Enable only if anonymous link-hub/master-group pages are intentionally required.
+      ALLOW_PUBLIC_RPC: ${ALLOW_PUBLIC_RPC:-false}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:?APP_PUBLIC_URL is required}
       API_PUBLIC_URL: ${API_PUBLIC_URL:?API_PUBLIC_URL is required}
       RESEND_API_KEY: ${RESEND_API_KEY:?RESEND_API_KEY is required}
@@ -322,7 +325,7 @@ services:
       OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
       AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
-      DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+      DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
       ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
     expose:
       - "3116"
@@ -377,9 +380,8 @@ services:
     environment:
       BACKUP_SCHEDULE: ${SESSIONS_BACKUP_SCHEDULE:-0 4 * * *}
       BACKUP_KEEP_DAYS: ${SESSIONS_BACKUP_KEEP_DAYS:-7}
-      # Defina BACKUP_ENCRYPTION_KEY para cifrar os backups com AES-256-CBC.
-      # Se vazio, os backups são gerados sem cifra (não recomendado em produção).
-      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      # Mandatory in production: session backups must be encrypted at rest.
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:?BACKUP_ENCRYPTION_KEY is required}
     volumes:
       - wa_sessions:/data/wa-sessions:ro
       - tg_sessions:/data/tg-sessions:ro

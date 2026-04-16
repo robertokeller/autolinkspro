@@ -31,7 +31,9 @@ _tmp_*/
 .copilot/
 .qwen/
 .synnacode/
+.agents/
 SKILL.md
+**/SKILL.md
 modules/
 temp/
 services/.analytics/
@@ -49,6 +51,10 @@ services/.analytics/
 
 # Local secrets and certificates
 .credential-cipher-salt
+.envrc
+*.envrc
+*.secret
+*.secrets
 *.pem
 *.key
 *.crt

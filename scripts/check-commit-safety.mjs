@@ -13,6 +13,7 @@ const exactBlocked = new Set([
 const prefixBlocked = [
   ".private/env/",
   ".private/secrets/",
+  ".agents/",
   ".ai/",
   ".copilot/",
   ".claude/",
@@ -22,6 +23,8 @@ const prefixBlocked = [
 
 const regexBlocked = [
   /(^|\/)\.env(\.[^/]+)?$/i,
+  /(^|\/)\.envrc$/i,
+  /\.secrets?$/i,
   /\.pem$/i,
   /\.key$/i,
   /\.crt$/i,

@@ -60,6 +60,8 @@ const requiredEnvVars = [
   "WEBHOOK_SECRET",
   "OPS_CONTROL_TOKEN",
   "BACKUP_ENCRYPTION_KEY",
+  "ALLOW_PUBLIC_RPC",
+  "DISABLE_SIGNUP",
   "VITE_API_URL",
   "VITE_WHATSAPP_MICROSERVICE_URL",
   "VITE_TELEGRAM_MICROSERVICE_URL",
@@ -72,7 +74,6 @@ const requiredEnvVars = [
   "MELI_CORS_ORIGIN",
   "SCHEDULER_MODE",
   "SCHEDULER_RPC_BASE_URL",
-  "BACKUP_ENCRYPTION_KEY",
 ];
 
 const errors = [];
@@ -93,6 +94,12 @@ function read(relativePath) {
 
 function escapeRegex(input) {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function readEnvValue(content, key) {
+  const envPattern = new RegExp(`^${escapeRegex(key)}=(.*)$`, "m");
+  const match = content.match(envPattern);
+  return match ? String(match[1] ?? "").trim() : "";
 }
 
 for (const file of requiredFiles) {
@@ -141,6 +148,27 @@ if (exists(".env.coolify.example")) {
   if (seedEnabled) {
     warnings.push(
       "APPLY_SEED_MIGRATIONS=true found in .env.coolify.example. In production, keep it as false to avoid seeding demo users.",
+    );
+  }
+
+  const dbSslRejectUnauthorized = readEnvValue(envExample, "DB_SSL_REJECT_UNAUTHORIZED").toLowerCase();
+  if (dbSslRejectUnauthorized === "false") {
+    warnings.push(
+      "DB_SSL_REJECT_UNAUTHORIZED=false in .env.coolify.example. Prefer true in production to enforce DB TLS certificate validation.",
+    );
+  }
+
+  const allowPublicRpc = readEnvValue(envExample, "ALLOW_PUBLIC_RPC").toLowerCase();
+  if (allowPublicRpc === "true") {
+    warnings.push(
+      "ALLOW_PUBLIC_RPC=true in .env.coolify.example. This exposes public RPC routes without session; set false unless intentionally required.",
+    );
+  }
+
+  const backupEncryptionKey = readEnvValue(envExample, "BACKUP_ENCRYPTION_KEY");
+  if (!backupEncryptionKey) {
+    warnings.push(
+      "BACKUP_ENCRYPTION_KEY is empty in .env.coolify.example. Session backups must be encrypted in production.",
     );
   }
 }
