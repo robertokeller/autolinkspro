@@ -28,6 +28,7 @@ export function RouteGuard({ requireAdmin = false, allowAdmin = false }: RouteGu
     ROUTES.app.dashboard,
     ROUTES.app.connectionsRoot,
     ROUTES.app.whatsappRoot,
+    ROUTES.app.telegramRoot,
     ROUTES.app.routes,
     ROUTES.app.shopeeRoot,
     ROUTES.app.amazonRoot,

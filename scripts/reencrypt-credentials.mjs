@@ -17,6 +17,9 @@ import { Client } from "pg";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { hkdfSync, createDecipheriv, createCipheriv, randomBytes } from "crypto";
+import { loadProjectEnv } from "./load-env.mjs";
+
+loadProjectEnv();
 
 const ALGORITHM = "aes-256-gcm";
 const IV_BYTES = 12;
@@ -24,7 +27,7 @@ const PREFIX = "enc:v1:";
 const HKDF_INFO = "autolinks-credential-encryption";
 
 function usageAndExit(code = 0) {
-  console.log(`Usage:\n  --detect                      only detect rows that fail decryption with current env key\n  --migrate                     perform migration using --old-key and --new-key\n  --old-key <hex>               old raw key (64 hex chars)\n  --old-salt <hex>              optional old salt (64 hex chars). Defaults to installation salt file or env\n  --new-key <hex>               new raw key (64 hex chars) or use CREDENTIAL_ENCRYPTION_KEY in env\n  --new-salt <hex>              optional new salt (64 hex chars)\n  --tables table:column,...     optional comma list of table:column pairs\n  --db-url <DATABASE_URL>       optional database url (defaults to env DATABASE_URL)\n  --dry-run                     show actions but do not update DB\n  --confirm                     required to actually run migration\n\nExamples:\n  node scripts/reencrypt-credentials.mjs --detect\n  node scripts/reencrypt-credentials.mjs --migrate --old-key <hex> --new-key <hex> --confirm\n`);
+  console.log(`Usage:\n  --detect                      only detect rows that fail decryption with current env key\n  --migrate                     perform migration using --old-key and --new-key\n  --invalidate-broken           clear rows that cannot be decrypted with current key/salt\n  --old-key <hex>               old raw key (64 hex chars)\n  --old-salt <hex>              optional old salt (64 hex chars). Defaults to installation salt file or env\n  --new-key <hex>               new raw key (64 hex chars) or use CREDENTIAL_ENCRYPTION_KEY in env\n  --new-salt <hex>              optional new salt (64 hex chars)\n  --tables table:column,...     optional comma list of table:column pairs\n  --db-url <DATABASE_URL>       optional database url (defaults to env DATABASE_URL)\n  --dry-run                     show actions but do not update DB\n  --confirm                     required to actually run migration/invalidation\n\nExamples:\n  node scripts/reencrypt-credentials.mjs --detect\n  node scripts/reencrypt-credentials.mjs --migrate --old-key <hex> --new-key <hex> --confirm\n  node scripts/reencrypt-credentials.mjs --invalidate-broken --confirm\n`);
   process.exit(code);
 }
 
@@ -35,6 +38,7 @@ function parseArgs() {
     const a = args[i];
     if (a === "--detect") out.detect = true;
     else if (a === "--migrate") out.migrate = true;
+    else if (a === "--invalidate-broken") out.invalidateBroken = true;
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--confirm") out.confirm = true;
     else if (a === "--old-key") out.oldKey = args[++i];
@@ -91,7 +95,11 @@ function encryptWithKey(plaintext, keyBuf) {
 
 async function main() {
   const opts = parseArgs();
-  if (!opts.detect && !opts.migrate) usageAndExit(2);
+  const selectedModes = [opts.detect, opts.migrate, opts.invalidateBroken].filter(Boolean).length;
+  if (selectedModes !== 1) {
+    console.error("Choose exactly one mode: --detect OR --migrate OR --invalidate-broken");
+    usageAndExit(2);
+  }
 
   const dbUrl = opts.dbUrl || process.env.DATABASE_URL;
   if (!dbUrl) {
@@ -119,28 +127,32 @@ async function main() {
   const oldKey = opts.oldKey || null;
   const oldSalt = opts.oldSalt || installationSalt || null;
 
-  if (opts.migrate && !opts.confirm) {
-    console.error("Migration requires --confirm to actually run. Use --dry-run for a preview.");
+  if ((opts.migrate || opts.invalidateBroken) && !opts.confirm) {
+    console.error("This operation requires --confirm to actually run. Use --dry-run for a preview.");
     process.exit(2);
   }
 
   const client = new Client({ connectionString: dbUrl });
   await client.connect();
 
-  // Ensure backup table exists — if we lack permission, continue (detection-only still useful)
-  let canUseBackupTable = true;
-  try {
-    await client.query(`CREATE TABLE IF NOT EXISTS credential_reencrypt_backups (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      table_name TEXT NOT NULL,
-      row_id TEXT NOT NULL,
-      column_name TEXT NOT NULL,
-      old_value TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`);
-  } catch (err) {
-    canUseBackupTable = false;
-    console.warn("[reencrypt] could not create backup table (permission denied?) — continuing in read-only/detect mode and skipping backups:", String(err.message || err));
+  // Backup table is only needed for write operations (not detect/dry-run).
+  const mayWriteRows = (opts.migrate || opts.invalidateBroken) && !opts.dryRun;
+  let canUseBackupTable = false;
+  if (mayWriteRows) {
+    try {
+      await client.query(`CREATE TABLE IF NOT EXISTS credential_reencrypt_backups (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        table_name TEXT NOT NULL,
+        row_id TEXT NOT NULL,
+        column_name TEXT NOT NULL,
+        old_value TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      canUseBackupTable = true;
+    } catch (err) {
+      canUseBackupTable = false;
+      console.warn("[reencrypt] could not create backup table (permission denied?) — continuing and skipping backups:", String(err.message || err));
+    }
   }
 
   // Prepare key buffers if provided
@@ -236,6 +248,59 @@ async function main() {
         // update target row
         await client.query(`UPDATE ${table} SET ${column} = $1, updated_at = NOW() WHERE ${idCol}::text = $2`, [reencrypted, rowId]);
         migratedCount++;
+      }
+
+      if (opts.invalidateBroken) {
+        if (!newKeyBuf) {
+          console.error("Current key not provided/derivable; cannot invalidate broken rows.");
+          break;
+        }
+
+        try {
+          decryptWithKey(stored, newKeyBuf);
+          okCount++;
+          continue;
+        } catch (e) {
+          failCount++;
+          const reason = e instanceof Error ? e.message : String(e);
+          console.warn(`  [INVALIDATE] ${table}:${rowId} decryption FAILED: ${reason}`);
+
+          if (opts.dryRun) {
+            console.log(`  [DRY-RUN] would clear broken payload in ${table}:${rowId}`);
+            migratedCount++;
+            continue;
+          }
+
+          // backup old value (if available)
+          if (canUseBackupTable) {
+            await client.query(
+              `INSERT INTO credential_reencrypt_backups (table_name, row_id, column_name, old_value) VALUES ($1,$2,$3,$4)`,
+              [table, rowId, column, stored],
+            );
+          } else {
+            console.warn(`[reencrypt] backup table unavailable — skipping backup for ${table}:${rowId}`);
+          }
+
+          // Clear irrecoverable encrypted data so runtime can fail closed without repeated decrypt noise.
+          // telegram_sessions needs extra fields reset so scheduler no longer treats it as recoverable online state.
+          if (table === "telegram_sessions" && column === "session_string") {
+            await client.query(
+              `UPDATE telegram_sessions
+                  SET session_string = '',
+                      phone_code_hash = '',
+                      status = 'offline',
+                      connected_at = NULL,
+                      error_message = 'session_cipher_invalid',
+                      updated_at = NOW()
+                WHERE ${idCol}::text = $1`,
+              [rowId],
+            );
+          } else {
+            await client.query(`UPDATE ${table} SET ${column} = '', updated_at = NOW() WHERE ${idCol}::text = $1`, [rowId]);
+          }
+
+          migratedCount++;
+        }
       }
     }
 

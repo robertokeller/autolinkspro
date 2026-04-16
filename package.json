@@ -85,8 +85,8 @@
     "env:private:setup": "node scripts/setup-private-env.mjs",
     "commit:safety": "node scripts/check-commit-safety.mjs",
     "smoke:coolify": "node scripts/smoke-coolify.mjs",
-    "ops:verify:global-controls": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-ops-global-controls.ps1"
-    ,"rekey:credentials": "node scripts/reencrypt-credentials.mjs"
+    "ops:verify:global-controls": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-ops-global-controls.ps1",
+    "rekey:credentials": "node scripts/reencrypt-credentials.mjs"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.11",
@@ -127,7 +127,7 @@
     "@types/node": "^22.16.5",
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
-    "@vitejs/plugin-react-swc": "^4.3.0",
+    "@vitejs/plugin-react": "^6.0.1",
     "archiver": "^7.0.1",
     "autoprefixer": "^10.4.21",
     "bcryptjs": "^3.0.3",

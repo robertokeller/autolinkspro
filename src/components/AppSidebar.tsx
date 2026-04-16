@@ -360,8 +360,8 @@ export function AppSidebar() {
 
               {featureVisibility.telegramConnections && (
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.connectionsTelegram)} tooltip="Telegram">
-                  <Link to={ROUTES.app.connectionsTelegram} onClick={closeMobileSidebar}>
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.telegramConfiguracoes)} tooltip="Telegram">
+                  <Link to={ROUTES.app.telegramConfiguracoes} onClick={closeMobileSidebar}>
                     <TelegramIcon className="h-4 w-4" />
                     <span>Telegram</span>
                   </Link>

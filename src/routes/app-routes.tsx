@@ -24,10 +24,18 @@ export function ProtectedAppRoutes() {
         />
         <Route path={ROUTES.app.connectionsWhatsApp} element={<Pages.ConexoesWhatsApp />} />
         <Route
-          path={ROUTES.app.connectionsTelegram}
+          path={ROUTES.app.telegramRoot}
+          element={<Navigate to={ROUTES.app.telegramConfiguracoes} replace />}
+        />
+        <Route
+          path={ROUTES.app.connectionsTelegramLegacy}
+          element={<Navigate to={ROUTES.app.telegramConfiguracoes} replace />}
+        />
+        <Route
+          path={ROUTES.app.telegramConfiguracoes}
           element={(
             <FeatureRouteGuard feature="telegramConnections">
-              <Pages.ConexoesTelegram />
+              <Pages.TelegramConfiguracoes />
             </FeatureRouteGuard>
           )}
         />

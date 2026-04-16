@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-15T21:18:23.899Z`
+> Atualizado em: `2026-04-16T01:57:57.775Z`
 
 ## Fluxo automático recomendado
 
@@ -32,6 +32,7 @@ npm run deploy:prepare
 | `ADMIN_PASSWORD` | api | - | troque-por-uma-senha-forte |
 | `API_PUBLIC_URL` | api | - | https://api.autolinks.pro |
 | `APP_PUBLIC_URL` | api | - | https://autolinks.pro |
+| `BACKUP_ENCRYPTION_KEY` | sessions-backup | - | troque-por-chave-forte-de-backup |
 | `CORS_ORIGIN` | amazon, api, ops-control, shopee, telegram, whatsapp | - | https://autolinks.pro |
 | `CREDENTIAL_CIPHER_SALT` | api | - | troque-por-salt-hex-64-caracteres |
 | `CREDENTIAL_ENCRYPTION_KEY` | api | - | troque-por-chave-hex-64-caracteres |
@@ -50,14 +51,14 @@ npm run deploy:prepare
 
 | Variável | Serviços | Default no compose | Exemplo em .env.coolify.example |
 | --- | --- | --- | --- |
+| `ALLOW_PUBLIC_RPC` | api | false | false |
 | `AUTH_COOKIE_DOMAIN` | api | - | .autolinks.pro |
-| `BACKUP_ENCRYPTION_KEY` | sessions-backup | - | troque-por-chave-forte-de-backup |
 | `BURST_THRESHOLD_PER_BUCKET` | api | 500 | - |
 | `CHANNEL_EVENTS_INTERVAL_SECONDS` | scheduler | 15 | 15 |
 | `DB_POOL_MAX` | api | 10 | - |
 | `DB_SSL` | api | true | true |
-| `DB_SSL_REJECT_UNAUTHORIZED` | api | false | false |
-| `DISABLE_SIGNUP` | api | false | false |
+| `DB_SSL_REJECT_UNAUTHORIZED` | api | true | true |
+| `DISABLE_SIGNUP` | api | true | true |
 | `DISPATCH_INTERVAL_SECONDS` | scheduler | - | 15 |
 | `DISPATCH_LIMIT` | scheduler | - | 25 |
 | `DISPATCH_SOURCE` | scheduler | - | scheduler |

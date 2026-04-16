@@ -98,7 +98,7 @@ function getInviteLink(group: LinkHubGroup) {
 export default function LinkHubPublicPage() {
   const { slug } = useParams<{ slug: string }>();
 
-  const { data, isLoading } = useQuery<LinkHubPublicResponse>({
+  const { data, isLoading, isError, error } = useQuery<LinkHubPublicResponse, Error>({
     queryKey: ["link_hub_public", slug],
     queryFn: () =>
       invokeBackendRpc<LinkHubPublicResponse>("link-hub-public", {
@@ -146,6 +146,24 @@ export default function LinkHubPublicPage() {
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
           <Loader2 className="h-6 w-6 animate-spin" style={{ color: accent }} />
         </motion.div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    const message = String(error?.message || "Servico temporariamente indisponivel.").trim();
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center" style={{ background: LINK_HUB_PUBLIC_THEME.background, color: LINK_HUB_PUBLIC_THEME.text }}>
+        <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="mb-4">
+          <Link2 className="h-12 w-12 opacity-50" />
+        </motion.div>
+        <h1 className="text-xl font-bold mb-2">Nao foi possivel carregar esta pagina</h1>
+        <p className="text-sm opacity-60 mb-2">{message}</p>
+        <p className="text-xs opacity-40 mb-6">Tente novamente em alguns instantes.</p>
+        <Link to={ROUTES.home} className="text-sm hover:underline flex items-center gap-1.5 opacity-60" style={{ color: accent }}>
+          <ArrowLeft className="h-4 w-4" />
+          Voltar
+        </Link>
       </div>
     );
   }

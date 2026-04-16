@@ -1,4 +1,4 @@
-﻿import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SessoesTelegram } from "@/components/conexoes/SessoesTelegram";
 import { GruposPorPlataforma } from "@/components/conexoes/GruposPorPlataforma";
@@ -8,7 +8,7 @@ import { useGrupos } from "@/hooks/useGrupos";
 import { useAuth } from "@/contexts/AuthContext";
 import { getAllChannelHealth } from "@/lib/channel-central";
 
-export default function ConexoesTelegram() {
+export default function TelegramConfiguracoes() {
   const { user } = useAuth();
   const [subTab, setSubTab] = useState("sessions");
   const {
@@ -35,7 +35,7 @@ export default function ConexoesTelegram() {
   } = useTelegramSessions();
   const { syncedGroups, isLoading: isLoadingGroups, refreshGroups } = useGrupos();
   const { refetch: refetchHealth } = useQuery({
-    queryKey: ["channel-health", user?.id, "connections-telegram"],
+    queryKey: ["channel-health", user?.id, "telegram-configuracoes"],
     queryFn: getAllChannelHealth,
     enabled: !!user,
     staleTime: 5 * 60 * 1000,
@@ -103,4 +103,3 @@ export default function ConexoesTelegram() {
     />
   );
 }
-

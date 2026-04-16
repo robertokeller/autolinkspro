@@ -203,6 +203,26 @@ function parseDockerIds(stdout) {
     .filter(Boolean);
 }
 
+function normalizeDockerId(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  return raw.startsWith("sha256:") ? raw.slice(7) : raw;
+}
+
+function parseDockerInspectRunning(stdout) {
+  const out = new Map();
+  const lines = String(stdout || "").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const [idRaw, runningRaw] = trimmed.split(/\s+/, 2);
+    const id = normalizeDockerId(idRaw);
+    if (!id) continue;
+    out.set(id, String(runningRaw || "").toLowerCase() === "true");
+  }
+  return out;
+}
+
 async function findDockerServiceContainerIds(serviceId) {
   const ids = new Set();
 
@@ -239,29 +259,99 @@ async function findDockerServiceContainerIds(serviceId) {
   return [...ids];
 }
 
-async function getDockerServiceRuntimeState(serviceId) {
-  try {
-    const allIds = await findDockerServiceContainerIds(serviceId);
-    if (allIds.length === 0) {
-      return { exists: false, running: false, ids: [] };
-    }
+async function findRunningDockerServiceContainerIds(serviceId) {
+  const ids = new Set();
+  let source = "none";
 
-    const runningByLabel = await execFileAsync("docker", [
+  try {
+    const byLabel = await execFileAsync("docker", [
       "ps",
       "--filter",
       `label=${DOCKER_SERVICE_LABEL_KEY}=${serviceId}`,
       "--format",
       "{{.ID}}",
-    ]).catch(() => ({ stdout: "" }));
+    ]);
+    for (const id of parseDockerIds(byLabel.stdout)) ids.add(id);
+    if (ids.size > 0) source = "label";
+  } catch {
+    // best effort
+  }
 
-    const runningIds = new Set(parseDockerIds(runningByLabel.stdout));
-    const running = allIds.some((id) => runningIds.has(id));
-    return { exists: true, running, ids: allIds };
+  if (ids.size === 0) {
+    try {
+      const byName = await execFileAsync("docker", [
+        "ps",
+        "--filter",
+        `name=${serviceId}`,
+        "--format",
+        "{{.ID}}",
+      ]);
+      for (const id of parseDockerIds(byName.stdout)) ids.add(id);
+      if (ids.size > 0) source = "name";
+    } catch {
+      // best effort
+    }
+  }
+
+  return { ids: [...ids], source };
+}
+
+async function inspectDockerContainersRunning(containerIds) {
+  if (!Array.isArray(containerIds) || containerIds.length === 0) return new Map();
+  try {
+    const { stdout } = await execFileAsync("docker", [
+      "inspect",
+      "--format",
+      "{{.Id}} {{.State.Running}}",
+      ...containerIds,
+    ]);
+    return parseDockerInspectRunning(stdout);
+  } catch {
+    return new Map();
+  }
+}
+
+async function getDockerServiceRuntimeState(serviceId) {
+  try {
+    const allIds = await findDockerServiceContainerIds(serviceId);
+    if (allIds.length === 0) {
+      return { exists: false, running: false, ids: [], runningSource: "missing" };
+    }
+
+    const runningDiscovery = await findRunningDockerServiceContainerIds(serviceId);
+    const runningIds = new Set(
+      runningDiscovery.ids
+        .map((id) => normalizeDockerId(id))
+        .filter(Boolean),
+    );
+    let runningSource = runningDiscovery.source;
+
+    // Coolify containers do not expose compose labels by default, so inspect IDs as final fallback.
+    if (runningIds.size === 0) {
+      const runningByInspect = await inspectDockerContainersRunning(allIds);
+      for (const id of allIds) {
+        const normalized = normalizeDockerId(id);
+        if (!normalized) continue;
+        if (runningByInspect.get(normalized) === true) {
+          runningIds.add(normalized);
+        }
+      }
+      if (runningIds.size > 0) runningSource = "inspect";
+    }
+
+    const running = allIds.some((id) => runningIds.has(normalizeDockerId(id)));
+    return {
+      exists: true,
+      running,
+      ids: allIds,
+      runningSource,
+    };
   } catch (error) {
     return {
       exists: false,
       running: false,
       ids: [],
+      runningSource: "error",
       error: parseExecError(error),
     };
   }
@@ -591,6 +681,8 @@ async function buildDockerSnapshot(serviceId) {
     healthUrl: getEffectiveHealthUrl(serviceId),
     port: getEffectivePort(serviceId),
     mode: "docker",
+    runtimeSource: runtimeState?.runningSource || "unknown",
+    dockerIds: Array.isArray(runtimeState?.ids) ? runtimeState.ids : [],
     error: componentOnline ? runtimeError : (health.error || runtimeError),
   };
 }
@@ -854,7 +946,31 @@ async function killByPort(serviceId) {
 async function listServices() {
   if (IS_DOCKER_MODE) {
     const serviceIds = Object.keys(SERVICE_APP_MAP);
-    return Promise.all(serviceIds.map((serviceId) => buildDockerSnapshot(serviceId)));
+    const settled = await Promise.allSettled(serviceIds.map((serviceId) => buildDockerSnapshot(serviceId)));
+    return settled.map((entry, index) => {
+      if (entry.status === "fulfilled") return entry.value;
+      const serviceId = serviceIds[index];
+      const appName = SERVICE_APP_MAP[serviceId] || serviceId;
+      const error = entry.reason instanceof Error ? entry.reason.message : String(entry.reason || "unknown error");
+      return {
+        id: serviceId,
+        appName,
+        status: "offline-docker",
+        online: false,
+        pid: null,
+        uptimeSec: null,
+        processStatus: "offline-docker",
+        processOnline: false,
+        componentOnline: false,
+        componentError: error,
+        healthUrl: getEffectiveHealthUrl(serviceId),
+        port: getEffectivePort(serviceId),
+        mode: "docker",
+        runtimeSource: "snapshot-error",
+        dockerIds: [],
+        error,
+      };
+    });
   }
 
   const pm2Available = await isPm2Available();

@@ -818,25 +818,28 @@ export default function AdminUsers() {
       if (res?.error) throw new Error(res.error);
       if (res?.redirect_url) {
         // Security: validate protocol before opening to prevent open redirect via javascript: etc.
-        const parsed = (() => { try { return new URL(res.redirect_url); } catch { return null; } })();
+        const parsed = (() => {
+          try {
+            return new URL(res.redirect_url, window.location.origin);
+          } catch {
+            return null;
+          }
+        })();
         if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
           toast.error("URL de redirecionamento inválida recebida do servidor.");
         } else {
           toast.success("Abrindo sessão de impersonação…");
-          window.open(res.redirect_url, "_blank", "noopener,noreferrer");
+          window.open(parsed.toString(), "_blank", "noopener,noreferrer");
         }
       } else if (res?.token) {
-        // Security: never expose the impersonation token in a URL query string —
-        // query-string tokens appear in browser history, server logs, and Referer headers.
-        // The backend must implement a server-side redirect that sets an HttpOnly cookie.
-        toast.info("Impersonação requer redirect server-side. Implemente o endpoint /auth/admin/impersonate-redirect no backend.");
+        toast.error("Resposta inválida do servidor para Entrar como.");
       } else {
-        toast.info("O backend ainda não suporta impersonação. Implemente o handler 'impersonate_user' no admin-users.");
+        toast.error("Resposta inesperada do servidor ao iniciar Entrar como.");
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
-      if (/unknown action|not supported|invalid action/i.test(msg)) {
-        toast.info("Impersonação não implementada no backend ainda.");
+      if (/unknown action|not supported|invalid action|aç[aã]o administrativa inv[aá]lida|opç[aã]o administrativa inv[aá]lida|acao administrativa invalida|opcao administrativa invalida/i.test(msg)) {
+        toast.info("Entrar como ainda não está disponível no backend.");
       } else {
         toast.error(msg);
       }
