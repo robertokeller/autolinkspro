@@ -51,7 +51,7 @@ CLOUDFLARE_ZONE_ID=...
 CLOUDFLARE_ZONE_NAME=autolinks.pro
 CLOUDFLARE_ACCOUNT_ID=...
 CLOUDFLARE_ORIGIN_IPV4=72.62.11.177
-CLOUDFLARE_PROXY_MODE=edge
+CLOUDFLARE_PROXY_MODE=all
 CLOUDFLARE_INCLUDE_SERVICE_HOSTS=true
 ```
 
@@ -116,8 +116,9 @@ Se houver regressao critica:
 ## Guardrails de Seguranca
 
 - Nao armazenar `CLOUDFLARE_API_TOKEN` no repositiorio.
+- Preferir token account-owned (`cfat_`) para integracoes duraveis (CI/CD e automacao).
+- `cfut_` (user token) funciona para operacao manual, mas depende da conta do usuario.
 - Preferir token de escopo minimo:
   - `Zone:Read`, `Zone Settings:Edit`, `DNS:Edit`
 - Rotacionar tokens expostos em chat/log imediatamente.
 - Manter `CLOUDFLARE_PROXY_MODE=edge` no inicio para reduzir risco em microservicos.
-

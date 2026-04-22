@@ -43,6 +43,10 @@ if (!token) {
   fail("CLOUDFLARE_API_TOKEN is required.");
 }
 
+if (token.startsWith("cfut_")) {
+  warn("token prefix cfut_ indicates a user token. For durable automation, prefer account-owned tokens (cfat_).");
+}
+
 if (!zoneIdFromEnv && !zoneNameFromEnv && !appPublicUrl) {
   fail("Set CLOUDFLARE_ZONE_ID or CLOUDFLARE_ZONE_NAME (or APP_PUBLIC_URL) to resolve the zone.");
 }
