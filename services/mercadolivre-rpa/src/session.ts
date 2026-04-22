@@ -532,14 +532,43 @@ export class MercadoLivreSessionService {
           logs = this.addLog(
             logs,
             "Sessão autenticada em /afiliados, mas o formulário do Linkbuilder não foi detectado (layout pode ter mudado).",
-            "error",
+            "warn",
           );
+
+          // Fallback: validate session by HTTP flow so layout changes in Linkbuilder
+          // do not produce false negatives for still-authenticated accounts.
+          const lightResult = await this.testSessionLight(sessionId);
+          const mergedLogs = [...logs, ...(Array.isArray(lightResult.logs) ? lightResult.logs : [])].slice(0, 50);
+
+          if (lightResult.status === "active") {
+            return {
+              status: "active",
+              accountName: accountName || lightResult.accountName,
+              mlUserId: lightResult.mlUserId,
+              sessionPath,
+              lastChecked: new Date().toISOString(),
+              logs: mergedLogs,
+            };
+          }
+
+          if (lightResult.status === "no_affiliate") {
+            return {
+              status: "no_affiliate",
+              accountName: accountName || lightResult.accountName,
+              mlUserId: lightResult.mlUserId,
+              sessionPath,
+              lastChecked: new Date().toISOString(),
+              logs: mergedLogs,
+            };
+          }
+
           return {
             status: "error",
-            accountName,
+            accountName: accountName || lightResult.accountName,
+            mlUserId: lightResult.mlUserId,
             sessionPath,
             lastChecked: new Date().toISOString(),
-            logs,
+            logs: mergedLogs,
           };
         }
 
@@ -593,6 +622,5 @@ export class MercadoLivreSessionService {
 }
 
 export const sessionService = new MercadoLivreSessionService();
-
 
 
