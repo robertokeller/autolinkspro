@@ -573,14 +573,26 @@ export class MercadoLivreLinkConverter {
       // Navigate to linkbuilder
       await page.goto(LINKBUILDER_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-      // Login redirects can happen shortly after initial load.
-      await page.waitForTimeout(900);
-      const currentUrl = page.url();
-      if (
-        currentUrl.includes("/login") ||
-        currentUrl.includes("/authentication") ||
-        currentUrl.includes("auth.mercadolivre")
-      ) {
+      // Login redirects can happen a few seconds after DOMContentLoaded and can
+      // bounce back to /afiliados when the session is still valid.
+      const isLoginLikeUrl = (url: string): boolean => (
+        url.includes("/login")
+        || url.includes("/authentication")
+        || url.includes("auth.mercadolivre")
+      );
+
+      await page.waitForTimeout(2200);
+      let currentUrl = page.url();
+      if (isLoginLikeUrl(currentUrl)) {
+        await page.waitForTimeout(2600);
+        currentUrl = page.url();
+      }
+      if (isLoginLikeUrl(currentUrl)) {
+        await page.goto(LINKBUILDER_URL, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => undefined);
+        await page.waitForTimeout(2200);
+        currentUrl = page.url();
+      }
+      if (isLoginLikeUrl(currentUrl)) {
         return {
           success: false,
           originalUrl: productUrl,
@@ -859,4 +871,3 @@ export class MercadoLivreLinkConverter {
 }
 
 export const converter = MercadoLivreLinkConverter.getInstance();
-

@@ -112,6 +112,7 @@ export function SessoesTelegram({
   const [authSessionId, setAuthSessionId] = useState<string | null>(null);
   const [authCode, setAuthCode] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [isWaitingCodeConfirmation, setIsWaitingCodeConfirmation] = useState(false);
 
   const [editSessionId, setEditSessionId] = useState<string | null>(null);
   const [editSessionName, setEditSessionName] = useState("");
@@ -169,6 +170,7 @@ export function SessoesTelegram({
     setAuthSessionId(null);
     setAuthCode("");
     setAuthPassword("");
+    setIsWaitingCodeConfirmation(false);
   };
 
   const openCreateFlow = () => {
@@ -177,6 +179,7 @@ export function SessoesTelegram({
   };
 
   const openAuthFlowForSession = async (session: TelegramSession) => {
+    setIsWaitingCodeConfirmation(false);
     setAuthSessionId(session.id);
     setSessionFlowStep("auth");
     setIsSessionFlowOpen(true);
@@ -205,11 +208,19 @@ export function SessoesTelegram({
 
   const handleVerifyCode = async () => {
     if (!authSessionId || !authCode.trim()) return;
+    setIsWaitingCodeConfirmation(true);
     try {
-      await onVerifyCode({ sessionId: authSessionId, code: authCode.trim() });
+      const result = await onVerifyCode({ sessionId: authSessionId, code: authCode.trim() });
+      const resultStatus = typeof result === "object" && result && "status" in result
+        ? String((result as Record<string, unknown>).status ?? "")
+        : "";
+      if (resultStatus && resultStatus !== "connecting") {
+        setIsWaitingCodeConfirmation(false);
+      }
       setAuthCode("");
       onRefresh({ silent: true });
     } catch {
+      setIsWaitingCodeConfirmation(false);
       // handled by mutation toast
     }
   };
@@ -227,6 +238,7 @@ export function SessoesTelegram({
 
   const handleReconnect = async () => {
     if (!authSessionId) return;
+    setIsWaitingCodeConfirmation(false);
     try {
       await onConnect(authSessionId);
       onRefresh({ silent: true });
@@ -234,6 +246,12 @@ export function SessoesTelegram({
       // handled by mutation toast
     }
   };
+
+  useEffect(() => {
+    if (!authSession || authSession.status !== "awaiting_code") {
+      setIsWaitingCodeConfirmation(false);
+    }
+  }, [authSession]);
 
   const openEditDialog = (session: TelegramSession) => {
     setEditSessionId(session.id);
@@ -348,6 +366,20 @@ export function SessoesTelegram({
     }
 
     if (authSession.status === "awaiting_code") {
+      if (isWaitingCodeConfirmation) {
+        return (
+          <div className="flex flex-col items-center gap-4 py-8">
+            <Loader2 className="h-10 w-10 animate-spin text-primary" />
+            <div className="text-center">
+              <p className="font-semibold">Confirmando código e conectando…</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Aguarde enquanto finalizamos a conexão da sua conta.
+              </p>
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div className="flex flex-col items-center gap-4 py-2">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-info/15">
@@ -369,6 +401,7 @@ export function SessoesTelegram({
                 placeholder="Ex: 12345"
                 className="h-10 text-center text-lg tracking-widest"
                 autoFocus
+                disabled={isVerifyingCode || isWaitingCodeConfirmation}
                 onKeyDown={(e) => e.key === "Enter" && authCode.trim() && void handleVerifyCode()}
               />
             </div>
@@ -705,16 +738,19 @@ export function SessoesTelegram({
                     <Button className="w-full sm:w-auto"
                       variant="outline"
                       onClick={() => void handleReconnect()}
-                      disabled={isSendingCode}
+                      disabled={isSendingCode || isWaitingCodeConfirmation}
                     >
                       {isSendingCode ? <Loader2 className="h-4 w-4 animate-spin" /> : "Reenviar SMS"}
                     </Button>
                     <Button className="w-full sm:w-auto"
                       onClick={() => void handleVerifyCode()}
-                      disabled={!authCode.trim() || isVerifyingCode}
+                      disabled={!authCode.trim() || isVerifyingCode || isWaitingCodeConfirmation}
                     >
-                      {isVerifyingCode ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                      {isVerifyingCode || isWaitingCodeConfirmation ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Conectando...
+                        </span>
                       ) : (
                         "Validar código"
                       )}

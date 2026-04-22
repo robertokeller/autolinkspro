@@ -4,9 +4,6 @@ import { useAccessControl } from "@/hooks/useAccessControl";
 import { useMaintenanceMode } from "@/hooks/useMaintenanceMode";
 import { ROUTES } from "@/lib/routes";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
-import { useRef } from "react";
-
-const AUTH_LOADING_DEADLINE_MS = 2500;
 
 interface RouteGuardProps {
   requireAdmin?: boolean;
@@ -18,9 +15,6 @@ export function RouteGuard({ requireAdmin = false, allowAdmin = false }: RouteGu
   const { isPlanExpired, isCheckingAccess } = useAccessControl();
   const { state: maintenance, isLoading: maintenanceLoading } = useMaintenanceMode();
   const location = useLocation();
-  // Use a ref (not a module-level variable) so each RouteGuard instance tracks its own
-  // loading deadline independently and doesn't leak state across re-mounts.
-  const authLoadingSinceRef = useRef<number | null>(null);
 
   const isAccountRoute = location.pathname === ROUTES.app.account;
   const isDashboardRoute = location.pathname === ROUTES.app.dashboard;
@@ -48,23 +42,8 @@ export function RouteGuard({ requireAdmin = false, allowAdmin = false }: RouteGu
   const isAppProtectedPath = appPathPrefixes.some((path) => location.pathname === path || location.pathname.startsWith(`${path}/`));
   const isHubProtectedPath = location.pathname.startsWith(hubPathPrefix);
 
-  if (isLoading && authLoadingSinceRef.current == null) {
-    authLoadingSinceRef.current = Date.now();
-  }
-
-  if (!isLoading) {
-    authLoadingSinceRef.current = null;
-  }
-
-  const loadingExpired = authLoadingSinceRef.current != null
-    && Date.now() - authLoadingSinceRef.current > AUTH_LOADING_DEADLINE_MS;
-
-  if (isLoading && !user && !loadingExpired) {
+  if (isLoading) {
     return <RoutePendingState label="Validando sessão..." />;
-  }
-
-  if (isLoading && !user && loadingExpired) {
-    return <Navigate to={ROUTES.auth.login} replace />;
   }
 
   if (!user) return <Navigate to={ROUTES.auth.login} replace />;

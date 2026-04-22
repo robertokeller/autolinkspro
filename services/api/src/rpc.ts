@@ -12182,7 +12182,7 @@ if (funcName === "whatsapp-connect") {
       const meliHeaders = { "x-autolinks-user-id": userId };
       let upstream = await proxyMicroservice(
         MELI_URL,
-        `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test`,
+        `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test?full=1`,
         "POST",
         {},
         meliHeaders,
@@ -12219,7 +12219,7 @@ if (funcName === "whatsapp-connect") {
         if (restored.restored) {
           upstream = await proxyMicroservice(
             MELI_URL,
-            `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test`,
+            `/api/meli/sessions/${encodeURIComponent(scopedSessionId)}/test?full=1`,
             "POST",
             {},
             meliHeaders,
