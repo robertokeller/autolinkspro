@@ -371,6 +371,8 @@ services:
       OPS_CONTROL_URL: http://ops-control:3115
       OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      # Required for deterministic, non-public hashing of user identifiers in logs.
+      LOG_HASH_SALT: ${LOG_HASH_SALT:?LOG_HASH_SALT is required}
       AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
       DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
       ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}

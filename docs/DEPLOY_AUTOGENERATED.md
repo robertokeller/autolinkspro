@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-16T01:57:57.775Z`
+> Atualizado em: `2026-04-22T02:07:53.573Z`
 
 ## Fluxo automático recomendado
 
@@ -38,11 +38,14 @@ npm run deploy:prepare
 | `CREDENTIAL_ENCRYPTION_KEY` | api | - | troque-por-chave-hex-64-caracteres |
 | `DATABASE_URL` | api | - | postgresql://postgres:[SUA-SENHA]@db.rwurwyuhxvlnykosfkdj.supabase.co:5432/postgres |
 | `JWT_SECRET` | api | - | troque-por-um-segredo-com-32-caracteres-ou-mais |
+| `LOG_HASH_SALT` | api | - | troque-por-salt-hex-64-caracteres-para-logs |
 | `MELI_CORS_ORIGIN` | meli | - | https://autolinks.pro |
 | `OPS_CONTROL_TOKEN` | api, ops-control | - | troque-por-ops-token-forte |
 | `RESEND_API_KEY` | api | - | re_xxxxxxxxxxxxxxxxxxxxxxxxx |
 | `RESEND_FROM` | api | - | Auto Links <suporte@autolinks.pro> |
 | `SERVICE_TOKEN` | api, scheduler | - | troque-por-token-forte-de-servico |
+| `SESSION_CIPHER_SALT` | meli, telegram, whatsapp | - | - |
+| `SESSION_ENCRYPTION_KEY` | meli, telegram, whatsapp | - | - |
 | `TELEGRAM_API_HASH` | telegram | - | troque-por-telegram-api-hash |
 | `TELEGRAM_API_ID` | telegram | - | 123456 |
 | `WEBHOOK_SECRET` | amazon, api, meli, ops-control, shopee, telegram, whatsapp | - | troque-por-webhook-secret-forte |
@@ -52,6 +55,7 @@ npm run deploy:prepare
 | Variável | Serviços | Default no compose | Exemplo em .env.coolify.example |
 | --- | --- | --- | --- |
 | `ALLOW_PUBLIC_RPC` | api | false | false |
+| `ALLOWED_EXTENSION_ORIGINS` | api | - | - |
 | `AUTH_COOKIE_DOMAIN` | api | - | .autolinks.pro |
 | `BURST_THRESHOLD_PER_BUCKET` | api | 500 | - |
 | `CHANNEL_EVENTS_INTERVAL_SECONDS` | scheduler | 15 | 15 |
@@ -75,14 +79,8 @@ npm run deploy:prepare
 | `SESSIONS_BACKUP_KEEP_DAYS` | sessions-backup | 7 | 7 |
 | `SESSIONS_BACKUP_SCHEDULE` | sessions-backup | 0 4 * * * | 0 4 * * * |
 | `SHOPEE_INTERVAL_SECONDS` | scheduler | - | 60 |
-| `VITE_AMAZON_MICROSERVICE_URL` | web | - | https://amazon-api.autolinks.pro |
 | `VITE_API_URL` | web | - | https://api.autolinks.pro |
 | `VITE_BROWSER_RUNTIME_ENABLED` | web | false | false |
-| `VITE_MELI_RPA_URL` | web | - | https://meli-api.autolinks.pro |
-| `VITE_OPS_CONTROL_URL` | web | - | https://ops-api.autolinks.pro |
-| `VITE_SHOPEE_MICROSERVICE_URL` | web | - | https://shopee-api.autolinks.pro |
-| `VITE_TELEGRAM_MICROSERVICE_URL` | web | - | https://tg-api.autolinks.pro |
-| `VITE_WHATSAPP_MICROSERVICE_URL` | web | - | https://wa-api.autolinks.pro |
 
 ## Capacidade inicial por serviço (baseline de escala)
 
@@ -90,6 +88,7 @@ npm run deploy:prepare
 | --- | --- | --- | --- |
 | `amazon` | 256M | 0.25 | http://127.0.0.1:3117/health |
 | `api` | 768M | 2.0 | http://127.0.0.1:3116/health |
+| `docker-proxy` | 64M | 0.1 | - |
 | `meli` | 1G | 1.5 | http://127.0.0.1:3114/api/meli/health |
 | `ops-control` | 256M | 0.25 | http://127.0.0.1:3115/health |
 | `scheduler` | 256M | 0.25 | - |
