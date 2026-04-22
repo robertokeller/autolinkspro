@@ -86,9 +86,9 @@ const MAX_SHOPEE_CONVERT_BATCH = Math.max(1, Math.min(500, Number(process.env.MA
 const MAX_SHOPEE_BATCH_QUERIES = Math.max(1, Math.min(100, Number(process.env.MAX_SHOPEE_BATCH_QUERIES || "25") || 25));
 const MAX_MELI_CONVERT_BATCH = Math.max(1, Math.min(500, Number(process.env.MAX_MELI_CONVERT_BATCH || "200") || 200));
 
-const MAX_MELI_COOKIES_PER_SESSION = Math.max(1, Math.min(200, Number(process.env.MAX_MELI_COOKIES_PER_SESSION || "80") || 80));
+const MAX_MELI_COOKIES_PER_SESSION = Math.max(1, Math.min(200, Number(process.env.MAX_MELI_COOKIES_PER_SESSION || "200") || 200));
 const MAX_MELI_COOKIE_NAME_LENGTH = Math.max(8, Math.min(256, Number(process.env.MAX_MELI_COOKIE_NAME_LENGTH || "120") || 120));
-const MAX_MELI_COOKIE_VALUE_LENGTH = Math.max(64, Math.min(8192, Number(process.env.MAX_MELI_COOKIE_VALUE_LENGTH || "4096") || 4096));
+const MAX_MELI_COOKIE_VALUE_LENGTH = Math.max(64, Math.min(8192, Number(process.env.MAX_MELI_COOKIE_VALUE_LENGTH || "8192") || 8192));
 
 const PLAN_EXPIRY_ALLOWED = new Set([
   "account-plan",
@@ -2532,6 +2532,82 @@ async function rehydrateMeliSessionFileFromDatabase(userId: string, sessionId: s
   }
 
   return { restored: true };
+}
+
+type MeliConvertProxyResult = {
+  payload: Record<string, unknown> | null;
+  errorMessage: string | null;
+  restoredSessionFile: boolean;
+};
+
+async function proxyMeliConvertWithRehydrate(input: {
+  userId: string;
+  sessionId: string;
+  productUrl: string;
+  timeoutMs: number;
+}): Promise<MeliConvertProxyResult> {
+  if (!MELI_URL) {
+    return { payload: null, errorMessage: "MeLi RPA não configurado.", restoredSessionFile: false };
+  }
+
+  const scopedSessionId = buildScopedMeliSessionId(input.userId, input.sessionId);
+  const meliHeaders = buildUserScopedHeaders(input.userId);
+  let restoredSessionFile = false;
+
+  const runConvert = async () => {
+    return await proxyMicroservice(
+      MELI_URL,
+      "/api/meli/convert",
+      "POST",
+      { productUrl: input.productUrl, sessionId: scopedSessionId },
+      meliHeaders,
+      input.timeoutMs,
+    );
+  };
+
+  let upstream = await runConvert();
+  while (true) {
+    if (upstream.error) {
+      const message = String(upstream.error.message || "").trim();
+      if (!restoredSessionFile && isMeliSessionFileMissingSignal(message)) {
+        const restored = await rehydrateMeliSessionFileFromDatabase(input.userId, input.sessionId);
+        if (restored.restored) {
+          restoredSessionFile = true;
+          upstream = await runConvert();
+          continue;
+        }
+        return {
+          payload: null,
+          errorMessage: restored.reason || message || "Falha ao converter link do Mercado Livre",
+          restoredSessionFile,
+        };
+      }
+
+      return {
+        payload: null,
+        errorMessage: message || "Falha ao converter link do Mercado Livre",
+        restoredSessionFile,
+      };
+    }
+
+    const payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
+      ? (upstream.data as Record<string, unknown>)
+      : {};
+
+    if (payload.success !== true && !restoredSessionFile && isMeliSessionFileMissingSignal(payload.error)) {
+      const restored = await rehydrateMeliSessionFileFromDatabase(input.userId, input.sessionId);
+      if (restored.restored) {
+        restoredSessionFile = true;
+        upstream = await runConvert();
+        continue;
+      }
+      if (restored.reason && !String(payload.error || "").trim()) {
+        payload.error = restored.reason;
+      }
+    }
+
+    return { payload, errorMessage: null, restoredSessionFile };
+  }
 }
 
 type RouteForwardMedia = {
@@ -5430,22 +5506,16 @@ async function processRouteMessageForUser(input: {
         const cacheKey = `${meliSessionId}::${conversionSource}`;
         let conversion = meliConversionCache.get(cacheKey);
         if (!conversion) {
-          const scopedSessionId = buildScopedMeliSessionId(userId, meliSessionId);
-          const meliHeaders = buildUserScopedHeaders(userId);
-          const response = await proxyMicroservice(
-            MELI_URL,
-            "/api/meli/convert",
-            "POST",
-            { productUrl: conversionSource, sessionId: scopedSessionId },
-            meliHeaders,
-            90_000,
-          );
-          if (response.error) {
-            conversion = { affiliateLink: "", ok: false, error: response.error.message };
+          const response = await proxyMeliConvertWithRehydrate({
+            userId,
+            sessionId: meliSessionId,
+            productUrl: conversionSource,
+            timeoutMs: 90_000,
+          });
+          if (response.errorMessage) {
+            conversion = { affiliateLink: "", ok: false, error: response.errorMessage };
           } else {
-            const payload = (response.data && typeof response.data === "object")
-              ? response.data as Record<string, unknown>
-              : {};
+            const payload = response.payload || {};
             const success = payload.success === true;
             const affiliateLink = String(payload.affiliateLink || "").trim();
             conversion = {
@@ -9538,21 +9608,15 @@ if (funcName === "whatsapp-connect") {
         const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
         if (!sessionId) { fail(res, "Nenhuma sessao Mercado Livre disponivel para conversao."); return; }
 
-        const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
-        const meliHeaders = { "x-autolinks-user-id": userId };
-        const upstream = await proxyMicroservice(
-          MELI_URL,
-          "/api/meli/convert",
-          "POST",
-          { productUrl, sessionId: scopedSessionId },
-          meliHeaders,
-          90_000,
-        );
-        if (upstream.error) { fail(res, upstream.error.message); return; }
+        const converted = await proxyMeliConvertWithRehydrate({
+          userId,
+          sessionId,
+          productUrl,
+          timeoutMs: 90_000,
+        });
+        if (converted.errorMessage) { fail(res, converted.errorMessage); return; }
 
-        const payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
-          ? (upstream.data as Record<string, unknown>)
-          : {};
+        const payload = converted.payload || {};
         if (payload.success !== true) {
           fail(res, String(payload.error || "Falha ao converter link do Mercado Livre"));
           return;
@@ -10707,31 +10771,22 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
-        const scopedSessionId = buildScopedMeliSessionId(ownerUserId, meliSessionId);
-        const meliHeaders = buildUserScopedHeaders(ownerUserId);
-        const conversion = await proxyMicroservice(
-          MELI_URL,
-          "/api/meli/convert",
-          "POST",
-          {
-            sessionId: scopedSessionId,
-            productUrl: String(selectedProduct.productUrl || "").trim(),
-            url: String(selectedProduct.productUrl || "").trim(),
-            source: "meli-automation",
-          },
-          meliHeaders,
-          60_000,
-        );
-        if (conversion.error) {
+        const conversion = await proxyMeliConvertWithRehydrate({
+          userId: ownerUserId,
+          sessionId: meliSessionId,
+          productUrl: String(selectedProduct.productUrl || "").trim(),
+          timeoutMs: 60_000,
+        });
+        if (conversion.errorMessage) {
           failed += 1;
-          errors.push(`${automationName}: ${conversion.error.message}`);
+          errors.push(`${automationName}: ${conversion.errorMessage}`);
           await insertAutomationHistoryEntry({
             userId: ownerUserId,
             automationName,
             destination: "automation:diagnostic",
             status: "error",
             processingStatus: "failed",
-            message: `Falha ao converter link Mercado Livre: ${conversion.error.message}`,
+            message: `Falha ao converter link Mercado Livre: ${conversion.errorMessage}`,
             details: { automationId, source, reason: "meli_conversion_failed" },
             blockReason: "meli_conversion_failed",
             errorStep: "link_conversion",
@@ -10739,9 +10794,7 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
-        const conversionPayload = (conversion.data && typeof conversion.data === "object")
-          ? conversion.data as Record<string, unknown>
-          : {};
+        const conversionPayload = conversion.payload || {};
         const affiliateLink = String(conversionPayload.affiliateLink || "").trim();
         if (!affiliateLink) {
           skipped += 1;
@@ -12399,40 +12452,18 @@ if (funcName === "whatsapp-connect") {
       const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
       if (!sessionId) { fail(res, "Nenhuma sessão Mercado Livre disponível para conversão."); return; }
 
-      const scopedSessionId = buildScopedMeliSessionId(userId, sessionId);
-      const meliHeaders = { "x-autolinks-user-id": userId };
-      let upstream = await proxyMicroservice(
-        MELI_URL,
-        "/api/meli/convert",
-        "POST",
-        { productUrl, sessionId: scopedSessionId },
-        meliHeaders,
-        90_000,
-      );
-      if (upstream.error) { fail(res, upstream.error.message); return; }
-
-      let payload: Record<string, unknown> = (upstream.data && typeof upstream.data === "object")
-        ? (upstream.data as Record<string, unknown>)
-        : {};
-      if (payload.success !== true && isMeliSessionFileMissingSignal(payload.error)) {
-        const restored = await rehydrateMeliSessionFileFromDatabase(userId, sessionId);
-        if (restored.restored) {
-          upstream = await proxyMicroservice(
-            MELI_URL,
-            "/api/meli/convert",
-            "POST",
-            { productUrl, sessionId: scopedSessionId },
-            meliHeaders,
-            90_000,
-          );
-          if (upstream.error) { fail(res, upstream.error.message); return; }
-          payload = (upstream.data && typeof upstream.data === "object")
-            ? (upstream.data as Record<string, unknown>)
-            : {};
-        } else if (restored.reason && !String(payload.error || "").trim()) {
-          payload.error = restored.reason;
-        }
+      const converted = await proxyMeliConvertWithRehydrate({
+        userId,
+        sessionId,
+        productUrl,
+        timeoutMs: 90_000,
+      });
+      if (converted.errorMessage) {
+        fail(res, converted.errorMessage);
+        return;
       }
+
+      const payload = converted.payload || {};
 
       if (payload.success !== true) {
         fail(res, String(payload.error || "Falha ao converter link do Mercado Livre"));

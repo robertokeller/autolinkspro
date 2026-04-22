@@ -215,3 +215,30 @@ Saída esperada (8 linhas `[smoke] OK ...`):
 2. Corrijá o SQL problemático em `supabase/migrations/`.
 3. Rode `supabase db push --linked --include-all` para aplicar o ajuste.
 4. Faça novo deploy do compose para sincronizar serviços.
+
+## 13) Cloudflare (pre-stage + cutover seguro)
+
+Para preparar Cloudflare antes da troca de nameserver:
+
+1. Preencha no ambiente local:
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ZONE_ID` (ou `CLOUDFLARE_ZONE_NAME`)
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `CLOUDFLARE_ORIGIN_IPV4`
+2. Rode:
+
+```bash
+npm run cloudflare:plan
+npm run cloudflare:apply
+npm run cloudflare:verify
+```
+
+3. No dia da ativacao, apos trocar os nameservers:
+
+```bash
+npm run cloudflare:verify:strict
+```
+
+Plano completo de risco/mitigacao por servico:
+
+- `docs/CLOUDFLARE_ROLLOUT_PLAN.md`

@@ -28,7 +28,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 }
 
 export function useAccessControl() {
-  const { user, isAdmin, isLoading: authLoading } = useAuth();
+  const { user, isAdmin, isLoading: authLoading, isLocalCoreReady } = useAuth();
   const queryClient = useQueryClient();
 
   const { data, isLoading: profileLoading } = useQuery({
@@ -128,6 +128,6 @@ export function useAccessControl() {
     canAccess,
     canSeeFeature,
     getFeaturePolicy,
-    isCheckingAccess: authLoading || (!!user && profileLoading),
+    isCheckingAccess: authLoading || (!!user && (profileLoading || !isLocalCoreReady)),
   };
 }

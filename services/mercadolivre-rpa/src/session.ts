@@ -523,22 +523,30 @@ export class MercadoLivreSessionService {
           (await page.locator("button.links-form__button").count()) > 0 ||
           (await page.locator("textarea[placeholder*='link'], textarea[placeholder*='url']").count()) > 0;
 
-        if (!hasBuilderUi) {
-          logs = this.addLog(
-            logs,
-            "Sessão autenticada em /afiliados, mas o formulário do Linkbuilder não foi detectado (layout pode ter mudado).",
-            "warn",
-          );
-        }
-
         // Try to read account nickname from the page
         const accountName = await page
           .$eval("[class*=\"nav-logo-subtitle\"], [data-testid=\"nav-menu-user-name\"], .nav-menu-link-text", (el) => el.textContent?.trim())
           .catch(() => undefined);
+
+        if (!hasBuilderUi) {
+          logs = this.addLog(
+            logs,
+            "Sessão autenticada em /afiliados, mas o formulário do Linkbuilder não foi detectado (layout pode ter mudado).",
+            "error",
+          );
+          return {
+            status: "error",
+            accountName,
+            sessionPath,
+            lastChecked: new Date().toISOString(),
+            logs,
+          };
+        }
+
         logs = this.addLog(
           logs,
-          `Sessão ativa${hasBuilderUi ? " e com acesso a afiliados" : " (afiliados carregado, UI do linkbuilder não confirmada)"}${accountName ? `: ${accountName}` : ""}`,
-          hasBuilderUi ? "success" : "warn",
+          `Sessão ativa e com acesso a afiliados${accountName ? `: ${accountName}` : ""}`,
+          "success",
         );
         return { status: "active", accountName, sessionPath, lastChecked: new Date().toISOString(), logs };
       }
@@ -585,7 +593,6 @@ export class MercadoLivreSessionService {
 }
 
 export const sessionService = new MercadoLivreSessionService();
-
 
 
 

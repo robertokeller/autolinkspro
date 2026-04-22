@@ -154,6 +154,12 @@ export class MercadoLivreLinkConverter {
     this.cooldownUntilByScope.delete(scopeId);
   }
 
+  resetScopeStateForSession(sessionId: string): void {
+    const scopeId = this.getQueueScope(sessionId);
+    this.registerScopeSuccess(scopeId);
+    logger.info({ scopeId }, "Reset cooldown/failure state for scope");
+  }
+
   private registerScopeFailure(scopeId: string): void {
     const failures = (this.consecutiveFailuresByScope.get(scopeId) || 0) + 1;
     this.consecutiveFailuresByScope.set(scopeId, failures);

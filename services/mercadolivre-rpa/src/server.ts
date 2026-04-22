@@ -251,6 +251,8 @@ app.post("/api/meli/sessions", async (req, res) => {
       res.status(422).json(result);
       return;
     }
+
+    converter.resetScopeStateForSession(sessionId.trim());
     res.status(201).json(result);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -279,6 +281,9 @@ app.post("/api/meli/sessions/:id/test", async (req, res) => {
     const result = full
       ? await sessionService.testSessionFull(sessionId)
       : await sessionService.testSessionLight(sessionId);
+    if (result.status === "active") {
+      converter.resetScopeStateForSession(sessionId);
+    }
     res.json(result);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -301,6 +306,7 @@ app.delete("/api/meli/sessions/:id", async (req, res) => {
   }
   try {
     const result = await sessionService.clearSession(sessionId);
+    converter.resetScopeStateForSession(sessionId);
     res.json(result);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

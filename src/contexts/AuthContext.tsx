@@ -7,6 +7,7 @@ interface AuthState {
   user: User | null;
   session: Session | null;
   isLoading: boolean;
+  isLocalCoreReady: boolean;
   isAdmin: boolean;
   signOut: () => Promise<void>;
 }
@@ -19,10 +20,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLocalCoreReady, setIsLocalCoreReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const initializedRef = useRef(false);
   const hydratedUserIdRef = useRef<string | null>(null);
   const lastAdminCheckRef = useRef<{ userId: string | null; at: number }>({ userId: null, at: 0 });
+  const localCoreHydrationTokenRef = useRef(0);
 
   const checkAdmin = useCallback(async (userId: string) => {
     try {
@@ -64,19 +67,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         initializedRef.current = true;
 
         if (newUser) {
+          setIsLocalCoreReady(false);
           // Use setTimeout to avoid potential backend client deadlock.
           setTimeout(() => {
             refreshAdmin(newUser.id);
             // Cache hydration should run once per authenticated user, not on every auth callback.
             if (hydratedUserIdRef.current !== newUser.id) {
               hydratedUserIdRef.current = newUser.id;
-              initializeLocalCoreCache().catch(console.error);
+              const hydrationToken = ++localCoreHydrationTokenRef.current;
+              initializeLocalCoreCache()
+                .catch(console.error)
+                .finally(() => {
+                  if (localCoreHydrationTokenRef.current === hydrationToken) {
+                    setIsLocalCoreReady(true);
+                  }
+                });
+              return;
             }
+            setIsLocalCoreReady(true);
           }, 0);
           return;
         }
 
         hydratedUserIdRef.current = null;
+        localCoreHydrationTokenRef.current += 1;
+        setIsLocalCoreReady(false);
         lastAdminCheckRef.current = { userId: null, at: 0 };
         setIsAdmin(false);
       }
@@ -92,15 +107,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
 
         if (initialUser) {
+          setIsLocalCoreReady(false);
           refreshAdmin(initialUser.id);
           if (hydratedUserIdRef.current !== initialUser.id) {
             hydratedUserIdRef.current = initialUser.id;
-            initializeLocalCoreCache().catch(console.error);
+            const hydrationToken = ++localCoreHydrationTokenRef.current;
+            initializeLocalCoreCache()
+              .catch(console.error)
+              .finally(() => {
+                if (localCoreHydrationTokenRef.current === hydrationToken) {
+                  setIsLocalCoreReady(true);
+                }
+              });
+            return;
           }
+          setIsLocalCoreReady(true);
           return;
         }
 
         hydratedUserIdRef.current = null;
+        localCoreHydrationTokenRef.current += 1;
+        setIsLocalCoreReady(false);
         lastAdminCheckRef.current = { userId: null, at: 0 };
       }
     }).catch((error) => {
@@ -112,6 +139,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
         initializedRef.current = true;
         hydratedUserIdRef.current = null;
+        localCoreHydrationTokenRef.current += 1;
+        setIsLocalCoreReady(false);
         lastAdminCheckRef.current = { userId: null, at: 0 };
       }
     });
@@ -133,15 +162,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (!latestUser) {
           hydratedUserIdRef.current = null;
+          localCoreHydrationTokenRef.current += 1;
+          setIsLocalCoreReady(false);
           lastAdminCheckRef.current = { userId: null, at: 0 };
           setIsAdmin(false);
           return;
         }
 
+        setIsLocalCoreReady(true);
         refreshAdmin(latestUser.id);
       }).catch((error) => {
         console.error("[Auth] local db sync getSession failed:", error);
         hydratedUserIdRef.current = null;
+        localCoreHydrationTokenRef.current += 1;
+        setIsLocalCoreReady(false);
         lastAdminCheckRef.current = { userId: null, at: 0 };
         setSession(null);
         setUser(null);
@@ -170,7 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, session, isLoading, isAdmin, signOut }}>
+    <AuthContext.Provider value={{ user, session, isLoading, isLocalCoreReady, isAdmin, signOut }}>
       {children}
     </AuthContext.Provider>
   );
