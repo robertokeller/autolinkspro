@@ -72,6 +72,10 @@ const BRIDGE_ALLOWED_MELI_DOMAINS = new Set([
   "meli.la",
   "www.meli.la",
 ]);
+const MELI_EXTENSION_VERSION = "1.1.6";
+const MELI_EXTENSION_ZIP_FILE = `autolinks-mercado-livre-v${MELI_EXTENSION_VERSION}.zip`;
+const MELI_EXTENSION_DOWNLOAD_URL = `/downloads/${MELI_EXTENSION_ZIP_FILE}`;
+const MELI_EXTENSION_DOWNLOAD_NAME = `AutoLinks - Mercado Livre v${MELI_EXTENSION_VERSION}.zip`;
 
 function normalizeCookieDomain(raw: unknown): string {
   return String(raw || "")
@@ -724,9 +728,9 @@ export default function MercadoLivreConfiguracoes() {
           <CollapsibleContent>
             <CardContent className="border-t space-y-6 pt-6 bg-muted/20">
               <Button asChild className="w-full">
-                <a href="/downloads/autolinks-mercado-livre.zip" download="AutoLinks - Mercado Livre.zip">
+                <a href={MELI_EXTENSION_DOWNLOAD_URL} download={MELI_EXTENSION_DOWNLOAD_NAME}>
                   <Download className="mr-1.5 h-4 w-4" />
-                  Baixar extensão (.zip)
+                  Baixar extensão v{MELI_EXTENSION_VERSION} (.zip)
                 </a>
               </Button>
 
