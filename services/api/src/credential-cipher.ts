@@ -106,13 +106,6 @@ function deriveKey(rawKey: string): Buffer {
 const KEY: Buffer | null = RAW_KEY ? deriveKey(RAW_KEY) : null;
 
 /**
- * Returns true when encryption is configured and available.
- */
-export function isEncryptionEnabled(): boolean {
-  return KEY !== null;
-}
-
-/**
  * Encrypt a plaintext value.  Returns the prefixed ciphertext string.
  * If encryption is not configured (dev mode), returns the plaintext unchanged.
  */

@@ -59,11 +59,11 @@ POST /functions/v1/rpc  { name: "analytics-admin-groups" }
 #### Componentes criados:
 ```
 src/components/metrics/
-├── BrasilMap.tsx               # Mapa interativo do Brasil (mapa-brasil)
-├── HealthScoreCard.tsx         # Card de health score com barra circular
-├── ComposicaoVisaoGeral.tsx    # Composição + mapa + ranking estados
-├── ChurnDiario.tsx             # Gráfico barras entradas/saídas
-└── CrossGroupOverlapping.tsx   # Tabela de membros overlapping
+├── BrasilMap.tsx               # Mapa interativo do Brasil
+├── CapacidadePorGrupo.tsx      # Capacidade e ocupação por grupo
+├── GruposDesempenho.tsx        # Ranking de desempenho por grupo
+├── HistoricoMovimentos.tsx     # Histórico e tendências
+└── RecapturaAutomatica.tsx     # Regras de recaptura e fila
 ```
 
 #### Página principal:
@@ -164,10 +164,10 @@ Storage                     Calculadores                    API
 Frontend                    Componentes React               Usuário
 ┌──────────────────┐      ┌───────────────────┐       ┌─────────────────────┐
 │ analytics-client │─────>│ Metricas.tsx      │──────>│ /metricas           │
-│ .ts              │      │ - HealthScoreCard │       │ - Tabs/Sub-tabs     │
-│                  │      │ - Composicao      │       │ - Mapa interativo   │
-│                  │      │ - ChurnDiario     │       │ - Tabela ranking    │
-│                  │      │ - CrossGroup      │       └─────────────────────┘
+│ .ts              │      │ - KPIs principais │       │ - Tabs/Sub-tabs     │
+│                  │      │ - Mapa interativo │       │ - Mapa interativo   │
+│                  │      │ - Ranking grupos  │       │ - Tabela ranking    │
+│                  │      │ - Histórico       │       └─────────────────────┘
 └──────────────────┘      └───────────────────┘
 ```
 

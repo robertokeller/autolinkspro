@@ -8,6 +8,19 @@
 -- API — it is intentionally short for the initial seed. If you change the
 -- password through the UI you will need to use 12+ characters.
 --
+-- SOMENTE DESENVOLVIMENTO — não executar em produção.
+-- Em produção, o admin é criado via ADMIN_EMAIL / ADMIN_PASSWORD env vars
+-- através da função seedAdminIfEmpty() em services/api/src/index.ts.
+DO $$
+BEGIN
+  IF current_setting('app.env', true) = 'production' THEN
+    RAISE EXCEPTION
+      '[006_seed_users] Esta migração NÃO deve rodar em produção. '
+      'O admin de produção é criado via variáveis de ambiente ADMIN_EMAIL/ADMIN_PASSWORD. '
+      'Se você está rodando isso intencionalmente em dev, defina app.env=development na sessão.';
+  END IF;
+END $$;
+--
 -- Safe to re-run: uses ON CONFLICT DO UPDATE throughout.
 
 DO $$

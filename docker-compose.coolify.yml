@@ -23,12 +23,8 @@ services:
       args:
         VITE_API_URL: ${VITE_API_URL}
         VITE_BROWSER_RUNTIME_ENABLED: ${VITE_BROWSER_RUNTIME_ENABLED:-false}
-        VITE_WHATSAPP_MICROSERVICE_URL: ${VITE_WHATSAPP_MICROSERVICE_URL}
-        VITE_TELEGRAM_MICROSERVICE_URL: ${VITE_TELEGRAM_MICROSERVICE_URL}
-        VITE_SHOPEE_MICROSERVICE_URL: ${VITE_SHOPEE_MICROSERVICE_URL}
-        VITE_MELI_RPA_URL: ${VITE_MELI_RPA_URL}
-        VITE_AMAZON_MICROSERVICE_URL: ${VITE_AMAZON_MICROSERVICE_URL}
-        VITE_OPS_CONTROL_URL: ${VITE_OPS_CONTROL_URL}
+        # Microservice internal URLs are server-side only — configuradas no serviço `api`,
+        # não expostas no bundle do frontend. Ver serviço `api` para as URLs reais.
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -76,6 +72,8 @@ services:
       PORT: 3111
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?SESSION_ENCRYPTION_KEY is required}
+      SESSION_CIPHER_SALT: ${SESSION_CIPHER_SALT:?SESSION_CIPHER_SALT is required}
       BAILEYS_SESSIONS_DIR: /data/wa-sessions
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ROUTE_MEDIA_DEBUG: ${ROUTE_MEDIA_DEBUG:-false}
@@ -112,6 +110,8 @@ services:
       PORT: 3112
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?SESSION_ENCRYPTION_KEY is required}
+      SESSION_CIPHER_SALT: ${SESSION_CIPHER_SALT:?SESSION_CIPHER_SALT is required}
       TELEGRAM_SESSIONS_DIR: /data/tg-sessions
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
@@ -181,6 +181,8 @@ services:
       MELI_RPA_PORT: 3114
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
       CORS_ORIGIN: ${MELI_CORS_ORIGIN:?MELI_CORS_ORIGIN is required}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?SESSION_ENCRYPTION_KEY is required}
+      SESSION_CIPHER_SALT: ${SESSION_CIPHER_SALT:?SESSION_CIPHER_SALT is required}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - meli_sessions:/app/services/mercadolivre-rpa/.sessions
@@ -226,6 +228,47 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
+  # docker-proxy: intermediário de segurança entre ops-control e o Docker socket.
+  # Expõe APENAS os endpoints da Docker API necessários para listar e reiniciar containers.
+  # Um comprometimento do ops-control NÃO resulta em acesso total ao host Docker.
+  # Endpoints bloqueados: EXEC (RCE), IMAGES, VOLUMES, NETWORKS, SECRETS, SWARM, BUILD.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Containers: permite listar, inspecionar e reiniciar containers
+      CONTAINERS: 1
+      POST: 1
+      # Tudo mais: bloqueado explicitamente
+      EXEC: 0
+      IMAGES: 0
+      VOLUMES: 0
+      NETWORKS: 0
+      SECRETS: 0
+      CONFIGS: 0
+      SERVICES: 0
+      SWARM: 0
+      TASKS: 0
+      NODES: 0
+      PLUGINS: 0
+      SYSTEM: 0
+      AUTH: 0
+      DISTRIBUTION: 0
+      BUILD: 0
+      COMMIT: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "2375"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.1'
+    logging: *default-logging
+    restart: unless-stopped
+
   ops-control:
     image: autolinks-ops-control:latest
     pull_policy: build
@@ -249,14 +292,15 @@ services:
       OPS_RUNTIME_MODE: docker
       DOCKER_CONTROL_ENABLED: ${DOCKER_CONTROL_ENABLED:-true}
       DOCKER_SERVICE_LABEL_KEY: ${DOCKER_SERVICE_LABEL_KEY:-com.docker.compose.service}
+      # Usa o docker-proxy em vez do socket diretamente — limita o blast radius se comprometido
+      DOCKER_HOST: tcp://docker-proxy:2375
       WHATSAPP_HEALTH_URL: http://whatsapp:3111/health
       TELEGRAM_HEALTH_URL: http://telegram:3112/health
       SHOPEE_HEALTH_URL: http://shopee:3113/health
       MELI_HEALTH_URL: http://meli:3114/api/meli/health
       AMAZON_HEALTH_URL: http://amazon:3117/health
       ALLOW_INSECURE_NO_TOKEN: "false"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    # Docker socket removido — ops-control agora usa docker-proxy (porta 2375)
     expose:
       - "3115"
     healthcheck:
@@ -296,6 +340,9 @@ services:
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?CREDENTIAL_ENCRYPTION_KEY is required}
       CREDENTIAL_CIPHER_SALT: ${CREDENTIAL_CIPHER_SALT:?CREDENTIAL_CIPHER_SALT is required}
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      # Comma-separated extension origins allowed by API CORS in production.
+      # Example: chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef
+      ALLOWED_EXTENSION_ORIGINS: ${ALLOWED_EXTENSION_ORIGINS:-}
       # Keep public RPC disabled by default in production.
       # Enable only if anonymous link-hub/master-group pages are intentionally required.
       ALLOW_PUBLIC_RPC: ${ALLOW_PUBLIC_RPC:-false}

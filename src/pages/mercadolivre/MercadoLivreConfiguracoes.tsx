@@ -444,8 +444,21 @@ export default function MercadoLivreConfiguracoes() {
   };
 
   useEffect(() => {
-    const postBridgeResponse = (response: ExtensionBridgeResponse) => {
-      window.postMessage(response, window.location.origin);
+    // Security: direciona respostas do bridge diretamente ao remetente (extensão) quando possível,
+    // em vez de broadcast via window.postMessage. Isso evita que listeners same-origin injetem
+    // ou observem respostas do bridge. PING usa broadcast (sem dados sensíveis); demais respostas
+    // usam directed reply via event.source.
+    const postBridgeResponse = (
+      response: ExtensionBridgeResponse,
+      source?: MessageEventSource | null
+    ) => {
+      if (source && source !== window) {
+        // Directed reply: somente o content script da extensão recebe a resposta.
+        (source as Window).postMessage(response, window.location.origin);
+      } else {
+        // PING ou casos sem source conhecida: broadcast same-origin (sem dados sensíveis).
+        window.postMessage(response, window.location.origin);
+      }
     };
 
     const onMessage = (event: MessageEvent) => {
@@ -455,11 +468,15 @@ export default function MercadoLivreConfiguracoes() {
       const data = event.data as ExtensionBridgeRequest | undefined;
       if (!data || data.source !== "autolinks-extension") return;
 
+      // Captura o sender antes de qualquer operação assíncrona.
+      // Respostas não-PING são direcionadas de volta ao remetente (extensão)
+      // em vez de broadcast, para evitar observação por listeners same-origin.
+      const sender = event.source;
+
       if (data.type === "AUTOLINKS_PING") {
         // Security: do NOT include bridgeToken in the PING response.
-        // Any JS on the same origin can listen to window.message and capture tokens
-        // from PING responses - the extension already holds the token from the initial
-        // bootstrap handshake and must include it in every subsequent request.
+        // PING é broadcast intencional — sem dados sensíveis, sem token.
+        // A extensão já possui o token do handshake inicial.
         postBridgeResponse({
           source: "autolinks-page-bridge",
           type: "AUTOLINKS_PING_RESULT",
@@ -483,7 +500,7 @@ export default function MercadoLivreConfiguracoes() {
           requestId: data.requestId,
           ok: false,
           message: "Canal da extensão inválido. Reabra Configurações ML e tente novamente.",
-        });
+        }, sender);
         return;
       }
 
@@ -498,7 +515,7 @@ export default function MercadoLivreConfiguracoes() {
             ? `Login confirmado para ${user?.email || "usuário"}.`
             : "Faça login no Autolinks antes de importar cookies pela extensão.",
           payload: loggedIn ? { email: user?.email || "", userId: user?.id || "" } : undefined,
-        });
+        }, sender);
         return;
       }
 
@@ -513,7 +530,7 @@ export default function MercadoLivreConfiguracoes() {
             requestId: data.requestId,
             ok: false,
             message: "Informe e-mail e senha para continuar.",
-          });
+          }, sender);
           return;
         }
 
@@ -528,7 +545,7 @@ export default function MercadoLivreConfiguracoes() {
               requestId: data.requestId,
               ok: false,
               message,
-            });
+            }, sender);
             return;
           }
 
@@ -542,7 +559,7 @@ export default function MercadoLivreConfiguracoes() {
               email: loginData.user?.email || "",
               userId: loginData.user?.id || "",
             },
-          });
+          }, sender);
         };
 
         void login();
@@ -558,7 +575,7 @@ export default function MercadoLivreConfiguracoes() {
           requestId: data.requestId,
           ok: false,
           message: "Você precisa estar logado no Autolinks para enviar cookies.",
-        });
+        }, sender);
         return;
       }
 
@@ -597,7 +614,7 @@ export default function MercadoLivreConfiguracoes() {
             ok: true,
             message: "Sessão salva com sucesso no Autolinks.",
             payload: { sessionId },
-          });
+          }, sender);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Falha ao salvar sessão enviada pela extensão.";
           postBridgeResponse({
@@ -606,7 +623,7 @@ export default function MercadoLivreConfiguracoes() {
             requestId: data.requestId,
             ok: false,
             message,
-          });
+          }, sender);
         }
       };
 

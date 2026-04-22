@@ -313,7 +313,11 @@ function ensureRequiredEnvVars() {
   // Security L-1: a public static LOG_HASH_SALT allows pre-computing a hash→userId map
   const logSalt = String(process.env.LOG_HASH_SALT || "").trim();
   if (!logSalt || logSalt === "autolinks-log-salt-v2") {
-    console.warn("[api] SECURITY WARNING: LOG_HASH_SALT is using the public default. Set a unique secret to prevent de-anonymization of log hashes.");
+    throw new Error(
+      "[api] LOG_HASH_SALT está usando o valor público padrão (ou não foi definido). " +
+      "Com esse valor qualquer pessoa pode pré-computar um mapa hash→userId e de-anonimizar logs. " +
+      "Gere um valor único com: openssl rand -hex 32"
+    );
   }
 }
 
@@ -519,10 +523,14 @@ async function kiwifyWebhookRateLimiter(req: express.Request, res: express.Respo
     }
     next();
   } catch {
-    // Fail open for webhooks to avoid blocking legitimate payments during DB issues
-    // But log the issue for ops attention
-    console.warn("[index] kiwify webhook rate limiter store error — allowing request");
-    next();
+    // Fail CLOSED — do NOT allow webhook floods during DB hiccups.
+    // The auth rate limiter (above) also fails closed for the same reason: a DB outage
+    // is exactly when an attacker can exploit a fail-open window.
+    // Kiwify retries failed webhook deliveries automatically, so a transient 503 here
+    // will not cause permanent data loss — payments will be processed on the retry.
+    const rid = (req as { rid?: string }).rid ?? "-";
+    console.error(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "kiwify_webhook_rate_limiter_error", ip: req.ip, rid }));
+    res.status(503).json({ ok: false, message: "Serviço temporariamente indisponível. Tente novamente em instantes." });
   }
 }
 
@@ -761,6 +769,23 @@ async function main() {
   process.on("unhandledRejection", (reason) => {
     console.error("[api] Unhandled rejection:", reason);
   });
+
+  // Pool saturation monitor: emite log estruturado se o pool estiver consistentemente
+  // sob pressão (waiting > 0 ou idle == 0). Configurar alerta externo neste evento
+  // para detectar degradação antes de erros de timeout aparecerem.
+  setInterval(() => {
+    if (pool.waitingCount > 0 || pool.idleCount === 0) {
+      console.warn(JSON.stringify({
+        ts: new Date().toISOString(),
+        svc: "api",
+        event: "pool_saturation_check",
+        total: pool.totalCount,
+        idle: pool.idleCount,
+        waiting: pool.waitingCount,
+        instance: process.env.NODE_APP_INSTANCE ?? "0",
+      }));
+    }
+  }, 60_000).unref();
 }
 
 main().catch((err) => { console.error("[api] Fatal startup error:", err); process.exit(1); });

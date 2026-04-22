@@ -64,6 +64,26 @@ pool.on("error", (err) => {
   console.error("[db] Unexpected pool error:", err);
 });
 
+// Pool pressure monitoring: emite aviso estruturado quando conexões ficam esperando.
+// Em cluster PM2, cada worker tem DB_POOL_MAX conexões — se waitingCount > 0 com
+// frequência, aumentar DB_MAX_TOTAL_CONN ou reduzir API_INSTANCES.
+const POOL_PRESSURE_THRESHOLD = 2;
+pool.on("connect", () => {
+  if (pool.waitingCount > POOL_PRESSURE_THRESHOLD) {
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(),
+      svc: "api",
+      event: "pool_pressure",
+      total: pool.totalCount,
+      idle: pool.idleCount,
+      waiting: pool.waitingCount,
+      max: DB_POOL_MAX,
+      instance: process.env.NODE_APP_INSTANCE ?? "0",
+      hint: "Considere aumentar DB_MAX_TOTAL_CONN ou reduzir API_INSTANCES",
+    }));
+  }
+});
+
 // console.debug(JSON.stringify({
 //   ts: new Date().toISOString(),
 //   svc: "api",

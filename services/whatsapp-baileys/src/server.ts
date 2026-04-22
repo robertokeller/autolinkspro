@@ -31,8 +31,9 @@ import makeWASocket, {
   getContentType,
   type proto,
   type WASocket,
-  useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
+// @security-review-required: session files are encrypted at rest via AES-256-GCM
+import { useEncryptedMultiFileAuthState } from "./encrypted-auth-state.js";
 
 // Analytics module
 import {
@@ -1471,7 +1472,7 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
     const sessionDir = (await resolveSessionDir(sessionId)) || getSessionDir(sessionId);
     await ensureDir(sessionDir);
 
-    const { state: authState, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { state: authState, saveCreds } = await useEncryptedMultiFileAuthState(sessionDir);
     const { version } = await fetchLatestBaileysVersion();
 
     const socket = makeWASocket({

@@ -537,7 +537,7 @@ export default function TemplatesMeli() {
                       Placeholder de imagem detectado
                     </div>
                     <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                      O template usa {"\{imagem\}"}. A imagem será enviada como anexo quando estiver disponível no fluxo de origem.
+                      O template usa {"{imagem}"}. A imagem será enviada como anexo quando estiver disponível no fluxo de origem.
                     </div>
                   </div>
                 )}

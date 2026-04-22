@@ -1,4 +1,4 @@
-﻿import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -31,7 +31,6 @@ import {
   Globe2,
   History,
   Loader2,
-  MessageSquare,
   RefreshCw,
   ShieldCheck,
   TrendingUp,
@@ -861,40 +860,3 @@ export default function Metricas() {
   );
 }
 
-function StatCard({
-  icon,
-  label,
-  value,
-  color,
-  subtitle,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string | number;
-  color?: string;
-  subtitle?: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="pt-6">
-        <div className="flex items-center gap-3">
-          <div className={`rounded-lg bg-primary/10 p-2 ${color ?? ""}`}>{icon}</div>
-          <div>
-            <p className="text-xs text-muted-foreground">{label}</p>
-            <p className="text-xl font-bold">{value}</p>
-            {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function EmptyState({ message }: { message: string }) {
-  return (
-    <div className="py-12 text-center text-muted-foreground">
-      <MessageSquare className="mx-auto mb-4 h-12 w-12 opacity-50" />
-      <p className="font-medium">{message}</p>
-    </div>
-  );
-}

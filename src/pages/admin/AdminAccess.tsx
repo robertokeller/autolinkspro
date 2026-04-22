@@ -307,7 +307,7 @@ export default function AdminAccess() {
         <Button onClick={saveLevels} disabled={!hasChanges}>Salvar Níveis</Button>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
         {draftLevels.map((level) => {
           const summary = summarizeLevel(level);
           return (
@@ -375,8 +375,8 @@ export default function AdminAccess() {
       </div>
 
       <Dialog open={!!activeLevel} onOpenChange={(open) => !open && setActiveLevelId(null)}>
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
             <DialogTitle>Ajustar Nível de Acesso</DialogTitle>
           </DialogHeader>
           {activeLevel && (
@@ -391,7 +391,7 @@ export default function AdminAccess() {
               </div>
 
               {/* Limites de recurso */}
-              <Card>
+              <Card className="admin-card">
                 <CardHeader className="pb-2">
                   <CardTitle className="admin-card-title">Limites</CardTitle>
                   <p className="text-xs text-muted-foreground">Use <strong>-1</strong> pra ilimitado · <strong>0</strong> bloqueia. O sistema usa o menor valor entre o plano e o que tá aqui.</p>
@@ -430,7 +430,7 @@ export default function AdminAccess() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="admin-card">
                 <CardHeader className="pb-2">
                   <CardTitle className="admin-card-title">Funcionalidades</CardTitle>
                 </CardHeader>

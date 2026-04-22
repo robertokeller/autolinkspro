@@ -1596,6 +1596,41 @@ async function insertAutomationHistoryEntry(input: {
   );
 }
 
+// Generic history_entries helper — use this for all new route/session events instead of
+// inline SQL.  The existing insertAutomationHistoryEntry covers 'automation_run' (outbound).
+// This helper covers 'route_forward' and 'session_event' (inbound / outbound).
+async function insertHistoryEntry(input: {
+  userId: string;
+  type: "route_forward" | "session_event" | "automation_run";
+  source: string;
+  destination: string;
+  status: "success" | "error" | "warning" | "info";
+  details: Record<string, unknown>;
+  direction: "inbound" | "outbound";
+  messageType: "text" | "image" | "video" | string;
+  processingStatus: "sent" | "processed" | "failed" | "blocked" | string;
+  blockReason?: string;
+  errorStep?: string;
+}): Promise<void> {
+  await execute(
+    "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+    [
+      uuid(),
+      input.userId,
+      input.type,
+      input.source,
+      input.destination,
+      input.status,
+      JSON.stringify(input.details),
+      input.direction,
+      input.messageType,
+      input.processingStatus,
+      input.blockReason ?? "",
+      input.errorStep ?? "",
+    ],
+  );
+}
+
 function safeGrowthRatio(current: number, expected: number): number {
   if (expected <= 0) return current > 0 ? Number(current.toFixed(4)) : 0;
   return Number((current / expected).toFixed(4));

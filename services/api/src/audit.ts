@@ -83,13 +83,3 @@ export async function logAudit(entry: AuditLogEntry): Promise<void> {
     console.error("[audit] Failed to write audit log:", error instanceof Error ? error.message : String(error));
   }
 }
-
-// Helper to get IP address from request
-export function getRequestIp(req: { ip?: string; connection?: { remoteAddress?: string } }): string | undefined {
-  return req.ip ?? req.connection?.remoteAddress;
-}
-
-// Helper to get user agent
-export function getUserAgent(req: { headers?: { "user-agent"?: string } }): string | undefined {
-  return req.headers?.["user-agent"];
-}

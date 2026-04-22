@@ -5,6 +5,7 @@ import {
   HardDrive, Clock, Circle, ShieldCheck, Eye, Edit2,
   TrendingUp, Wifi, WifiOff, DollarSign, Package,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { TelegramIcon, WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
@@ -216,6 +217,34 @@ export default function AdminDashboard() {
   const [editPortService, setEditPortService] = useState<RuntimeServiceView["key"] | null>(null);
   const [editPortValue, setEditPortValue] = useState<string>("");
   const [editPortBusy, setEditPortBusy] = useState(false);
+
+  // --- UI Handlers ---
+  const handleToggleMaintenance = async () => {
+    const action = maintenanceEnabled ? "disable" : "enable";
+    try {
+      setCommandStatus({ phase: "running", title: "Alterando Modo", detail: "Aguarde..." });
+      const res = await invokeBackendRpc<{ ok: boolean }>("admin-maintenance", { body: { action } });
+      if (res.ok) {
+        setMaintenanceEnabled(!maintenanceEnabled);
+        toast.success(`Modo manutenção ${maintenanceEnabled ? "desativado" : "ativado"}`);
+      }
+    } catch (err) {
+      toast.error("Erro ao mudar modo");
+    } finally {
+      setCommandStatus({ phase: "idle", title: "Monitor", detail: "Pronto" });
+    }
+  };
+
+  const syncAmazonVitrine = async () => {
+    setAmazonSyncBusy(true);
+    try {
+      const res = await invokeBackendRpc<{ ok: boolean }>("amazon-vitrine-sync");
+      if (res.ok) toast.success("Sincronizado!");
+    } finally {
+      setAmazonSyncBusy(false);
+      refreshSystemObservability();
+    }
+  };
 
   const refreshSystemObservability = useCallback(async () => {
     const [snapshot, maintenance] = await Promise.all([
@@ -942,810 +971,730 @@ export default function AdminDashboard() {
   return (
     <TooltipProvider>
     <div className="admin-page">
-      <PageHeader title="Dashboard Admin" description="Painel de Controle">
-        <div className="flex items-center gap-2">
-          <Badge variant={systemStatusLabel.variant} className="gap-1.5">
-            <Circle className={`h-2 w-2 fill-current ${onlineCount === totalCount && opsHealth.online ? "text-success" : onlineCount > 0 ? "text-warning" : "text-destructive"}`} />
-            {systemStatusLabel.text}
-          </Badge>
-          <Badge variant={systemPressureBadge.variant}>{systemPressureBadge.label}</Badge>
-          {isRefreshingHealth && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-        </div>
-      </PageHeader>
-
-      <Card className="admin-card overflow-hidden">
-        <CardHeader className="pb-2 border-b border-border/30">
-          <div className="flex items-center justify-between">
-            <CardTitle className="admin-card-title">Controle Operacional</CardTitle>
-            <div className="flex items-center gap-2 text-2xs text-muted-foreground">
-              <Clock className="h-3 w-3" />
-              <span>Próx. check: {nextRefreshIn}s</span>
-            </div>
+      <div className="flex flex-col items-center text-center">
+        <PageHeader title="Painel de Controle" description="Visão geral e monitoramento operacional do ecossistema Autolinks.">
+          <div className="flex items-center justify-center gap-3 mt-4">
+            <Badge variant={systemStatusLabel.variant} className="gap-2 px-3 py-1.5 text-[11px] font-black uppercase tracking-wider rounded-lg shadow-sm">
+              <Circle className={`h-3 w-3 fill-current ${onlineCount === totalCount && opsHealth.online ? "text-success" : onlineCount > 0 ? "text-warning" : "text-destructive"}`} />
+              {systemStatusLabel.text}
+            </Badge>
+            <Badge variant={systemPressureBadge.variant} className="px-3 py-1.5 text-[11px] font-black uppercase tracking-wider rounded-lg shadow-sm">
+              {systemPressureBadge.label}
+            </Badge>
+            {isRefreshingHealth && <Loader2 className="h-4 w-4 animate-spin text-primary ml-1" />}
           </div>
-        </CardHeader>
-        <CardContent className="space-y-3 pt-4">
-          <div className="space-y-3 rounded-lg border border-border/40 bg-muted/10 p-3">
-            <div className="grid gap-3 lg:grid-cols-2">
-              <div className="rounded-lg border border-border/40 bg-card/80 p-4">
-                <div className="mb-4 flex items-center justify-between">
-                  <p className="text-xs uppercase font-semibold tracking-wider text-foreground">Controles do Sistema</p>
-                  <Badge variant={maintenanceEnabled ? "secondary" : "default"} className="text-2xs px-2 py-0.5">
-                    {maintenanceEnabled ? "Sistema Pausado" : "Sistema Ativo"}
+        </PageHeader>
+      </div>
+
+      <div className="grid gap-6">
+        <Card className="rounded-[2rem] border-border/80 shadow-2xl overflow-hidden bg-card/60 backdrop-blur-md">
+          <CardHeader className="p-6 border-b border-border/40 bg-muted/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-primary/10 rounded-xl text-primary ring-1 ring-primary/20">
+                  <Activity className="h-5 w-5" />
+                </div>
+                <div>
+                  <CardTitle className="text-xl font-black tracking-tight">Orquestrador de Sistema</CardTitle>
+                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-widest mt-0.5">Operações de Infraestrutura</p>
+                </div>
+              </div>
+              <div className="hidden sm:flex items-center gap-2 bg-background/50 px-3 py-1.5 rounded-xl border border-border/50">
+                <Clock className="h-3.5 w-3.5 text-primary" />
+                <span className="text-[10px] font-black uppercase tracking-tighter text-muted-foreground">Check em {nextRefreshIn}s</span>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-6 space-y-6">
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Controles do Sistema */}
+              <div className="space-y-5 p-6 rounded-[1.5rem] border border-border/60 bg-background/40 relative group transition-all hover:border-primary/30">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Server className="h-4 w-4 text-primary" />
+                    <h3 className="text-xs font-black uppercase tracking-[0.15em] text-foreground/80">Gestão de Host</h3>
+                  </div>
+                  <Badge variant={maintenanceEnabled ? "secondary" : "default"} className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-md">
+                    {maintenanceEnabled ? "Modo Manutenção" : "Modo Produção"}
                   </Badge>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <Button
                     variant="default"
-                    size="sm"
-                    className="flex-1 min-w-[140px] justify-center"
+                    className="h-12 rounded-xl font-bold text-xs uppercase tracking-widest shadow-xl shadow-primary/10 hover:scale-[1.02] transition-all"
                     disabled={anySystemActionBusy || anyServiceBulkActionBusy}
                     onClick={() => void controlSystem("start")}
                   >
-                    {systemActionBusy.start ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <Play className="h-4 w-4 mr-1.5" />}
-                    Iniciar Sistema
+                    {systemActionBusy.start ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Play className="h-4 w-4 mr-2" />}
+                    Start
                   </Button>
                   <Button
                     variant="outline"
-                    size="sm"
-                    className="flex-1 min-w-[140px] justify-center"
+                    className="h-12 rounded-xl font-bold text-xs uppercase tracking-widest border-primary/20 hover:bg-primary/5 hover:text-primary transition-all"
                     disabled={anySystemActionBusy || anyServiceBulkActionBusy}
                     onClick={() => void controlSystem("restart")}
                   >
-                    {systemActionBusy.restart ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <RotateCcw className="h-4 w-4 mr-1.5" />}
-                    Reiniciar Sistema
+                    {systemActionBusy.restart ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
+                    Reloader
                   </Button>
                   <Button
                     variant="destructive"
-                    size="sm"
-                    className="w-full sm:w-auto flex-1 min-w-[140px] justify-center"
+                    className="h-12 rounded-xl font-bold text-xs uppercase tracking-widest shadow-xl shadow-destructive/10 hover:scale-[1.02] transition-all"
                     disabled={anySystemActionBusy || anyServiceBulkActionBusy || !opsHealth.online}
                     onClick={() => void controlSystem("shutdown")}
                   >
-                    {systemActionBusy.shutdown ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <Power className="h-4 w-4 mr-1.5" />}
-                    Desligar Sistema
+                    {systemActionBusy.shutdown ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Power className="h-4 w-4 mr-2" />}
+                    Kill
                   </Button>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-border/40 bg-card/80 p-4">
-                <div className="mb-4 flex items-center justify-between">
-                  <p className="text-xs uppercase font-semibold tracking-wider text-foreground">Controles dos Serviços</p>
-                  <Badge variant={onlineCount === totalCount ? "default" : "secondary"} className="text-2xs px-2 py-0.5">
-                    {onlineCount}/{totalCount} online
+              {/* Controles de Serviços */}
+              <div className="space-y-5 p-6 rounded-[1.5rem] border border-border/60 bg-background/40 relative group transition-all hover:border-primary/30">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Activity className="h-4 w-4 text-primary" />
+                    <h3 className="text-xs font-black uppercase tracking-[0.15em] text-foreground/80">Microsserviços</h3>
+                  </div>
+                  <Badge variant={onlineCount === totalCount ? "default" : "secondary"} className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-md">
+                    {onlineCount}/{totalCount} ATIVOS
                   </Badge>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <Button
                     variant="default"
-                    size="sm"
-                    className="flex-1 min-w-[140px] justify-center"
+                    className="h-12 rounded-xl font-bold text-xs uppercase tracking-widest shadow-xl shadow-primary/10 hover:scale-[1.02] transition-all"
                     disabled={allServiceActionBusy.start === true || !opsHealth.online || allServicesOnline || anyGlobalActionBusy || anySystemActionBusy}
                     onClick={() => void controlAllServices("start")}
                   >
-                    <Play className="h-4 w-4 mr-1.5" />
-                    Iniciar Serviços
+                    <Play className="h-4 w-4 mr-2" />
+                    Up All
                   </Button>
                   <Button
                     variant="outline"
-                    size="sm"
-                    className="flex-1 min-w-[140px] justify-center"
+                    className="h-12 rounded-xl font-bold text-xs uppercase tracking-widest border-primary/20 hover:bg-primary/5 hover:text-primary transition-all"
                     disabled={allServiceActionBusy.restart === true || !opsHealth.online || anyGlobalActionBusy || anySystemActionBusy}
                     onClick={() => void controlAllServices("restart")}
                   >
-                    <RotateCcw className="h-4 w-4 mr-1.5" />
-                    Reiniciar Serviços
+                    <RotateCcw className="h-4 w-4 mr-2" />
+                    Sync
                   </Button>
                   <Button
                     variant="destructive"
-                    size="sm"
-                    className="w-full sm:w-auto flex-1 min-w-[140px] justify-center"
+                    className="h-12 rounded-xl font-bold text-xs uppercase tracking-widest shadow-xl shadow-destructive/10 hover:scale-[1.02] transition-all"
                     disabled={allServiceActionBusy.stop === true || !opsHealth.online || allServicesOffline || anyGlobalActionBusy || anySystemActionBusy}
                     onClick={() => void controlAllServices("stop")}
                   >
-                    <Power className="h-4 w-4 mr-1.5" />
-                    Desligar Serviços
+                    <Power className="h-4 w-4 mr-2" />
+                    Down All
                   </Button>
                 </div>
               </div>
             </div>
 
-            <div className={`rounded-lg border px-5 py-4 mt-2 ${
-              commandStatus.phase === "running"
-                ? "border-info/30 bg-info/5 text-info"
-                : commandStatus.phase === "error"
-                  ? "border-destructive/30 bg-destructive/5 text-destructive"
-                  : commandStatus.phase === "success"
-                    ? "border-success/30 bg-success/5 text-success"
-                    : "border-border/50 bg-muted/30 text-muted-foreground"
-            }`}>
-              <div className="flex items-center gap-3">
-                {commandStatus.phase === "running"
-                  ? <Loader2 className="h-5 w-5 animate-spin flex-shrink-0" />
-                  : commandStatus.phase === "success"
-                    ? <div className="h-5 w-5 rounded-full bg-success flex-shrink-0" />
-                    : commandStatus.phase === "error"
-                      ? <div className="h-5 w-5 rounded-full bg-destructive flex-shrink-0" />
-                      : <Activity className="h-5 w-5 flex-shrink-0" />
-                }
-                <div className="flex-1">
-                  <p className="text-sm font-bold leading-tight">{commandStatus.title}</p>
-                  {commandStatus.detail && <p className="mt-1 text-xs opacity-90">{commandStatus.detail}</p>}
+            {/* Status do Monitor */}
+            <div className={cn(
+              "rounded-2xl border p-6 transition-all duration-500 backdrop-blur-sm",
+              commandStatus.phase === "running" ? "border-primary/30 bg-primary/[0.03]" :
+              commandStatus.phase === "error" ? "border-destructive/30 bg-destructive/[0.03]" :
+              commandStatus.phase === "success" ? "border-success/30 bg-success/[0.03]" :
+              "border-border/60 bg-muted/20"
+            )}>
+              <div className="flex flex-col sm:flex-row items-center gap-6 text-center sm:text-left">
+                <div className={cn(
+                  "h-16 w-16 rounded-2xl flex items-center justify-center shadow-lg transition-all",
+                  commandStatus.phase === "running" ? "bg-primary/10 text-primary animate-pulse" :
+                  commandStatus.phase === "success" ? "bg-success/10 text-success" :
+                  commandStatus.phase === "error" ? "bg-destructive/10 text-destructive" :
+                  "bg-background text-muted-foreground"
+                )}>
+                  {commandStatus.phase === "running" ? <Loader2 className="h-8 w-8 animate-spin" /> : 
+                   commandStatus.phase === "success" ? <ShieldCheck className="h-8 w-8" /> :
+                   commandStatus.phase === "error" ? <AlertTriangle className="h-8 w-8" /> :
+                   <Activity className="h-8 w-8" />}
                 </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                onClick={refreshAllHealth}
-                disabled={isRefreshingHealth}
-              >
-                <RefreshCw className={`h-3 w-3 ${isRefreshingHealth ? "animate-spin" : ""}`} />
-                Atualizar
-              </Button>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-2xs text-muted-foreground">
-            <Badge variant={opsHealth.online ? "default" : "secondary"} className="gap-1.5 text-2xs">
-              <Circle className={`h-1.5 w-1.5 fill-current ${opsHealth.online ? "text-success" : "text-destructive"}`} />
-              {opsHealth.online ? "Ops Online" : "Ops Offline"}
-            </Badge>
-            <span className="text-2xs">{opsHealth.url || "-"}</span>
-            <span className="text-2xs">Último: {lastHealthCheckAt ? new Date(lastHealthCheckAt).toLocaleTimeString("pt-BR") : "-"}</span>
-          </div>
-          {opsHealth.system && (
-            <div className="grid gap-4 sm:grid-cols-2 mt-2">
-              <div className="admin-kpi p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <HardDrive className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-xs uppercase font-semibold tracking-wider text-muted-foreground">Memória</span>
-                  </div>
-                  <span className="text-sm font-bold text-foreground">
-                    {Number.isFinite(opsHealth.system.memory?.usedPercent)
-                      ? `${Number(opsHealth.system.memory?.usedPercent || 0).toFixed(1)}%`
-                      : "-"}
-                  </span>
+                <div className="flex-1 space-y-1">
+                  <h4 className="text-lg font-black tracking-tight">{commandStatus.title}</h4>
+                  <p className="text-sm font-medium opacity-70 italic">{commandStatus.detail}</p>
                 </div>
-                <Progress value={Number(opsHealth.system.memory?.usedPercent || 0)} className="h-2.5" />
-                <p className="text-xs text-muted-foreground">
-                  Alerta: {Number.isFinite(opsHealth.system.memory?.warnPercent) ? `${Number(opsHealth.system.memory?.warnPercent || 0).toFixed(0)}%` : "-"}
-                  {" · "}
-                  Crítico: {Number.isFinite(opsHealth.system.memory?.criticalPercent) ? `${Number(opsHealth.system.memory?.criticalPercent || 0).toFixed(0)}%` : "-"}
-                </p>
-              </div>
-              <div className="admin-kpi p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Cpu className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-xs uppercase font-semibold tracking-wider text-muted-foreground">CPU / núcleo (1m)</span>
-                  </div>
-                  <span className="text-sm font-bold text-foreground">
-                    {Number.isFinite(opsHealth.system.cpu?.loadPerCpu1m)
-                      ? Number(opsHealth.system.cpu?.loadPerCpu1m || 0).toFixed(2)
-                      : "-"}
-                  </span>
-                </div>
-                <Progress value={Math.min(Number(opsHealth.system.cpu?.loadPerCpu1m || 0) * 50, 100)} className="h-2.5" />
-                <p className="text-xs text-muted-foreground">
-                  Alerta: {Number.isFinite(opsHealth.system.cpu?.warnPerCpu) ? Number(opsHealth.system.cpu?.warnPerCpu || 0).toFixed(2) : "-"}
-                  {" · "}
-                  Crítico: {Number.isFinite(opsHealth.system.cpu?.criticalPerCpu) ? Number(opsHealth.system.cpu?.criticalPerCpu || 0).toFixed(2) : "-"}
-                </p>
-              </div>
-            </div>
-          )}
-          {processQueues && (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 mt-2">
-              <div className="admin-kpi p-4">
-                <p className="text-xs uppercase tracking-wider font-semibold text-muted-foreground">Fila de Rotas</p>
-                <p className="text-base font-bold text-foreground mt-2">Ativo: {processQueues.route.active}</p>
-                <p className="text-xs text-muted-foreground mt-1">Pendente: {processQueues.route.pending} | Limite: {processQueues.route.limit}</p>
-              </div>
-              <div className="admin-kpi p-4">
-                <p className="text-xs uppercase tracking-wider font-semibold text-muted-foreground">Fila de Disparo</p>
-                <p className="text-base font-bold text-foreground mt-2">Ativo: {processQueues.dispatch.active}</p>
-                <p className="text-xs text-muted-foreground mt-1">Pendente: {processQueues.dispatch.pending} | Limite: {processQueues.dispatch.limit}</p>
-              </div>
-              <div className="admin-kpi p-4">
-                <p className="text-xs uppercase tracking-wider font-semibold text-muted-foreground">Fila de Automação</p>
-                <p className="text-base font-bold text-foreground mt-2">Ativo: {processQueues.automation.active}</p>
-                <p className="text-xs text-muted-foreground mt-1">Pendente: {processQueues.automation.pending} | Limite: {processQueues.automation.limit}</p>
-              </div>
-              <div className="admin-kpi p-4">
-                <p className="text-xs uppercase tracking-wider font-semibold text-muted-foreground">Fila de Conversão</p>
-                <p className="text-base font-bold text-foreground mt-2">Ativo: {processQueues.convert.active}</p>
-                <p className="text-xs text-muted-foreground mt-1">Pendente: {processQueues.convert.pending} | Limite: {processQueues.convert.limit}</p>
-              </div>
-            </div>
-          )}
-          <p className="text-2xs text-muted-foreground">Checagem automática a cada 30s</p>
-          {opsHealth.error && <p className="text-xs text-destructive">{opsHealth.error}</p>}
-          {!opsHealth.online && opsConnecting && (
-            <div className="flex items-center gap-2 rounded-md border border-info/30 bg-info/5 px-3 py-2">
-              <Loader2 className="h-4 w-4 animate-spin text-info" />
-              <p className="text-xs text-info">
-                Conectando ao Ops... aguarda aí que tá iniciando.
-              </p>
-            </div>
-          )}
-          {!opsHealth.online && !opsConnecting && (
-            <div className="space-y-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2">
-              <p className="text-xs font-medium text-warning">
-                Ops fora do ar — inicie o serviço pra reativar os comandos.
-              </p>
-              <p className="text-xs text-warning/80">
-                Em produção, reinicie o container <code>ops-control</code> no Coolify.
-              </p>
-              <p className="text-xs text-warning/80">
-                No ambiente local, rode no terminal:
-              </p>
-              <div className="flex items-center gap-2">
-                <code className="rounded bg-warning/10 px-2 py-1 text-xs">npm run svc:ops:dev</code>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-xs"
-                  onClick={() => {
-                    navigator.clipboard.writeText("npm run svc:ops:dev").then(() => toast.success("Copiado!"));
-                  }}
+                  className="h-12 rounded-xl px-5 flex items-center gap-2 font-black uppercase tracking-widest hover:bg-background/80 transition-all border border-transparent hover:border-border/50"
+                  onClick={refreshAllHealth}
+                  disabled={isRefreshingHealth}
                 >
-                  <Copy className="h-3 w-3" />
+                  <RefreshCw className={cn("h-4 w-4", isRefreshingHealth && "animate-spin")} />
+                  Refresh
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Os estados abaixo mostram a saúde de cada serviço.
-              </p>
             </div>
-          )}
-        </CardContent>
-      </Card>
 
-      <Tabs defaultValue="services" className="w-full space-y-4">
-        <TabsList className="w-full flex-wrap justify-center gap-2 rounded-xl border border-border/50 bg-card/70 p-2 h-auto">
-          <TabsTrigger value="services" className="gap-2 px-4 py-2">
-            <Server className="h-4 w-4" />
-            <span>Serviços</span>
-            <Badge variant={onlineCount === totalCount ? "default" : "secondary"} className="ml-1 px-2 py-0.5 text-2xs">
-              {onlineCount}/{totalCount}
-            </Badge>
-          </TabsTrigger>
-          <TabsTrigger value="metrics" className="gap-2 px-4 py-2">
-            <Activity className="h-4 w-4" />
-            <span>Métricas</span>
-          </TabsTrigger>
-          <TabsTrigger value="usage" className="gap-2 px-4 py-2">
-            <Eye className="h-4 w-4" />
-            <span>Uso</span>
-          </TabsTrigger>
-          <TabsTrigger value="alerts" className="gap-2 px-4 py-2">
-            <AlertTriangle className="h-4 w-4" />
-            <span>Alertas</span>
-            {anomalies.length > 0 && (
-              <Badge variant="destructive" className="ml-1 px-2 py-0.5 text-2xs">{anomalies.length}</Badge>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="business" className="gap-2 px-4 py-2">
-            <TrendingUp className="h-4 w-4" />
-            <span>Negócio</span>
-          </TabsTrigger>
-          <TabsTrigger value="sessions" className="gap-2 px-4 py-2">
-            <Wifi className="h-4 w-4" />
-            <span>Sessões</span>
-            {sessionHealth.rows.filter((r) => r.hasIssue).length > 0 && (
-              <Badge variant="destructive" className="ml-1 px-2 py-0.5 text-2xs">
-                {sessionHealth.rows.filter((r) => r.hasIssue).length}
-              </Badge>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="amazon" className="gap-2 px-4 py-2">
-            <Package className="h-4 w-4" />
-            <span>Amazon</span>
-            {amazonVitrine?.stale && (
-              <Badge variant="secondary" className="ml-1 px-2 py-0.5 text-2xs">Stale</Badge>
-            )}
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="services">
-
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        {services.map((service) => {
-          const meta = SERVICE_META[service.key];
-          return (
-            <Card key={service.key} className={`admin-card flex h-full flex-col transition-all ${service.online ? "border-success/25" : ""}`}>
-              <CardHeader className="pb-2 border-b border-border/30">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 flex-1">
-                    <div className={`flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0 ${service.online ? "bg-success/10" : "bg-muted"}`}>
-                      <ServiceIcon id={service.key} className={`h-4 w-4 ${service.online ? (meta?.color || "text-foreground") : "text-muted-foreground"}`} />
+            {/* Métricas de Hardware */}
+            {opsHealth.system && (
+              <div className="grid gap-6 sm:grid-cols-2">
+                <div className="p-6 rounded-2xl border border-border/60 bg-background/40 space-y-5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-primary/10 rounded-lg text-primary">
+                        <HardDrive className="h-5 w-5" />
+                      </div>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Memória RAM</span>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <CardTitle className="text-sm font-semibold truncate">{service.label}</CardTitle>
-                      <code className="text-2xs font-mono text-muted-foreground/70 bg-muted/50 rounded-sm px-1 py-px leading-relaxed">:{meta?.port ?? "?"}</code>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <Circle className={`h-2 w-2 fill-current flex-shrink-0 ${service.online ? "text-success animate-pulse" : "text-destructive/60"}`} />
-                    <span className={`text-2xs font-semibold whitespace-nowrap ${service.online ? "text-success" : "text-muted-foreground"}`}>
-                      {service.online ? "Online" : "Offline"}
+                    <span className="text-xl font-black tabular-nums">
+                      {Number.isFinite(opsHealth.system.memory?.usedPercent)
+                        ? `${Number(opsHealth.system.memory?.usedPercent || 0).toFixed(1)}%`
+                        : "—"}
                     </span>
                   </div>
-                </div>
-              </CardHeader>
-              <CardContent className="flex flex-1 flex-col gap-4 text-xs pt-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="admin-kpi p-3 flex flex-col justify-center">
-                    <p className="text-2xs uppercase tracking-wider text-muted-foreground mb-1.5">Uptime</p>
-                    <p className="text-sm font-semibold">{formatUptime(service.uptimeSec)}</p>
-                  </div>
-                  <div className="admin-kpi p-3 flex flex-col justify-center">
-                    <p className="text-2xs uppercase tracking-wider text-muted-foreground mb-1.5">Processo</p>
-                    <p className="text-2xs font-medium line-clamp-1">{formatProcessStatusLabel(service.processStatus)}</p>
+                  <Progress value={Number(opsHealth.system.memory?.usedPercent || 0)} className="h-3 rounded-full bg-muted/50" />
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/60">
+                    <span>Critical: {Number(opsHealth.system.memory?.criticalPercent || 0)}%</span>
+                    <span>Warn: {Number(opsHealth.system.memory?.warnPercent || 0)}%</span>
                   </div>
                 </div>
-                <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    <ShieldCheck className={`h-4 w-4 flex-shrink-0 ${service.componentOnline ? "text-success" : "text-muted-foreground"}`} />
-                    <span className="text-xs font-medium truncate">Health Check</span>
+
+                <div className="p-6 rounded-2xl border border-border/60 bg-background/40 space-y-5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-primary/10 rounded-lg text-primary">
+                        <Cpu className="h-5 w-5" />
+                      </div>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Load Average</span>
+                    </div>
+                    <span className="text-xl font-black tabular-nums">
+                      {Number.isFinite(opsHealth.system.cpu?.loadPerCpu1m)
+                        ? Number(opsHealth.system.cpu?.loadPerCpu1m || 0).toFixed(2)
+                        : "—"}
+                    </span>
                   </div>
-                  <Badge variant={service.componentOnline ? "default" : "secondary"} className="text-2xs px-2.5 py-0.5 flex-shrink-0">
-                    {service.componentOnline ? "OK" : "Falha"}
-                  </Badge>
+                  <Progress value={Math.min(Number(opsHealth.system.cpu?.loadPerCpu1m || 0) * 50, 100)} className="h-3 rounded-full bg-muted/50" />
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/60">
+                    <span>Critical: {Number(opsHealth.system.cpu?.criticalPerCpu || 0).toFixed(2)}</span>
+                    <span>Warn: {Number(opsHealth.system.cpu?.warnPerCpu || 0).toFixed(2)}</span>
+                  </div>
                 </div>
-                {service.error && <p className="line-clamp-2 text-destructive text-xs bg-destructive/5 rounded-lg px-3 py-2 border border-destructive/20">{service.error}</p>}
-                <div className="mt-auto grid grid-cols-2 gap-2 pt-3">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Tabs defaultValue="services" className="w-full space-y-8">
+        <TabsList className="w-full flex-wrap justify-center gap-3 rounded-[1.5rem] border border-border/80 bg-card/60 backdrop-blur-sm p-2 h-auto">
+          {[
+            { value: "services", icon: Server, label: "Serviços", badge: `${onlineCount}/${totalCount}` },
+            { value: "metrics", icon: Activity, label: "Métricas", badge: null },
+            { value: "usage", icon: Eye, label: "Uso", badge: null },
+            { value: "alerts", icon: AlertTriangle, label: "Alertas", badge: anomalies.length > 0 ? anomalies.length : null, destructive: anomalies.length > 0 },
+            { value: "business", icon: TrendingUp, label: "Negócio", badge: null },
+            { value: "sessions", icon: Wifi, label: "Sessões", badge: sessionHealth.rows.filter(r => r.hasIssue).length || null, destructive: sessionHealth.rows.filter(r => r.hasIssue).length > 0 },
+            { value: "amazon", icon: Package, label: "Amazon", badge: amazonVitrine?.stale ? "Stale" : null }
+          ].map((tab) => (
+            <TabsTrigger 
+              key={tab.value} 
+              value={tab.value} 
+              className="flex items-center gap-2.5 px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-[0.15em] transition-all data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-lg"
+            >
+              <tab.icon className="h-4 w-4" />
+              <span>{tab.label}</span>
+              {tab.badge && (
+                <Badge variant={tab.destructive ? "destructive" : "secondary"} className="ml-1 px-1.5 py-0 min-w-[1.25rem] h-5 flex items-center justify-center text-[9px] font-black rounded-md">
+                  {tab.badge}
+                </Badge>
+              )}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <TabsContent value="services" className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+            {services.map((service) => {
+              const meta = SERVICE_META[service.key];
+              return (
+                <Card key={service.key} className={cn(
+                  "group relative flex flex-col overflow-hidden border-border/80 transition-all duration-300 hover:shadow-2xl hover:-translate-y-1.5",
+                  service.online ? "border-success/20 ring-1 ring-success/5" : "border-destructive/20 grayscale-[0.5] hover:grayscale-0"
+                )}>
+                  <CardHeader className={cn(
+                    "pb-4 border-b border-border/40 transition-colors",
+                    service.online ? "bg-success/[0.03]" : "bg-destructive/[0.03]"
+                  )}>
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className={cn(
+                          "flex h-10 w-10 items-center justify-center rounded-xl shadow-inner border transition-all group-hover:scale-110",
+                          service.online ? "bg-background border-success/30 text-success" : "bg-background border-destructive/30 text-destructive"
+                        )}>
+                          <ServiceIcon id={service.key} className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <CardTitle className="text-sm font-black tracking-tight truncate">{service.label}</CardTitle>
+                          <div className="flex items-center gap-1.5">
+                            <code className="text-[10px] font-bold text-muted-foreground/60">PORT:{meta?.port ?? "?"}</code>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Circle className={cn(
+                          "h-2.5 w-2.5 fill-current",
+                          service.online ? "text-success animate-pulse" : "text-destructive"
+                        )} />
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-5 flex flex-col flex-1 gap-5">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3 rounded-2xl bg-muted/30 border border-border/40 text-center">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/60 mb-1">Uptime</p>
+                        <p className="text-xs font-black tabular-nums">{formatUptime(service.uptimeSec)}</p>
+                      </div>
+                      <div className="p-3 rounded-2xl bg-muted/30 border border-border/40 text-center">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/60 mb-1">Processo</p>
+                        <p className="text-[10px] font-black uppercase tracking-tighter truncate">{formatProcessStatusLabel(service.processStatus)}</p>
+                      </div>
+                    </div>
+
+                    <div className={cn(
+                      "flex items-center justify-between rounded-xl border p-3.5 px-4 transition-all",
+                      service.componentOnline ? "bg-success/5 border-success/20" : "bg-destructive/5 border-destructive/20"
+                    )}>
+                      <div className="flex items-center gap-3">
+                        <ShieldCheck className={cn("h-4 w-4", service.componentOnline ? "text-success" : "text-destructive")} />
+                        <span className="text-[11px] font-black uppercase tracking-widest opacity-80">Sync Health</span>
+                      </div>
+                      <Badge variant={service.componentOnline ? "default" : "destructive"} className="h-5 rounded-md px-1.5 text-[9px] font-black">
+                        {service.componentOnline ? "PASS" : "FAIL"}
+                      </Badge>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-auto">
                       <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 w-full px-2 text-xs gap-1.5 justify-center"
+                        variant="ghost"
+                        className="h-10 rounded-xl text-[10px] font-black uppercase tracking-wider bg-background border border-border/50 hover:bg-success/5 hover:text-success hover:border-success/30 transition-all"
                         disabled={serviceActionBusy[`${service.key}:start`] === true || !opsHealth.online || service.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "start")}
                       >
-                        {serviceActionBusy[`${service.key}:start`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                        <span>Ligar</span>
+                        {serviceActionBusy[`${service.key}:start`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
+                        Up
                       </Button>
-                    </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops fora do ar: inicie o serviço primeiro</TooltipContent>}
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
                       <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 w-full px-2 text-xs gap-1.5 justify-center"
+                        variant="ghost"
+                        className="h-10 rounded-xl text-[10px] font-black uppercase tracking-wider bg-background border border-border/50 hover:bg-primary/5 hover:text-primary hover:border-primary/30 transition-all"
                         disabled={serviceActionBusy[`${service.key}:restart`] === true || !opsHealth.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "restart")}
                       >
-                        {serviceActionBusy[`${service.key}:restart`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                        <span>Reiniciar</span>
+                        {serviceActionBusy[`${service.key}:restart`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1" />}
+                        Sync
                       </Button>
-                    </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops fora do ar: inicie o serviço primeiro</TooltipContent>}
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
                       <Button
-                        variant="destructive"
-                        size="sm"
-                        className="h-8 w-full px-2 text-xs gap-1.5 justify-center"
+                        variant="ghost"
+                        className="h-10 rounded-xl text-[10px] font-black uppercase tracking-wider bg-background border border-border/50 hover:bg-destructive/5 hover:text-destructive hover:border-destructive/30 transition-all"
                         disabled={serviceActionBusy[`${service.key}:stop`] === true || !opsHealth.online || !service.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => void controlService(service.key, "stop")}
                       >
-                        {serviceActionBusy[`${service.key}:stop`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
-                        <span>Desligar</span>
+                        {serviceActionBusy[`${service.key}:stop`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5 mr-1" />}
+                        Kill
                       </Button>
-                    </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops fora do ar: inicie o serviço primeiro</TooltipContent>}
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
                       <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 w-full px-2 text-xs gap-1.5 justify-center"
+                        variant="ghost"
+                        className="h-10 rounded-xl text-[10px] font-black uppercase tracking-wider bg-background border border-border/50 hover:bg-muted-foreground/5 transition-all"
                         disabled={editPortBusy || !opsHealth.online || anyGlobalActionBusy || anySystemActionBusy}
                         onClick={() => {
                           setEditPortService(service.key);
                           setEditPortValue(String(meta?.port ?? 3111));
                         }}
                       >
-                        <Edit2 className="h-3.5 w-3.5" />
-                        <span>Porta</span>
+                        <Edit2 className="h-3.5 w-3.5 mr-1" />
+                        PORT
                       </Button>
-                    </TooltipTrigger>
-                    {!opsHealth.online && <TooltipContent>Ops fora do ar</TooltipContent>}
-                  </Tooltip>
-                </div>
-
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-
-        </TabsContent>
-
-        <TabsContent value="metrics">
-      <div className="ds-card-grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="Total de Usuários" value={String(counts.users)} icon={Users} />
-        <StatCard title="Sessões WhatsApp" value={String(counts.waSessions)} icon={WhatsAppIcon} />
-        <StatCard title="Sessões Telegram" value={String(counts.tgSessions)} icon={TelegramIcon} />
-        <StatCard title="Grupos" value={String(counts.groups)} icon={Users} />
-        <StatCard title="Rotas Ativas" value={String(counts.routes)} icon={Route} />
-        <StatCard title="Automações Shopee" value={String(counts.automations)} icon={ShoppingBag} />
-        <StatCard title="Registros 24h" value={String(counts.history)} icon={BarChart3} />
-        <StatCard title="Erros 24h" value={String(counts.errors24h)} icon={AlertTriangle} />
-      </div>
-        </TabsContent>
-
-        <TabsContent value="usage">
-      <Card className="admin-card overflow-hidden">
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="admin-card-title">Uso por Usuário (Top 8)</CardTitle>
-            <Badge variant="outline" className="text-2xs">{topUserUsage.length} usuários</Badge>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
-        </CardHeader>
-        <CardContent className="space-y-2.5">
-          {topUserUsage.length === 0 && (
-            <p className="text-xs text-muted-foreground">Sem dados ainda.</p>
-          )}
-          {topUserUsage.map((row) => (
-            <div key={row.user_id} className="rounded-xl border border-border/70 px-3 py-2.5 text-xs transition-colors hover:bg-muted/30">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-2xs font-bold text-primary">
-                    {String(row.name || "?").charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <p className="truncate font-medium">{row.name}</p>
-                    <p className="truncate text-xs text-muted-foreground">{row.email}</p>
-                  </div>
-                </div>
-                <Badge variant={row.account_status === "active" ? "default" : "secondary"} className="text-2xs">{row.account_status}</Badge>
-              </div>
-              <div className="mt-3 grid grid-cols-3 gap-3 text-xs text-muted-foreground">
-                <span className="flex items-center justify-between">Rotas <strong className="text-foreground">{row.usage.routesTotal}</strong></span>
-                <span className="flex items-center justify-between">Autom. <strong className="text-foreground">{row.usage.automationsTotal}</strong></span>
-                <span className="flex items-center justify-between">Grupos <strong className="text-foreground">{row.usage.groupsTotal}</strong></span>
-                <span className="flex items-center justify-between">WA <strong className="text-foreground">{row.usage.waSessionsTotal}</strong></span>
-                <span className="flex items-center justify-between">TG <strong className="text-foreground">{row.usage.tgSessionsTotal}</strong></span>
-                <span className="flex items-center justify-between">Erros (24h) <strong className={`${Number(row.usage.errors24h) > 0 ? "text-destructive" : "text-foreground"}`}>{row.usage.errors24h}</strong></span>
-              </div>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+        </TabsContent>
+        <TabsContent value="metrics" className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <StatCard title="Total de Usuários" value={String(counts.users)} icon={Users} />
+            <StatCard title="Sessões WhatsApp" value={String(counts.waSessions)} icon={WhatsAppIcon} />
+            <StatCard title="Sessões Telegram" value={String(counts.tgSessions)} icon={TelegramIcon} />
+            <StatCard title="Grupos" value={String(counts.groups)} icon={Users} />
+            <StatCard title="Rotas Ativas" value={String(counts.routes)} icon={Route} />
+            <StatCard title="Automações Shopee" value={String(counts.automations)} icon={ShoppingBag} />
+            <StatCard title="Registros 24h" value={String(counts.history)} icon={BarChart3} />
+            <StatCard title="Erros 24h" value={String(counts.errors24h)} icon={AlertTriangle} />
+          </div>
         </TabsContent>
 
-        <TabsContent value="alerts">
-      <Card className="admin-card overflow-hidden">
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="admin-card-title">Alertas do Sistema</CardTitle>
-            <Badge variant={anomalies.length > 0 ? "destructive" : "default"} className="text-2xs">
-              {anomalies.length > 0 ? `${anomalies.length} alerta${anomalies.length > 1 ? "s" : ""}` : "Tudo limpo"}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2.5">
-          {anomalies.length === 0 && (
-            <div className="flex flex-col items-center gap-2 py-6 text-center">
-              <ShieldCheck className="h-8 w-8 text-success" />
-              <p className="text-sm font-medium text-success">Tudo certo, sem alertas</p>
-              <p className="text-xs text-muted-foreground">Sistema rodando normal.</p>
-            </div>
-          )}
-          {anomalies.map((item) => (
-            <div key={item.id} className={`rounded-xl border px-3 py-2.5 text-xs ${item.severity === "critical" ? "border-destructive/30 bg-destructive/5" : item.severity === "warning" ? "border-warning/30 bg-warning/5" : "border-border/70"}`}>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <AlertTriangle className={`h-3.5 w-3.5 ${item.severity === "critical" ? "text-destructive" : item.severity === "warning" ? "text-warning" : "text-muted-foreground"}`} />
-                  <p className="truncate font-medium">{item.title}</p>
+        <TabsContent value="usage" className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <Card className="rounded-[2.5rem] bg-card/60 backdrop-blur-md border-border/80 overflow-hidden shadow-2xl">
+            <CardHeader className="p-8 pb-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Eye className="h-5 w-5 text-primary" />
+                  <CardTitle className="text-xl font-black uppercase tracking-[0.2em]">Uso por Usuário</CardTitle>
                 </div>
-                <Badge variant={item.severity === "critical" ? "destructive" : item.severity === "warning" ? "secondary" : "outline"}>
-                  {item.severity}
+                <Badge variant="outline" className="text-[10px] font-black uppercase px-3 py-1 rounded-full border-primary/30 text-primary">
+                  {topUserUsage.length} TOP USERS
                 </Badge>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">{item.message}</p>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-        </TabsContent>
-
-        {/* ── Negócio tab ─────────────────────────────────────────── */}
-        <TabsContent value="business" className="space-y-4">
-          <div className="ds-card-grid grid-cols-2 sm:grid-cols-4">
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <DollarSign className="h-3.5 w-3.5" />
-                <span className="text-2xs uppercase tracking-wider">MRR Estimado</span>
-              </div>
-              <p className="text-xl font-bold">
-                {revenueMetrics.mrr.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-              </p>
-              <p className="text-2xs text-muted-foreground">receita mensal recorrente</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <TrendingUp className="h-3.5 w-3.5" />
-                <span className="text-2xs uppercase tracking-wider">ARR Estimado</span>
-              </div>
-              <p className="text-xl font-bold">
-                {revenueMetrics.arr.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-              </p>
-              <p className="text-2xs text-muted-foreground">receita anual projetada (×12)</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Users className="h-3.5 w-3.5" />
-                <span className="text-2xs uppercase tracking-wider">Pagantes</span>
-              </div>
-              <p className="text-xl font-bold">{revenueMetrics.paidCount}</p>
-              <p className="text-2xs text-muted-foreground">de {revenueMetrics.totalActive} ativos</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Users className="h-3.5 w-3.5" />
-                <span className="text-2xs uppercase tracking-wider">Trial / Free</span>
-              </div>
-              <p className="text-xl font-bold">{revenueMetrics.freeTierCount}</p>
-              <p className="text-2xs text-muted-foreground">usuários sem plano pago ativo</p>
-            </div>
-          </div>
-
-          <div className="ds-card-grid grid-cols-2 sm:grid-cols-4">
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <TrendingUp className="h-3.5 w-3.5 text-success" />
-                <span className="text-2xs uppercase tracking-wider">Novos (7d)</span>
-              </div>
-              <p className="text-xl font-bold text-success">{revenueMetrics.newUsers7d}</p>
-              <p className="text-2xs text-muted-foreground">cadastros na última semana</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <TrendingUp className="h-3.5 w-3.5 text-info" />
-                <span className="text-2xs uppercase tracking-wider">Novos (30d)</span>
-              </div>
-              <p className="text-xl font-bold">{revenueMetrics.newUsers30d}</p>
-              <p className="text-2xs text-muted-foreground">cadastros no último mês</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <AlertTriangle className="h-3.5 w-3.5 text-warning" />
-                <span className="text-2xs uppercase tracking-wider">Inativos</span>
-              </div>
-              <p className="text-xl font-bold text-warning">{revenueMetrics.inactiveCount}</p>
-              <p className="text-2xs text-muted-foreground">
-                {revenueMetrics.blockedCount > 0 ? `+ ${revenueMetrics.blockedCount} bloqueados` : "usuários sem acesso"}
-              </p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-2xs uppercase tracking-wider">Total Cadastros</span>
-              </div>
-              <p className="text-xl font-bold">{revenueMetrics.totalUsers}</p>
-              <p className="text-2xs text-muted-foreground">
-                {revenueMetrics.archivedCount > 0 ? `${revenueMetrics.archivedCount} arquivados` : "todos os usuários"}
-              </p>
-            </div>
-          </div>
-
-          <Card className="admin-card overflow-hidden">
-            <CardHeader className="pb-2 border-b border-border/30">
-              <CardTitle className="admin-card-title">Distribuição por Plano</CardTitle>
             </CardHeader>
-            <CardContent className="divide-y pt-0">
-              {revenueMetrics.byPlan.length === 0 && (
-                <p className="py-6 text-center text-sm text-muted-foreground">Sem dados de usuários ativos</p>
-              )}
-              {revenueMetrics.byPlan.map((row) => {
-                const pct = revenueMetrics.mrr > 0 ? (row.revenue / revenueMetrics.mrr) * 100 : 0;
-                return (
-                  <div key={row.name} className="flex items-center gap-4 py-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-medium">{row.name}</span>
-                        <span className="text-xs text-muted-foreground">{row.count} usuário{row.count !== 1 ? "s" : ""}</span>
-                      </div>
-                      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-primary transition-all"
-                          style={{ width: `${Math.max(pct, row.revenue > 0 ? 2 : 0)}%` }}
-                        />
-                      </div>
-                    </div>
-                    <span className="text-sm font-semibold tabular-nums w-28 text-right">
-                      {row.revenue.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}/mês
-                    </span>
-                  </div>
-                );
-              })}
-            </CardContent>
-          </Card>
-
-          <p className="text-2xs text-muted-foreground px-1">
-            Valores estimados com base nos planos ativos. Planos anuais são divididos em equivalente mensal.
-          </p>
-        </TabsContent>
-
-        {/* ── Sessões tab ─────────────────────────────────────────── */}
-        <TabsContent value="sessions" className="space-y-4">
-          <div className="ds-card-grid grid-cols-2 sm:grid-cols-4">
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Wifi className="h-3.5 w-3.5 text-brand-whatsapp" />
-                <span className="text-2xs uppercase tracking-wider">WA Online</span>
-              </div>
-              <p className="text-xl font-bold text-success">{sessionHealth.onlineWa}</p>
-              <p className="text-2xs text-muted-foreground">de {sessionHealth.totalWa} sessões WA</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <WifiOff className="h-3.5 w-3.5 text-destructive/60" />
-                <span className="text-2xs uppercase tracking-wider">WA Offline</span>
-              </div>
-              <p className="text-xl font-bold text-destructive">{sessionHealth.totalWa - sessionHealth.onlineWa}</p>
-              <p className="text-2xs text-muted-foreground">sessões desconectadas</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Wifi className="h-3.5 w-3.5 text-brand-telegram" />
-                <span className="text-2xs uppercase tracking-wider">TG Online</span>
-              </div>
-              <p className="text-xl font-bold text-info">{sessionHealth.onlineTg}</p>
-              <p className="text-2xs text-muted-foreground">de {sessionHealth.totalTg} sessões TG</p>
-            </div>
-            <div className="admin-card p-4 space-y-1">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <AlertTriangle className="h-3.5 w-3.5 text-warning" />
-                <span className="text-2xs uppercase tracking-wider">Com Problema</span>
-              </div>
-              <p className="text-xl font-bold text-warning">
-                {sessionHealth.rows.filter((r) => r.hasIssue).length}
-              </p>
-              <p className="text-2xs text-muted-foreground">usuários com sessão offline</p>
-            </div>
-          </div>
-
-          <Card className="admin-card overflow-hidden">
-            <CardHeader className="pb-2 border-b border-border/30">
-              <div className="flex items-center justify-between">
-                <CardTitle className="admin-card-title">Saúde das Sessões por Usuário</CardTitle>
-                <Badge variant="outline" className="text-2xs">{sessionHealth.rows.length} usuários</Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="divide-y pt-0">
-              {sessionHealth.rows.length === 0 && (
-                <div className="flex flex-col items-center gap-2 py-8 text-center">
-                  <Wifi className="h-8 w-8 text-muted-foreground/40" />
-                  <p className="text-sm text-muted-foreground">Nenhum usuário com sessões cadastradas</p>
+            <CardContent className="p-8 pt-0 space-y-4">
+              {topUserUsage.length === 0 && (
+                <div className="flex flex-col items-center gap-2 py-12 text-center">
+                  <Users className="h-12 w-12 text-muted-foreground/20" />
+                  <p className="text-sm font-bold text-muted-foreground/40 uppercase tracking-widest">Sem dados de uso disponíveis</p>
                 </div>
               )}
-              {sessionHealth.rows.map((row) => (
-                <div key={row.user_id} className={`flex items-center gap-3 py-2.5 px-1 ${row.hasIssue ? "bg-destructive/5" : ""}`}>
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-2xs font-bold text-primary">
-                    {String(row.name || "?").charAt(0).toUpperCase()}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium truncate">{row.name}</p>
-                    <p className="text-xs text-muted-foreground truncate">{row.email}</p>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0 text-xs">
-                    {row.waTotal > 0 && (
-                      <div className="flex items-center gap-1">
-                        {row.waOnline > 0
-                          ? <Wifi className="h-3 w-3 text-success" />
-                          : <WifiOff className="h-3 w-3 text-destructive/60" />}
-                        <span className={row.waOnline === 0 ? "text-destructive font-medium" : "text-muted-foreground"}>
-                          WA {row.waOnline}/{row.waTotal}
-                        </span>
+              <div className="grid gap-6 md:grid-cols-2">
+                {topUserUsage.map((row) => (
+                  <div key={row.user_id} className="group flex flex-col p-5 rounded-[1.5rem] border border-border/60 bg-background/40 hover:border-primary/40 hover:bg-primary/[0.02] transition-all">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary font-black shadow-inner">
+                          {String(row.name || "?").charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-black text-sm tracking-tight truncate">{row.name}</p>
+                          <p className="text-[10px] font-bold text-muted-foreground/60 truncate uppercase tracking-tighter">{row.email}</p>
+                        </div>
                       </div>
-                    )}
-                    {row.tgTotal > 0 && (
-                      <div className="flex items-center gap-1">
-                        {row.tgOnline > 0
-                          ? <Wifi className="h-3 w-3 text-info" />
-                          : <WifiOff className="h-3 w-3 text-destructive/60" />}
-                        <span className={row.tgOnline === 0 ? "text-destructive font-medium" : "text-muted-foreground"}>
-                          TG {row.tgOnline}/{row.tgTotal}
-                        </span>
-                      </div>
-                    )}
+                      <Badge variant={row.account_status === "active" ? "default" : "secondary"} className="h-6 rounded-md px-2 text-[9px] font-black uppercase">
+                        {row.account_status}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 py-4 border-y border-border/40">
+                      {[
+                        { label: "Rotas", val: row.usage.routesTotal },
+                        { label: "Autom.", val: row.usage.automationsTotal },
+                        { label: "Grupos", val: row.usage.groupsTotal },
+                        { label: "WA", val: row.usage.waSessionsTotal },
+                        { label: "TG", val: row.usage.tgSessionsTotal },
+                        { label: "Erros 24h", val: row.usage.errors24h, warn: Number(row.usage.errors24h) > 0 }
+                      ].map((stat, idx) => (
+                        <div key={idx} className="flex flex-col items-center">
+                          <span className="text-[8px] font-black uppercase tracking-widest text-muted-foreground/60 mb-0.5">{stat.label}</span>
+                          <span className={cn("text-sm font-black tabular-nums", stat.warn ? "text-destructive" : "text-foreground")}>{stat.val}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  {row.hasIssue && (
-                    <Badge variant="destructive" className="text-2xs px-1.5 py-0 shrink-0">Offline</Badge>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="alerts" className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <Card className="rounded-[2.5rem] bg-card/60 backdrop-blur-md border-border/80 overflow-hidden shadow-2xl">
+            <CardHeader className="p-8 pb-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <AlertTriangle className="h-5 w-5 text-primary" />
+                  <CardTitle className="text-xl font-black uppercase tracking-[0.2em]">Sinalização de Crise</CardTitle>
+                </div>
+                <Badge variant={anomalies.length > 0 ? "destructive" : "default"} className="text-[10px] font-black uppercase px-3 py-1 rounded-full border-primary/30">
+                  {anomalies.length > 0 ? `${anomalies.length} PENDÊNCIAS` : "ESTADO NOMINAL"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="p-8 pt-0 space-y-4">
+              {anomalies.length === 0 && (
+                <div className="flex flex-col items-center gap-4 py-16 text-center">
+                  <div className="h-20 w-20 rounded-full bg-success/10 flex items-center justify-center border-4 border-success/5 shadow-2xl">
+                    <ShieldCheck className="h-10 w-10 text-success" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-lg font-black uppercase tracking-widest text-success">Operação Saudável</p>
+                    <p className="text-xs font-bold text-muted-foreground uppercase opacity-60">Nenhuma anomalia detectada nas últimas 24h</p>
+                  </div>
+                </div>
+              )}
+              <div className="grid gap-6">
+                {anomalies.map((item) => (
+                  <div key={item.id} className={cn(
+                    "relative flex gap-4 p-5 rounded-2xl border transition-all",
+                    item.severity === "critical" ? "border-destructive/30 bg-destructive/5" : "border-warning/30 bg-warning/5"
+                  )}>
+                    <div className={cn(
+                      "h-10 w-10 shrink-0 rounded-xl flex items-center justify-center",
+                      item.severity === "critical" ? "bg-destructive/10 text-destructive" : "bg-warning/10 text-warning"
+                    )}>
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-black uppercase tracking-tight">{item.title}</h4>
+                        <Badge variant={item.severity === "critical" ? "destructive" : "secondary"} className="h-5 text-[9px] font-black uppercase px-2">
+                          {item.severity}
+                        </Badge>
+                      </div>
+                      <p className="text-xs font-medium text-muted-foreground leading-relaxed">{item.message}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="business" className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+            {[
+              { label: "MRR Estimado", val: revenueMetrics.mrr.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }), icon: DollarSign, sub: "Receita Mensal Recorrente", color: "text-primary" },
+              { label: "ARR Estimado", val: revenueMetrics.arr.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }), icon: TrendingUp, sub: "Receita Anual Projetada", color: "text-info" },
+              { label: "Transacionais", val: revenueMetrics.paidCount, icon: Users, sub: `de ${revenueMetrics.totalActive} ativos`, color: "text-success" },
+              { label: "Trial / Free", val: revenueMetrics.freeTierCount, icon: Package, sub: "Usuários sem plano pago", color: "text-muted-foreground" }
+            ].map((stat, i) => (
+              <div key={i} className="flex flex-col p-6 rounded-[2rem] border border-border/80 bg-card/60 backdrop-blur-md shadow-xl">
+                <div className="flex items-center gap-2 mb-3">
+                  <stat.icon className={cn("h-4 w-4", stat.color)} />
+                  <span className="text-[10px] font-black uppercase tracking-[0.15em] text-muted-foreground">{stat.label}</span>
+                </div>
+                <p className="text-2xl font-black tracking-tighter mb-1">{stat.val}</p>
+                <p className="text-[9px] font-bold uppercase tracking-tight text-muted-foreground/50">{stat.sub}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card className="rounded-[2.5rem] bg-card/60 backdrop-blur-md border-border/80 overflow-hidden shadow-2xl">
+              <CardHeader className="p-8 pb-4 border-b border-border/40">
+                <div className="flex items-center gap-3">
+                  <BarChart3 className="h-5 w-5 text-primary" />
+                  <CardTitle className="text-xl font-black uppercase tracking-[0.2em]">Share de Planos</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="p-8 pt-6">
+                <div className="space-y-6">
+                  {revenueMetrics.byPlan.length === 0 && (
+                    <p className="py-12 text-center text-sm font-bold opacity-30 uppercase tracking-widest">Sem base instalada</p>
                   )}
+                  {revenueMetrics.byPlan.map((row) => {
+                    const pct = revenueMetrics.mrr > 0 ? (row.revenue / revenueMetrics.mrr) * 100 : 0;
+                    return (
+                      <div key={row.name} className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-black uppercase tracking-tight">{row.name}</span>
+                            <Badge variant="outline" className="h-5 text-[9px] font-black px-1.5 border-primary/20 text-primary">{row.count} USERS</Badge>
+                          </div>
+                          <span className="text-sm font-black tabular-nums">
+                            {row.revenue.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                          </span>
+                        </div>
+                        <div className="h-3 w-full rounded-full bg-muted/40 overflow-hidden border border-border/50">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-primary/80 to-primary transition-all duration-1000"
+                            style={{ width: `${Math.max(pct, row.revenue > 0 ? 2 : 0)}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[
+                { label: "New Users (7d)", val: revenueMetrics.newUsers7d, color: "text-success", icon: TrendingUp },
+                { label: "Inativos", val: revenueMetrics.inactiveCount, color: "text-warning", icon: AlertTriangle },
+                { label: "Bloqueados", val: revenueMetrics.blockedCount, color: "text-destructive", icon: Power },
+                { label: "Cadastros Total", val: revenueMetrics.totalUsers, color: "text-primary", icon: Users }
+              ].map((m, idx) => (
+                <div key={idx} className="p-6 rounded-[1.5rem] border border-border/80 bg-background/50 flex flex-col justify-between hover:border-primary/30 transition-all">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/60">{m.label}</span>
+                    <m.icon className={cn("h-4 w-4", m.color)} />
+                  </div>
+                  <p className={cn("text-3xl font-black tracking-tighter", m.color)}>{m.val}</p>
                 </div>
               ))}
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="sessions" className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="p-6 rounded-[2rem] border border-border/80 bg-card/60 backdrop-blur-md shadow-xl">
+              <div className="flex items-center gap-2 mb-3">
+                <WhatsAppIcon className="h-4 w-4 text-brand-whatsapp" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">WA Online</span>
+              </div>
+              <p className="text-2xl font-black text-success">{sessionHealth.onlineWa}</p>
+              <p className="text-[9px] font-bold text-muted-foreground/50 uppercase">DE {sessionHealth.totalWa} TOTAL</p>
+            </div>
+            <div className="p-6 rounded-[2rem] border border-border/80 bg-card/60 backdrop-blur-md shadow-xl">
+              <div className="flex items-center gap-2 mb-3">
+                <WifiOff className="h-4 w-4 text-destructive/60" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">WA Offline</span>
+              </div>
+              <p className="text-2xl font-black text-destructive">{sessionHealth.totalWa - sessionHealth.onlineWa}</p>
+              <p className="text-[9px] font-bold text-muted-foreground/50 uppercase">DESCONECTADOS</p>
+            </div>
+            <div className="p-6 rounded-[2rem] border border-border/80 bg-card/60 backdrop-blur-md shadow-xl">
+              <div className="flex items-center gap-2 mb-3">
+                <TelegramIcon className="h-4 w-4 text-brand-telegram" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">TG Online</span>
+              </div>
+              <p className="text-2xl font-black text-info font-black">{sessionHealth.onlineTg}</p>
+              <p className="text-[9px] font-bold text-muted-foreground/50 uppercase">DE {sessionHealth.totalTg} TOTAL</p>
+            </div>
+            <div className="p-6 rounded-[2rem] border border-border/80 bg-card/60 backdrop-blur-md shadow-xl">
+              <div className="flex items-center gap-2 mb-3">
+                <AlertTriangle className="h-4 w-4 text-warning" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Issue Alert</span>
+              </div>
+              <p className="text-2xl font-black text-warning">{sessionHealth.rows.filter(r => r.hasIssue).length}</p>
+              <p className="text-[9px] font-bold text-muted-foreground/50 uppercase">USUÁRIOS CRÍTICOS</p>
+            </div>
+          </div>
+
+          <Card className="rounded-[2.5rem] bg-card/60 backdrop-blur-md border-border/80 overflow-hidden shadow-2xl">
+            <CardHeader className="p-8 pb-4 border-b border-border/40">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Wifi className="h-5 w-5 text-primary" />
+                  <CardTitle className="text-xl font-black uppercase tracking-[0.2em]">Painel de Connectivity</CardTitle>
+                </div>
+                <Badge variant="outline" className="text-[10px] font-black uppercase px-3 py-1 rounded-full border-primary/30 text-primary">
+                  {sessionHealth.rows.length} MONITORADOS
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {sessionHealth.rows.length === 0 && (
+                <div className="flex flex-col items-center gap-4 py-20 text-center">
+                  <WifiOff className="h-12 w-12 text-muted-foreground/20" />
+                  <p className="text-sm font-bold text-muted-foreground/40 uppercase tracking-widest">Nenhuma sessão ativa no grid</p>
+                </div>
+              )}
+              <div className="divide-y divide-border/40">
+                {sessionHealth.rows.map((row) => (
+                  <div key={row.user_id} className={cn(
+                    "group flex flex-col sm:flex-row sm:items-center gap-4 p-6 transition-all hover:bg-primary/[0.02]",
+                    row.hasIssue && "bg-destructive/[0.03]"
+                  )}>
+                    <div className="flex items-center gap-4 flex-1">
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-background border border-border/60 text-sm font-black shadow-sm group-hover:scale-110 transition-transform">
+                        {String(row.name || "?").charAt(0).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-black tracking-tight truncate">{row.name}</p>
+                        <p className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-tighter truncate">{row.email}</p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-wrap items-center gap-6">
+                      <div className="flex items-center gap-4">
+                        {row.waTotal > 0 && (
+                          <div className={cn(
+                            "flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all",
+                            row.waOnline === row.waTotal ? "bg-success/5 border-success/20 text-success" : "bg-destructive/5 border-destructive/20 text-destructive"
+                          )}>
+                            <WhatsAppIcon className="h-3.5 w-3.5" />
+                            <span className="text-[10px] font-black tabular-nums">WA {row.waOnline}/{row.waTotal}</span>
+                          </div>
+                        )}
+                        {row.tgTotal > 0 && (
+                          <div className={cn(
+                            "flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all",
+                            row.tgOnline === row.tgTotal ? "bg-info/5 border-info/20 text-info" : "bg-destructive/5 border-destructive/20 text-destructive"
+                          )}>
+                            <TelegramIcon className="h-3.5 w-3.5" />
+                            <span className="text-[10px] font-black tabular-nums">TG {row.tgOnline}/{row.tgTotal}</span>
+                          </div>
+                        )}
+                      </div>
+                      {row.hasIssue && (
+                        <Badge variant="destructive" className="animate-pulse h-6 px-2 text-[9px] font-black uppercase">CRITICAL FAILURE</Badge>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* ── Amazon tab ──────────────────────────────────────────── */}
-        <TabsContent value="amazon" className="space-y-4">
-          <Card className="admin-card overflow-hidden">
-            <CardHeader className="pb-2 border-b border-border/30">
+        <TabsContent value="amazon" className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
+          <Card className="rounded-[2.5rem] bg-card/60 backdrop-blur-md border-border/80 overflow-hidden shadow-2xl">
+            <CardHeader className="p-8 pb-4 border-b border-border/40">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Package className="h-4 w-4 text-warning" />
-                  <CardTitle className="admin-card-title">Vitrine Amazon</CardTitle>
+                <div className="flex items-center gap-3">
+                  <Package className="h-5 w-5 text-warning" />
+                  <CardTitle className="text-xl font-black uppercase tracking-[0.2em]">Vitrine Global Amazon</CardTitle>
                 </div>
-                <div className="flex items-center gap-2">
-                  {amazonVitrine?.stale && (
-                    <Badge variant="secondary" className="text-2xs">Desatualizada</Badge>
-                  )}
-                  {amazonVitrine && !amazonVitrine.stale && (
-                    <Badge variant="default" className="text-2xs">Atualizada</Badge>
+                <div className="flex items-center gap-3">
+                  {amazonVitrine?.stale ? (
+                    <Badge variant="destructive" className="text-[10px] font-black uppercase h-7 px-3 flex items-center gap-1.5">
+                      <RotateCcw className="h-3 w-3 animate-reverse-spin" /> DESATUALIZADA
+                    </Badge>
+                  ) : amazonVitrine && (
+                    <Badge variant="default" className="bg-success text-success-foreground text-[10px] font-black uppercase h-7 px-3">ATUALIZADA</Badge>
                   )}
                   <Button
-                    variant="outline"
+                    variant="default"
                     size="sm"
-                    className="h-7 gap-1.5 text-xs"
+                    className="h-9 px-5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg shadow-primary/20 hover:scale-105 transition-all"
                     disabled={amazonSyncBusy}
                     onClick={() => void triggerAmazonVitrineSync()}
                   >
-                    {amazonSyncBusy
-                      ? <Loader2 className="h-3 w-3 animate-spin" />
-                      : <RefreshCw className="h-3 w-3" />}
-                    Sincronizar
+                    {amazonSyncBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" /> : <RefreshCw className="h-3.5 w-3.5 mr-2" />}
+                    FORCE SYNC
                   </Button>
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="pt-4 space-y-4">
-              {!amazonVitrine && (
-                <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Carregando dados da vitrine...
+            <CardContent className="p-8">
+              {!amazonVitrine ? (
+                <div className="flex flex-col items-center gap-3 py-16 text-center">
+                  <Loader2 className="h-10 w-10 animate-spin text-primary/40" />
+                  <p className="text-xs font-black uppercase tracking-widest opacity-40">Mapeando catálogo global...</p>
                 </div>
-              )}
-              {amazonVitrine && (
-                <>
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                    <span>
-                      Última sincronização:{" "}
-                      <strong className="text-foreground">
-                        {amazonVitrine.lastSyncAt
-                          ? new Date(amazonVitrine.lastSyncAt).toLocaleString("pt-BR")
-                          : "Nunca"}
-                      </strong>
-                    </span>
-                    <span>
-                      Total de produtos:{" "}
-                      <strong className="text-foreground">{amazonVitrine.total}</strong>
-                    </span>
+              ) : (
+                <div className="space-y-8">
+                  <div className="flex flex-wrap items-center gap-6 p-6 rounded-2xl bg-background/40 border border-border/60">
+                    <div className="flex flex-col">
+                      <span className="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 mb-1">Última Sincronização</span>
+                      <span className="text-sm font-black">
+                        {amazonVitrine.lastSyncAt ? new Date(amazonVitrine.lastSyncAt).toLocaleString("pt-BR") : "NUNCA"}
+                      </span>
+                    </div>
+                    <div className="h-8 w-px bg-border/60 hidden sm:block" />
+                    <div className="flex flex-col">
+                      <span className="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 mb-1">SKU Count</span>
+                      <span className="text-sm font-black tabular-nums">{amazonVitrine.total} PRODUTOS</span>
+                    </div>
                   </div>
-                  {amazonVitrine.tabs.length === 0 && (
-                    <p className="text-xs text-muted-foreground text-center py-4">
-                      Nenhum produto na vitrine. Clique em Sincronizar para buscar produtos.
-                    </p>
-                  )}
-                  {amazonVitrine.tabs.length > 0 && (
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+
+                  {amazonVitrine.tabs.length === 0 ? (
+                    <div className="flex flex-col items-center gap-2 py-12 text-center border-2 border-dashed border-border/40 rounded-[2rem]">
+                      <Package className="h-12 w-12 text-muted-foreground/20" />
+                      <p className="text-xs font-black uppercase tracking-widest text-muted-foreground/40">Vitrine deserta</p>
+                    </div>
+                  ) : (
+                    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
                       {amazonVitrine.tabs.map((tab) => (
-                        <div key={tab.key} className="admin-kpi p-3">
-                          <p className="text-2xs uppercase tracking-wider text-muted-foreground mb-1.5">{tab.label}</p>
-                          <p className="text-lg font-bold text-foreground">{tab.activeCount}</p>
-                          <p className="text-2xs text-muted-foreground">produtos ativos</p>
+                        <div key={tab.key} className="group p-6 rounded-[2rem] bg-gradient-to-br from-background/80 to-muted/20 border border-border/80 hover:border-warning/40 transition-all shadow-sm">
+                          <p className="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 mb-2 truncate">{tab.label}</p>
+                          <div className="flex items-end justify-between">
+                            <p className="text-3xl font-black tracking-tighter group-hover:text-warning transition-colors">{tab.activeCount}</p>
+                            <Badge variant="outline" className="text-[8px] font-black uppercase border-warning/30 text-warning px-1.5 h-4 mb-1">ACTV</Badge>
+                          </div>
                         </div>
                       ))}
                     </div>
                   )}
-                </>
+                </div>
               )}
             </CardContent>
           </Card>
 
-          <div className="ds-card-grid grid-cols-2 sm:grid-cols-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
             <StatCard title="Total Automações" value={String(counts.automations)} icon={Package} />
             <StatCard title="Rotas Ativas" value={String(counts.routes)} icon={Route} />
             <StatCard title="Histórico 24h" value={String(counts.history)} icon={BarChart3} />
@@ -1761,17 +1710,17 @@ export default function AdminDashboard() {
           setEditPortValue("");
         }
       }}>
-        <DialogContent className="sm:max-w-[400px]">
-          <DialogHeader>
-            <DialogTitle>Mudar Porta</DialogTitle>
-            <DialogDescription>
+        <DialogContent className="max-w-sm rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
+            <DialogTitle className="text-lg font-black">Mudar Porta</DialogTitle>
+            <DialogDescription className="text-sm font-medium">
               Mude a porta do serviço {SERVICE_META[editPortService]?.label || editPortService}
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="port-input" className="text-right">
-                Porta
+          <div className="grid gap-4 p-6 space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="port-input" className="text-sm font-medium">
+                Nova Porta
               </Label>
               <Input
                 id="port-input"
@@ -1782,14 +1731,15 @@ export default function AdminDashboard() {
                 onChange={(e) => setEditPortValue(e.target.value)}
                 placeholder={String(SERVICE_META[editPortService]?.port ?? 3111)}
                 disabled={editPortBusy}
-                className="col-span-3"
+                className="h-10"
               />
             </div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <p>Porta Atual: {SERVICE_META[editPortService]?.port ?? "?"}</p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/30 p-3 rounded-lg">
+              <Clock className="h-3.5 w-3.5" />
+              <p><strong>Porta Atual:</strong> {SERVICE_META[editPortService]?.port ?? "?"}</p>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-3 p-6 border-t border-border/40 bg-muted/10 rounded-b-[2rem]">
             <Button
               type="button"
               variant="outline"

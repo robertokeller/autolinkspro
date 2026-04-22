@@ -7,23 +7,16 @@ RUN npm install
 COPY . .
 
 ARG VITE_API_URL
-ARG VITE_WHATSAPP_MICROSERVICE_URL
-ARG VITE_TELEGRAM_MICROSERVICE_URL
-ARG VITE_SHOPEE_MICROSERVICE_URL
-ARG VITE_MELI_RPA_URL
-ARG VITE_AMAZON_MICROSERVICE_URL
-ARG VITE_OPS_CONTROL_URL
+ARG VITE_BROWSER_RUNTIME_ENABLED=false
 # NOTE: VITE_ build args are inlined into the browser JS bundle and visible
-# to anyone who inspects the built JS. Only include non-sensitive config here.
-# WEBHOOK_SECRET and OPS_CONTROL_TOKEN must NEVER be VITE_ variables — they stay server-side only.
+# to anyone who inspects the built JS. Only include non-sensitive, public config here.
+# Microservice internal URLs (WhatsApp, Telegram, Shopee, Meli, Amazon, ops-control)
+# must NEVER be VITE_ variables — they reveal internal service topology and must stay
+# server-side only (configured in the `api` service environment, not here).
+# WEBHOOK_SECRET and OPS_CONTROL_TOKEN must NEVER be VITE_ variables either.
 
 ENV VITE_API_URL=${VITE_API_URL}
-ENV VITE_WHATSAPP_MICROSERVICE_URL=${VITE_WHATSAPP_MICROSERVICE_URL}
-ENV VITE_TELEGRAM_MICROSERVICE_URL=${VITE_TELEGRAM_MICROSERVICE_URL}
-ENV VITE_SHOPEE_MICROSERVICE_URL=${VITE_SHOPEE_MICROSERVICE_URL}
-ENV VITE_MELI_RPA_URL=${VITE_MELI_RPA_URL}
-ENV VITE_AMAZON_MICROSERVICE_URL=${VITE_AMAZON_MICROSERVICE_URL}
-ENV VITE_OPS_CONTROL_URL=${VITE_OPS_CONTROL_URL}
+ENV VITE_BROWSER_RUNTIME_ENABLED=${VITE_BROWSER_RUNTIME_ENABLED}
 
 RUN npm run build
 

@@ -336,7 +336,7 @@ function normalizeSeller(value: string): string {
   if (soldByMatch?.[1]) return normalizeText(soldByMatch[1]);
 
   const cleaned = normalized
-    .replace(/^marca\s*[:\-]\s*/i, "")
+    .replace(/^marca\s*[:-]\s*/i, "")
     .replace(/^visite\s+a\s+loja\s*/i, "")
     .replace(/^por\s+/i, "")
     .trim();
@@ -438,8 +438,8 @@ async function extractSnapshotFromLivePage(canonicalUrl: string, asinHint: strin
       "#priceblock_ourprice",
       "#price_inside_buybox",
     ]),
-    extractRegexNumber(html, /\"priceAmount\"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
-    extractRegexNumber(html, /\"price\"\s*:\s*\"?([0-9]+(?:\.[0-9]+)?)\"?/i),
+    extractRegexNumber(html, /"priceAmount"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
+    extractRegexNumber(html, /"price"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/i),
   );
 
   const oldPrice = pickFirstPositiveNumber(
@@ -450,15 +450,15 @@ async function extractSnapshotFromLivePage(canonicalUrl: string, asinHint: strin
       ".a-price[data-a-strike='true'] .a-offscreen",
       ".priceBlockStrikePriceString",
     ]),
-    extractRegexNumber(html, /\"basisPrice\"[^}]*\"priceAmount\"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
-    extractRegexNumber(html, /\"listPrice\"[^}]*\"amount\"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
+    extractRegexNumber(html, /"basisPrice"[^}]*"priceAmount"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
+    extractRegexNumber(html, /"listPrice"[^}]*"amount"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
   );
 
   let discountText = sanitizeDiscountText(pickFirstNonEmptyString(
     $("#corePriceDisplay_desktop_feature_div .savingsPercentage").first().text(),
     $("#corePrice_feature_div .savingsPercentage").first().text(),
     $(".reinventPriceSavingsPercentageMargin").first().text(),
-    extractRegexString(html, /\"savingsPercentage\"\s*:\s*\"([^\"]+)\"/i),
+    extractRegexString(html, /"savingsPercentage"\s*:\s*"([^"]+)"/i),
   ));
   if (!discountText && Number.isFinite(Number(oldPrice)) && Number.isFinite(Number(price)) && Number(oldPrice) > Number(price) && Number(price) > 0) {
     const pct = Math.round((1 - Number(price) / Number(oldPrice)) * 100);
@@ -481,12 +481,12 @@ async function extractSnapshotFromLivePage(canonicalUrl: string, asinHint: strin
   const rating = pickFirstPositiveNumber(
     parseRatingValue(String($("#acrPopover").attr("title") || "")),
     parseRatingValue($("#acrPopover").first().text()),
-    extractRegexNumber(html, /\"averageRating\"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
+    extractRegexNumber(html, /"averageRating"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i),
   );
 
   const reviewsCount = pickFirstPositiveNumber(
     parseReviewsCount($("#acrCustomerReviewText").first().text()),
-    extractRegexNumber(html, /\"totalReviewCount\"\s*:\s*([0-9.]+)/i),
+    extractRegexNumber(html, /"totalReviewCount"\s*:\s*([0-9.]+)/i),
   );
 
   const badgeText = sanitizeBadgeText(pickFirstNonEmptyString(
@@ -497,7 +497,7 @@ async function extractSnapshotFromLivePage(canonicalUrl: string, asinHint: strin
 
   const asin = pickFirstNonEmptyString(
     $("#ASIN").attr("value"),
-    extractRegexString(html, /\"asin\"\s*:\s*\"([A-Z0-9]{10})\"/i),
+    extractRegexString(html, /"asin"\s*:\s*"([A-Z0-9]{10})"/i),
     asinHint,
     extractAsinFromUrl(productUrl),
   ).toUpperCase();

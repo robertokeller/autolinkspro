@@ -1174,8 +1174,8 @@ export default function AdminUsers() {
       </Card>
 
       <Dialog open={!!editUser} onOpenChange={() => setEditUser(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader className="space-y-1">
+        <DialogContent className="max-w-2xl rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
             <DialogTitle>Editar Usuário</DialogTitle>
             <p className="text-sm text-muted-foreground">
               Atualize os dados da conta, permissões e status do usuário.
@@ -1562,8 +1562,8 @@ export default function AdminUsers() {
         open={!!waContactUser}
         onOpenChange={(open) => { if (!open && !sendingWaMessage) { setWaContactUser(null); setWaMessage(""); setWaMedia(null); } }}
       >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
+        <DialogContent className="max-w-md rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
             <DialogTitle className="flex items-center gap-2">
               <WhatsAppIcon className="h-5 w-5 text-green-600 dark:text-green-500" />
               Contato via WhatsApp
@@ -1661,8 +1661,8 @@ export default function AdminUsers() {
         open={showBulkWaDialog}
         onOpenChange={(open) => { if (!open && !sendingBulkWa) { setShowBulkWaDialog(false); setBulkWaMessage(""); setBulkWaMedia(null); } }}
       >
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
+        <DialogContent className="max-w-lg rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
             <DialogTitle className="flex items-center gap-2">
               <WhatsAppIcon className="h-5 w-5 text-green-600 dark:text-green-500" />
               Enviar WhatsApp em massa
@@ -1762,8 +1762,8 @@ export default function AdminUsers() {
         open={!!planManagerUser}
         onOpenChange={(open) => { if (!open && !savingPlanManager) setPlanManagerUser(null); }}
       >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
+        <DialogContent className="max-w-md rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
             <DialogTitle className="flex items-center gap-2">
               <Calendar className="h-4 w-4" />
               Gerenciar Plano
@@ -1973,8 +1973,8 @@ export default function AdminUsers() {
 
       {/* ── Bulk Status Dialog ──────────────────────────────────────── */}
       <Dialog open={showBulkStatusDialog} onOpenChange={(open) => { if (!open && !applyingBulkStatus) setShowBulkStatusDialog(false); }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
+        <DialogContent className="max-w-sm rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
             <DialogTitle className="flex items-center gap-2">
               <ToggleRight className="h-4 w-4" />
               Mudar status em massa
@@ -2015,7 +2015,7 @@ export default function AdminUsers() {
 
       {/* ── Bulk Plan Dialog ────────────────────────────────────────── */}
       <Dialog open={showBulkPlanDialog} onOpenChange={(open) => { if (!open && !applyingBulkPlan) setShowBulkPlanDialog(false); }}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CreditCard className="h-4 w-4" />
@@ -2064,7 +2064,7 @@ export default function AdminUsers() {
 
       {/* ── Plan History Dialog ─────────────────────────────────────── */}
       <Dialog open={!!planHistoryUser} onOpenChange={(open) => { if (!open && !planHistoryLoading) setPlanHistoryUser(null); }}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <History className="h-4 w-4" />

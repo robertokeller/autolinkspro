@@ -223,41 +223,6 @@ export async function syncAllWhatsAppGroups(): Promise<AnalyticsSyncAllResult> {
   };
 }
 
-export async function fetchComposition(groupId: string): Promise<CompositionMetrics> {
-  const payload = await invokeBackendRpc<unknown>("analytics-composition", { body: { groupId } });
-  return unwrapRpcPayload<CompositionMetrics>(payload);
-}
-
-export async function fetchGeography(groupId: string): Promise<GeographyMetrics> {
-  const payload = await invokeBackendRpc<unknown>("analytics-geography", { body: { groupId } });
-  return unwrapRpcPayload<GeographyMetrics>(payload);
-}
-
-export async function fetchChurnDaily(groupId: string, days = 30): Promise<DailyChurnMetrics> {
-  const payload = await invokeBackendRpc<unknown>("analytics-churn-daily", { body: { groupId, days } });
-  return unwrapRpcPayload<DailyChurnMetrics>(payload);
-}
-
-export async function fetchChurnTrends(groupId: string): Promise<ChurnTrendsMetrics> {
-  const payload = await invokeBackendRpc<unknown>("analytics-churn-trends", { body: { groupId } });
-  return unwrapRpcPayload<ChurnTrendsMetrics>(payload);
-}
-
-export async function fetchChurnRetention(groupId: string): Promise<RetentionMetrics> {
-  const payload = await invokeBackendRpc<unknown>("analytics-churn-retention", { body: { groupId } });
-  return unwrapRpcPayload<RetentionMetrics>(payload);
-}
-
-export async function fetchHealthScore(groupId: string, days = 30): Promise<HealthScoreMetrics> {
-  const payload = await invokeBackendRpc<unknown>("analytics-health-score", { body: { groupId, days } });
-  return unwrapRpcPayload<HealthScoreMetrics>(payload);
-}
-
-export async function fetchCrossGroupOverlapping(): Promise<CrossGroupMetrics> {
-  const payload = await invokeBackendRpc<unknown>("analytics-cross-group", { body: {} });
-  return unwrapRpcPayload<CrossGroupMetrics>(payload);
-}
-
 export async function fetchGroupSummary(groupId: string, days = 30): Promise<GroupSummaryMetrics> {
   const payload = await invokeBackendRpc<unknown>("analytics-group-summary", { body: { groupId, days } });
   return unwrapRpcPayload<GroupSummaryMetrics>(payload);
@@ -401,4 +366,3 @@ export async function saveRecaptureRule(
   });
   return unwrapRpcPayload<RecaptureRule>(payload);
 }
-

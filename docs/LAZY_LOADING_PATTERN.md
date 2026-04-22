@@ -41,24 +41,25 @@ Para operações que carregam dados **dentro** da página já renderizada:
 
 #### Opção A: Loading State Simples com Hook
 ```tsx
-import { usePageData } from "@/hooks/usePageData";
+import { usePageLoadingState } from "@/components/PageLoadingFallback";
 
 export default function MyPage() {
-  const { isLoading, startLoading, stopLoading } = usePageData();
+  const { isLoading, setLoading, resetLoading } = usePageLoadingState();
   const [data, setData] = useState(null);
 
   useEffect(() => {
     const loadData = async () => {
-      startLoading("Carregando dados...");
+      setLoading(true, "Carregando dados...");
       try {
         const result = await fetchData();
         setData(result);
       } finally {
-        stopLoading();
+        setLoading(false);
       }
     };
     loadData();
-  }, [startLoading, stopLoading]);
+    return () => resetLoading();
+  }, [setLoading, resetLoading]);
 
   return (
     <div>
@@ -134,17 +135,18 @@ export default function MyPage() {
 
 ## Hooks Disponíveis
 
-### usePageData
+### usePageLoadingState
 Gerencia loading de dados dentro da página:
 
 ```tsx
-const { isLoading, startLoading, stopLoading } = usePageData();
+const { isLoading, setLoading, resetLoading } = usePageLoadingState();
 
 // Iniciar loading
-startLoading("Processando...");
+setLoading(true, "Processando...");
 
-// Parar loading (reset automático ao desmontar)
-stopLoading();
+// Parar loading/reset
+setLoading(false);
+resetLoading();
 ```
 
 ### usePageLoadingState
@@ -188,7 +190,7 @@ export default function MyPage() {
 1. **Use PageWrapper** para páginas inteiras que têm lazy loading
 2. **Use InlineLoadingState** para operações dentro da página
 3. **Use Skeleton** para placeholder visual de listas/cards
-4. **Use usePageData** apenas para casos complexos que precisam de controle fino
+4. **Use usePageLoadingState** para controle fino de loading em operações locais
 5. **Evite** component RoutePendingState (descontinuado)
 6. **Não crie novos spinners**: Use os componentes padronizados
 
@@ -213,25 +215,26 @@ export default function Dashboard() {
 
 ### Página com Carregamento de Dados Progressivo
 ```tsx
-import { usePageData } from "@/hooks/usePageData";
+import { usePageLoadingState } from "@/components/PageLoadingFallback";
 import { InlineLoadingState } from "@/components/InlineLoadingState";
 
 export default function ListPage() {
-  const { isLoading, startLoading, stopLoading } = usePageData();
+  const { isLoading, setLoading, resetLoading } = usePageLoadingState();
   const [items, setItems] = useState([]);
 
   useEffect(() => {
     const loadItems = async () => {
-      startLoading();
+      setLoading(true);
       try {
         const data = await fetchItems();
         setItems(data);
       } finally {
-        stopLoading();
+        setLoading(false);
       }
     };
     loadItems();
-  }, [startLoading, stopLoading]);
+    return () => resetLoading();
+  }, [setLoading, resetLoading]);
 
   return (
     <div>

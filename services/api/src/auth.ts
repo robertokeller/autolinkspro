@@ -506,13 +506,13 @@ if (SERVICE_TOKEN_RAW && SERVICE_TOKEN_RAW !== SERVICE_TOKEN) {
   console.warn("[auth] SERVICE_TOKEN had leading/trailing whitespace and was normalized.");
 }
 
-if (!SERVICE_TOKEN) {
-  console.warn("[auth] SERVICE_TOKEN is not set — scheduler/service-to-service auth is disabled. Set SERVICE_TOKEN in the environment.");
-}
 
 // Pre-computed dummy hash for timing-safe "user not found" path in signin — prevents email enumeration.
-// bcrypt.hashSync runs once at startup (~80–120ms total cost).
-const SIGNIN_DUMMY_HASH = bcrypt.hashSync("__autolinks_dummy_no_real_credential__", BCRYPT_COST);
+// IMPORTANT: use a fixed low cost (10) here, NOT BCRYPT_COST.
+// This hash is never checked for real security — it only exists to consume the same CPU time as a real
+// bcrypt.compare() call so an attacker can't distinguish "user not found" from "wrong password" via timing.
+// Using BCRYPT_COST (12-14) would block the Node.js event loop for 300-1000ms at startup per instance.
+const SIGNIN_DUMMY_HASH = bcrypt.hashSync("__autolinks_dummy_no_real_credential__", 10);
 
 // ─── JWT helpers ─────────────────────────────────────────────────────────────
 export interface TokenPayload {
@@ -577,15 +577,17 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       if (row?.token_invalidated_before) {
         const invalidatedMs = Date.parse(row.token_invalidated_before);
         if (Number.isFinite(invalidatedMs) && iatMs < invalidatedMs) {
-          // Token was revoked (user blocked or signed out) — log before dropping
+          // Token was revoked (user blocked or signed out) — reject explicitly with 401.
           console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "token_revoked_detected", userId: payload.sub, ip: req.ip ?? "-", tokenIat: payload.iat, rid }));
-          next(); return;
+          res.status(401).json({ data: null, error: { message: "Sessão expirada. Faça login novamente." } }); return;
         }
       }
     } catch (error) {
-      // DB unavailable — fail closed for revoked-token safety.
-      console.warn("[auth] token revocation check failed; denying token for safety", error);
-      next(); return;
+      // DB unavailable — fail CLOSED: reject the token rather than silently dropping auth context.
+      // Calling next() without setting req.currentUser would silently treat the user as anonymous,
+      // which may bypass route-level guards that only check for the presence of currentUser.
+      console.warn("[auth] token revocation check failed; rejecting request for safety", error);
+      res.status(503).json({ data: null, error: { message: "Serviço temporariamente indisponível. Tente novamente em instantes." } }); return;
     }
     req.currentUser = payload;
   } else if (payload) {
@@ -663,15 +665,6 @@ export function requireTrustedOriginForSessionWrite(req: Request, res: Response,
     hasOrigin: Boolean(requestOrigin),
   }));
   res.status(403).json({ data: null, error: { message: "Origem da requisição não autorizada" } });
-}
-
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.currentUser || req.currentUser.role !== "admin") {
-    const rid = (req as { rid?: string }).rid ?? "-";
-    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "forbidden", userId: req.currentUser?.sub ?? "-", path: req.path, ip: req.ip ?? "-", rid }));
-    res.status(403).json({ data: null, error: { message: "Acesso negado" } }); return;
-  }
-  next();
 }
 
 // ─── Auth router ─────────────────────────────────────────────────────────────

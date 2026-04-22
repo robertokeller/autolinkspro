@@ -479,3 +479,4 @@ export default function AdminLogs() {
     </div>
   );
 }
+

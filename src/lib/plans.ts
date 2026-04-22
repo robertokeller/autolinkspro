@@ -121,46 +121,46 @@ export const plans: Plan[] = [
 
   // Start
   {
-    id: "plan-start", name: "Start", price: 77, period: "30 dias",
+    id: "plan-start", name: "Start", price: 0, period: "30 dias",
     billingPeriod: "monthly",
     limits: START_LIMITS,
     isActive: true,
     checkoutProvider: "kiwify",
     periods: [
-      { type: "monthly", price: 77, isActive: true, checkoutProvider: "kiwify" },
-      { type: "quarterly", price: 207, monthlyEquivalentPrice: 69.00, isActive: true, checkoutProvider: "kiwify" },
-      { type: "semiannual", price: 390, monthlyEquivalentPrice: 65.00, isActive: true, checkoutProvider: "kiwify" },
-      { type: "annual", price: 770, monthlyEquivalentPrice: 64.17, isActive: true, checkoutProvider: "kiwify" },
+      { type: "monthly", price: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "quarterly", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "semiannual", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "annual", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
     ],
   },
 
   // Pro
   {
-    id: "plan-pro", name: "Pro", price: 147, period: "30 dias",
+    id: "plan-pro", name: "Pro", price: 0, period: "30 dias",
     billingPeriod: "monthly",
     limits: PRO_LIMITS,
     isActive: true,
     checkoutProvider: "kiwify",
     periods: [
-      { type: "monthly", price: 147, isActive: true, checkoutProvider: "kiwify" },
-      { type: "quarterly", price: 396, monthlyEquivalentPrice: 132.00, isActive: true, checkoutProvider: "kiwify" },
-      { type: "semiannual", price: 750, monthlyEquivalentPrice: 125.00, isActive: true, checkoutProvider: "kiwify" },
-      { type: "annual", price: 1470, monthlyEquivalentPrice: 122.50, isActive: true, checkoutProvider: "kiwify" },
+      { type: "monthly", price: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "quarterly", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "semiannual", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "annual", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
     ],
   },
 
   // Business
   {
-    id: "plan-business", name: "Business", price: 197, period: "30 dias",
+    id: "plan-business", name: "Business", price: 0, period: "30 dias",
     billingPeriod: "monthly",
     limits: BUSINESS_LIMITS,
     isActive: true,
     checkoutProvider: "kiwify",
     periods: [
-      { type: "monthly", price: 197, isActive: true, checkoutProvider: "kiwify" },
-      { type: "quarterly", price: 531, monthlyEquivalentPrice: 177.00, isActive: true, checkoutProvider: "kiwify" },
-      { type: "semiannual", price: 1002, monthlyEquivalentPrice: 167.00, isActive: true, checkoutProvider: "kiwify" },
-      { type: "annual", price: 1970, monthlyEquivalentPrice: 164.17, isActive: true, checkoutProvider: "kiwify" },
+      { type: "monthly", price: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "quarterly", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "semiannual", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
+      { type: "annual", price: 0, monthlyEquivalentPrice: 0, isActive: true, checkoutProvider: "kiwify" },
     ],
   },
 ];

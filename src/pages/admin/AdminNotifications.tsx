@@ -508,7 +508,7 @@ export default function AdminNotifications() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="notifications" className="space-y-4">
+        <TabsContent value="notifications" className="space-y-6">
           <Card className="admin-card">
             <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
               <CardTitle className="admin-card-title flex items-center gap-2">
@@ -594,7 +594,7 @@ export default function AdminNotifications() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="maintenance" className="space-y-4">
+        <TabsContent value="maintenance" className="space-y-6">
           <Card className="admin-card">
             <CardHeader>
               <CardTitle className="admin-card-title flex items-center gap-2">
@@ -611,7 +611,7 @@ export default function AdminNotifications() {
                 <span className="text-sm">Ativar manutenção (bloqueia o acesso dos clientes)</span>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-6 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Título</Label>
                   <Input
@@ -660,8 +660,8 @@ export default function AdminNotifications() {
       </Tabs>
 
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="max-w-4xl overflow-auto">
-          <DialogHeader>
+        <DialogContent className="max-w-4xl overflow-auto rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
+          <DialogHeader className="p-6 border-b border-border/40 bg-muted/20 rounded-t-[2rem]">
             <DialogTitle>{form.id ? "Editar Notificação" : "Criar Notificação"}</DialogTitle>
             <DialogDescription>
               Configure quem vai ver, por quanto tempo e como a notificação aparece.
@@ -669,7 +669,7 @@ export default function AdminNotifications() {
           </DialogHeader>
 
           <div className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-6 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Título</Label>
                 <Input
@@ -703,7 +703,7 @@ export default function AdminNotifications() {
               />
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-6 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Onde aparece</Label>
                 <Select value={form.channel} onValueChange={(value) => setForm((prev) => ({ ...prev, channel: value as "bell" | "modal" | "both" }))}>
@@ -761,7 +761,7 @@ export default function AdminNotifications() {
                 </Button>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-6 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Começa em</Label>
                   <Input
@@ -953,3 +953,4 @@ export default function AdminNotifications() {
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-﻿import { TrendingUp, Handshake, ExternalLink, Calculator, ArrowRight, Zap, BadgeDollarSign, Infinity } from "lucide-react";
+﻿import { TrendingUp, Handshake, ExternalLink, Calculator, ArrowRight, Zap, BadgeDollarSign, Infinity as InfinityIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function Afiliado() {
@@ -37,7 +37,7 @@ export default function Afiliado() {
       <div className="grid md:grid-cols-3 gap-6">
         <div className="bg-card border rounded-2xl p-8 hover:border-primary/50 transition-colors shadow-sm">
           <div className="h-12 w-12 bg-primary/10 rounded-xl flex items-center justify-center mb-6">
-            <Infinity className="h-6 w-6 text-primary" />
+            <InfinityIcon className="h-6 w-6 text-primary" />
           </div>
           <h3 className="text-xl font-bold mb-3">Ganhe Sobre Todos os Planos</h3>
           <p className="text-muted-foreground leading-relaxed">

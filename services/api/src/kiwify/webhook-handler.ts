@@ -104,10 +104,32 @@ export function verifyWebhookToken(received: string, expected: string): boolean 
 
 // ─── Idempotency check ─────────────────────────────────────────────────────
 
+// Window within which a duplicate payload_hash+order_id+event_type is considered
+// already processed. Set to 48 h so routine log maintenance (clearing rows older
+// than a week) cannot be exploited to replay old webhooks.
+const IDEMPOTENCY_WINDOW_MS = 48 * 60 * 60 * 1000;
+
 async function wasAlreadyProcessed(payloadHash: string, orderId: string, eventType: string): Promise<boolean> {
+  const windowStart = new Date(Date.now() - IDEMPOTENCY_WINDOW_MS).toISOString();
   const row = await queryOne(
-    `SELECT id FROM kiwify_webhooks_log WHERE payload_hash = $1 AND kiwify_order_id = $2 AND event_type = $3 LIMIT 1`,
-    [payloadHash, orderId, eventType]
+    `SELECT id FROM kiwify_webhooks_log
+     WHERE payload_hash = $1 AND kiwify_order_id = $2 AND event_type = $3
+       AND created_at >= $4
+     LIMIT 1`,
+    [payloadHash, orderId, eventType, windowStart],
+  );
+  return !!row;
+}
+
+// Guard: check whether a purchase order already has an activated transaction in
+// kiwify_transactions. Prevents double-activation when idempotency logs are cleared
+// or a replay attack slips through the window check above.
+async function isOrderAlreadyActivated(orderId: string): Promise<boolean> {
+  const row = await queryOne(
+    `SELECT id FROM kiwify_transactions
+     WHERE kiwify_order_id = $1 AND status = 'activated'
+     LIMIT 1`,
+    [orderId],
   );
   return !!row;
 }
@@ -125,6 +147,39 @@ async function logWebhookEvent(
      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [uuid(), eventType, orderId, payloadHash, httpStatus, result, errorMsg]
   );
+}
+
+// ─── Shared downgrade helper ────────────────────────────────────────────────
+// Used by handleRefund, handleChargeback, and handleSubscriptionLate.
+// Finds the most recent activated transaction for the order and immediately
+// downgrades the linked user's plan. Returns a WebhookResult ready to return.
+
+async function downgradeOrderUser(
+  txId: string,
+  orderId: string,
+  eventLabel: string,
+): Promise<WebhookResult> {
+  const originalTx = await queryOne<{ user_id: string | null }>(
+    `SELECT user_id FROM kiwify_transactions
+     WHERE kiwify_order_id = $1 AND user_id IS NOT NULL AND status = 'activated'
+     ORDER BY created_at DESC LIMIT 1`,
+    [orderId],
+  );
+
+  if (!originalTx?.user_id) {
+    return { success: true, message: `${eventLabel} recorded for order ${orderId} (no linked user)`, transactionId: txId };
+  }
+
+  const downgrade = await downgradeUserPlan(originalTx.user_id, "immediate", { source: "kiwify" });
+  if (downgrade === "skipped_manual_override") {
+    await execute("UPDATE kiwify_transactions SET status='manual_override_hold' WHERE id=$1", [txId]);
+    return {
+      success: true,
+      message: `${eventLabel} recorded for order ${orderId}, downgrade skipped due to manual override.`,
+      transactionId: txId,
+    };
+  }
+  return { success: true, message: `User downgraded due to ${eventLabel.toLowerCase()} on order ${orderId}`, transactionId: txId };
 }
 
 // ─── Helper: extract fields from varying webhook payloads ───────────────────
@@ -368,6 +423,19 @@ async function handlePurchaseApproved(
     ]
   );
 
+  // Guard against double-activation: reject if this order already has an active transaction.
+  // This is a second layer of protection complementing the payload-hash idempotency check,
+  // covering cases where the idempotency log was cleared or a replay bypasses the time window.
+  if (user && planId && await isOrderAlreadyActivated(orderId)) {
+    console.warn(`[kiwify-webhook] order ${orderId} already activated — skipping duplicate plan activation`);
+    await execute("UPDATE kiwify_transactions SET status='duplicate_skipped' WHERE id=$1", [txId]);
+    return {
+      success: true,
+      message: `Order ${orderId} already activated (duplicate webhook rejected).`,
+      transactionId: txId,
+    };
+  }
+
   // Activate plan for existing user
   if (user && planId) {
     const activation = await activateUserPlan(
@@ -427,28 +495,7 @@ async function handleRefund(
     ]
   );
 
-  // Find the original purchase and downgrade user
-  const originalTx = await queryOne<{ user_id: string | null }>(
-    `SELECT user_id
-       FROM kiwify_transactions
-      WHERE kiwify_order_id = $1
-        AND user_id IS NOT NULL
-        AND status = 'activated'
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [orderId],
-  );
-
-  if (originalTx?.user_id) {
-    const downgrade = await downgradeUserPlan(originalTx.user_id, "immediate", { source: "kiwify" });
-    if (downgrade === "skipped_manual_override") {
-      await execute("UPDATE kiwify_transactions SET status='manual_override_hold' WHERE id=$1", [txId]);
-      return { success: true, message: `Refund recorded for order ${orderId}, downgrade skipped due to manual override.`, transactionId: txId };
-    }
-    return { success: true, message: `User downgraded due to refund on order ${orderId}`, transactionId: txId };
-  }
-
-  return { success: true, message: `Refund recorded for order ${orderId} (no linked user)`, transactionId: txId };
+  return downgradeOrderUser(txId, orderId, "Refund");
 }
 
 async function handleChargeback(
@@ -469,27 +516,7 @@ async function handleChargeback(
     ]
   );
 
-  const originalTx = await queryOne<{ user_id: string | null }>(
-    `SELECT user_id
-       FROM kiwify_transactions
-      WHERE kiwify_order_id = $1
-        AND user_id IS NOT NULL
-        AND status = 'activated'
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [orderId],
-  );
-
-  if (originalTx?.user_id) {
-    const downgrade = await downgradeUserPlan(originalTx.user_id, "immediate", { source: "kiwify" });
-    if (downgrade === "skipped_manual_override") {
-      await execute("UPDATE kiwify_transactions SET status='manual_override_hold' WHERE id=$1", [txId]);
-      return { success: true, message: `Chargeback recorded for order ${orderId}, downgrade skipped due to manual override.`, transactionId: txId };
-    }
-    return { success: true, message: `User downgraded due to chargeback on order ${orderId}`, transactionId: txId };
-  }
-
-  return { success: true, message: `Chargeback recorded for order ${orderId}`, transactionId: txId };
+  return downgradeOrderUser(txId, orderId, "Chargeback");
 }
 
 async function handleSubscriptionRenewed(
@@ -640,47 +667,27 @@ async function handleSubscriptionLate(
     ]
   );
 
+  const graceDays = Math.max(0, Number(config.grace_period_days ?? 0));
+  if (graceDays <= 0) {
+    // No grace period — reuse the shared downgrade helper (same query + manual-override guard).
+    return downgradeOrderUser(txId, orderId, "Subscription late");
+  }
+
+  // Grace period active — find user but do not downgrade yet.
   const targetTx = await queryOne<{ user_id: string | null }>(
-    `SELECT user_id
-       FROM kiwify_transactions
-      WHERE kiwify_order_id = $1
-        AND status = 'activated'
-        AND user_id IS NOT NULL
-      ORDER BY created_at DESC
-      LIMIT 1`,
+    `SELECT user_id FROM kiwify_transactions
+     WHERE kiwify_order_id = $1 AND status = 'activated' AND user_id IS NOT NULL
+     ORDER BY created_at DESC LIMIT 1`,
     [orderId],
   );
-  const graceDays = Math.max(0, Number(config.grace_period_days ?? 0));
   if (targetTx?.user_id) {
-    if (graceDays <= 0) {
-      const downgrade = await downgradeUserPlan(targetTx.user_id, "immediate", { source: "kiwify" });
-      if (downgrade === "skipped_manual_override") {
-        await execute("UPDATE kiwify_transactions SET status='manual_override_hold' WHERE id=$1", [txId]);
-        return {
-          success: true,
-          message: `Subscription late recorded for ${email}, downgrade skipped due to manual override.`,
-          transactionId: txId,
-        };
-      }
-      return {
-        success: true,
-        message: `Subscription late recorded for ${email}. User ${targetTx.user_id} downgraded immediately (grace=0).`,
-        transactionId: txId,
-      };
-    }
-
     return {
       success: true,
       message: `Subscription late recorded for ${email}. Grace period of ${graceDays} day(s) started before downgrade.`,
       transactionId: txId,
     };
   }
-
-  return {
-    success: true,
-    message: `Subscription late recorded for ${email}. No matched user to downgrade.`,
-    transactionId: txId,
-  };
+  return { success: true, message: `Subscription late recorded for ${email}. No matched user to downgrade.`, transactionId: txId };
 }
 
 async function handleInfoEvent(

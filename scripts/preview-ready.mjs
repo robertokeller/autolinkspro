@@ -42,9 +42,16 @@ const PREVIEW_JWT_SECRET = String(process.env.JWT_SECRET || randomBytes(32).toSt
 const PREVIEW_SERVICE_TOKEN = String(process.env.SERVICE_TOKEN || "autolinks-preview-service-token-local").trim();
 const PREVIEW_OPS_CONTROL_TOKEN = String(process.env.OPS_CONTROL_TOKEN || "autolinks-preview-ops-token-local").trim();
 const PREVIEW_ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || randomBytes(18).toString("hex")).trim();
+const PREVIEW_SESSION_ENCRYPTION_KEY = String(
+  process.env.SESSION_ENCRYPTION_KEY
+  || process.env.PREVIEW_SESSION_ENCRYPTION_KEY
+  || randomBytes(32).toString("hex"),
+).trim();
 const USING_FALLBACK_PREVIEW_WEBHOOK_SECRET = !String(process.env.WEBHOOK_SECRET || "").trim()
   && !String(process.env.PREVIEW_WEBHOOK_SECRET || "").trim()
   && !String(WHATSAPP_SERVICE_WEBHOOK_SECRET || "").trim();
+const USING_FALLBACK_PREVIEW_SESSION_ENCRYPTION_KEY = !String(process.env.SESSION_ENCRYPTION_KEY || "").trim()
+  && !String(process.env.PREVIEW_SESSION_ENCRYPTION_KEY || "").trim();
 const OPS_CONFIG_DIR = path.resolve(process.cwd(), ".ops");
 const OPS_PORTS_CONFIG_PATH = path.join(OPS_CONFIG_DIR, "service-ports.json");
 const STACK_RESERVED_PORTS = new Set([3000, 3111, 3112, 3113, 3114, 3115, 3116, 3117]);
@@ -422,6 +429,7 @@ async function ensureServiceOnline(serviceConfig) {
     PORT: String(servicePort),
     ALLOW_INSECURE_NO_SECRET: process.env.ALLOW_INSECURE_NO_SECRET || "false",
     WEBHOOK_SECRET: PREVIEW_WEBHOOK_SECRET,
+    SESSION_ENCRYPTION_KEY: PREVIEW_SESSION_ENCRYPTION_KEY,
     ...runtimeEnv(servicePort),
   };
 
@@ -471,6 +479,9 @@ async function main() {
 
   if (USING_FALLBACK_PREVIEW_WEBHOOK_SECRET) {
     console.warn("[preview:ready] WEBHOOK_SECRET não definido. Usando fallback estável local para evitar conflito entre runtimes de preview.");
+  }
+  if (USING_FALLBACK_PREVIEW_SESSION_ENCRYPTION_KEY) {
+    console.warn("[preview:ready] SESSION_ENCRYPTION_KEY não definido. Usando chave efêmera nesta execução de preview.");
   }
 
   await ensureDatabaseReady();
@@ -665,6 +676,7 @@ async function main() {
       PORT: String(port),
       ALLOW_INSECURE_NO_SECRET: process.env.ALLOW_INSECURE_NO_SECRET || "false",
       WEBHOOK_SECRET: PREVIEW_WEBHOOK_SECRET,
+      SESSION_ENCRYPTION_KEY: PREVIEW_SESSION_ENCRYPTION_KEY,
       ...(serviceConfig.runtimeEnv ? serviceConfig.runtimeEnv(port) : {}),
     };
     attachAutoRestart(serviceConfig.name, serviceResult.process, serviceConfig, processEnv, port);

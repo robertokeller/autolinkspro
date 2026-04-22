@@ -269,7 +269,7 @@ function AutomationDialog({ open, onClose, initial, draft, onSave, isSaving, onP
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+      <DialogContent className="max-w-lg rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
         <DialogHeader className="pb-1">
           <DialogTitle className="flex items-center gap-2.5 text-base">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
@@ -568,7 +568,7 @@ function AutomationCard({
     <div className={`overflow-hidden rounded-xl border bg-card transition-all ${
       auto.is_active ? "shadow-sm" : "opacity-55"
     }`}>
-      <div className="flex items-start gap-4 p-4">
+      <div className="flex items-start gap-6 p-4">
         {/* Icon container */}
         <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${
           auto.is_active ? "bg-muted border-border" : "bg-muted/50 border-dashed"
@@ -841,7 +841,7 @@ export default function AdminMensagens() {
     }
     if (session.status === "warning") {
       return (
-        <div className="flex flex-col items-center gap-4 py-4">
+        <div className="flex flex-col items-center gap-6 py-4">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-warning/15">
             <AlertTriangle className="h-8 w-8 text-warning" />
           </div>
@@ -854,7 +854,7 @@ export default function AdminMensagens() {
     }
     if (session.status === "qr_code" && session.qrCode) {
       return (
-        <div className="flex flex-col items-center gap-4 py-2">
+        <div className="flex flex-col items-center gap-6 py-2">
           <img
             src={session.qrCode}
             alt="QR Code do WhatsApp Admin"
@@ -867,7 +867,7 @@ export default function AdminMensagens() {
       );
     }
     return (
-      <div className="flex flex-col items-center gap-4 py-8">
+      <div className="flex flex-col items-center gap-6 py-8">
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
         <div className="text-center">
           <p className="font-semibold">Gerando QR Code...</p>
@@ -966,8 +966,8 @@ export default function AdminMensagens() {
       </PageHeader>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:gap-6">
-        <Card className="group overflow-hidden transition-all hover:shadow-md">
+      <div className="grid grid-cols-2 gap-6 sm:grid-cols-4 lg:gap-6">
+        <Card className="admin-card group transition-all hover:shadow-md">
           <CardContent className="flex flex-col justify-center gap-2 p-6">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-muted-foreground">Disparos</p>
@@ -981,7 +981,7 @@ export default function AdminMensagens() {
           </CardContent>
         </Card>
         
-        <Card className="group overflow-hidden transition-all hover:shadow-md">
+        <Card className="admin-card group transition-all hover:shadow-md">
           <CardContent className="flex flex-col justify-center gap-2 p-6">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-muted-foreground">Agendados</p>
@@ -995,7 +995,7 @@ export default function AdminMensagens() {
           </CardContent>
         </Card>
 
-        <Card className="group overflow-hidden transition-all hover:shadow-md">
+        <Card className="admin-card group transition-all hover:shadow-md">
           <CardContent className="flex flex-col justify-center gap-2 p-6">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-muted-foreground">Eventos Ativos</p>
@@ -1009,7 +1009,7 @@ export default function AdminMensagens() {
           </CardContent>
         </Card>
 
-        <Card className="group overflow-hidden transition-all hover:shadow-md">
+        <Card className="admin-card group transition-all hover:shadow-md">
           <CardContent className="flex flex-col justify-center gap-2 p-6">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-muted-foreground">Total de Eventos</p>
@@ -1025,7 +1025,7 @@ export default function AdminMensagens() {
       </div>
 
       {!isWaOnline && (
-        <div className="flex items-start md:items-center gap-4 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40">
+        <div className="flex items-start md:items-center gap-6 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/50">
             <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
           </div>
@@ -1047,7 +1047,7 @@ export default function AdminMensagens() {
       )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="mb-6 grid w-full grid-cols-4 h-12 p-1">
+        <TabsList className="admin-toolbar h-auto w-full justify-start overflow-x-auto mb-2">
           <TabsTrigger value="broadcast" className="gap-2.5 h-full text-sm font-medium">
             <Send className="h-4 w-4" />
             <span className="hidden sm:inline">Disparo em Massa</span>
@@ -1084,7 +1084,7 @@ export default function AdminMensagens() {
 
         {/* ── Tab: Disparo em Massa ──────────────────────────────────────── */}
         <TabsContent value="broadcast" className="space-y-6 focus-visible:outline-none">
-          <Card className="overflow-hidden border-border/50 shadow-sm transition-shadow hover:shadow-md">
+          <Card className="admin-card overflow-hidden transition-shadow hover:shadow-md">
             <CardHeader className="bg-muted/20 pb-4 pt-6 border-b border-border/50">
               <CardTitle className="flex items-center gap-2.5 text-base font-semibold">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
@@ -1154,7 +1154,7 @@ export default function AdminMensagens() {
               )}
 
               {/* Preview */}
-              <div className="flex items-center gap-4 rounded-xl border border-dashed bg-muted/20 p-4">
+              <div className="flex items-center gap-6 rounded-xl border border-dashed bg-muted/20 p-4">
                 <Button
                   size="default"
                   variant="secondary"
@@ -1180,7 +1180,7 @@ export default function AdminMensagens() {
             </CardContent>
           </Card>
 
-          <Card className="overflow-hidden border-border/50 shadow-sm transition-shadow hover:shadow-md">
+          <Card className="admin-card overflow-hidden transition-shadow hover:shadow-md">
             <CardHeader className="bg-muted/20 pb-4 pt-6 border-b border-border/50">
               <CardTitle className="flex items-center gap-2.5 text-base font-semibold">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
@@ -1268,7 +1268,7 @@ export default function AdminMensagens() {
 
         {/* ── Tab: Centro de Eventos ─────────────────────────────────────── */}
         <TabsContent value="automations" className="space-y-6 focus-visible:outline-none">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
             <div className="min-w-0">
               <h2 className="text-lg font-bold tracking-tight">Centro de Eventos Programados</h2>
               <p className="text-sm text-muted-foreground mt-1">
@@ -1321,7 +1321,7 @@ export default function AdminMensagens() {
 
           <Card className="overflow-hidden border-amber-500/30 bg-amber-500/5">
             <CardHeader className="py-4">
-              <div className="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
+              <div className="flex items-start sm:items-center justify-between gap-6 flex-col sm:flex-row">
                 <div className="space-y-1">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Timer className="h-4 w-4 text-amber-600" />
@@ -1393,14 +1393,14 @@ export default function AdminMensagens() {
           ) : (
             <>
               {/* Trigger type grouping hints */}
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-5">
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-5">
                 {(Object.keys(TRIGGER_META) as AutomationTriggerType[]).map((t) => {
                   const cnt = automations.filter((a) => a.trigger_type === t).length;
                   const activeCnt = automations.filter((a) => a.trigger_type === t && a.is_active).length;
                   const tm = TRIGGER_META[t];
                   const TIcon = tm.icon;
                   return (
-                    <div key={t} className={`flex flex-col gap-2 rounded-xl border p-4 transition-all shadow-sm ${
+                    <div key={t} className={`flex flex-col gap-3 rounded-xl border p-4 transition-all shadow-sm ${
                       cnt > 0 ? "bg-card hover:border-primary/30" : "border-dashed bg-muted/10 opacity-70"
                     }`}>
                       <div className={`flex items-center justify-center h-8 w-8 rounded-lg bg-muted text-center`}>
@@ -1441,7 +1441,7 @@ export default function AdminMensagens() {
               <Wand2 className="h-4 w-4 text-muted-foreground" />
               <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Como funcionam os gatilhos do centro de eventos</span>
             </div>
-            <div className="grid grid-cols-1 gap-4 text-sm text-muted-foreground sm:grid-cols-2 md:grid-cols-4">
+            <div className="grid grid-cols-1 gap-6 text-sm text-muted-foreground sm:grid-cols-2 md:grid-cols-4">
               <div className="flex flex-col gap-1.5 p-3 rounded-lg border border-border/50 bg-background/50">
                 <div className="flex items-center gap-2 text-foreground/90 font-semibold">
                   <Timer className="h-4 w-4 text-amber-500" />
@@ -1476,7 +1476,7 @@ export default function AdminMensagens() {
 
         {/* ── Tab: Histórico ─────────────────────────────────────────────── */}
         <TabsContent value="history" className="space-y-6 focus-visible:outline-none">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
             <div className="min-w-0">
               <h2 className="text-lg font-bold tracking-tight text-foreground">Histórico de disparos</h2>
               <p className="text-sm text-muted-foreground mt-1">Acompanhe as mensagens enviadas e falhas de envio.</p>
@@ -1491,7 +1491,7 @@ export default function AdminMensagens() {
             <InlineLoadingState label="Carregando histórico..." />
           ) : broadcasts.length === 0 ? (
             <Card className="border-dashed bg-muted/10 shadow-sm">
-              <CardContent className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+              <CardContent className="flex flex-col items-center justify-center gap-6 py-20 text-center">
                 <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-dashed border-border bg-background shadow-sm">
                   <Bell className="h-8 w-8 text-muted-foreground" />
                 </div>
@@ -1550,8 +1550,8 @@ export default function AdminMensagens() {
             <Card className={`overflow-hidden shadow-sm transition-all ${isWaOnline ? "ring-2 ring-success/40" : "border-border/50"}`}>
               <div className={`h-1.5 w-full ${isWaOnline ? "bg-success" : isWaBusy ? "bg-blue-500" : session.status === "warning" ? "bg-warning" : "bg-muted-foreground/30"}`} />
               <CardHeader className="pb-4 bg-muted/10 border-b border-border/50">
-                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                  <div className="flex items-start gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-6">
+                  <div className="flex items-start gap-6">
                     <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-background shadow-sm border border-border/50 shrink-0">
                       <Phone className="h-6 w-6 text-foreground/80" />
                     </div>
@@ -1663,7 +1663,7 @@ export default function AdminMensagens() {
 
       {/* ── QR Code Dialog ────────────────────────────────────────────────── */}
       <Dialog open={showQrDialog} onOpenChange={setShowQrDialog}>
-        <DialogContent className="max-h-[92dvh] max-w-md overflow-y-auto">
+        <DialogContent className="max-w-md rounded-[2rem] border-none p-0 shadow-2xl bg-background/95 backdrop-blur-xl">
           <DialogHeader>
             <DialogTitle>{session?.status === "online" ? "WhatsApp conectado!" : "Escanear QR Code"}</DialogTitle>
             <DialogDescription>
@@ -1780,3 +1780,4 @@ export default function AdminMensagens() {
     </div>
   );
 }
+

@@ -2,6 +2,8 @@
 import * as path from "path";
 import { chromium } from "playwright";
 import { fileURLToPath } from "url";
+// @security-review-required: session files encrypted at rest via AES-256-GCM
+import { readEncryptedStorageState, writeEncryptedStorageState } from "./session-cipher.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,6 +35,26 @@ interface CookieInput {
   sameSite?: string;
 }
 
+type PlaywrightStorageState = {
+  cookies: {
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "None" | "Lax" | "Strict";
+  }[];
+  origins: {
+    origin: string;
+    localStorage: {
+      name: string;
+      value: string;
+    }[];
+  }[];
+};
+
 const AUTH_HINT_COOKIES = ["ssid", "nsa_rotok", "orguseridp", "orgnickp"];
 const MAX_CAPTURED_COOKIES = 200;
 const MAX_COOKIE_NAME_LENGTH = 128;
@@ -41,9 +63,23 @@ const MAX_COOKIE_DOMAIN_LENGTH = 255;
 const MAX_COOKIE_PATH_LENGTH = 512;
 const COOKIE_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const COOKIE_DOMAIN_PATTERN = /^[A-Za-z0-9.-]+$/;
-const COOKIE_CONTROL_CHAR_PATTERN = /[\u0000-\u001F\u007F]/;
-const COOKIE_VALUE_FORBIDDEN_PATTERN = /[;\r\n\u0000]/;
 const COOKIE_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function hasControlCharacters(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function hasForbiddenCookieValueCharacters(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code === 0 || code === 10 || code === 13 || code === 59) return true;
+  }
+  return false;
+}
 
 export class MercadoLivreSessionService {
   private sessionsDir: string;
@@ -230,11 +266,11 @@ export class MercadoLivreSessionService {
       if (domain.length > MAX_COOKIE_DOMAIN_LENGTH) throw new Error(`Cookie [${idx}]: dominio excede ${MAX_COOKIE_DOMAIN_LENGTH} caracteres.`);
       if (cookiePath.length > MAX_COOKIE_PATH_LENGTH) throw new Error(`Cookie [${idx}]: path excede ${MAX_COOKIE_PATH_LENGTH} caracteres.`);
       if (!COOKIE_NAME_PATTERN.test(name)) throw new Error(`Cookie [${idx}]: nome invalido.`);
-      if (COOKIE_VALUE_FORBIDDEN_PATTERN.test(value) || COOKIE_CONTROL_CHAR_PATTERN.test(value)) {
+      if (hasForbiddenCookieValueCharacters(value) || hasControlCharacters(value)) {
         throw new Error(`Cookie [${idx}]: valor contem caracteres invalidos.`);
       }
       if (!COOKIE_DOMAIN_PATTERN.test(domain)) throw new Error(`Cookie [${idx}]: dominio invalido.`);
-      if (!cookiePath.startsWith("/") || COOKIE_CONTROL_CHAR_PATTERN.test(cookiePath)) {
+      if (!cookiePath.startsWith("/") || hasControlCharacters(cookiePath)) {
         throw new Error(`Cookie [${idx}]: path invalido.`);
       }
 
@@ -323,8 +359,8 @@ export class MercadoLivreSessionService {
         origins: [],
       };
 
-      await fs.mkdir(this.sessionsDir, { recursive: true });
-      await fs.writeFile(sessionPath, JSON.stringify(storageState, null, 2), "utf-8");
+      // Grava criptografado (AES-256-GCM) — cookies do ML nunca ficam em plaintext no disco.
+      await writeEncryptedStorageState(sessionPath, storageState);
 
       logs = this.addLog(logs, "Cookies salvos com sucesso", "success");
 
@@ -360,8 +396,11 @@ export class MercadoLivreSessionService {
       }
 
       logs = this.addLog(logs, "Carregando sessão...", "info");
-      const storageStateRaw = await fs.readFile(sessionPath, "utf-8");
-      const storageState = JSON.parse(storageStateRaw) as { cookies: CookieInput[] };
+      // Descriptografa o arquivo de sessão — null significa arquivo inexistente, plaintext ou corrompido.
+      const storageState = await readEncryptedStorageState<{ cookies: CookieInput[] }>(sessionPath);
+      if (!storageState) {
+        return { status: "not_found", logs: this.addLog(logs, "Arquivo de sessão não encontrado ou expirado (plaintext?)", "error") };
+      }
 
       // Build Cookie header from stored cookies for .mercadolivre.com.br
       const cookieHeader = storageState.cookies
@@ -445,8 +484,17 @@ export class MercadoLivreSessionService {
     let context = null;
     try {
       logs = this.addLog(logs, "Iniciando verificação completa...", "info");
+
+      // Descriptografa a sessão em memória antes de passar ao Playwright.
+      // Playwright aceita storageState como objeto — nunca passamos o path do arquivo
+      // criptografado diretamente, pois o Playwright não saberia descriptografá-lo.
+      const decryptedState = await readEncryptedStorageState<PlaywrightStorageState>(sessionPath);
+      if (!decryptedState) {
+        return { status: "not_found", logs: this.addLog(logs, "Sessão não encontrada ou expirada (plaintext?)", "error") };
+      }
+
       browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
-      context = await browser.newContext({ storageState: sessionPath });
+      context = await browser.newContext({ storageState: decryptedState });
       const page = await context.newPage();
 
       await page.goto("https://www.mercadolivre.com.br/afiliados/linkbuilder", {

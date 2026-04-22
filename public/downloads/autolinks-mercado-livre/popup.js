@@ -21,6 +21,19 @@ const TRUSTED_PRODUCTION_APP_HOSTS = new Set([
 const TRUSTED_PRODUCTION_API_ORIGIN = "https://api.autolinks.pro";
 
 const TRUSTED_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const ALLOWED_MELI_DOMAINS = new Set([
+  "mercadolivre.com.br",
+  "www.mercadolivre.com.br",
+  "myaccount.mercadolivre.com.br",
+  "auth.mercadolivre.com.br",
+  "mercadopago.com.br",
+  "www.mercadopago.com.br",
+  "mercadolibre.com",
+  "www.mercadolibre.com",
+  "auth.mercadolibre.com",
+  "meli.la",
+  "www.meli.la",
+]);
 const MAX_COOKIE_NAME_LENGTH = 128;
 const MAX_COOKIE_VALUE_LENGTH = 8192;
 const MAX_COOKIE_DOMAIN_LENGTH = 255;
@@ -586,19 +599,98 @@ async function apiRequest(origin, path, options = {}) {
   }
 }
 
-async function verifyApiOrigin(origin) {
+function isPositiveHealthStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return (
+    normalized === "ok"
+    || normalized === "healthy"
+    || normalized === "up"
+    || normalized === "pass"
+    || normalized === "ready"
+  );
+}
+
+function isLikelyApiHealthPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+
+  const asRecord = payload;
+  if (asRecord.ok === true || asRecord.healthy === true || asRecord.ready === true) {
+    return true;
+  }
+  if (asRecord.ok === false) {
+    return false;
+  }
+
+  if (isPositiveHealthStatus(asRecord.status) || isPositiveHealthStatus(asRecord.state)) {
+    return true;
+  }
+
+  const service = String(asRecord.service || asRecord.name || "").trim().toLowerCase();
+  if (!service) return false;
+  if (service === "api" || service === "autolinks-api" || service === "autolinks_api") {
+    return true;
+  }
+  return service.includes("autolinks-api");
+}
+
+async function probeRpcEndpoint(origin) {
+  const safeOrigin = normalizeApiOriginInput(origin);
+  if (!safeOrigin) return false;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+
   try {
-    const health = await apiRequest(origin, "/health", {
+    const response = await fetch(`${safeOrigin}/functions/v1/rpc`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name: "__extension_probe__" }),
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    return response.status === 200
+      || response.status === 400
+      || response.status === 401
+      || response.status === 403;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyApiOrigin(origin) {
+  const safeOrigin = normalizeApiOriginInput(origin);
+  if (!safeOrigin) {
+    return { ok: false, message: "Origem da API nao autorizada." };
+  }
+
+  try {
+    const health = await apiRequest(safeOrigin, "/health", {
       method: "GET",
       timeoutMs: 10000,
     });
-    // Only check health.ok — the service field is not included in the response.
-    const isApi = Boolean(health?.ok);
-    if (!isApi) {
-      return { ok: false, message: "Origem sem API valida do AutoLinks." };
+
+    if (isLikelyApiHealthPayload(health)) {
+      return { ok: true };
     }
-    return { ok: true };
+
+    const rpcReachable = await probeRpcEndpoint(safeOrigin);
+    if (rpcReachable) {
+      return { ok: true };
+    }
+
+    return { ok: false, message: "Origem sem API valida do AutoLinks." };
   } catch (error) {
+    const rpcReachable = await probeRpcEndpoint(safeOrigin);
+    if (rpcReachable) {
+      return { ok: true };
+    }
     return { ok: false, message: toFriendlyErrorMessage(error) };
   }
 }

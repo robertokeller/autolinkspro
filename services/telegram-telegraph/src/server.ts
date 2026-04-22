@@ -3,6 +3,8 @@ import path from "node:path";
 import process from "node:process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
+// @security-review-required: session files encrypted at rest via AES-256-GCM
+import { readEncryptedJson, writeEncryptedJson } from "./session-cipher.js";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import pino from "pino";
@@ -353,8 +355,10 @@ function normalizePhone(phone: string): string {
 async function readMetadata(sessionId: string): Promise<SessionMetadata | null> {
   for (const sessionDir of getSessionDirCandidates(sessionId)) {
     try {
-      const raw = await fs.readFile(path.join(sessionDir, "metadata.json"), "utf-8");
-      const parsed = JSON.parse(raw) as SessionMetadata;
+      // Lê o arquivo de metadados criptografado (AES-256-GCM via session-cipher.ts).
+      // Retorna null se o arquivo não existe, está em plaintext (legado) ou falha GCM.
+      const parsed = await readEncryptedJson<SessionMetadata>(path.join(sessionDir, "metadata.json"));
+      if (!parsed) continue;
 
       if (!parsed.sessionId || !parsed.userId || !parsed.apiId || !parsed.apiHash) {
         continue;
@@ -386,7 +390,8 @@ async function writeMetadata(state: SessionState): Promise<void> {
 
   const metadataPath = getMetadataPath(state.config.sessionId);
   await ensureDir(path.dirname(metadataPath));
-  await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), "utf-8");
+  // Grava criptografado (AES-256-GCM) — nunca plaintext em disco.
+  await writeEncryptedJson(metadataPath, metadata);
 }
 
 async function removeMetadata(sessionId: string): Promise<void> {

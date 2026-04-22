@@ -186,7 +186,7 @@ function PlanCard({ plan, accessLevels, onUpdate, onSavePlan, onSavePeriod, savi
               </div>
 
               {/* Metadata */}
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Nome do Plano</Label>
                   <Input
@@ -456,17 +456,16 @@ export default function AdminPlans() {
   };
 
   return (
-    <div className="min-h-full">
+    <div className="admin-page">
       <PageHeader
         title="Planos e Kiwify"
         description="Central unica para gerir periodos, checkouts e mapeamentos de faturamento."
       />
-      <div className="container max-w-6xl py-6">
-        <Tabs
+      <Tabs
           value={mainTab}
           onValueChange={(v) => setSearchParams(v === "plans" ? {} : { tab: v })}
         >
-          <TabsList className="mb-6">
+          <TabsList className="admin-toolbar h-auto w-full justify-start overflow-x-auto mb-2">
             <TabsTrigger value="plans">Planos</TabsTrigger>
             <TabsTrigger value="kiwify" className="gap-1.5">
               Kiwify
@@ -476,9 +475,9 @@ export default function AdminPlans() {
           </TabsList>
 
           {/* ── Plans tab ── */}
-          <TabsContent value="plans" className="space-y-4">
+          <TabsContent value="plans" className="space-y-6">
             {/* Gateway status summary */}
-            <Card className="border-border/60">
+            <Card className="admin-card">
               <CardHeader className="pb-2 pt-3">
                 <CardTitle className="text-sm">Status dos Gateways de Pagamento</CardTitle>
                 <CardDescription className="text-xs">Configure as credenciais antes de vincular planos. Clique para gerenciar cada gateway.</CardDescription>
@@ -508,7 +507,7 @@ export default function AdminPlans() {
             </Card>
 
             {/* Global config */}
-            <Card>
+            <Card className="admin-card">
               <CardHeader className="pb-2 pt-3">
                 <CardTitle className="text-sm">Configuração Global</CardTitle>
               </CardHeader>
@@ -572,8 +571,8 @@ export default function AdminPlans() {
             <KiwifyPanel />
           </TabsContent>
         </Tabs>
-      </div>
     </div>
   );
 }
+
 
