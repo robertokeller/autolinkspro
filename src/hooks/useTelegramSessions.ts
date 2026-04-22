@@ -216,6 +216,7 @@ export function useTelegramSessions() {
       }
     },
     onError: (err: unknown) => {
+      invalidateSessions();
       const msg = toFriendlyRuntimeError(err, "Erro ao iniciar conexão Telegram");
       toast.error(msg);
     },
@@ -235,6 +236,7 @@ export function useTelegramSessions() {
       }
     },
     onError: (err: unknown) => {
+      invalidateSessions();
       const msg = toFriendlyRuntimeError(err, "Erro ao verificar codigo");
       toast.error(msg);
     },
@@ -252,6 +254,7 @@ export function useTelegramSessions() {
       }
     },
     onError: (err: unknown) => {
+      invalidateSessions();
       const msg = toFriendlyRuntimeError(err, "Erro ao verificar senha 2FA");
       toast.error(msg);
     },

@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-22T02:07:53.573Z`
+> Atualizado em: `2026-04-22T12:15:07.544Z`
 
 ## Fluxo automático recomendado
 
@@ -71,6 +71,7 @@ npm run deploy:prepare
 | `EMAIL_VERIFY_TOKEN_TTL_MINUTES` | api | 1440 | 1440 |
 | `LOG_LEVEL` | amazon, meli, shopee, telegram, whatsapp | info | info |
 | `MEDIA_CAPTURE_DEBUG` | telegram, whatsapp | false | false |
+| `MELI_AUTOMATION_INTERVAL_SECONDS` | scheduler | 60 | 60 |
 | `PASSWORD_RESET_TOKEN_TTL_MINUTES` | api | 30 | 30 |
 | `RESEND_REPLY_TO` | api | - | suporte@autolinks.pro |
 | `ROUTE_MEDIA_DEBUG` | api, telegram, whatsapp | false | false |

@@ -8826,7 +8826,16 @@ if (funcName === "whatsapp-connect") {
           webhookUrl: "",
           sessionString: decryptCredential(String(sess.session_string ?? "")),
         }, tgHeaders);
-        if (r.error) { fail(res, r.error.message); return; }
+        if (r.error) {
+          await execute(
+            "UPDATE telegram_sessions SET status='warning', error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+            [String(r.error.message || "Erro ao iniciar autenticação Telegram"), sessionId, userId],
+          ).catch(() => undefined);
+          const upstreamStatus = Number((r.error as { status?: unknown }).status);
+          const statusCode = Number.isFinite(upstreamStatus) && upstreamStatus >= 400 ? upstreamStatus : 502;
+          fail(res, r.error.message, statusCode);
+          return;
+        }
         await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
         const status = (r.data && typeof r.data === "object" && typeof (r.data as Record<string, unknown>).status === "string")
           ? String((r.data as Record<string, unknown>).status)
@@ -8837,7 +8846,16 @@ if (funcName === "whatsapp-connect") {
         await execute("UPDATE telegram_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
         const tgHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/verify_code", "POST", { sessionId, code: params.code }, tgHeaders);
-        if (r.error) { fail(res, r.error.message); return; }
+        if (r.error) {
+          await execute(
+            "UPDATE telegram_sessions SET status='warning', error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+            [String(r.error.message || "Erro ao validar código Telegram"), sessionId, userId],
+          ).catch(() => undefined);
+          const upstreamStatus = Number((r.error as { status?: unknown }).status);
+          const statusCode = Number.isFinite(upstreamStatus) && upstreamStatus >= 400 ? upstreamStatus : 502;
+          fail(res, r.error.message, statusCode);
+          return;
+        }
         await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
         ok(res, r.data ?? { status: "connecting" }); return;
       }
@@ -8845,7 +8863,16 @@ if (funcName === "whatsapp-connect") {
         await execute("UPDATE telegram_sessions SET status='connecting', error_message='', updated_at=NOW() WHERE id=$1 AND user_id=$2", [sessionId, userId]);
         const tgHeaders = buildUserScopedHeaders(userId);
         const r = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/verify_password", "POST", { sessionId, password: params.password }, tgHeaders);
-        if (r.error) { fail(res, r.error.message); return; }
+        if (r.error) {
+          await execute(
+            "UPDATE telegram_sessions SET status='warning', error_message=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3",
+            [String(r.error.message || "Erro ao validar senha 2FA Telegram"), sessionId, userId],
+          ).catch(() => undefined);
+          const upstreamStatus = Number((r.error as { status?: unknown }).status);
+          const statusCode = Number.isFinite(upstreamStatus) && upstreamStatus >= 400 ? upstreamStatus : 502;
+          fail(res, r.error.message, statusCode);
+          return;
+        }
         await pollTelegramEventsForSession(userId, sessionId).catch(() => 0);
         ok(res, r.data ?? { status: "connecting" }); return;
       }

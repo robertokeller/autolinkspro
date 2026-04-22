@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import pino from "pino";
+import { readEncryptedStorageState } from "./session-cipher.js";
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +41,26 @@ export interface ConversionResult {
   cached?: boolean;
   conversionTimeMs?: number;
 }
+
+type PlaywrightStorageState = {
+  cookies: {
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "None" | "Lax" | "Strict";
+  }[];
+  origins: {
+    origin: string;
+    localStorage: {
+      name: string;
+      value: string;
+    }[];
+  }[];
+};
 
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 const LINKBUILDER_URL = "https://www.mercadolivre.com.br/afiliados/linkbuilder#hub";
@@ -488,6 +509,17 @@ export class MercadoLivreLinkConverter {
       return { success: false, originalUrl: productUrl, error: `Sessão '${sessionId}' não encontrada` };
     }
 
+    // Session files are encrypted at rest ("enc:v1:*"), so Playwright cannot
+    // read them directly by file path. Decrypt in-memory first.
+    const decryptedState = await readEncryptedStorageState<PlaywrightStorageState>(sessionPath);
+    if (!decryptedState) {
+      return {
+        success: false,
+        originalUrl: productUrl,
+        error: "Sessao expirada ou invalida. Reenvie os cookies do Mercado Livre.",
+      };
+    }
+
     // Step 1a: Resolve /sec/ short redirect with a lightweight HTTP HEAD (no browser needed)
     let resolvedUrl = await this.resolveRedirect(productUrl);
 
@@ -514,7 +546,7 @@ export class MercadoLivreLinkConverter {
         ],
       });
       context = await browser.newContext({
-        storageState: sessionPath,
+        storageState: decryptedState,
         viewport: { width: 800, height: 600 },
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         locale: "pt-BR",

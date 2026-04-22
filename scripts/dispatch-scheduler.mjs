@@ -8,6 +8,10 @@ const DISPATCH_INTERVAL_SECONDS = Number.parseInt(process.env.DISPATCH_INTERVAL_
 const ADMIN_BROADCAST_INTERVAL_SECONDS = Number.parseInt(process.env.ADMIN_BROADCAST_INTERVAL_SECONDS || "45", 10);
 const ADMIN_EVENTS_INTERVAL_SECONDS = Number.parseInt(process.env.ADMIN_EVENTS_INTERVAL_SECONDS || "60", 10);
 const SHOPEE_INTERVAL_SECONDS = Number.parseInt(process.env.SHOPEE_INTERVAL_SECONDS || "60", 10);
+const MELI_AUTOMATION_INTERVAL_SECONDS = Number.parseInt(
+  process.env.MELI_AUTOMATION_INTERVAL_SECONDS || String(SHOPEE_INTERVAL_SECONDS),
+  10,
+);
 const AMAZON_AUTOMATION_INTERVAL_SECONDS = Number.parseInt(process.env.AMAZON_AUTOMATION_INTERVAL_SECONDS || String(SHOPEE_INTERVAL_SECONDS), 10);
 const CHANNEL_EVENTS_INTERVAL_SECONDS = Number.parseInt(process.env.CHANNEL_EVENTS_INTERVAL_SECONDS || "15", 10);
 const MELI_VITRINE_INTERVAL_SECONDS = Number.parseInt(process.env.MELI_VITRINE_INTERVAL_SECONDS || "7200", 10);
@@ -28,6 +32,7 @@ let runningDispatch = false;
 let runningAdminBroadcasts = false;
 let runningAdminEvents = false;
 let runningShopee = false;
+let runningMeliAutomation = false;
 let runningAmazonAutomation = false;
 let runningChannelEvents = false;
 let runningMeliVitrine = false;
@@ -332,6 +337,39 @@ async function runAmazonAutomationCycle() {
   }
 }
 
+async function runMeliAutomationCycle() {
+  if (runningMeliAutomation) return;
+  runningMeliAutomation = true;
+
+  try {
+    const pressure = readPressure();
+    if (pressure.level === "critical") {
+      log(`meli automation cycle skipped due to host pressure critical (mem=${pressure.usedMemPercent}% load/cpu=${pressure.loadPerCpu})`);
+      return;
+    }
+
+    const result = await invokeFunction("meli-automation-run", {
+      source: DISPATCH_SOURCE,
+      pressure: pressure.level,
+    });
+    const payload = unwrapRpcData(result);
+
+    const active = Number(payload?.active || 0);
+    const processed = Number(payload?.processed || 0);
+    const sent = Number(payload?.sent || 0);
+    const skipped = Number(payload?.skipped || 0);
+    const failed = Number(payload?.failed || 0);
+    if (active > 0 || processed > 0 || sent > 0 || failed > 0) {
+      log(`meli automation cycle ok: active=${active} processed=${processed} sent=${sent} skipped=${skipped} failed=${failed} pressure=${pressure.level}`);
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`meli automation cycle error: ${reason}`);
+  } finally {
+    runningMeliAutomation = false;
+  }
+}
+
 async function runMeliVitrineCycle() {
   if (runningMeliVitrine) return;
   runningMeliVitrine = true;
@@ -429,13 +467,14 @@ function scheduleRecurringTask(intervalSeconds, minIntervalSeconds, runner) {
 
 function startRemoteWorker() {
   log(
-    `remote mode started (dispatch=${DISPATCH_INTERVAL_SECONDS}s admin_broadcast=${ADMIN_BROADCAST_INTERVAL_SECONDS}s admin_events=${ADMIN_EVENTS_INTERVAL_SECONDS}s shopee=${SHOPEE_INTERVAL_SECONDS}s amazon_auto=${AMAZON_AUTOMATION_INTERVAL_SECONDS}s channels=${CHANNEL_EVENTS_INTERVAL_SECONDS}s meli_vitrine=${MELI_VITRINE_INTERVAL_SECONDS}s amazon_vitrine=${AMAZON_VITRINE_INTERVAL_SECONDS}s purge=${PURGE_INTERVAL_SECONDS}s timeout=${REQUEST_TIMEOUT_MS}ms)`,
+    `remote mode started (dispatch=${DISPATCH_INTERVAL_SECONDS}s admin_broadcast=${ADMIN_BROADCAST_INTERVAL_SECONDS}s admin_events=${ADMIN_EVENTS_INTERVAL_SECONDS}s shopee=${SHOPEE_INTERVAL_SECONDS}s meli_auto=${MELI_AUTOMATION_INTERVAL_SECONDS}s amazon_auto=${AMAZON_AUTOMATION_INTERVAL_SECONDS}s channels=${CHANNEL_EVENTS_INTERVAL_SECONDS}s meli_vitrine=${MELI_VITRINE_INTERVAL_SECONDS}s amazon_vitrine=${AMAZON_VITRINE_INTERVAL_SECONDS}s purge=${PURGE_INTERVAL_SECONDS}s timeout=${REQUEST_TIMEOUT_MS}ms)`,
   );
 
   void runDispatchCycle();
   void runAdminBroadcastCycle();
   void runAdminEventsCycle();
   void runShopeeCycle();
+  void runMeliAutomationCycle();
   void runAmazonAutomationCycle();
   void runChannelEventsCycle();
   void runMeliVitrineCycle();
@@ -445,6 +484,7 @@ function startRemoteWorker() {
   scheduleRecurringTask(ADMIN_BROADCAST_INTERVAL_SECONDS, 10, runAdminBroadcastCycle);
   scheduleRecurringTask(ADMIN_EVENTS_INTERVAL_SECONDS, 10, runAdminEventsCycle);
   scheduleRecurringTask(SHOPEE_INTERVAL_SECONDS, 5, runShopeeCycle);
+  scheduleRecurringTask(MELI_AUTOMATION_INTERVAL_SECONDS, 5, runMeliAutomationCycle);
   scheduleRecurringTask(AMAZON_AUTOMATION_INTERVAL_SECONDS, 5, runAmazonAutomationCycle);
   scheduleRecurringTask(CHANNEL_EVENTS_INTERVAL_SECONDS, 5, runChannelEventsCycle);
   scheduleRecurringTask(MELI_VITRINE_INTERVAL_SECONDS, 60, runMeliVitrineCycle);

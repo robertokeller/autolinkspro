@@ -196,9 +196,10 @@ export function SessoesTelegram({
       setAuthSessionId(createdId);
       setSessionFlowStep("auth");
       await onConnect(createdId);
-      onRefresh({ silent: true });
     } catch {
       // handled by mutation toast
+    } finally {
+      onRefresh({ silent: true });
     }
   };
 
@@ -298,6 +299,20 @@ export function SessoesTelegram({
       );
     }
 
+    if (isSendingCode || authSession.status === "connecting") {
+      return (
+        <div className="flex flex-col items-center gap-4 py-8">
+          <Loader2 className="h-10 w-10 animate-spin text-primary" />
+          <div className="text-center">
+            <p className="font-semibold">Enviando código por SMS…</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Esperando resposta do Telegram. Pode levar alguns segundos.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     if (authSession.status === "warning") {
       const warningMessage = authSession.errorMessage?.trim() || "Confira se o número está certo e tente de novo.";
       return (
@@ -309,6 +324,23 @@ export function SessoesTelegram({
             <p className="font-semibold">Não foi possível conectar</p>
             <p className="mt-1 text-sm text-muted-foreground">
               {warningMessage}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    if (authSession.status === "offline") {
+      const offlineMessage = authSession.errorMessage?.trim() || "Não foi possível iniciar o envio do código.";
+      return (
+        <div className="flex flex-col items-center gap-4 py-4">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-warning/15">
+            <AlertTriangle className="h-8 w-8 text-warning" />
+          </div>
+          <div className="text-center">
+            <p className="font-semibold">Conexão ainda não iniciada</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {offlineMessage}
             </p>
           </div>
         </div>
@@ -376,7 +408,7 @@ export function SessoesTelegram({
       );
     }
 
-    // connecting / offline / fallback → spinner
+    // fallback
     return (
       <div className="flex flex-col items-center gap-4 py-8">
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
@@ -659,7 +691,6 @@ export function SessoesTelegram({
               <DialogFooter className="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
                 {authSession?.status === "online" ? (
                   <Button className="w-full sm:w-auto"
-                    className="w-full"
                     onClick={() => {
                       setIsSessionFlowOpen(false);
                       resetSessionFlow();
@@ -712,6 +743,28 @@ export function SessoesTelegram({
                     </Button>
                   </>
                 ) : authSession?.status === "warning" ? (
+                  <>
+                    <Button className="w-full sm:w-auto"
+                      variant="outline"
+                      onClick={() => {
+                        setIsSessionFlowOpen(false);
+                        resetSessionFlow();
+                      }}
+                    >
+                      Fechar
+                    </Button>
+                    <Button className="w-full sm:w-auto"
+                      onClick={() => void handleReconnect()}
+                      disabled={isSendingCode}
+                    >
+                      {isSendingCode ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        "Tentar novamente"
+                      )}
+                    </Button>
+                  </>
+                ) : authSession?.status === "offline" ? (
                   <>
                     <Button className="w-full sm:w-auto"
                       variant="outline"
