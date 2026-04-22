@@ -5,9 +5,11 @@ import {
   endOfMonth,
   endOfWeek,
   format,
+  isBefore,
   isSameDay,
   isSameMonth,
   parseISO,
+  startOfDay,
   startOfMonth,
   startOfWeek,
 } from "date-fns";
@@ -52,8 +54,36 @@ function toDateValue(value: string): { isoDate: string; isoTime: string } {
 }
 
 function nowTimeLabel(): string {
-  const now = new Date();
+  const now = minimumSelectableDateTime();
   return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+function minimumSelectableDateTime(): Date {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  now.setMinutes(now.getMinutes() + 1);
+  return now;
+}
+
+function parseLocalDateTime(dateValue: string, timeValue: string): Date | null {
+  if (!dateValue || !timeValue) return null;
+  const parsed = new Date(`${dateValue}T${timeValue}:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function normalizeTimeForDate(dateValue: string, timeValue: string): string {
+  if (!dateValue || !timeValue) return timeValue;
+
+  const minDateTime = minimumSelectableDateTime();
+  const selectedDate = parseISO(dateValue);
+  if (Number.isNaN(selectedDate.getTime())) return timeValue;
+  if (!isSameDay(selectedDate, minDateTime)) return timeValue;
+
+  const selectedDateTime = parseLocalDateTime(dateValue, timeValue);
+  if (!selectedDateTime) return timeValue;
+  if (selectedDateTime.getTime() >= minDateTime.getTime()) return timeValue;
+  return format(minDateTime, "HH:mm");
 }
 
 export function DateTimeField({
@@ -67,6 +97,10 @@ export function DateTimeField({
   const [selectedTime, setSelectedTime] = useState("");
   const [openDatePicker, setOpenDatePicker] = useState(false);
   const [displayMonth, setDisplayMonth] = useState(() => startOfMonth(new Date()));
+  const minDateTime = minimumSelectableDateTime();
+  const minDate = startOfDay(minDateTime);
+  const minMonth = startOfMonth(minDate);
+  const canGoToPreviousMonth = displayMonth.getTime() > minMonth.getTime();
 
   const monthDays = useMemo(() => {
     const start = startOfWeek(startOfMonth(displayMonth), { weekStartsOn: 0 });
@@ -76,7 +110,13 @@ export function DateTimeField({
 
   const emitIfReady = (dateValue: string, timeValue: string) => {
     if (!dateValue || !timeValue) return;
-    onChange(`${dateValue}T${timeValue}`);
+
+    const normalizedTime = normalizeTimeForDate(dateValue, timeValue);
+    const candidateDateTime = parseLocalDateTime(dateValue, normalizedTime);
+    if (!candidateDateTime) return;
+    if (candidateDateTime.getTime() < minDateTime.getTime()) return;
+
+    onChange(`${dateValue}T${normalizedTime}`);
   };
 
   useEffect(() => {
@@ -129,6 +169,7 @@ export function DateTimeField({
                   variant="ghost"
                   size="icon"
                   className="h-9 w-9 sm:h-8 sm:w-8"
+                  disabled={!canGoToPreviousMonth}
                   onClick={() => setDisplayMonth((prev) => addMonths(prev, -1))}
                 >
                   <ChevronLeft className="h-4 w-4" />
@@ -159,17 +200,24 @@ export function DateTimeField({
                   const dayIso = format(day, "yyyy-MM-dd");
                   const isSelected = selectedDate ? isSameDay(day, parseISO(selectedDate)) : false;
                   const muted = !isSameMonth(day, displayMonth);
+                  const isBeforeToday = isBefore(startOfDay(day), minDate);
+                  const disabled = muted || isBeforeToday;
                   return (
                     <Button
                       key={dayIso}
                       type="button"
                       variant={isSelected ? "default" : "ghost"}
-                      className={cn("h-9 w-9 min-w-0 p-0 text-xs sm:h-8 sm:w-8", muted && "text-muted-foreground")}
+                      className={cn(
+                        "h-9 w-9 min-w-0 p-0 text-xs sm:h-8 sm:w-8",
+                        muted && "text-muted-foreground",
+                        disabled && "cursor-not-allowed opacity-40",
+                      )}
+                      disabled={disabled}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        const resolvedTime = selectedTime || nowTimeLabel();
+                        const resolvedTime = normalizeTimeForDate(dayIso, selectedTime || nowTimeLabel());
                         setSelectedDate(dayIso);
-                        if (!selectedTime) setSelectedTime(resolvedTime);
+                        setSelectedTime(resolvedTime);
                         emitIfReady(dayIso, resolvedTime);
                         setOpenDatePicker(false);
                       }}
@@ -190,8 +238,9 @@ export function DateTimeField({
                 onChange("");
                 return;
               }
-              setSelectedTime(nextTime);
-              emitIfReady(selectedDate, nextTime);
+              const normalizedTime = normalizeTimeForDate(selectedDate, nextTime);
+              setSelectedTime(normalizedTime);
+              emitIfReady(selectedDate, normalizedTime);
             }}
             placeholder="Selecionar hora"
           />

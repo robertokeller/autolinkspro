@@ -549,6 +549,7 @@ export class MercadoLivreLinkConverter {
           "--disable-component-update",
           "--disable-domain-reliability",
           "--no-first-run",
+          "--disable-blink-features=AutomationControlled",
         ],
       });
       context = await browser.newContext({

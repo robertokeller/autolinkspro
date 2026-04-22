@@ -695,6 +695,7 @@ export default function Templates() {
           }
         }}
         initialTemplateId={scheduleTemplateId}
+        initialMessage={generatedOffer?.message || ""}
         product={scheduleProduct || undefined}
       />
 

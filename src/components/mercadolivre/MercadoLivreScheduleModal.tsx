@@ -13,6 +13,7 @@ import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import type { ScheduledMediaAttachment, ScheduledPost, TemplateScope } from "@/lib/types";
 import { getMarketplaceTemplateModule } from "@/lib/marketplace-template-modules";
+import { templateRequestsImageAttachment } from "@/lib/template-placeholders";
 import { toast } from "sonner";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
@@ -21,6 +22,7 @@ import { formatBRT } from "@/lib/timezone";
 import { extractMarketplaceLinks } from "@/lib/marketplace-utils";
 
 type MarketplaceTemplateScope = Extract<TemplateScope, "meli" | "amazon">;
+type DestinationMode = "individual" | "master";
 
 interface MercadoLivreScheduleModalProps {
   open: boolean;
@@ -112,8 +114,8 @@ export function MercadoLivreScheduleModal({
 }: MercadoLivreScheduleModalProps) {
   const resolvedScope: MarketplaceTemplateScope = templateScope === "amazon" ? "amazon" : "meli";
   const marketplaceShortLabel = String(marketplaceLabel || "").trim() || (resolvedScope === "amazon" ? "Amazon" : "ML");
-  const defaultOfferName = resolvedScope === "amazon" ? "Oferta Amazon" : "Oferta Mercado Livre";
-  const defaultOfferPrefix = resolvedScope === "amazon" ? "Oferta Amazon: " : "Oferta ML: ";
+  const defaultScheduleName = resolvedScope === "amazon" ? "Agendamento Amazon" : "Oferta Mercado Livre";
+  const defaultSchedulePrefix = resolvedScope === "amazon" ? "" : "Oferta ML: ";
   const templateFieldLabel = resolvedScope === "amazon" ? "Template Amazon" : "Template Meli";
   const defaultScheduleSource = `${resolvedScope}_vitrine`;
   const defaultImageFileName = `${resolvedScope}_offer.jpg`;
@@ -138,6 +140,7 @@ export function MercadoLivreScheduleModal({
   const resolvedTemplateId = selectedTemplateId || (!isEditing ? defaultTemplate?.id || "" : "");
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [selectedMasterGroups, setSelectedMasterGroups] = useState<string[]>([]);
+  const [destinationMode, setDestinationMode] = useState<DestinationMode>("individual");
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
   const [imageAttachment, setImageAttachment] = useState<ScheduledMediaAttachment | null>(null);
@@ -181,21 +184,41 @@ export function MercadoLivreScheduleModal({
     () => ({ ...baseTemplateData, "{imagem}": "", "{{imagem}}": "" }),
     [baseTemplateData],
   );
-  const templateContent = useMemo(() => {
-    const template = templates.find((item) => item.id === resolvedTemplateId)
+  const selectedTemplate = useMemo(
+    () => (resolvedTemplateId
+      ? templates.find((item) => item.id === resolvedTemplateId) || null
+      : null)
       || defaultTemplate
       || templates[0]
-      || null;
+      || null,
+    [defaultTemplate, resolvedTemplateId, templates],
+  );
+  const templateRequiresImageAttachment = useMemo(
+    () => templateRequestsImageAttachment(selectedTemplate?.content || ""),
+    [selectedTemplate?.content],
+  );
+  const templateContent = useMemo(() => {
+    const template = selectedTemplate;
     if (!template) return fallbackContent;
     return templateModule.applyPlaceholders(template.content, scheduleTemplateData);
-  }, [defaultTemplate, fallbackContent, resolvedTemplateId, scheduleTemplateData, templateModule, templates]);
+  }, [fallbackContent, scheduleTemplateData, selectedTemplate, templateModule]);
 
   const requiresImageAttachment = useMemo(() => {
-    if (product) return true;
+    if (product) {
+      if (resolvedScope === "amazon") return templateRequiresImageAttachment;
+      return true;
+    }
     const policy = String(editingPost?.imagePolicy || "").trim().toLowerCase();
     const source = String(editingPost?.scheduleSource || "").trim().toLowerCase();
     return policy === "required" || source === defaultScheduleSource;
-  }, [defaultScheduleSource, editingPost?.imagePolicy, editingPost?.scheduleSource, product]);
+  }, [
+    defaultScheduleSource,
+    editingPost?.imagePolicy,
+    editingPost?.scheduleSource,
+    product,
+    resolvedScope,
+    templateRequiresImageAttachment,
+  ]);
   const preferredImageUrl = useMemo(() => {
     const fromProduct = String(product?.imageUrl || "").trim();
     if (/^https?:\/\//i.test(fromProduct)) return fromProduct;
@@ -234,6 +257,11 @@ export function MercadoLivreScheduleModal({
     setSelectedTemplateId(editingPost.templateId || "");
     setSelectedGroups([...editingPost.destinationGroupIds]);
     setSelectedMasterGroups([...editingPost.masterGroupIds]);
+    setDestinationMode(
+      editingPost.masterGroupIds.length > 0 && editingPost.destinationGroupIds.length === 0
+        ? "master"
+        : "individual",
+    );
     setSelectedSessionId(editingPost.sessionId || defaultSessionId);
     setScheduledAt(editingPost.scheduledAt ? formatBRT(editingPost.scheduledAt, "yyyy-MM-dd'T'HH:mm") : "");
     setImageAttachment(editingPost.media || null);
@@ -256,12 +284,12 @@ export function MercadoLivreScheduleModal({
     if (!open || editingPost || !product) return;
 
     const generatedName = product.title
-      ? `${defaultOfferPrefix}${product.title.slice(0, 60)}`
-      : defaultOfferName;
+      ? `${defaultSchedulePrefix}${product.title.slice(0, 60)}`
+      : defaultScheduleName;
 
     setScheduleName(generatedName);
     setMessageContent(templateContent || product.affiliateLink || product.productUrl || "");
-  }, [defaultOfferName, defaultOfferPrefix, editingPost, open, product, templateContent]);
+  }, [defaultScheduleName, defaultSchedulePrefix, editingPost, open, product, templateContent]);
 
   useEffect(() => {
     if (!open) return;
@@ -272,8 +300,8 @@ export function MercadoLivreScheduleModal({
   }, [editingPost?.media, imageAttachment, open, prepareImageAttachment, requiresImageAttachment]);
 
   const totalDestinations = useMemo(
-    () => selectedGroups.length + selectedMasterGroups.length,
-    [selectedGroups.length, selectedMasterGroups.length],
+    () => (destinationMode === "individual" ? selectedGroups.length : selectedMasterGroups.length),
+    [destinationMode, selectedGroups.length, selectedMasterGroups.length],
   );
 
   const handleDialogOpenChange = (nextOpen: boolean) => {
@@ -305,8 +333,12 @@ export function MercadoLivreScheduleModal({
       toast.error("Escolha a data e o horário");
       return;
     }
-    if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
+    if (destinationMode === "individual" && selectedGroups.length === 0) {
       toast.error("Escolha pelo menos um grupo");
+      return;
+    }
+    if (destinationMode === "master" && selectedMasterGroups.length === 0) {
+      toast.error("Escolha pelo menos um grupo mestre");
       return;
     }
     if (requiresImageAttachment && preparingImageAttachment) {
@@ -325,16 +357,19 @@ export function MercadoLivreScheduleModal({
       const detectedLinks = detectedLinksFromContent.length > 0
         ? detectedLinksFromContent
         : (editingPost?.detectedLinks || []);
-      const scheduleSource = editingPost?.scheduleSource || (product ? defaultScheduleSource : "");
+      const scheduleSource = editingPost?.scheduleSource || (product ? (requiresImageAttachment ? defaultScheduleSource : `${resolvedScope}_templates`) : "");
       const imagePolicy = requiresImageAttachment ? "required" : (editingPost?.imagePolicy || "");
+      const payloadMedia = requiresImageAttachment ? imageAttachment : null;
+      const destinationGroupIds = destinationMode === "individual" ? selectedGroups : [];
+      const masterGroupIds = destinationMode === "master" ? selectedMasterGroups : [];
       const payload = {
         name: scheduleName.trim(),
         content,
         finalContent: content,
         scheduledAt,
         recurrence: "none" as const,
-        destinationGroupIds: selectedGroups,
-        masterGroupIds: selectedMasterGroups,
+        destinationGroupIds,
+        masterGroupIds,
         templateId: resolvedTemplateId || undefined,
         sessionId: effectiveSessionId || undefined,
         weekDays: [],
@@ -342,7 +377,7 @@ export function MercadoLivreScheduleModal({
         messageType: detectedLinks.length > 0 || requiresImageAttachment ? "offer" : "text",
         detectedLinks,
         templateData: scheduleTemplateData,
-        media: imageAttachment,
+        media: payloadMedia,
         imagePolicy: imagePolicy || undefined,
         scheduleSource: scheduleSource || undefined,
         productImageUrl: preferredImageUrl || String(editingPost?.productImageUrl || ""),
@@ -367,6 +402,7 @@ export function MercadoLivreScheduleModal({
     setMessageContent("");
     setSelectedGroups([]);
     setSelectedMasterGroups([]);
+    setDestinationMode("individual");
     setSelectedTemplateId("");
     setSelectedSessionId("");
     setScheduledAt("");
@@ -412,7 +448,7 @@ export function MercadoLivreScheduleModal({
           <div className="space-y-2">
             <Label>Nome *</Label>
             <Input
-              placeholder={resolvedScope === "amazon" ? "Ex: Oferta Amazon para grupos VIP" : "Ex: Oferta ML para grupos VIP"}
+              placeholder={resolvedScope === "amazon" ? "Ex: Produto Amazon para grupos VIP" : "Ex: Oferta ML para grupos VIP"}
               value={scheduleName}
               onChange={(event) => setScheduleName(event.target.value)}
             />
@@ -471,42 +507,65 @@ export function MercadoLivreScheduleModal({
           </div>
 
           <div className="space-y-2">
-            <Label className="text-xs">Grupos</Label>
+            <Label>Enviar para</Label>
+            <Select
+              value={destinationMode}
+              onValueChange={(value: DestinationMode) => {
+                setDestinationMode(value);
+                if (value === "individual") {
+                  setSelectedMasterGroups([]);
+                } else {
+                  setSelectedGroups([]);
+                }
+              }}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="individual">Grupos individuais</SelectItem>
+                <SelectItem value="master">Grupos mestres</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Destinos</Label>
             {!effectiveSessionId ? (
               <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
                 Selecione uma sessão para listar os grupos disponíveis.
               </div>
             ) : (
               <>
-                <MultiOptionDropdown
-                  value={selectedGroups}
-                  onChange={setSelectedGroups}
-                  items={filteredGroups.map((group) => ({
-                    id: group.id,
-                    label: group.name,
-                    meta: group.platform,
-                  }))}
-                  placeholder="Escolher grupos"
-                  selectedLabel={(count) => `${count} grupo(s)`}
-                  emptyMessage="Nenhum grupo nessa sessão"
-                  title="Grupos diretos"
-                  maxHeightClassName="max-h-56"
-                />
-
-                <MultiOptionDropdown
-                  value={selectedMasterGroups}
-                  onChange={setSelectedMasterGroups}
-                  items={filteredMasterGroups.map((master) => ({
-                    id: master.id,
-                    label: master.name,
-                    meta: `${master.groupIds.length} grupo(s)`,
-                  }))}
-                  placeholder="Escolher grupos mestre"
-                  selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
-                  emptyMessage="Nenhum grupo mestre nessa sessão"
-                  title="Grupos mestre"
-                  maxHeightClassName="max-h-56"
-                />
+                {destinationMode === "individual" ? (
+                  <MultiOptionDropdown
+                    value={selectedGroups}
+                    onChange={setSelectedGroups}
+                    items={filteredGroups.map((group) => ({
+                      id: group.id,
+                      label: group.name,
+                      meta: group.platform,
+                    }))}
+                    placeholder="Escolher grupos"
+                    selectedLabel={(count) => `${count} grupo(s)`}
+                    emptyMessage="Nenhum grupo nessa sessão"
+                    title="Grupos diretos"
+                    maxHeightClassName="max-h-56"
+                  />
+                ) : (
+                  <MultiOptionDropdown
+                    value={selectedMasterGroups}
+                    onChange={setSelectedMasterGroups}
+                    items={filteredMasterGroups.map((master) => ({
+                      id: master.id,
+                      label: master.name,
+                      meta: `${master.groupIds.length} grupo(s)`,
+                    }))}
+                    placeholder="Escolher grupos mestre"
+                    selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                    emptyMessage="Nenhum grupo mestre nessa sessão"
+                    title="Grupos mestre"
+                    maxHeightClassName="max-h-56"
+                  />
+                )}
               </>
             )}
           </div>

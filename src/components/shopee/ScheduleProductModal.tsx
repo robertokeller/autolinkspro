@@ -13,6 +13,7 @@ import { useSessoes } from "@/hooks/useSessoes";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
+import { templateRequestsImageAttachment } from "@/lib/template-placeholders";
 import type { ScheduledMediaAttachment, ScheduledPost } from "@/lib/types";
 import { toast } from "sonner";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
@@ -25,6 +26,7 @@ interface ScheduleProductModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialTemplateId?: string;
+  initialMessage?: string;
   product?: {
     title?: string;
     affiliateLink: string;
@@ -38,6 +40,8 @@ interface ScheduleProductModalProps {
   };
   editingPost?: ScheduledPost;
 }
+
+type DestinationMode = "individual" | "master";
 
 const MAX_SCHEDULE_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -84,7 +88,7 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
   };
 }
 
-export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, product, editingPost }: ScheduleProductModalProps) {
+export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, initialMessage, product, editingPost }: ScheduleProductModalProps) {
   const { templates, defaultTemplate, applyTemplate } = useTemplateModule();
   const { syncedGroups, masterGroups } = useGrupos();
   const { allSessions } = useSessoes();
@@ -97,6 +101,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
   const resolvedTemplateId = selectedTemplateId || (!isEditing ? defaultTemplate?.id || "" : "");
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [selectedMasterGroups, setSelectedMasterGroups] = useState<string[]>([]);
+  const [destinationMode, setDestinationMode] = useState<DestinationMode>("individual");
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
   const [imageAttachment, setImageAttachment] = useState<ScheduledMediaAttachment | null>(null);
@@ -133,18 +138,33 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     () => ({ ...baseTemplateData, "{imagem}": "", "{{imagem}}": "" }),
     [baseTemplateData],
   );
+  const selectedTemplate = useMemo(
+    () => (resolvedTemplateId
+      ? templates.find((item) => item.id === resolvedTemplateId) || null
+      : null)
+      || defaultTemplate
+      || templates[0]
+      || null,
+    [defaultTemplate, resolvedTemplateId, templates],
+  );
+  const templateRequiresImageAttachment = useMemo(
+    () => templateRequestsImageAttachment(selectedTemplate?.content || ""),
+    [selectedTemplate?.content],
+  );
   const templateContent = applyTemplate({
     templateId: resolvedTemplateId,
     fallbackContent,
     placeholderData: scheduleTemplateData,
   });
+  const normalizedInitialTemplateId = String(initialTemplateId || "").trim();
+  const normalizedInitialMessage = String(initialMessage || "").trim();
 
   const requiresImageAttachment = useMemo(() => {
-    if (product) return true;
+    if (product) return templateRequiresImageAttachment;
     const policy = String(editingPost?.imagePolicy || "").trim().toLowerCase();
     const source = String(editingPost?.scheduleSource || "").trim().toLowerCase();
     return policy === "required" || source === "shopee_catalog";
-  }, [editingPost?.imagePolicy, editingPost?.scheduleSource, product]);
+  }, [editingPost?.imagePolicy, editingPost?.scheduleSource, product, templateRequiresImageAttachment]);
   const preferredImageUrl = useMemo(() => {
     const fromProduct = String(product?.imageUrl || "").trim();
     if (/^https?:\/\//i.test(fromProduct)) return fromProduct;
@@ -184,6 +204,11 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     setSelectedTemplateId(editingPost.templateId || "");
     setSelectedGroups([...editingPost.destinationGroupIds]);
     setSelectedMasterGroups([...editingPost.masterGroupIds]);
+    setDestinationMode(
+      editingPost.masterGroupIds.length > 0 && editingPost.destinationGroupIds.length === 0
+        ? "master"
+        : "individual",
+    );
     setSelectedSessionId(editingPost.sessionId || "");
     setScheduledAt(editingPost.scheduledAt ? formatBRT(editingPost.scheduledAt, "yyyy-MM-dd'T'HH:mm") : "");
     setImageAttachment(editingPost.media || null);
@@ -197,14 +222,23 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
 
   useEffect(() => {
     if (!open || editingPost || !product) return;
+    if (normalizedInitialTemplateId && resolvedTemplateId !== normalizedInitialTemplateId) return;
 
     const generatedName = product.title
-      ? `Oferta: ${product.title.slice(0, 60)}`
-      : "Oferta Shopee";
+      ? product.title.slice(0, 60)
+      : "Agendamento Shopee";
 
     setScheduleName(generatedName);
-    setMessageContent(templateContent || product.affiliateLink || "");
-  }, [editingPost, open, product, templateContent]);
+    setMessageContent(normalizedInitialMessage || templateContent || product.affiliateLink || "");
+  }, [
+    editingPost,
+    normalizedInitialMessage,
+    normalizedInitialTemplateId,
+    open,
+    product,
+    resolvedTemplateId,
+    templateContent,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -215,8 +249,8 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
   }, [editingPost?.media, imageAttachment, open, prepareImageAttachment, requiresImageAttachment]);
 
   const totalDestinations = useMemo(
-    () => selectedGroups.length + selectedMasterGroups.length,
-    [selectedGroups.length, selectedMasterGroups.length],
+    () => (destinationMode === "individual" ? selectedGroups.length : selectedMasterGroups.length),
+    [destinationMode, selectedGroups.length, selectedMasterGroups.length],
   );
 
   const handleDialogOpenChange = (nextOpen: boolean) => {
@@ -249,8 +283,12 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       toast.error("Escolha a data e o horário");
       return;
     }
-    if (selectedGroups.length === 0 && selectedMasterGroups.length === 0) {
+    if (destinationMode === "individual" && selectedGroups.length === 0) {
       toast.error("Escolha pelo menos um grupo");
+      return;
+    }
+    if (destinationMode === "master" && selectedMasterGroups.length === 0) {
+      toast.error("Escolha pelo menos um grupo mestre");
       return;
     }
     if (requiresImageAttachment && preparingImageAttachment) {
@@ -269,16 +307,18 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
       const detectedLinks = detectedLinksFromContent.length > 0
         ? detectedLinksFromContent
         : (editingPost?.detectedLinks || []);
-      const scheduleSource = editingPost?.scheduleSource || (product ? "shopee_catalog" : "");
+      const scheduleSource = editingPost?.scheduleSource || (product ? (requiresImageAttachment ? "shopee_catalog" : "shopee_templates") : "");
       const imagePolicy = requiresImageAttachment ? "required" : (editingPost?.imagePolicy || "");
+      const destinationGroupIds = destinationMode === "individual" ? selectedGroups : [];
+      const masterGroupIds = destinationMode === "master" ? selectedMasterGroups : [];
       const payload = {
         name: scheduleName.trim(),
         content,
         finalContent: content,
         scheduledAt,
         recurrence: "none" as const,
-        destinationGroupIds: selectedGroups,
-        masterGroupIds: selectedMasterGroups,
+        destinationGroupIds,
+        masterGroupIds,
         templateId: resolvedTemplateId || undefined,
         sessionId: selectedSessionId || undefined,
         weekDays: [],
@@ -311,6 +351,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
     setMessageContent("");
     setSelectedGroups([]);
     setSelectedMasterGroups([]);
+    setDestinationMode("individual");
     setSelectedTemplateId("");
     setSelectedSessionId("");
     setScheduledAt("");
@@ -408,12 +449,35 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
           </div>
 
           <div className="space-y-2">
-            <Label className="text-xs">Grupos</Label>
-            {!selectedSessionId ? (
-              <p className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
-                Escolha a sessão primeiro para ver os grupos.
-              </p>
-            ) : (
+            <Label>Enviar para</Label>
+            <Select
+              value={destinationMode}
+              onValueChange={(value: DestinationMode) => {
+                setDestinationMode(value);
+                if (value === "individual") {
+                  setSelectedMasterGroups([]);
+                } else {
+                  setSelectedGroups([]);
+                }
+              }}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="individual">Grupos individuais</SelectItem>
+                <SelectItem value="master">Grupos mestres</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {!selectedSessionId && (
+            <p className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/30">
+              Escolha a sessão primeiro para ver os grupos.
+            </p>
+          )}
+
+          {selectedSessionId && destinationMode === "individual" && (
+            <div className="space-y-2">
+              <Label className="text-xs">Grupos *</Label>
               <MultiOptionDropdown
                 value={selectedGroups}
                 onChange={setSelectedGroups}
@@ -427,12 +491,12 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, pr
                 emptyMessage="Nenhum grupo nesta sessão"
                 title="Grupos"
               />
-            )}
-          </div>
+            </div>
+          )}
 
-          {selectedSessionId && filteredMasterGroups.length > 0 && (
+          {selectedSessionId && destinationMode === "master" && (
             <div className="space-y-2">
-              <Label className="text-xs">Grupos mestres</Label>
+              <Label className="text-xs">Grupos mestres *</Label>
               <MultiOptionDropdown
                 value={selectedMasterGroups}
                 onChange={setSelectedMasterGroups}

@@ -81,6 +81,10 @@ const AMAZON_URL = String(
   process.env.AMAZON_MICROSERVICE_URL || process.env.AMAZON_URL || "",
 ).trim().replace(/\/$/, "");
 const OPS_URL = String(process.env.OPS_CONTROL_URL || "").trim().replace(/\/$/, "");
+const WHATSAPP_SYNC_GROUPS_TIMEOUT_MS = Math.max(
+  15_000,
+  Math.min(300_000, Number(process.env.WHATSAPP_SYNC_GROUPS_TIMEOUT_MS || "120000") || 120_000),
+);
 
 const MAX_SHOPEE_CONVERT_BATCH = Math.max(1, Math.min(500, Number(process.env.MAX_SHOPEE_CONVERT_BATCH || "200") || 200));
 const MAX_SHOPEE_BATCH_QUERIES = Math.max(1, Math.min(100, Number(process.env.MAX_SHOPEE_BATCH_QUERIES || "25") || 25));
@@ -4047,7 +4051,7 @@ async function syncWhatsAppSessionGroups(input: {
 }> {
   const timeoutMs = Number.isFinite(input.timeoutMs)
     ? Math.max(5_000, Math.trunc(Number(input.timeoutMs)))
-    : 45_000;
+    : WHATSAPP_SYNC_GROUPS_TIMEOUT_MS;
 
   const upstream = await proxyMicroservice(
     WHATSAPP_URL,

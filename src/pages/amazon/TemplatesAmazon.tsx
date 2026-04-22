@@ -308,7 +308,7 @@ export default function TemplatesAmazon() {
         throw new Error("Não foi possível extrair os dados do produto Amazon. Tente novamente em alguns instantes.");
       }
 
-      const productTitle = firstNonEmptyString(productSnapshot?.title, "Oferta Amazon");
+      const productTitle = firstNonEmptyString(productSnapshot?.title, "Produto Amazon");
 
       const productInput: AmazonTemplateProductInput = {
         title: productTitle,

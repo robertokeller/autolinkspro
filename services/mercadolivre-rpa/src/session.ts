@@ -337,10 +337,15 @@ export class MercadoLivreSessionService {
       // Build Playwright storageState format
       const storageState = {
         cookies: dedupedCookies.map((cookie) => {
+          // Playwright requires a leading dot for cross-subdomain cookies.
+          // parseCookieJson strips the leading dot for validation, so we restore it here.
+          // Without it, cookies for "mercadolivre.com.br" are host-only and won't be
+          // sent to "www.mercadolivre.com.br", causing a login redirect in the browser.
+          const playwrightDomain = cookie.domain ? `.${cookie.domain}` : ".mercadolivre.com.br";
           const normalized: Record<string, unknown> = {
             name: cookie.name || "",
             value: cookie.value || "",
-            domain: cookie.domain || ".mercadolivre.com.br",
+            domain: playwrightDomain,
             path: cookie.path || "/",
             httpOnly: cookie.httpOnly || false,
             secure: cookie.secure || false,

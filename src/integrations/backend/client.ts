@@ -555,16 +555,24 @@ const functions = {
     // Keep RPC function selector authoritative even when the payload also has
     // a business field called "name" (for example, "user name" in admin forms).
     const body = JSON.stringify({ ...(options?.body ?? {}), name });
+    const action = String(options?.body?.action ?? "").trim().toLowerCase();
+    const isChannelConnector = name === "whatsapp-connect" || name === "telegram-connect";
+    const isChannelGroupsSync = isChannelConnector && action === "sync_groups";
+    const isChannelPollAll = isChannelConnector && action === "poll_events_all";
     const timeoutMs = name === "ops-service-control"
       ? 120_000
       : name === "ops-bootstrap"
         ? 45_000
-        : name === "admin-system-observability"
+      : name === "admin-system-observability"
           ? 45_000
-          : name === "admin-export-diagnostics"
+      : name === "admin-export-diagnostics"
             ? 60_000
           : name === "admin-maintenance"
             ? 20_000
+          : isChannelGroupsSync
+            ? 180_000
+            : isChannelPollAll
+              ? 45_000
           : name === "analytics-sync-all-groups"
             ? 180_000
             : name === "analytics-admin-groups"
