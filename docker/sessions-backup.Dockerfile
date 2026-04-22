@@ -2,7 +2,7 @@ FROM alpine:3.19
 
 RUN apk add --no-cache tar openssl
 
-# Security: run as non-root user so session volumes are not writable by UID 0
+# Create a dedicated user (kept for file ownership compatibility).
 RUN addgroup -S backup && adduser -S -G backup backup
 
 COPY docker/sessions-backup-entrypoint.sh /entrypoint.sh
@@ -10,9 +10,9 @@ RUN chmod +x /entrypoint.sh
 
 VOLUME ["/data", "/backups"]
 
-# Ensure the backup output directory is owned by the backup user
-RUN mkdir -p /backups && chown -R backup:backup /backups
-
-USER backup
+# Keep backup directory writable and run as root because busybox `crond`
+# is not reliable as non-root on Alpine in this setup. Session volumes are
+# mounted read-only in docker-compose.
+RUN mkdir -p /backups && chown -R root:root /backups
 
 ENTRYPOINT ["/entrypoint.sh"]
