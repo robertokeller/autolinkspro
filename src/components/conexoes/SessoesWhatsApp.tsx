@@ -88,6 +88,7 @@ export function SessoesWhatsApp({
 }: Props) {
   const [isSessionFlowOpen, setIsSessionFlowOpen] = useState(false);
   const [sessionFlowStep, setSessionFlowStep] = useState<SessionFlowStep>("form");
+  const [hasShownQrCode, setHasShownQrCode] = useState(false);
 
   const [sessionName, setSessionName] = useState("");
   const [authSessionId, setAuthSessionId] = useState<string | null>(null);
@@ -154,6 +155,7 @@ export function SessoesWhatsApp({
     setSessionFlowStep("form");
     setSessionName("");
     setAuthSessionId(null);
+    setHasShownQrCode(false);
   };
 
   const openCreateFlow = () => {
@@ -162,6 +164,7 @@ export function SessoesWhatsApp({
   };
 
   const openAuthFlowForSession = async (session: WhatsAppSession) => {
+    setHasShownQrCode(false);
     setAuthSessionId(session.id);
     setSessionFlowStep("auth");
     setIsSessionFlowOpen(true);
@@ -184,6 +187,7 @@ export function SessoesWhatsApp({
 
       setAuthSessionId(createdId);
       setSessionFlowStep("auth");
+      setHasShownQrCode(false);
 
       await onConnect(createdId);
       onRefreshSession(createdId, { silent: true });
@@ -201,6 +205,12 @@ export function SessoesWhatsApp({
       // handled by mutation toast
     }
   };
+
+  useEffect(() => {
+    if (authSession?.status === "qr_code" && authSession.qrCode) {
+      setHasShownQrCode(true);
+    }
+  }, [authSession?.status, authSession?.qrCode]);
 
   const openEditDialog = (session: WhatsAppSession) => {
     setEditSessionId(session.id);
@@ -249,6 +259,14 @@ export function SessoesWhatsApp({
   // ── Auth step content ──────────────────────────────────────────────────────
   const renderAuthStep = () => {
     if (!authSession) return null;
+
+    const isPreparingQr = authSession.status === "connecting" && !hasShownQrCode;
+    const isConnectingAfterScan =
+      hasShownQrCode &&
+      (
+        authSession.status === "connecting" ||
+        (authSession.status === "qr_code" && !authSession.qrCode)
+      );
 
     if (authSession.status === "online") {
       return (
@@ -319,16 +337,48 @@ export function SessoesWhatsApp({
       );
     }
 
-    // connecting / offline / fallback → loading
+    if (isConnectingAfterScan) {
+      return (
+        <div className="flex flex-col items-center gap-4 py-8">
+          <Loader2 className="h-10 w-10 animate-spin text-primary" />
+          <div className="text-center">
+            <p className="font-semibold">
+              Conectando conta...
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              QR Code lido. Finalizando a conexão com o WhatsApp.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    if (isPreparingQr) {
+      return (
+        <div className="flex flex-col items-center gap-4 py-8">
+          <Loader2 className="h-10 w-10 animate-spin text-primary" />
+          <div className="text-center">
+            <p className="font-semibold">
+              Gerando QR Code...
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Esperando resposta do WhatsApp. Pode levar alguns segundos.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // offline / fallback → loading
     return (
       <div className="flex flex-col items-center gap-4 py-8">
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
         <div className="text-center">
           <p className="font-semibold">
-            Gerando QR Code...
+            Preparando conexão...
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Esperando resposta do WhatsApp. Pode levar alguns segundos.
+            Aguarde enquanto atualizamos o estado da sessão.
           </p>
         </div>
       </div>
@@ -577,12 +627,16 @@ export function SessoesWhatsApp({
                 <DialogTitle>
                   {authSession?.status === "online"
                     ? "Conta conectada!"
-                    : "Leia o QR Code"}
+                    : hasShownQrCode && (authSession?.status === "connecting" || (authSession?.status === "qr_code" && !authSession?.qrCode))
+                      ? "Conectando conta..."
+                      : "Leia o QR Code"}
                 </DialogTitle>
                 <DialogDescription>
                   {authSession?.status === "online"
                     ? `${authSession.name} está pronta.`
-                    : "Use o WhatsApp no celular para ler o código."}
+                    : hasShownQrCode && (authSession?.status === "connecting" || (authSession?.status === "qr_code" && !authSession?.qrCode))
+                      ? "Leitura recebida. Estamos finalizando a conexão."
+                      : "Use o WhatsApp no celular para ler o código."}
                 </DialogDescription>
               </DialogHeader>
 

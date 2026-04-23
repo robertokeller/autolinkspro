@@ -1146,11 +1146,11 @@ const MELI_TEMPLATE_EMPTY_RATING_LINE_REGEX = /^[ \t]*Nota:\s*(?:\(\s*\))?\s*$/g
 const MELI_TEMPLATE_PARTIAL_RATING_LINE_REGEX = /^[ \t]*Nota:\s*([0-9]+(?:[.,][0-9])?)\s*\(\s*\)\s*$/gim;
 
 type TemplateScope = "shopee" | "meli" | "amazon" | "message";
-const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}/i;
-const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}/i;
+const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}?/i;
+const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}?/i;
 // Keep legacy token support (cta_ia_gerada) while standardizing on cta_gerada_por_ia
 // and tone-specific placeholders.
-const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}/i;
+const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}?/i;
 const RANDOM_CTA_PHRASE_CACHE_TTL_MS = 60_000;
 const RANDOM_CTA_RECENT_WINDOW_MIN = 8;
 const RANDOM_CTA_RECENT_WINDOW_MAX = 24;
@@ -1464,83 +1464,83 @@ const AI_CTA_PLACEHOLDER_DEFINITIONS: ReadonlyArray<AiCtaPlaceholderDefinition> 
   {
     canonicalToken: "cta_gerada_por_ia",
     aliases: ["cta gerada por ia", "cta_ia_gerada", "cta ia gerada"],
-    regex: /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada)\s*\}\}/i,
+    regex: /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada)\s*\}\}?/i,
     mode: "default",
   },
   {
     canonicalToken: "cta_urgencia",
     aliases: ["cta urgencia"],
-    regex: /\{\{?\s*cta[_ ]urgencia\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]urgencia\s*\}\}?/i,
     mode: "tone",
     toneKey: "urgencia",
   },
   {
     canonicalToken: "cta_escassez",
     aliases: ["cta escassez"],
-    regex: /\{\{?\s*cta[_ ]escassez\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]escassez\s*\}\}?/i,
     mode: "tone",
     toneKey: "escassez",
   },
   {
     canonicalToken: "cta_oportunidade",
     aliases: ["cta oportunidade"],
-    regex: /\{\{?\s*cta[_ ]oportunidade\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]oportunidade\s*\}\}?/i,
     mode: "tone",
     toneKey: "oportunidade",
   },
   {
     canonicalToken: "cta_beneficio",
     aliases: ["cta beneficio"],
-    regex: /\{\{?\s*cta[_ ]beneficio\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]beneficio\s*\}\}?/i,
     mode: "tone",
     toneKey: "beneficio",
   },
   {
     canonicalToken: "cta_curiosidade",
     aliases: ["cta curiosidade"],
-    regex: /\{\{?\s*cta[_ ]curiosidade\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]curiosidade\s*\}\}?/i,
     mode: "tone",
     toneKey: "curiosidade",
   },
   {
     canonicalToken: "cta_preco_forte",
     aliases: ["cta preco forte"],
-    regex: /\{\{?\s*cta[_ ]preco[_ ]forte\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]preco[_ ]forte\s*\}\}?/i,
     mode: "tone",
     toneKey: "preco_forte",
   },
   {
     canonicalToken: "cta_achadinho",
     aliases: ["cta achadinho"],
-    regex: /\{\{?\s*cta[_ ]achadinho\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]achadinho\s*\}\}?/i,
     mode: "tone",
     toneKey: "achadinho",
   },
   {
     canonicalToken: "cta_prova_social",
     aliases: ["cta prova social"],
-    regex: /\{\{?\s*cta[_ ]prova[_ ]social\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]prova[_ ]social\s*\}\}?/i,
     mode: "tone",
     toneKey: "prova_social",
   },
   {
     canonicalToken: "cta_desejo",
     aliases: ["cta desejo"],
-    regex: /\{\{?\s*cta[_ ]desejo\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]desejo\s*\}\}?/i,
     mode: "tone",
     toneKey: "desejo",
   },
   {
     canonicalToken: "cta_dica_amiga",
     aliases: ["cta dica amiga"],
-    regex: /\{\{?\s*cta[_ ]dica[_ ]amiga\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]dica[_ ]amiga\s*\}\}?/i,
     mode: "tone",
     toneKey: "dica_amiga",
   },
   {
     canonicalToken: "cta_rotativa",
     aliases: ["cta rotativa"],
-    regex: /\{\{?\s*cta[_ ]rotativa\s*\}\}/i,
+    regex: /\{\{?\s*cta[_ ]rotativa\s*\}\}?/i,
     mode: "rotative",
   },
 ];
@@ -3585,6 +3585,89 @@ function calcExpected24hFrom7d(total7d: number): number {
 function isSessionOnlineStatus(status: unknown): boolean {
   const normalized = String(status || "").trim().toLowerCase();
   return normalized === "online" || normalized === "active" || normalized === "connected" || normalized === "ready";
+}
+
+async function resolveOnlineDestinationSessionSets(input: {
+  ownerUserId: string;
+  destinationGroups: Array<{ platform?: unknown; session_id?: unknown }>;
+}): Promise<{
+  onlineWaSessions: Set<string>;
+  onlineTgSessions: Set<string>;
+}> {
+  const ownerUserId = String(input.ownerUserId || "").trim();
+  const destinationGroups = Array.isArray(input.destinationGroups) ? input.destinationGroups : [];
+
+  const waSessionIds = [...new Set(
+    destinationGroups
+      .filter((group) => String(group.platform || "").trim() === "whatsapp")
+      .map((group) => String(group.session_id || "").trim())
+      .filter(Boolean),
+  )];
+  const tgSessionIds = [...new Set(
+    destinationGroups
+      .filter((group) => String(group.platform || "").trim() === "telegram")
+      .map((group) => String(group.session_id || "").trim())
+      .filter(Boolean),
+  )];
+
+  const [waSessionRows, tgSessionRows, waHealthRows, tgHealthRows] = await Promise.all([
+    waSessionIds.length > 0
+      ? query<{ id: string; status: string }>(
+          "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
+          [ownerUserId, waSessionIds],
+        )
+      : Promise.resolve([]),
+    tgSessionIds.length > 0
+      ? query<{ id: string; status: string }>(
+          "SELECT id, status FROM telegram_sessions WHERE user_id = $1 AND id = ANY($2)",
+          [ownerUserId, tgSessionIds],
+        )
+      : Promise.resolve([]),
+    waSessionIds.length > 0
+      ? loadOnlineSessionsFromConnectorHealth({
+          platform: "whatsapp",
+          requesterUserId: ownerUserId,
+          canRunGlobal: false,
+        }).catch(() => [])
+      : Promise.resolve([]),
+    tgSessionIds.length > 0
+      ? loadOnlineSessionsFromConnectorHealth({
+          platform: "telegram",
+          requesterUserId: ownerUserId,
+          canRunGlobal: false,
+        }).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+
+  const waSessionIdSet = new Set(waSessionIds);
+  const tgSessionIdSet = new Set(tgSessionIds);
+
+  const onlineWaSessions = new Set(
+    waSessionRows
+      .filter((row) => isSessionOnlineStatus(row.status))
+      .map((row) => String(row.id || "").trim())
+      .filter(Boolean),
+  );
+  const onlineTgSessions = new Set(
+    tgSessionRows
+      .filter((row) => isSessionOnlineStatus(row.status))
+      .map((row) => String(row.id || "").trim())
+      .filter(Boolean),
+  );
+
+  for (const row of waHealthRows) {
+    const sessionId = String(row?.id || "").trim();
+    if (!sessionId || !waSessionIdSet.has(sessionId)) continue;
+    onlineWaSessions.add(sessionId);
+  }
+
+  for (const row of tgHealthRows) {
+    const sessionId = String(row?.id || "").trim();
+    if (!sessionId || !tgSessionIdSet.has(sessionId)) continue;
+    onlineTgSessions.add(sessionId);
+  }
+
+  return { onlineWaSessions, onlineTgSessions };
 }
 
 type QueueBucket = { active: number; pending: number; limit: number };
@@ -11690,6 +11773,7 @@ if (funcName === "whatsapp-connect") {
         toneKey,
         offerTitle,
         strict: false,
+        enforceAccess: false,
         persistLog: persist,
       });
 
@@ -11726,6 +11810,7 @@ if (funcName === "whatsapp-connect") {
         templateContent,
         offerTitle,
         strict: false,
+        enforceAccess: false,
         persistLog: persist,
       });
 
@@ -12629,44 +12714,10 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
-        const waSessionIds = [...new Set(
-          destinationGroups
-            .filter((group) => String(group.platform || "").trim() === "whatsapp")
-            .map((group) => String(group.session_id || "").trim())
-            .filter(Boolean),
-        )];
-        const tgSessionIds = [...new Set(
-          destinationGroups
-            .filter((group) => String(group.platform || "").trim() === "telegram")
-            .map((group) => String(group.session_id || "").trim())
-            .filter(Boolean),
-        )];
-        const [waSessionRows, tgSessionRows] = await Promise.all([
-          waSessionIds.length > 0
-            ? query<{ id: string; status: string }>(
-                "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
-                [ownerUserId, waSessionIds],
-              )
-            : Promise.resolve([]),
-          tgSessionIds.length > 0
-            ? query<{ id: string; status: string }>(
-                "SELECT id, status FROM telegram_sessions WHERE user_id = $1 AND id = ANY($2)",
-                [ownerUserId, tgSessionIds],
-              )
-            : Promise.resolve([]),
-        ]);
-        const onlineWaSessions = new Set(
-          waSessionRows
-            .filter((row) => isSessionOnlineStatus(row.status))
-            .map((row) => String(row.id || "").trim())
-            .filter(Boolean),
-        );
-        const onlineTgSessions = new Set(
-          tgSessionRows
-            .filter((row) => isSessionOnlineStatus(row.status))
-            .map((row) => String(row.id || "").trim())
-            .filter(Boolean),
-        );
+        const { onlineWaSessions, onlineTgSessions } = await resolveOnlineDestinationSessionSets({
+          ownerUserId,
+          destinationGroups,
+        });
 
         let sentNow = 0;
         for (const group of destinationGroups) {
@@ -13295,44 +13346,10 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
-        const waSessionIds = [...new Set(
-          destinationGroups
-            .filter((group) => String(group.platform || "").trim() === "whatsapp")
-            .map((group) => String(group.session_id || "").trim())
-            .filter(Boolean),
-        )];
-        const tgSessionIds = [...new Set(
-          destinationGroups
-            .filter((group) => String(group.platform || "").trim() === "telegram")
-            .map((group) => String(group.session_id || "").trim())
-            .filter(Boolean),
-        )];
-        const [waSessionRows, tgSessionRows] = await Promise.all([
-          waSessionIds.length > 0
-            ? query<{ id: string; status: string }>(
-                "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
-                [ownerUserId, waSessionIds],
-              )
-            : Promise.resolve([]),
-          tgSessionIds.length > 0
-            ? query<{ id: string; status: string }>(
-                "SELECT id, status FROM telegram_sessions WHERE user_id = $1 AND id = ANY($2)",
-                [ownerUserId, tgSessionIds],
-              )
-            : Promise.resolve([]),
-        ]);
-        const onlineWaSessions = new Set(
-          waSessionRows
-            .filter((row) => isSessionOnlineStatus(row.status))
-            .map((row) => String(row.id || "").trim())
-            .filter(Boolean),
-        );
-        const onlineTgSessions = new Set(
-          tgSessionRows
-            .filter((row) => isSessionOnlineStatus(row.status))
-            .map((row) => String(row.id || "").trim())
-            .filter(Boolean),
-        );
+        const { onlineWaSessions, onlineTgSessions } = await resolveOnlineDestinationSessionSets({
+          ownerUserId,
+          destinationGroups,
+        });
 
         let sentNow = 0;
         for (const group of destinationGroups) {
@@ -13990,44 +14007,10 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
-        const waSessionIds = [...new Set(
-          destinationGroups
-            .filter((group) => String(group.platform || "").trim() === "whatsapp")
-            .map((group) => String(group.session_id || "").trim())
-            .filter(Boolean),
-        )];
-        const tgSessionIds = [...new Set(
-          destinationGroups
-            .filter((group) => String(group.platform || "").trim() === "telegram")
-            .map((group) => String(group.session_id || "").trim())
-            .filter(Boolean),
-        )];
-        const [waSessionRows, tgSessionRows] = await Promise.all([
-          waSessionIds.length > 0
-            ? query<{ id: string; status: string }>(
-                "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
-                [ownerUserId, waSessionIds],
-              )
-            : Promise.resolve([]),
-          tgSessionIds.length > 0
-            ? query<{ id: string; status: string }>(
-                "SELECT id, status FROM telegram_sessions WHERE user_id = $1 AND id = ANY($2)",
-                [ownerUserId, tgSessionIds],
-              )
-            : Promise.resolve([]),
-        ]);
-        const onlineWaSessions = new Set(
-          waSessionRows
-            .filter((row) => isSessionOnlineStatus(row.status))
-            .map((row) => String(row.id || "").trim())
-            .filter(Boolean),
-        );
-        const onlineTgSessions = new Set(
-          tgSessionRows
-            .filter((row) => isSessionOnlineStatus(row.status))
-            .map((row) => String(row.id || "").trim())
-            .filter(Boolean),
-        );
+        const { onlineWaSessions, onlineTgSessions } = await resolveOnlineDestinationSessionSets({
+          ownerUserId,
+          destinationGroups,
+        });
 
         let sentNow = 0;
         for (const group of destinationGroups) {

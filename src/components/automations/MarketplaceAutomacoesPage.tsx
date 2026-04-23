@@ -424,11 +424,10 @@ export function MarketplaceAutomacoesPage({
   return (
     <div className="ds-page">
       <PageHeader title="Piloto automático" description={copy.pageDescription}>
-        <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+        <div className="flex w-full flex-wrap items-center justify-center gap-2.5">
           <Button
             size="sm"
             variant="outline"
-            className="w-full sm:w-auto"
             onClick={() => { void refreshAllAutomations(); }}
             disabled={automations.length === 0 || isHeaderActionPending}
           >
@@ -438,7 +437,6 @@ export function MarketplaceAutomacoesPage({
           <Button
             size="sm"
             variant="outline"
-            className="w-full sm:w-auto"
             onClick={() => { void handleBulkToggleAndRefreshRoutes(); }}
             disabled={automations.length === 0 || isHeaderActionPending}
           >
@@ -449,7 +447,7 @@ export function MarketplaceAutomacoesPage({
                 ? "Atualizando rotas..."
                 : (shouldPauseAll ? "Pausar automações" : "Retomar automações")}
           </Button>
-          <Button size="sm" className="w-full sm:w-auto" onClick={openCreate}>
+          <Button size="sm" onClick={openCreate}>
             <Plus className="mr-1.5 h-4 w-4" />
             Nova automação
           </Button>

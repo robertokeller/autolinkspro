@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  ArrowLeftRight,
   CalendarDays,
   ChevronRight,
   FileText,
@@ -317,23 +316,14 @@ export function AppSidebar() {
 
               {featureVisibility.templates && (
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.modelosMensagem)} tooltip="Modelos de Mensagem">
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.modelosMensagem)} tooltip="Gerador de Ofertas">
                   <Link to={ROUTES.app.modelosMensagem} onClick={closeMobileSidebar}>
                     <MessageSquare className="h-4 w-4" />
-                    <span>Modelos de Mensagem</span>
+                    <span>Gerador de Ofertas</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               )}
-
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.shopeeConversor)} tooltip="Conversor de links">
-                  <Link to={ROUTES.app.shopeeConversor} onClick={closeMobileSidebar}>
-                    <ArrowLeftRight className="h-4 w-4" />
-                    <span>Conversor de links</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
 
               {featureVisibility.routes && (
               <SidebarMenuItem>

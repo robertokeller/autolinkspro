@@ -43,7 +43,6 @@ import {
   CheckCheck,
   Eye,
   CalendarDays,
-  ImageIcon,
 } from "lucide-react";
 import { useTemplateModule } from "@/contexts/TemplateModuleContext";
 import { useShopeeLinkModule } from "@/contexts/ShopeeLinkModuleContext";
@@ -185,11 +184,14 @@ export default function Templates() {
   const deleteTarget = templates.find((t) => t.id === deleteId);
 
   // ── converter tool ───────────────────────────────────────────────────
+  const [converterMode, setConverterMode] = useState<"converter" | "mensagem">("mensagem");
   const [converterLink, setConverterLink] = useState("");
   const [converterTemplateId, setConverterTemplateId] = useState("");
   const [generatedOffer, setGeneratedOffer] = useState<GeneratedOffer | null>(null);
+  const [convertedLinkResult, setConvertedLinkResult] = useState<string | null>(null);
   const [converting, setConverting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
   const [scheduleProduct, setScheduleProduct] = useState<SchedulableProductInput | null>(null);
   const [scheduleTemplateId, setScheduleTemplateId] = useState("");
 
@@ -318,6 +320,45 @@ export default function Templates() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleConvertOnly = async () => {
+    const link = converterLink.trim();
+    if (!link) {
+      toast.error("Cole um link da Shopee primeiro");
+      return;
+    }
+    if (!isConfigured) {
+      toast.error("Preencha as credenciais da Shopee antes de converter");
+      return;
+    }
+    setConverting(true);
+    setConvertedLinkResult(null);
+    setCopiedLink(false);
+    try {
+      const conversion = await convertLink(link, { source: "templates-converter-link" });
+      setConvertedLinkResult(conversion.affiliateLink || link);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não deu pra converter o link");
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  const handleCopyLink = () => {
+    if (!convertedLinkResult) return;
+    navigator.clipboard.writeText(convertedLinkResult);
+    setCopiedLink(true);
+    toast.success("Link copiado!");
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const handleAction = () => {
+    if (converterMode === "converter") {
+      handleConvertOnly();
+    } else {
+      handleConvert();
+    }
+  };
+
   const handleScheduleGeneratedOffer = () => {
     if (!generatedOffer) return;
 
@@ -351,114 +392,143 @@ export default function Templates() {
           <CardHeader className="border-b pb-4">
             <CardTitle className="text-sm flex items-center gap-2">
               <Link2 className="h-4 w-4 text-primary" />
-              Gerador de oferta com template
+              Gerador com template
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Cole um link da Shopee, escolha o template e gere a mensagem pronta com preview.
+              Cole um link da Shopee e escolha o que fazer com ele.
             </p>
           </CardHeader>
           <CardContent className="space-y-4 pt-4">
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Link do produto</Label>
-                <Input
-                  placeholder="Cole o link do produto Shopee aqui"
-                  value={converterLink}
-                  onChange={(e) => setConverterLink(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleConvert()}
-                />
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Template</Label>
-                  <Select value={converterTemplateId} onValueChange={setConverterTemplateId}>
-                    <SelectTrigger>
-                      <SelectValue
-                        placeholder={
-                          templates.find((t) => t.isDefault)?.name || "Selecionar template"
-                        }
-                      />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {templates.map((t) => (
-                        <SelectItem key={t.id} value={t.id}>
-                          {t.name}
-                          {t.isDefault ? " ★" : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button
-                  onClick={handleConvert}
-                  disabled={converting || !converterLink.trim()}
-                  className="h-10 sm:min-w-28"
-                >
-                  {converting ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-                  ) : (
-                    <Link2 className="h-4 w-4 mr-1.5" />
-                  )}
-                  Converter
-                </Button>
-              </div>
+            {/* Link input */}
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Link do produto</Label>
+              <Input
+                placeholder="Cole o link do produto Shopee aqui"
+                value={converterLink}
+                onChange={(e) => setConverterLink(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleAction()}
+              />
             </div>
 
-            {generatedOffer && (
+            {/* Mode toggle */}
+            <div className="flex gap-1 rounded-lg border bg-muted/30 p-1">
+              <button
+                type="button"
+                className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  converterMode === "mensagem"
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => setConverterMode("mensagem")}
+              >
+                Gerar mensagem
+              </button>
+              <button
+                type="button"
+                className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  converterMode === "converter"
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => setConverterMode("converter")}
+              >
+                Converter link
+              </button>
+            </div>
+
+            {/* Template selector — only in mensagem mode */}
+            {converterMode === "mensagem" && (
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Template</Label>
+                <Select value={converterTemplateId} onValueChange={setConverterTemplateId}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        templates.find((t) => t.isDefault)?.name || "Selecionar template"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {templates.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name}
+                        {t.isDefault ? " ★" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            <Button
+              onClick={handleAction}
+              disabled={converting || !converterLink.trim()}
+              className="w-full"
+            >
+              {converting ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+              ) : (
+                <Link2 className="h-4 w-4 mr-1.5" />
+              )}
+              {converterMode === "converter" ? "Converter link" : "Gerar mensagem"}
+            </Button>
+
+            {/* Result: converter mode */}
+            {converterMode === "converter" && convertedLinkResult && (
+              <div className="space-y-2">
+                <Separator />
+                <Label className="text-xs text-muted-foreground">Link afiliado</Label>
+                <div className="flex items-center gap-2">
+                  <Input value={convertedLinkResult} readOnly className="text-xs" />
+                  <Button size="icon" variant="outline" className="h-9 w-9 shrink-0" onClick={handleCopyLink}>
+                    {copiedLink ? (
+                      <CheckCheck className="h-3.5 w-3.5 text-success" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Result: mensagem mode */}
+            {converterMode === "mensagem" && generatedOffer && (
               <div className="space-y-3">
                 <Separator />
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="space-y-0.5">
-                    <Label className="text-xs text-muted-foreground">Oferta gerada</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Template: <span className="font-medium text-foreground">{generatedOffer.templateName}</span>
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" variant="outline" onClick={handleCopy} className="h-8 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">
+                    Template: <span className="font-medium text-foreground">{generatedOffer.templateName}</span>
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <Button size="sm" variant="outline" onClick={handleCopy} className="h-8 text-xs gap-1.5">
                       {copied ? (
-                        <CheckCheck className="h-3.5 w-3.5 mr-1 text-success" />
+                        <CheckCheck className="h-3.5 w-3.5 text-success" />
                       ) : (
-                        <Copy className="h-3.5 w-3.5 mr-1" />
+                        <Copy className="h-3.5 w-3.5" />
                       )}
                       {copied ? "Copiado!" : "Copiar"}
                     </Button>
-                    <Button size="sm" onClick={handleScheduleGeneratedOffer} className="h-8 text-xs">
-                      <CalendarDays className="h-3.5 w-3.5 mr-1" />
+                    <Button size="sm" onClick={handleScheduleGeneratedOffer} className="h-8 text-xs gap-1.5">
+                      <CalendarDays className="h-3.5 w-3.5" />
                       Agendar
                     </Button>
                   </div>
                 </div>
 
-                {generatedOffer.requestsImageAttachment && (
-                  <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
-                    <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      <ImageIcon className="h-3.5 w-3.5" />
-                      Prévia de mídia do placeholder {"{imagem}"}
-                    </div>
-                    {generatedOffer.imageUrl ? (
-                      <img
-                        src={generatedOffer.imageUrl}
-                        alt="Prévia da imagem da oferta"
-                        className="h-40 w-full rounded-md border bg-muted object-cover"
-                        loading="lazy"
-                        onError={(e) => { e.currentTarget.src = "/placeholder.svg"; }}
-                      />
-                    ) : (
-                      <div className="flex h-20 items-center justify-center rounded-md border border-dashed px-3 text-center text-xs text-muted-foreground">
-                        Este template usa {"{imagem}"}, mas esse produto não retornou uma imagem válida.
-                      </div>
-                    )}
-                  </div>
+                {generatedOffer.requestsImageAttachment && generatedOffer.imageUrl && (
+                  <img
+                    src={generatedOffer.imageUrl}
+                    alt="Prévia da imagem"
+                    className="h-36 w-full rounded-md border bg-muted object-cover"
+                    loading="lazy"
+                    onError={(e) => { e.currentTarget.src = "/placeholder.svg"; }}
+                  />
                 )}
 
                 {/* safe: renderRichTextPreviewHtml escapes all HTML via escapeHtml() before applying markup tags */}
                 <pre
                   className="text-sm whitespace-pre-wrap rounded-lg border bg-muted/30 p-4 leading-relaxed max-h-72 overflow-y-auto"
-                  dangerouslySetInnerHTML={{
-                    __html: generatedOfferPreviewHtml,
-                  }}
+                  dangerouslySetInnerHTML={{ __html: generatedOfferPreviewHtml }}
                 />
               </div>
             )}

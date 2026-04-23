@@ -3,9 +3,9 @@ import { applyPlaceholders } from "@/lib/marketplace-utils";
 
 type TemplatePlaceholderData = Record<string, string>;
 const IMAGE_PLACEHOLDER_LINE_REGEX = /^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim;
-const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}/i;
-const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}/i;
-const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}/i;
+const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}?/i;
+const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}?/i;
+const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}?/i;
 
 function safeNumber(value: unknown, fallback = Number.NaN) {
   const parsed = Number(value);

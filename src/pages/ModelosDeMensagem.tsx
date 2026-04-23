@@ -88,6 +88,13 @@ const PLACEHOLDER_LEGEND: Array<{ key: string; description: string }> = [
   { key: "{avaliacao}", description: "Nota dos compradores" },
 ];
 
+const PLACEHOLDER_DESCRIPTION_OVERRIDES: Readonly<Partial<Record<string, string>>> = {
+  "{preco}": "Preco com desconto",
+  "{preco_original}": "Preco cheio (sem desconto)",
+  "{cta_aleatoria}": "CTA automatica com variacao anti-repeticao",
+  "{cta_personalizada}": "CTA personalizada aleatoria das suas frases ativas",
+};
+
 type AiCtaToneSelectorOption = {
   toneToken: string;
   toneKey: string;
@@ -1472,13 +1479,6 @@ export default function ModelosDeMensagem() {
     return filtered.length > 0 ? filtered : AI_CTA_TONE_SELECTOR_OPTIONS;
   }, [aiCtaTones]);
 
-  const selectedAiCtaToneFromBackend = useMemo(() => {
-    const selectedToneKey = selectedAiCtaTone?.toneKey || "";
-    if (!selectedToneKey) return null;
-
-    return aiCtaTones.find((tone) => normalizeAiCtaToneKey(tone.key) === selectedToneKey) || null;
-  }, [aiCtaTones, selectedAiCtaTone]);
-
   const generatedOfferPreviewHtml = useMemo(
     () => (generatedOffer ? renderRichTextPreviewHtml(generatedOffer.message) : ""),
     [generatedOffer],
@@ -1503,8 +1503,8 @@ export default function ModelosDeMensagem() {
       <div className="grid items-start gap-5 md:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <div className="space-y-5">
           <Card className={MODEL_MAIN_CARD_CLASS}>
-            <CardHeader className="space-y-4 border-b pb-5">
-              <div className="flex flex-wrap items-start justify-between gap-3">
+            <CardHeader className="space-y-3 border-b pb-5">
+              <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="space-y-1.5">
                   <CardTitle className="flex items-center gap-2 text-base sm:text-lg">
                     <Wand2 className="h-4 w-4 text-primary" />
@@ -1514,30 +1514,34 @@ export default function ModelosDeMensagem() {
                     Fluxo unificado: cole um link da Shopee, Mercado Livre ou Amazon para converter o afiliado e gerar mensagem pronta com o modelo selecionado.
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary" className="text-[11px]">
-                    {templates.length} {templates.length === 1 ? "modelo" : "modelos"}
-                  </Badge>
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      "text-[11px]",
-                      detectedMarketplace ? "border-primary/30 text-primary" : "text-muted-foreground",
-                    )}
-                  >
-                    {detectedMarketplace ? `Marketplace: ${marketplaceLabel(detectedMarketplace)}` : "Marketplace: aguardando link"}
-                  </Badge>
-                </div>
+                <Badge variant="secondary" className="text-[11px]">
+                  {templates.length} {templates.length === 1 ? "modelo" : "modelos"}
+                </Badge>
               </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="rounded-full border border-border/60 bg-background/80 px-2.5 py-1">
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-[11px]",
+                    detectedMarketplace ? "border-primary/30 text-primary" : "text-muted-foreground",
+                  )}
+                >
+                  {detectedMarketplace ? `Marketplace: ${marketplaceLabel(detectedMarketplace)}` : "Marketplace: aguardando link"}
+                </Badge>
+                <span className="rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
                   Modelo ativo: <span className="font-medium text-foreground">{selectedConverterTemplateLabel}</span>
                 </span>
               </div>
             </CardHeader>
 
-            <CardContent className="space-y-5 pt-5">
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.48fr)] lg:items-end">
+            <CardContent className="space-y-4 pt-5">
+              <div className="space-y-3 rounded-xl border border-border/60 bg-muted/10 p-3 sm:p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label className="text-xs font-medium text-foreground">1. Converter link</Label>
+                  <p className="text-[11px] text-muted-foreground">Shopee, Mercado Livre ou Amazon</p>
+                </div>
+
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Link do produto</Label>
                   <Input
@@ -1550,6 +1554,27 @@ export default function ModelosDeMensagem() {
                       }
                     }}
                   />
+                </div>
+
+                <Button
+                  variant="outline"
+                  onClick={handleConvertAffiliateLink}
+                  disabled={!canRunLinkActions}
+                  className="h-10 w-full sm:w-auto sm:min-w-[180px]"
+                >
+                  {converting ? (
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  ) : (
+                    <Link2 className="h-4 w-4 mr-1.5" />
+                  )}
+                  Converter link
+                </Button>
+              </div>
+
+              <div className="space-y-3 rounded-xl border border-border/60 bg-background/70 p-3 sm:p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label className="text-xs font-medium text-foreground">2. Gerar mensagem</Label>
+                  <p className="text-[11px] text-muted-foreground">Selecionando o modelo salvo</p>
                 </div>
 
                 <div className="space-y-1.5">
@@ -1568,26 +1593,11 @@ export default function ModelosDeMensagem() {
                     </SelectContent>
                   </Select>
                 </div>
-              </div>
 
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button
-                  variant="outline"
-                  onClick={handleConvertAffiliateLink}
-                  disabled={!canRunLinkActions}
-                  className="h-10 w-full"
-                >
-                  {converting ? (
-                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                  ) : (
-                    <Link2 className="h-4 w-4 mr-1.5" />
-                  )}
-                  Converter link
-                </Button>
                 <Button
                   onClick={handleConvert}
                   disabled={!canGenerateFromTemplate}
-                  className="h-10 w-full"
+                  className="h-10 w-full sm:w-auto sm:min-w-[180px]"
                 >
                   {converting ? (
                     <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
@@ -1882,56 +1892,56 @@ export default function ModelosDeMensagem() {
                 </section>
 
                 <section className={MODEL_MODAL_SECTION_CLASS}>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <Label className="text-sm font-medium">
-                      Campos disponiveis - clique para inserir no cursor
-                    </Label>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-8 text-xs"
-                        onClick={openAiCtaModal}
-                      >
-                        CTA por IA ({selectedAiCtaTone?.label || "Beneficio"})
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-8 text-xs"
-                        onClick={openPersonalizedCtasModal}
-                      >
-                        CTAs personalizadas
-                      </Button>
-                    </div>
+                  <div className="space-y-1 text-center sm:text-left">
+                    <Label className="text-sm font-medium">Campos disponiveis</Label>
+                    <p className="text-xs text-muted-foreground">Clique em um campo para inserir no cursor.</p>
                   </div>
 
-                  <p className="text-xs leading-relaxed text-muted-foreground">
+                  <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-xs"
+                      onClick={openAiCtaModal}
+                    >
+                      CTA por IA ({selectedAiCtaTone?.label || "Beneficio"})
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-xs"
+                      onClick={openPersonalizedCtasModal}
+                    >
+                      CTAs personalizadas
+                    </Button>
+                  </div>
+
+                  <p className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground text-center sm:text-left">
                     Tom atual da CTA IA: <span className="font-medium text-foreground">{selectedAiCtaTone?.label || "Beneficio"}</span>.
                     Chave enviada ao backend: <span className="font-mono text-foreground">{selectedAiCtaTone?.toneToken || AI_CTA_DEFAULT_TONE_TOKEN}</span>.
                   </p>
 
-                  <div className="space-y-3 rounded-xl border bg-muted/20 p-4">
-                    <div className="flex flex-wrap gap-1.5">
+                  <div className="space-y-3 rounded-xl border border-border/60 bg-background/70 p-4">
+                    <div className="flex flex-wrap justify-center gap-1.5 sm:justify-start">
                       {PLACEHOLDER_LEGEND.map((item) => (
                         <button
                           key={item.key}
                           type="button"
                           onClick={() => insertPlaceholder(item.key)}
                           className="inline-flex items-center rounded-md border bg-background px-2 py-1 text-xs transition-colors hover:bg-secondary/50"
-                          title={item.description}
+                          title={PLACEHOLDER_DESCRIPTION_OVERRIDES[item.key] || item.description}
                         >
                           <code className="font-mono text-primary">{item.key}</code>
                         </button>
                       ))}
                     </div>
-                    <div className="grid grid-cols-1 gap-x-4 gap-y-1 border-t pt-2 md:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-2 border-t border-border/60 pt-3 sm:grid-cols-2">
                       {PLACEHOLDER_LEGEND.map((item) => (
-                        <div key={item.key} className="flex gap-2 text-xs text-muted-foreground">
-                          <code className="w-32 shrink-0 text-primary">{item.key}</code>
-                          <span>{item.description}</span>
+                        <div key={item.key} className="rounded-md border border-border/60 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+                          <code className="block font-mono text-primary">{item.key}</code>
+                          <p className="mt-1 leading-relaxed">{PLACEHOLDER_DESCRIPTION_OVERRIDES[item.key] || item.description}</p>
                         </div>
                       ))}
                     </div>
@@ -2160,28 +2170,21 @@ export default function ModelosDeMensagem() {
             <DialogHeader className={MODAL_HEADER_CLASS}>
               <DialogTitle>CTA gerada por IA</DialogTitle>
               <p className="text-sm leading-relaxed text-muted-foreground">
-                Selecione o tom que sera usado para gerar o placeholder {"{cta_gerada_por_ia}"}.
+                Escolha apenas o tom da CTA para este modelo.
               </p>
             </DialogHeader>
 
-            <div className={`${MODAL_BODY_CLASS} space-y-4`}>
-            <div className="rounded-xl border bg-background/70 p-3 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label className="text-sm font-medium">Tom da CTA IA</Label>
-                <span className="text-xs text-muted-foreground">
-                  {selectableAiCtaTones.length} {selectableAiCtaTones.length === 1 ? "tom" : "tons"}
-                </span>
-              </div>
-
+            <div className={`${MODAL_BODY_CLASS}`}>
               {aiCtaLoading ? (
                 <div className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   Carregando configuracoes de CTA IA...
                 </div>
               ) : (
-                <>
+                <div className="mx-auto w-full max-w-md space-y-2">
+                  <Label className="text-sm font-medium">Tom da CTA IA</Label>
                   <Select value={selectedAiCtaToneToken} onValueChange={setSelectedAiCtaToneToken}>
-                    <SelectTrigger className="h-9 text-sm">
+                    <SelectTrigger className="h-10 text-sm">
                       <SelectValue placeholder="Selecione um tom" />
                     </SelectTrigger>
                     <SelectContent>
@@ -2192,17 +2195,8 @@ export default function ModelosDeMensagem() {
                       ))}
                     </SelectContent>
                   </Select>
-
-                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                    {selectedAiCtaToneFromBackend?.description || selectedAiCtaTone?.description || "Escolha um tom para ajustar o estilo da CTA gerada."}
-                  </div>
-                </>
+                </div>
               )}
-            </div>
-
-            <div className="rounded-md border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
-              Esse seletor define o tom deste modelo: ex. Escassez envia <span className="font-mono">cta_escassez</span> e aplica esse prompt ao placeholder {"{cta_gerada_por_ia}"} quando voce salvar.
-            </div>
             </div>
 
             <DialogFooter className={MODAL_FOOTER_CLASS}>
