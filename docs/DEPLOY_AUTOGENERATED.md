@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-22T20:46:39.012Z`
+> Atualizado em: `2026-04-23T04:02:11.639Z`
 
 ## Fluxo automático recomendado
 
@@ -72,6 +72,12 @@ npm run deploy:prepare
 | `LOG_LEVEL` | amazon, meli, shopee, telegram, whatsapp | info | info |
 | `MEDIA_CAPTURE_DEBUG` | telegram, whatsapp | false | false |
 | `MELI_AUTOMATION_INTERVAL_SECONDS` | scheduler | 60 | 60 |
+| `OPENROUTER_API_KEY` | api | - | troque-por-chave-openrouter |
+| `OPENROUTER_APP_TITLE` | api | AutoLinks CTA IA | AutoLinks CTA IA |
+| `OPENROUTER_HTTP_REFERER` | api | - | https://autolinks.pro |
+| `OPENROUTER_MAX_RETRIES` | api | 1 | 1 |
+| `OPENROUTER_MODEL` | api | openai/gpt-oss-20b | openai/gpt-oss-20b |
+| `OPENROUTER_TIMEOUT_MS` | api | 12000 | 12000 |
 | `PASSWORD_RESET_TOKEN_TTL_MINUTES` | api | 30 | 30 |
 | `RESEND_REPLY_TO` | api | - | suporte@autolinks.pro |
 | `ROUTE_MEDIA_DEBUG` | api, telegram, whatsapp | false | false |
