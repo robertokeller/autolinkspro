@@ -459,7 +459,7 @@ export default function Schedules() {
   if (isLoading) {
     return (
       <div className="ds-page">
-        <PageHeader title="Agendamentos" description="Agende mensagens pra enviar na hora certa" />
+        <PageHeader title="Agendamentos" description="Agende mensagens para enviar na hora certa" />
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => (<Card key={i} className="glass"><CardContent className="py-4"><Skeleton className="h-16 w-full" /></CardContent></Card>))}</div>
       </div>
     );
@@ -467,8 +467,8 @@ export default function Schedules() {
 
   return (
     <div className="ds-page">
-      <PageHeader title="Agendamentos" description="Agende mensagens paara enviar na hora certa">
-        <div className="flex items-center gap-2">
+      <PageHeader title="Agendamentos" description="Agende mensagens para enviar na hora certa">
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1.5" />Novo agendamento</Button>
         </div>
       </PageHeader>

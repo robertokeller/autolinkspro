@@ -272,6 +272,7 @@ class QueryBuilder<T = unknown> {
   lte(col: string, val: unknown): this { this._filters.push({ type: "lte", col, val }); return this; }
   gte(col: string, val: unknown): this { this._filters.push({ type: "gte", col, val }); return this; }
   like(col: string, val: string): this { this._filters.push({ type: "like", col, val }); return this; }
+  nin(col: string, arr: unknown[]): this { this._filters.push({ type: "nin", col, val: arr }); return this; }
 
   order(col: string, opts?: { ascending?: boolean }): this {
     this._order.push({ col, ascending: opts?.ascending ?? true }); return this;

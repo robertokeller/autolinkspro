@@ -1,4 +1,4 @@
-﻿import { useState, useMemo } from "react";
+﻿import { useMemo, useState } from "react";
 import type { ComponentType } from "react";
 import {
   Accordion,
@@ -6,8 +6,8 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
   Tooltip,
@@ -15,26 +15,26 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { HELP_CATEGORIES, HELP_ARTICLES } from "./help-content";
-import {
-  Search,
-  MessageCircle,
-  Link2,
-  Bot,
-  Rocket,
-  ShoppingCart,
-  ShoppingBag,
-  Wrench,
-  Smartphone,
-  Package,
-  Send,
-  CheckCircle2,
-  BookOpen,
-  HelpCircle,
-  ChevronRight,
-} from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
 import { cn } from "@/lib/utils";
+import {
+  BookOpen,
+  Bot,
+  HelpCircle,
+  Link2,
+  MessageCircle,
+  Package,
+  Rocket,
+  Search,
+  Send,
+  ShoppingBag,
+  ShoppingCart,
+  Smartphone,
+  Wrench,
+  X,
+} from "lucide-react";
+import { HELP_ARTICLES, HELP_CATEGORIES } from "./help-content";
 
 type LucideIcon = ComponentType<{ className?: string }>;
 
@@ -67,7 +67,6 @@ function normalize(str: string) {
 
 export default function Ajuda() {
   const [searchTerm, setSearchTerm] = useState("");
-
   const term = normalize(searchTerm);
 
   const filteredCategories = useMemo(
@@ -76,8 +75,8 @@ export default function Ajuda() {
         ...category,
         items: category.items.filter(
           (item) =>
-            normalize(item.question).includes(term) ||
-            normalize(item.answer).includes(term),
+            normalize(item.question).includes(term)
+            || normalize(item.answer).includes(term),
         ),
       })).filter((category) => category.items.length > 0),
     [term],
@@ -87,10 +86,10 @@ export default function Ajuda() {
     () =>
       term
         ? HELP_ARTICLES.filter(
-            (a) =>
-              normalize(a.title).includes(term) ||
-              normalize(a.summary).includes(term) ||
-              a.steps.some((s) => normalize(s).includes(term)),
+            (article) =>
+              normalize(article.title).includes(term)
+              || normalize(article.summary).includes(term)
+              || article.steps.some((step) => normalize(step).includes(term)),
           )
         : HELP_ARTICLES,
     [term],
@@ -100,169 +99,153 @@ export default function Ajuda() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="relative mx-auto max-w-3xl space-y-8 px-4 py-8 pb-24 animate-in fade-in duration-300">
+      <div className="ds-page animate-in fade-in duration-300">
+        <PageHeader
+          title="Ajuda"
+          description="Encontre respostas, tutoriais e guias de uso do sistema."
+        />
 
-        {/* Header */}
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-primary">
-            <HelpCircle className="h-5 w-5" />
-            <span className="text-sm font-medium uppercase tracking-widest">Central de Ajuda</span>
+        <div className="relative mx-auto w-full max-w-3xl space-y-8 pb-24">
+          <div className="relative">
+            <Search
+              className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="text"
+              aria-label="Buscar na Central de Ajuda"
+              placeholder="Buscar dúvidas e tutoriais... (ex: automação, conexão, shopee)"
+              className="h-12 rounded-xl border-border/60 bg-muted/40 pl-11 pr-10 text-base shadow-none transition-colors focus-visible:bg-background"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                aria-label="Limpar busca"
+                onClick={() => setSearchTerm("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
-          <h1 className="text-3xl font-bold tracking-tight">Como podemos ajudar?</h1>
-          <p className="text-muted-foreground">
-            Encontre respostas, tutoriais e guias de uso do sistema.
-          </p>
-        </div>
 
-        {/* Search */}
-        <div className="relative">
-          <Search
-            className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <Input
-            type="text"
-            aria-label="Buscar na Central de Ajuda"
-            placeholder="Buscar dúvidas e tutoriais... (ex: automação, conexão, shopee)"
-            className="h-12 rounded-xl border-border/60 bg-muted/40 pl-11 pr-10 text-base shadow-none transition-colors focus-visible:bg-background"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-          {searchTerm && (
-            <button
-              type="button"
-              aria-label="Limpar busca"
-              onClick={() => setSearchTerm("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+          {noResults ? (
+            <div className="flex flex-col items-center gap-3 py-20 text-center">
+              <div className="rounded-full bg-muted p-4">
+                <HelpCircle className="h-8 w-8 text-muted-foreground" />
+              </div>
+              <p className="font-medium">Nenhum resultado para &ldquo;{searchTerm}&rdquo;</p>
+              <p className="text-sm text-muted-foreground">
+                Tente palavras diferentes ou fale com o suporte via WhatsApp.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-10">
+              {filteredArticles.length > 0 && (
+                <section>
+                  <div className="mb-4 flex items-center gap-2">
+                    <BookOpen className="h-4 w-4 text-primary" />
+                    <h2 className="text-base font-semibold tracking-tight">Guias e tutoriais</h2>
+                    <Badge variant="secondary" className="ml-auto text-xs">
+                      {filteredArticles.length}
+                    </Badge>
+                  </div>
+
+                  <Accordion type="multiple" className="space-y-2">
+                    {filteredArticles.map((article) => {
+                      const Icon = IconMap[article.icon] ?? MessageCircle;
+                      return (
+                        <AccordionItem
+                          key={article.id}
+                          value={article.id}
+                          className="overflow-hidden rounded-xl border border-border/60 bg-card shadow-none data-[state=open]:border-primary/30 data-[state=open]:shadow-sm"
+                        >
+                          <AccordionTrigger className="px-4 py-3.5 hover:no-underline [&>svg]:shrink-0 [&>svg]:text-muted-foreground">
+                            <div className="flex items-center gap-3 text-left">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                                <Icon className="h-4 w-4" />
+                              </div>
+                              <div>
+                                <p className="font-medium leading-snug">{article.title}</p>
+                                <p className="mt-0.5 text-xs text-muted-foreground">{article.category}</p>
+                              </div>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4 pb-4">
+                            <Separator className="mb-4" />
+                            <p className="mb-4 text-sm text-muted-foreground">{article.summary}</p>
+                            <ol className="space-y-2.5">
+                              {article.steps.map((step, index) => (
+                                <li key={index} className="flex gap-3 text-sm">
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                                    {index + 1}
+                                  </span>
+                                  <span className="leading-relaxed">{step}</span>
+                                </li>
+                              ))}
+                            </ol>
+                          </AccordionContent>
+                        </AccordionItem>
+                      );
+                    })}
+                  </Accordion>
+                </section>
+              )}
+
+              {filteredCategories.length > 0 && (
+                <section>
+                  <div className="mb-4 flex items-center gap-2">
+                    <MessageCircle className="h-4 w-4 text-primary" />
+                    <h2 className="text-base font-semibold tracking-tight">Perguntas frequentes</h2>
+                    <Badge variant="secondary" className="ml-auto text-xs">
+                      {filteredCategories.reduce((acc, category) => acc + category.items.length, 0)}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-6">
+                    {filteredCategories.map((category) => {
+                      const Icon = IconMap[category.icon] ?? MessageCircle;
+                      return (
+                        <div key={category.id}>
+                          <div className="mb-2 flex items-center gap-2 px-1">
+                            <Icon className="h-3.5 w-3.5 text-primary/70" />
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                              {category.title}
+                            </span>
+                          </div>
+
+                          <Accordion type="multiple" className="space-y-2">
+                            {category.items.map((item) => (
+                              <AccordionItem
+                                key={item.id}
+                                value={item.id}
+                                className="overflow-hidden rounded-xl border border-border/60 bg-card data-[state=open]:border-primary/30 data-[state=open]:shadow-sm"
+                              >
+                                <AccordionTrigger className="px-4 py-3.5 text-left font-medium hover:text-primary hover:no-underline [&>svg]:shrink-0 [&>svg]:text-muted-foreground">
+                                  {item.question}
+                                </AccordionTrigger>
+                                <AccordionContent className="px-4 pb-4">
+                                  <Separator className="mb-3" />
+                                  <p className="text-sm leading-relaxed text-muted-foreground">
+                                    {item.answer}
+                                  </p>
+                                </AccordionContent>
+                              </AccordionItem>
+                            ))}
+                          </Accordion>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+            </div>
           )}
         </div>
-
-        {noResults ? (
-          <div className="flex flex-col items-center gap-3 py-20 text-center">
-            <div className="rounded-full bg-muted p-4">
-              <HelpCircle className="h-8 w-8 text-muted-foreground" />
-            </div>
-            <p className="font-medium">Nenhum resultado para &ldquo;{searchTerm}&rdquo;</p>
-            <p className="text-sm text-muted-foreground">
-              Tente palavras diferentes ou fale com o suporte via WhatsApp.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-10">
-
-            {/* ── Guias e Tutoriais ── */}
-            {filteredArticles.length > 0 && (
-              <section>
-                <div className="mb-4 flex items-center gap-2">
-                  <BookOpen className="h-4 w-4 text-primary" />
-                  <h2 className="text-base font-semibold tracking-tight">Guias e Tutoriais</h2>
-                  <Badge variant="secondary" className="ml-auto text-xs">
-                    {filteredArticles.length}
-                  </Badge>
-                </div>
-
-                <Accordion type="multiple" className="space-y-2">
-                  {filteredArticles.map((article) => {
-                    const Icon = IconMap[article.icon] ?? MessageCircle;
-                    return (
-                      <AccordionItem
-                        key={article.id}
-                        value={article.id}
-                        className="overflow-hidden rounded-xl border border-border/60 bg-card shadow-none data-[state=open]:border-primary/30 data-[state=open]:shadow-sm"
-                      >
-                        <AccordionTrigger className="px-4 py-3.5 hover:no-underline [&>svg]:shrink-0 [&>svg]:text-muted-foreground">
-                          <div className="flex items-center gap-3 text-left">
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                              <Icon className="h-4 w-4" />
-                            </div>
-                            <div>
-                              <p className="font-medium leading-snug">{article.title}</p>
-                              <p className="mt-0.5 text-xs text-muted-foreground">{article.category}</p>
-                            </div>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-4 pb-4">
-                          <Separator className="mb-4" />
-                          <p className="mb-4 text-sm text-muted-foreground">{article.summary}</p>
-                          <ol className="space-y-2.5">
-                            {article.steps.map((step, i) => (
-                              <li key={i} className="flex gap-3 text-sm">
-                                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                                  {i + 1}
-                                </span>
-                                <span className="leading-relaxed">{step}</span>
-                              </li>
-                            ))}
-                          </ol>
-                        </AccordionContent>
-                      </AccordionItem>
-                    );
-                  })}
-                </Accordion>
-              </section>
-            )}
-
-            {/* ── Perguntas Frequentes ── */}
-            {filteredCategories.length > 0 && (
-              <section>
-                <div className="mb-4 flex items-center gap-2">
-                  <MessageCircle className="h-4 w-4 text-primary" />
-                  <h2 className="text-base font-semibold tracking-tight">Perguntas Frequentes</h2>
-                  <Badge variant="secondary" className="ml-auto text-xs">
-                    {filteredCategories.reduce((acc, c) => acc + c.items.length, 0)}
-                  </Badge>
-                </div>
-
-                <div className="space-y-6">
-                  {filteredCategories.map((category) => {
-                    const Icon = IconMap[category.icon] ?? MessageCircle;
-                    return (
-                      <div key={category.id}>
-                        {/* Category label */}
-                        <div className="mb-2 flex items-center gap-2 px-1">
-                          <Icon className="h-3.5 w-3.5 text-primary/70" />
-                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                            {category.title}
-                          </span>
-                        </div>
-
-                        <Accordion type="multiple" className="space-y-2">
-                          {category.items.map((item) => (
-                            <AccordionItem
-                              key={item.id}
-                              value={item.id}
-                              className="overflow-hidden rounded-xl border border-border/60 bg-card data-[state=open]:border-primary/30 data-[state=open]:shadow-sm"
-                            >
-                              <AccordionTrigger className="px-4 py-3.5 text-left font-medium hover:text-primary hover:no-underline [&>svg]:shrink-0 [&>svg]:text-muted-foreground">
-                                {item.question}
-                              </AccordionTrigger>
-                              <AccordionContent className="px-4 pb-4">
-                                <Separator className="mb-3" />
-                                <p className="text-sm leading-relaxed text-muted-foreground">
-                                  {item.answer}
-                                </p>
-                              </AccordionContent>
-                            </AccordionItem>
-                          ))}
-                        </Accordion>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-
-          </div>
-        )}
       </div>
 
-      {/* Floating WhatsApp button */}
       <Tooltip>
         <TooltipTrigger asChild>
           <button

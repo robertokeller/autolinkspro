@@ -51,6 +51,36 @@ const RATE_LIMIT_REQUESTS = 300;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const MAX_SHOPEE_BATCH_QUERIES = 20;
 const MAX_URL_LENGTH = 2048;
+const REPORT_MAX_PAGES = Math.max(
+  1,
+  Math.min(50, Number.parseInt(String(process.env.SHOPEE_REPORT_MAX_PAGES || "5"), 10) || 5),
+);
+const REPORT_PAGE_LIMIT = Math.max(
+  1,
+  Math.min(200, Number.parseInt(String(process.env.SHOPEE_REPORT_PAGE_LIMIT || "50"), 10) || 50),
+);
+const REPORT_CONVERSION_PATH = String(
+  process.env.SHOPEE_REPORT_CONVERSION_PATH || "/open_api/list?type=conversion_report",
+).trim();
+const REPORT_VALIDATION_PATH = String(
+  process.env.SHOPEE_REPORT_VALIDATION_PATH || "/open_api/list?type=validation_report",
+).trim();
+const REPORT_VALUE_FIELDS = String(
+  process.env.SHOPEE_REPORT_VALUE_FIELDS
+    || "commission,total_commission,commission_value,estimated_commission,valid_commission,settled_commission,commission_amount",
+)
+  .split(",")
+  .map((field) => field.trim())
+  .filter(Boolean);
+const REPORT_TOTAL_FIELDS = [
+  "total_commission",
+  "commission_total",
+  "totalCommission",
+  "estimated_commission",
+  "settled_commission",
+  "valid_commission",
+  ...REPORT_VALUE_FIELDS,
+];
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -113,6 +143,19 @@ type ShopeeCredentials = {
   appId: string;
   secret: string;
   region: string;
+};
+
+type CommissionReportType = "conversion_report" | "validation_report";
+
+type CommissionReportSummary = {
+  success: true;
+  type: CommissionReportType;
+  startDate: string;
+  endDate: string;
+  totalCommission: number;
+  currency: string;
+  recordsCount: number;
+  pagesScanned: number;
 };
 
 type BatchQuery = {
@@ -246,6 +289,342 @@ function signAuthorization(appId: string, secret: string, payload: string): stri
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function normalizeCurrency(value: unknown): string {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return "";
+  if (!/^[A-Z]{3,6}$/.test(raw)) return "";
+  return raw;
+}
+
+function parseDecimalLike(input: unknown): number {
+  if (typeof input === "number") return Number.isFinite(input) ? input : Number.NaN;
+
+  const raw = String(input || "").trim();
+  if (!raw) return Number.NaN;
+
+  let normalized = raw
+    .replace(/[R$\s]/gi, "")
+    .replace(/[^0-9.,-]/g, "");
+  if (!normalized) return Number.NaN;
+
+  const commaPos = normalized.lastIndexOf(",");
+  const dotPos = normalized.lastIndexOf(".");
+
+  if (commaPos >= 0 && dotPos >= 0) {
+    if (commaPos > dotPos) {
+      normalized = normalized.replace(/\./g, "").replace(",", ".");
+    } else {
+      normalized = normalized.replace(/,/g, "");
+    }
+  } else if (commaPos >= 0) {
+    normalized = normalized.replace(",", ".");
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function normalizeReportType(input: unknown): CommissionReportType | null {
+  const value = String(input || "").trim().toLowerCase();
+  if (value === "conversion_report") return "conversion_report";
+  if (value === "validation_report") return "validation_report";
+  return null;
+}
+
+function normalizeDateYmd(input: unknown): string | null {
+  const value = String(input || "").trim();
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const normalized = `${match[1]}-${match[2]}-${match[3]}`;
+  const date = new Date(`${normalized}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return normalized;
+}
+
+function dateYmdDaysAgo(days: number): string {
+  const now = new Date();
+  now.setUTCHours(0, 0, 0, 0);
+  now.setUTCDate(now.getUTCDate() - Math.max(0, Math.trunc(days)));
+  return now.toISOString().slice(0, 10);
+}
+
+function resolveReportPath(type: CommissionReportType): string {
+  return type === "validation_report" ? REPORT_VALIDATION_PATH : REPORT_CONVERSION_PATH;
+}
+
+function buildReportUrl(
+  credentials: ShopeeCredentials,
+  type: CommissionReportType,
+  startDate: string,
+  endDate: string,
+  page: number,
+  limit: number,
+): string {
+  const host = REGION_HOSTS[credentials.region] || REGION_HOSTS.br;
+  const template = resolveReportPath(type);
+  const rawUrl = /^https?:\/\//i.test(template)
+    ? template
+    : `${host}${template.startsWith("/") ? "" : "/"}${template}`;
+
+  const resolved = rawUrl
+    .replace(/\{type\}/g, encodeURIComponent(type))
+    .replace(/\{startDate\}/g, encodeURIComponent(startDate))
+    .replace(/\{endDate\}/g, encodeURIComponent(endDate))
+    .replace(/\{page\}/g, encodeURIComponent(String(page)))
+    .replace(/\{limit\}/g, encodeURIComponent(String(limit)));
+
+  const parsed = new URL(resolved);
+  if (!parsed.searchParams.has("type")) parsed.searchParams.set("type", type);
+  if (!parsed.searchParams.has("start_date")) parsed.searchParams.set("start_date", startDate);
+  if (!parsed.searchParams.has("end_date")) parsed.searchParams.set("end_date", endDate);
+  if (!parsed.searchParams.has("page")) parsed.searchParams.set("page", String(page));
+  if (!parsed.searchParams.has("limit")) parsed.searchParams.set("limit", String(limit));
+  return parsed.toString();
+}
+
+function buildReportSignaturePayload(input: {
+  type: CommissionReportType;
+  startDate: string;
+  endDate: string;
+  page: number;
+  limit: number;
+}): string {
+  return JSON.stringify({
+    type: input.type,
+    start_date: input.startDate,
+    end_date: input.endDate,
+    page: input.page,
+    limit: input.limit,
+  });
+}
+
+function findFirstObjectArray(value: unknown, depth = 0): Record<string, unknown>[] {
+  if (depth > 5 || value == null) return [];
+
+  if (Array.isArray(value)) {
+    const objectRows = value
+      .filter((row): row is Record<string, unknown> => !!row && typeof row === "object" && !Array.isArray(row));
+    if (objectRows.length > 0) return objectRows;
+    for (const row of value) {
+      const nested = findFirstObjectArray(row, depth + 1);
+      if (nested.length > 0) return nested;
+    }
+    return [];
+  }
+
+  const record = asRecord(value);
+  if (!record) return [];
+
+  const prioritizedKeys = ["items", "rows", "records", "list", "result", "data"];
+  for (const key of prioritizedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    const nested = findFirstObjectArray(record[key], depth + 1);
+    if (nested.length > 0) return nested;
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    const nested = findFirstObjectArray(nestedValue, depth + 1);
+    if (nested.length > 0) return nested;
+  }
+
+  return [];
+}
+
+function findNumberByKeys(value: unknown, keys: string[], depth = 0): number | null {
+  if (depth > 5 || value == null) return null;
+  const record = asRecord(value);
+  if (!record) return null;
+
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    const parsed = parseDecimalLike(record[key]);
+    if (Number.isFinite(parsed)) return Math.max(0, parsed);
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    const nested = findNumberByKeys(nestedValue, keys, depth + 1);
+    if (nested !== null) return nested;
+  }
+
+  return null;
+}
+
+function findCurrency(value: unknown, depth = 0): string {
+  if (depth > 5 || value == null) return "";
+  const record = asRecord(value);
+  if (!record) return "";
+
+  const direct = normalizeCurrency(record.currency)
+    || normalizeCurrency(record.currency_code)
+    || normalizeCurrency(record.currencyCode);
+  if (direct) return direct;
+
+  for (const nestedValue of Object.values(record)) {
+    const nested = findCurrency(nestedValue, depth + 1);
+    if (nested) return nested;
+  }
+
+  return "";
+}
+
+function extractRowCommissionValue(row: Record<string, unknown>): number {
+  for (const field of REPORT_VALUE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(row, field)) continue;
+    const parsed = parseDecimalLike(row[field]);
+    if (Number.isFinite(parsed)) return Math.max(0, parsed);
+  }
+  return 0;
+}
+
+function hasNextReportPage(
+  payload: Record<string, unknown>,
+  page: number,
+  rowsCount: number,
+  limit: number,
+): boolean {
+  const nextPage = toInt(payload.next_page ?? payload.nextPage, 0);
+  if (nextPage > page) return true;
+
+  const totalPages = toInt(payload.total_pages ?? payload.totalPages, 0);
+  const currentPage = toInt(payload.current_page ?? payload.page, page);
+  if (totalPages > 0 && currentPage < totalPages) return true;
+
+  if (payload.has_more === true || payload.hasMore === true || payload.has_next === true || payload.hasNextPage === true) {
+    return true;
+  }
+
+  const totalCount = toInt(payload.total_count ?? payload.totalCount, 0);
+  if (totalCount > 0 && (page * limit) < totalCount) return true;
+
+  return rowsCount >= limit;
+}
+
+async function callShopeeSignedGet(
+  credentials: ShopeeCredentials,
+  url: string,
+  signaturePayload: string,
+): Promise<Record<string, unknown>> {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: signAuthorization(credentials.appId, credentials.secret, signaturePayload),
+        },
+      });
+
+      const text = await response.text().catch(() => "");
+      if (/buyer\/login/i.test(response.url || "") || /buyer\/login/i.test(text)) {
+        throw new Error("Shopee report endpoint returned login page. Configure valid report path and access.");
+      }
+
+      let parsed: Record<string, unknown> = {};
+      if (text) {
+        try {
+          parsed = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          throw new Error("Shopee report endpoint returned non-JSON response.");
+        }
+      }
+
+      if (!response.ok) {
+        throw new Error(String(parsed.error || parsed.message || `Shopee report HTTP ${response.status}`));
+      }
+
+      return parsed;
+    } catch (error) {
+      const canRetry = attempt < maxAttempts && isRetryableShopeeError(error);
+      if (!canRetry) throw error;
+
+      const backoffMs = 300 * attempt;
+      logger.warn({ attempt, backoffMs, error: sanitizeError(error) }, "retrying shopee report request");
+      await wait(backoffMs);
+    }
+  }
+
+  throw new Error("Failed to fetch Shopee report.");
+}
+
+async function fetchCommissionReport(
+  credentials: ShopeeCredentials,
+  input: { type: CommissionReportType; startDate: string; endDate: string },
+): Promise<CommissionReportSummary> {
+  let page = 1;
+  let pagesScanned = 0;
+  let recordsCount = 0;
+  let rowsTotalCommission = 0;
+  let directTotalCommission: number | null = null;
+  let currency = "BRL";
+
+  while (page <= REPORT_MAX_PAGES) {
+    const targetUrl = buildReportUrl(
+      credentials,
+      input.type,
+      input.startDate,
+      input.endDate,
+      page,
+      REPORT_PAGE_LIMIT,
+    );
+
+    const signaturePayload = buildReportSignaturePayload({
+      type: input.type,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      page,
+      limit: REPORT_PAGE_LIMIT,
+    });
+
+    const payload = await callShopeeSignedGet(credentials, targetUrl, signaturePayload);
+    const innerPayload = asRecord(payload.data) ?? payload;
+
+    const parsedCurrency = findCurrency(innerPayload) || findCurrency(payload);
+    if (parsedCurrency) currency = parsedCurrency;
+
+    const topLevelTotal = findNumberByKeys(innerPayload, REPORT_TOTAL_FIELDS)
+      ?? findNumberByKeys(payload, REPORT_TOTAL_FIELDS);
+    if (topLevelTotal !== null) {
+      directTotalCommission = topLevelTotal;
+    }
+
+    const rows = findFirstObjectArray(innerPayload);
+    if (rows.length > 0) {
+      recordsCount += rows.length;
+      for (const row of rows) {
+        rowsTotalCommission += extractRowCommissionValue(row);
+      }
+    }
+
+    pagesScanned += 1;
+    const nextFromInner = hasNextReportPage(innerPayload, page, rows.length, REPORT_PAGE_LIMIT);
+    const nextFromOuter = innerPayload === payload
+      ? false
+      : hasNextReportPage(payload, page, rows.length, REPORT_PAGE_LIMIT);
+    if (!nextFromInner && !nextFromOuter) break;
+    page += 1;
+  }
+
+  const totalCommission = Number(Math.max(0, directTotalCommission ?? rowsTotalCommission).toFixed(2));
+
+  return {
+    success: true,
+    type: input.type,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    totalCommission,
+    currency,
+    recordsCount,
+    pagesScanned,
+  };
 }
 
 function isRetryableShopeeError(error: unknown): boolean {
@@ -592,6 +971,59 @@ app.post("/api/shopee/test-connection", async (req, res) => {
       success: false,
       region: credentials.region.toUpperCase(),
       error: sanitizeError(error),
+    });
+  }
+});
+
+app.post("/api/shopee/commission-report", async (req, res) => {
+  const parsed = requireCredentials(req.body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+
+  const reportType = normalizeReportType(req.body?.reportType ?? req.body?.type ?? "conversion_report");
+  if (!reportType) {
+    res.status(400).json({ error: "Tipo de relatorio invalido. Use conversion_report ou validation_report." });
+    return;
+  }
+
+  const startInput = String(req.body?.startDate ?? req.body?.start_date ?? "").trim();
+  const endInput = String(req.body?.endDate ?? req.body?.end_date ?? "").trim();
+
+  const normalizedStart = startInput ? normalizeDateYmd(startInput) : null;
+  const normalizedEnd = endInput ? normalizeDateYmd(endInput) : null;
+
+  if (startInput && !normalizedStart) {
+    res.status(400).json({ error: "startDate invalido. Use formato YYYY-MM-DD." });
+    return;
+  }
+  if (endInput && !normalizedEnd) {
+    res.status(400).json({ error: "endDate invalido. Use formato YYYY-MM-DD." });
+    return;
+  }
+
+  const startDate = normalizedStart || dateYmdDaysAgo(29);
+  const endDate = normalizedEnd || dateYmdDaysAgo(0);
+
+  if (startDate > endDate) {
+    res.status(400).json({ error: "Periodo invalido: startDate deve ser menor ou igual a endDate." });
+    return;
+  }
+
+  try {
+    const result = await fetchCommissionReport(parsed.credentials, {
+      type: reportType,
+      startDate,
+      endDate,
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({
+      error: sanitizeError(error),
+      type: reportType,
+      startDate,
+      endDate,
     });
   }
 });

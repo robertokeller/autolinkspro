@@ -39,6 +39,12 @@ const ignoredDomains = [
 ];
 
 const urlRegex = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
+const PLACEHOLDER_TOKEN_PATTERN = "[\\wáéíóúãõâêôçÁÉÍÓÚÃÕÂÊÔÇ -]{1,64}";
+const ALLOWED_PLACEHOLDER_TOKEN = new RegExp(`^${PLACEHOLDER_TOKEN_PATTERN}$`);
+const PLACEHOLDER_CAPTURE_REGEX = new RegExp(
+  `\\{\\{\\s*(${PLACEHOLDER_TOKEN_PATTERN})\\s*\\}\\}|\\{\\s*(${PLACEHOLDER_TOKEN_PATTERN})\\s*\\}`,
+  "g",
+);
 
 export function extractLinks(content: string): string[] {
   return content.match(urlRegex) || [];
@@ -68,15 +74,70 @@ export function extractMarketplaceLinks(content: string): { url: string; marketp
     .filter((l) => l.marketplace !== "unknown");
 }
 
+function normalizePlaceholderToken(key: string): string | null {
+  const normalized = String(key || "").trim();
+  if (!normalized) return null;
+
+  const stripped = normalized
+    .replace(/^\{\{?/, "")
+    .replace(/\}\}?$/, "")
+    .trim();
+
+  if (!stripped || !ALLOWED_PLACEHOLDER_TOKEN.test(stripped)) return null;
+  return stripped;
+}
+
+function isNumericDiscount(value: string): boolean {
+  return /^-?\d+(?:[.,]\d+)?$/.test(value);
+}
+
+function resolveDiscountPlaceholderValue(
+  value: string,
+  fullText: string,
+  matchStart: number,
+  placeholderMatch: string,
+): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (!isNumericDiscount(normalized)) return normalized;
+  if (normalized.includes("%")) return normalized;
+
+  let cursor = matchStart + placeholderMatch.length;
+  while (cursor < fullText.length && /\s/.test(fullText[cursor] || "")) {
+    cursor += 1;
+  }
+
+  return fullText[cursor] === "%" ? normalized : `${normalized}%`;
+}
+
+export function stripUnresolvedPlaceholders(content: string): string {
+  return applyPlaceholders(content, {});
+}
+
 /** Apply all placeholders to a template content string */
 export function applyPlaceholders(content: string, data: Record<string, string>): string {
-  let result = content;
-  for (const [key, value] of Object.entries(data)) {
-    // Support both {key} and {{key}} formats
-    result = result.split(key).join(value);
-    const doubleKey = key.replace("{", "{{").replace("}", "}}");
-    result = result.split(doubleKey).join(value);
+  const normalizedReplacements = new Map<string, string>();
+  const orderedData = Object.entries(data || {})
+    .sort((left, right) => right[0].length - left[0].length);
+
+  for (const [key, value] of orderedData) {
+    const token = normalizePlaceholderToken(key);
+    if (!token) continue;
+
+    normalizedReplacements.set(token, String(value ?? ""));
   }
-  return result;
+
+  return String(content || "").replace(
+    PLACEHOLDER_CAPTURE_REGEX,
+    (fullMatch: string, doubleToken: string, singleToken: string, offset: number, fullText: string) => {
+      const token = String(doubleToken || singleToken || "").trim();
+      if (!token || !ALLOWED_PLACEHOLDER_TOKEN.test(token)) return fullMatch;
+      const replacement = normalizedReplacements.get(token) ?? "";
+      if (token === "desconto") {
+        return resolveDiscountPlaceholderValue(replacement, fullText, offset, fullMatch);
+      }
+      return replacement;
+    },
+  );
 }
 

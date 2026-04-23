@@ -5,10 +5,38 @@ type TemplatePlaceholderData = Record<string, string>;
 const IMAGE_PLACEHOLDER_LINE_REGEX = /^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim;
 const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}?/i;
 const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}?/i;
-const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}?/i;
+const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga)\s*\}\}?/i;
+
+function parseLocalizedNumber(value: unknown) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : Number.NaN;
+  }
+
+  const raw = String(value || "").trim();
+  if (!raw) return Number.NaN;
+
+  let normalized = raw
+    .replace(/[R$\s]/gi, "")
+    .replace(/[^0-9.,-]/g, "");
+
+  if (!normalized) return Number.NaN;
+
+  if (/^-?\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  } else if (/^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/,/g, "");
+  } else if (/^-?\d+,\d+$/.test(normalized)) {
+    normalized = normalized.replace(",", ".");
+  } else if (/^-?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "");
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
 
 function safeNumber(value: unknown, fallback = Number.NaN) {
-  const parsed = Number(value);
+  const parsed = parseLocalizedNumber(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
@@ -30,9 +58,18 @@ export function buildTemplatePlaceholderData(
 ): TemplatePlaceholderData {
   const rawProduct = (product || {}) as Record<string, unknown>;
 
-  const salePrice = safeNumber(rawProduct.salePrice ?? rawProduct.price);
+  const salePrice = safeNumber(
+    rawProduct.salePrice
+    ?? rawProduct.price
+    ?? rawProduct.currentPrice
+    ?? rawProduct.current_price,
+  );
   const originalPriceRaw = safeNumber(
     rawProduct.originalPrice
+    ?? rawProduct.oldPrice
+    ?? rawProduct.old_price
+    ?? rawProduct.priceOriginal
+    ?? rawProduct.price_original
     ?? rawProduct.priceMinBeforeDiscount
     ?? rawProduct.priceBeforeDiscount
     ?? rawProduct.priceMin,
@@ -43,11 +80,17 @@ export function buildTemplatePlaceholderData(
   const hasSalePrice = Number.isFinite(salePrice) && salePrice > 0;
   const hasOriginalPrice = Number.isFinite(originalPrice) && originalPrice > 0;
 
-  const discountFromProduct = safeNumber(rawProduct.discount ?? rawProduct.priceDiscountRate, 0);
+  const discountFromProduct = safeNumber(
+    rawProduct.discount
+    ?? rawProduct.priceDiscountRate
+    ?? rawProduct.discountRate
+    ?? rawProduct.discountPercent,
+    0,
+  );
   const discountComputed = hasOriginalPrice && hasSalePrice && originalPrice > salePrice
     ? Math.round((1 - salePrice / originalPrice) * 100)
     : 0;
-  const discount = Math.max(0, discountFromProduct || discountComputed);
+  const discount = Math.max(0, discountComputed || discountFromProduct);
 
   const title = firstNonEmptyString(rawProduct.title, rawProduct.productName);
   const link = firstNonEmptyString(

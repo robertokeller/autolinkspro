@@ -92,6 +92,7 @@ const OPENROUTER_MAX_RETRIES = Math.max(
   0,
   Math.min(2, Number(process.env.OPENROUTER_MAX_RETRIES || "1") || 1),
 );
+const OPENROUTER_REASONING_EFFORT = String(process.env.OPENROUTER_REASONING_EFFORT || "low").trim().toLowerCase();
 const OPENROUTER_HTTP_REFERER = String(
   process.env.OPENROUTER_HTTP_REFERER || process.env.APP_PUBLIC_URL || "",
 ).trim();
@@ -1103,7 +1104,12 @@ async function loadRecentAutomationOfferTitleSet(input: {
 
 // Only allow placeholder tokens with simple names so we can safely build
 // replacement regexes without accepting arbitrary patterns.
-const ALLOWED_PLACEHOLDER_TOKEN = /^[\wáéíóúãõâêôçÁÉÍÓÚÃÕÂÊÔÇ -]{1,64}$/;
+const PLACEHOLDER_TOKEN_PATTERN = "[\\wáéíóúãõâêôçÁÉÍÓÚÃÕÂÊÔÇ -]{1,64}";
+const ALLOWED_PLACEHOLDER_TOKEN = new RegExp(`^${PLACEHOLDER_TOKEN_PATTERN}$`);
+const PLACEHOLDER_CAPTURE_REGEX = new RegExp(
+  `\\{\\{\\s*(${PLACEHOLDER_TOKEN_PATTERN})\\s*\\}\\}|\\{\\s*(${PLACEHOLDER_TOKEN_PATTERN})\\s*\\}`,
+  "g",
+);
 
 function normalizePlaceholderToken(key: string): string | null {
   const normalized = String(key || "").trim();
@@ -1118,8 +1124,31 @@ function normalizePlaceholderToken(key: string): string | null {
   return stripped;
 }
 
+function isNumericDiscount(value: string): boolean {
+  return /^-?\d+(?:[.,]\d+)?$/.test(value);
+}
+
+function resolveDiscountPlaceholderValue(
+  value: string,
+  fullText: string,
+  matchStart: number,
+  placeholderMatch: string,
+): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (!isNumericDiscount(normalized)) return normalized;
+  if (normalized.includes("%")) return normalized;
+
+  let cursor = matchStart + placeholderMatch.length;
+  while (cursor < fullText.length && /\s/.test(fullText[cursor] || "")) {
+    cursor += 1;
+  }
+
+  return fullText[cursor] === "%" ? normalized : `${normalized}%`;
+}
+
 function applyPlaceholders(template: string, replacements: Record<string, string>): string {
-  let output = String(template || "");
+  const normalizedReplacements = new Map<string, string>();
   const orderedReplacements = Object.entries(replacements)
     .sort((left, right) => right[0].length - left[0].length);
 
@@ -1127,14 +1156,21 @@ function applyPlaceholders(template: string, replacements: Record<string, string
     const token = normalizePlaceholderToken(key);
     if (!token) continue;
 
-    const normalizedValue = String(value ?? "");
-    const variants = [`{${token}}`, `{{${token}}}`];
-    for (const variant of variants) {
-      const escaped = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      output = output.replace(new RegExp(escaped, "g"), normalizedValue);
-    }
+    normalizedReplacements.set(token, String(value ?? ""));
   }
-  return output;
+
+  return String(template || "").replace(
+    PLACEHOLDER_CAPTURE_REGEX,
+    (fullMatch: string, doubleToken: string, singleToken: string, offset: number, fullText: string) => {
+      const token = String(doubleToken || singleToken || "").trim();
+      if (!token || !ALLOWED_PLACEHOLDER_TOKEN.test(token)) return fullMatch;
+      const replacement = normalizedReplacements.get(token) ?? "";
+      if (token === "desconto") {
+        return resolveDiscountPlaceholderValue(replacement, fullText, offset, fullMatch);
+      }
+      return replacement;
+    },
+  );
 }
 
 const PLACEHOLDER_IMAGE_LINE_REGEX = /^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim;
@@ -1150,7 +1186,7 @@ const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}?/i;
 const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}?/i;
 // Keep legacy token support (cta_ia_gerada) while standardizing on cta_gerada_por_ia
 // and tone-specific placeholders.
-const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}?/i;
+const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga)\s*\}\}?/i;
 const RANDOM_CTA_PHRASE_CACHE_TTL_MS = 60_000;
 const RANDOM_CTA_RECENT_WINDOW_MIN = 8;
 const RANDOM_CTA_RECENT_WINDOW_MAX = 24;
@@ -1163,21 +1199,10 @@ const RANDOM_CTA_PROFILE_PREFS_KEY = "random_cta_state";
 const RANDOM_CTA_STORAGE_CACHE_TTL_MS = 30_000;
 const AI_CTA_TONES_CACHE_TTL_MS = 60_000;
 const AI_CTA_DEFAULT_TONE_KEY = "beneficio";
+const AI_CTA_ROTATIVE_TONE_KEY = "rotativo";
 const AI_CTA_DEFAULT_FALLBACK_PHRASE = "Clique no link e confira essa oferta agora";
 const AI_CTA_MAX_OFFER_TITLE_LENGTH = 180;
 const AI_CTA_MAX_OUTPUT_LENGTH = 280;
-const AI_CTA_ROTATIVE_TONE_KEYS: ReadonlyArray<string> = [
-  "urgencia",
-  "escassez",
-  "oportunidade",
-  "beneficio",
-  "curiosidade",
-  "preco_forte",
-  "achadinho",
-  "prova_social",
-  "desejo",
-  "dica_amiga",
-];
 const BUILTIN_RANDOM_CTA_PHRASES: ReadonlyArray<RandomCtaPhraseRow> = [
   { id: "builtin-random-1", phrase: "Clique no link e garanta o seu agora" },
   { id: "builtin-random-2", phrase: "Aproveite agora antes que acabe" },
@@ -1381,6 +1406,20 @@ const BUILTIN_AI_CTA_TONES: ReadonlyArray<AiCtaToneRow> = [
     created_at: null,
     updated_at: null,
   },
+  {
+    key: "rotativo",
+    label: "Rotativo",
+    description: "Alterna automaticamente entre os tons ativos.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "rotativo",
+      line1: "Este tom deve alternar entre os estilos ativos",
+      line2: "Use este prompt apenas como fallback tecnico",
+    }),
+    sort_order: 11,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
 ];
 
 type PersonalizedCtaTableName = "user_personalized_ctas" | "user_personalized_cta";
@@ -1450,7 +1489,7 @@ type UserTemplateAiCtaConfigRow = {
 
 type AiCtaGenerationStatus = "success" | "fallback" | "error";
 
-type AiCtaPlaceholderMode = "default" | "tone" | "rotative";
+type AiCtaPlaceholderMode = "default" | "tone";
 
 type AiCtaPlaceholderDefinition = {
   canonicalToken: string;
@@ -1536,12 +1575,6 @@ const AI_CTA_PLACEHOLDER_DEFINITIONS: ReadonlyArray<AiCtaPlaceholderDefinition> 
     regex: /\{\{?\s*cta[_ ]dica[_ ]amiga\s*\}\}?/i,
     mode: "tone",
     toneKey: "dica_amiga",
-  },
-  {
-    canonicalToken: "cta_rotativa",
-    aliases: ["cta rotativa"],
-    regex: /\{\{?\s*cta[_ ]rotativa\s*\}\}?/i,
-    mode: "rotative",
   },
 ];
 
@@ -1677,6 +1710,10 @@ function normalizeAiGeneratedCtaPhrase(value: unknown): string {
 
 function extractOpenRouterAssistantText(rawContent: unknown): string {
   if (typeof rawContent === "string") return rawContent;
+  if (rawContent && typeof rawContent === "object" && !Array.isArray(rawContent)) {
+    const record = rawContent as Record<string, unknown>;
+    if (typeof record.text === "string") return record.text;
+  }
   if (!Array.isArray(rawContent)) return "";
 
   const fragments = rawContent
@@ -1690,6 +1727,23 @@ function extractOpenRouterAssistantText(rawContent: unknown): string {
     .filter(Boolean);
 
   return fragments.join(" ");
+}
+
+function resolveOpenRouterReasoningConfig(model: string): { effort: "low" | "medium" | "high" } | undefined {
+  const normalizedModel = String(model || "").trim().toLowerCase();
+  if (!normalizedModel.includes("gpt-oss")) return undefined;
+
+  if (
+    OPENROUTER_REASONING_EFFORT === "off"
+    || OPENROUTER_REASONING_EFFORT === "none"
+    || OPENROUTER_REASONING_EFFORT === "disabled"
+  ) {
+    return undefined;
+  }
+
+  if (OPENROUTER_REASONING_EFFORT === "high") return { effort: "high" };
+  if (OPENROUTER_REASONING_EFFORT === "medium") return { effort: "medium" };
+  return { effort: "low" };
 }
 
 function normalizePersonalizedCtaPhrase(value: unknown): string {
@@ -2599,8 +2653,22 @@ async function resolveAiCtaToneForUser(input: {
       updated_at: null,
     };
 
+  const rotativeCandidates = tones.filter((tone) => {
+    const toneKey = normalizeAiCtaToneKey(tone.key);
+    return !!toneKey && toneKey !== AI_CTA_ROTATIVE_TONE_KEY;
+  });
+
+  const pickRotativeTone = (): AiCtaToneRow => {
+    if (rotativeCandidates.length === 0) return fallbackTone;
+    const randomIndex = Math.floor(Math.random() * rotativeCandidates.length);
+    return rotativeCandidates[randomIndex] || fallbackTone;
+  };
+
   const overrideToneKey = normalizeAiCtaToneKey(input.toneKey);
   if (overrideToneKey && toneMap.has(overrideToneKey)) {
+    if (overrideToneKey === AI_CTA_ROTATIVE_TONE_KEY) {
+      return pickRotativeTone();
+    }
     return toneMap.get(overrideToneKey) || fallbackTone;
   }
 
@@ -2613,6 +2681,9 @@ async function resolveAiCtaToneForUser(input: {
     if (config && config.is_active !== false) {
       const configuredToneKey = normalizeAiCtaToneKey(config.tone_key);
       if (configuredToneKey && toneMap.has(configuredToneKey)) {
+        if (configuredToneKey === AI_CTA_ROTATIVE_TONE_KEY) {
+          return pickRotativeTone();
+        }
         return toneMap.get(configuredToneKey) || fallbackTone;
       }
     }
@@ -2751,6 +2822,7 @@ async function requestAiCtaPhraseFromOpenRouter(input: {
     `Titulo da oferta: ${offerTitle || "Oferta sem titulo"}`,
     "Retorne somente a CTA final, sem prefixos.",
   ].join("\n");
+  const reasoningConfig = resolveOpenRouterReasoningConfig(OPENROUTER_MODEL);
 
   let lastError: Error | null = null;
 
@@ -2771,6 +2843,7 @@ async function requestAiCtaPhraseFromOpenRouter(input: {
             { role: "system", content: systemPrompt },
             { role: "user", content: userMessage },
           ],
+          ...(reasoningConfig ? { reasoning: reasoningConfig } : {}),
           stream: false,
         }),
         signal: controller.signal,
@@ -2814,10 +2887,37 @@ async function requestAiCtaPhraseFromOpenRouter(input: {
         : {};
 
       const rawContent = "content" in message ? message.content : "";
-      const extracted = extractOpenRouterAssistantText(rawContent);
+      let extracted = extractOpenRouterAssistantText(rawContent);
+      if (!extracted && "text" in firstChoice) {
+        extracted = extractOpenRouterAssistantText(firstChoice.text);
+      }
+
+      if (!extracted) {
+        const outputBlocks = Array.isArray(payload.output) ? payload.output : [];
+        for (const block of outputBlocks) {
+          if (!block || typeof block !== "object") continue;
+          const contentParts = Array.isArray((block as Record<string, unknown>).content)
+            ? (block as Record<string, unknown>).content as unknown[]
+            : [];
+          for (const part of contentParts) {
+            const candidate = extractOpenRouterAssistantText(part);
+            if (candidate) {
+              extracted = candidate;
+              break;
+            }
+          }
+          if (extracted) break;
+        }
+      }
+
       const phrase = normalizeAiGeneratedCtaPhrase(extracted);
       if (!phrase) {
-        throw new Error("OpenRouter retornou CTA vazia.");
+        const finishReason = String(firstChoice.finish_reason || firstChoice.native_finish_reason || "").trim();
+        throw new Error(
+          finishReason
+            ? `OpenRouter retornou CTA vazia (finish_reason: ${finishReason}).`
+            : "OpenRouter retornou CTA vazia.",
+        );
       }
 
       return {
@@ -2947,15 +3047,6 @@ async function resolveAiGeneratedCtaPlaceholderDataForTemplate(input: {
   const definitions = resolveAiCtaPlaceholderDefinitions(input.templateContent);
   if (definitions.length === 0) return {};
 
-  const activeTones = await listActiveAiCtaTones();
-  const activeToneKeys = new Set(
-    activeTones
-      .map((tone) => normalizeAiCtaToneKey(tone.key))
-      .filter(Boolean),
-  );
-
-  const rotativePool = AI_CTA_ROTATIVE_TONE_KEYS.filter((toneKey) => activeToneKeys.has(toneKey));
-
   const phraseByCacheKey = new Map<string, string>();
   let mergedPlaceholderData: Record<string, string> = {};
 
@@ -2966,12 +3057,6 @@ async function resolveAiGeneratedCtaPlaceholderDataForTemplate(input: {
     if (definition.mode === "tone") {
       toneOverride = normalizeAiCtaToneKey(definition.toneKey);
       cacheKey = `tone:${toneOverride}`;
-    } else if (definition.mode === "rotative") {
-      const randomTone = rotativePool.length > 0
-        ? rotativePool[Math.floor(Math.random() * rotativePool.length)]
-        : AI_CTA_DEFAULT_TONE_KEY;
-      toneOverride = randomTone;
-      cacheKey = `rotative:${randomTone}`;
     }
 
     if (!phraseByCacheKey.has(cacheKey)) {
@@ -3297,9 +3382,19 @@ function buildRouteTemplatePlaceholderData(
     return 0;
   };
 
-  const salePrice = toNumber(source.salePrice ?? source.price, Number.NaN);
+  const salePrice = toNumber(
+    source.salePrice
+    ?? source.price
+    ?? source.currentPrice
+    ?? source.current_price,
+    Number.NaN,
+  );
   const originalPriceRaw = toNumber(
     source.originalPrice
+    ?? source.oldPrice
+    ?? source.old_price
+    ?? source.priceOriginal
+    ?? source.price_original
     ?? source.priceMinBeforeDiscount
     ?? source.priceBeforeDiscount
     ?? source.priceMin,
@@ -3324,12 +3419,18 @@ function buildRouteTemplatePlaceholderData(
 
   const formatPrice = (value: number) => (Number.isFinite(value) && value > 0 ? value.toFixed(2) : "");
 
-  const discountFromProduct = toNumber(source.discount ?? source.priceDiscountRate, 0);
+  const discountFromProduct = toNumber(
+    source.discount
+    ?? source.priceDiscountRate
+    ?? source.discountRate
+    ?? source.discountPercent,
+    0,
+  );
   const discountComputed = Number.isFinite(resolvedOriginalPrice) && Number.isFinite(resolvedSalePrice) && resolvedOriginalPrice > resolvedSalePrice
     ? Math.round((1 - resolvedSalePrice / resolvedOriginalPrice) * 100)
     : 0;
   const discountFallback = extractPercentFallback(sourceMessage);
-  const discount = Math.max(0, discountFromProduct || discountComputed || discountFallback);
+  const discount = Math.max(0, discountComputed || discountFromProduct || discountFallback);
 
   const title = String(source.title ?? source.productName ?? "").trim() || extractFirstUsefulTitle(sourceMessage);
   const link = String(
@@ -3375,11 +3476,31 @@ function buildShopeeAutomationMessage(
   const contentWithoutImageLine = String(templateContent || "")
     .replace(/^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim, "");
 
+  const salePrice = toNumber(product.salePrice ?? product.price, Number.NaN);
+  const originalPriceRaw = toNumber(
+    product.originalPrice
+    ?? product.oldPrice
+    ?? product.old_price
+    ?? product.priceMinBeforeDiscount
+    ?? product.priceBeforeDiscount
+    ?? product.priceMin,
+    Number.NaN,
+  );
+  const originalPrice = Number.isFinite(originalPriceRaw) && originalPriceRaw > 0
+    ? originalPriceRaw
+    : salePrice;
+  const discountComputed = Number.isFinite(originalPrice) && Number.isFinite(salePrice) && originalPrice > salePrice
+    ? Math.round((1 - salePrice / originalPrice) * 100)
+    : 0;
+  const discountFromProduct = toNumber(product.discount ?? product.priceDiscountRate, 0);
+  const discount = Math.max(0, discountComputed || discountFromProduct);
+  const formatPrice = (value: number) => (Number.isFinite(value) && value > 0 ? value.toFixed(2) : "");
+
   return applyPlaceholders(contentWithoutImageLine, {
     "{titulo}": String(product.title || "Produto Shopee"),
-    "{preco}": Number(toNumber(product.salePrice, 0)).toFixed(2),
-    "{preco_original}": Number(toNumber(product.originalPrice, 0)).toFixed(2),
-    "{desconto}": String(Math.max(0, toNumber(product.discount, 0))),
+    "{preco}": formatPrice(salePrice),
+    "{preco_original}": formatPrice(originalPrice),
+    "{desconto}": discount > 0 ? String(discount) : "",
     "{link}": affiliateLink,
     "{cta_aleatoria}": randomCta,
     "{cta aleatoria}": randomCta,
@@ -3506,12 +3627,29 @@ function buildAmazonAutomationMessage(
   });
 }
 
+type HistoryEntryProcessingStatus = "sent" | "processed" | "skipped" | "error" | "blocked";
+
+function normalizeHistoryEntryProcessingStatus(status: unknown): HistoryEntryProcessingStatus {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (
+    normalized === "sent"
+    || normalized === "processed"
+    || normalized === "skipped"
+    || normalized === "error"
+    || normalized === "blocked"
+  ) {
+    return normalized;
+  }
+  if (normalized === "failed") return "error";
+  return "error";
+}
+
 async function insertAutomationHistoryEntry(input: {
   userId: string;
   automationName: string;
   destination: string;
   status: "success" | "error" | "warning" | "info";
-  processingStatus: "sent" | "failed" | "blocked" | "processed";
+  processingStatus: HistoryEntryProcessingStatus | "failed";
   message: string;
   details?: Record<string, unknown>;
   blockReason?: string;
@@ -3531,7 +3669,7 @@ async function insertAutomationHistoryEntry(input: {
         ...(input.details || {}),
       }),
       input.messageType || "text",
-      input.processingStatus,
+      normalizeHistoryEntryProcessingStatus(input.processingStatus),
       input.blockReason || "",
       input.errorStep || "",
     ],
@@ -3550,7 +3688,7 @@ async function insertHistoryEntry(input: {
   details: Record<string, unknown>;
   direction: "inbound" | "outbound";
   messageType: "text" | "image" | "video" | string;
-  processingStatus: "sent" | "processed" | "failed" | "blocked" | string;
+  processingStatus: HistoryEntryProcessingStatus | "failed" | string;
   blockReason?: string;
   errorStep?: string;
 }): Promise<void> {
@@ -3566,7 +3704,7 @@ async function insertHistoryEntry(input: {
       JSON.stringify(input.details),
       input.direction,
       input.messageType,
-      input.processingStatus,
+      normalizeHistoryEntryProcessingStatus(input.processingStatus),
       input.blockReason ?? "",
       input.errorStep ?? "",
     ],
@@ -6424,7 +6562,7 @@ async function logRouteProcessingFailure(input: {
 
   try {
     await execute(
-      "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','error',$4,'inbound',$5,'failed','route_processing_error','route_engine')",
+      "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','error',$4,'inbound',$5,'error','route_processing_error','route_engine')",
       [
         uuid(),
         userId,
@@ -7846,7 +7984,7 @@ async function processRouteMessageForUser(input: {
 
       if (!queueResult.queued) {
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'inbound',$6,'failed','quiet_hours_queue_failed','quiet_hours')",
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'inbound',$6,'error','quiet_hours_queue_failed','quiet_hours')",
           [uuid(), userId, sourceName, route.name, JSON.stringify({
             message: outboundText,
             routeId: route.id,
@@ -7885,7 +8023,7 @@ async function processRouteMessageForUser(input: {
       const group = destGroupMap.get(String(targetId));
       if (!group) {
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_not_found','destination_lookup')",
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','error','destination_not_found','destination_lookup')",
           [uuid(), userId, sourceName, route.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, destinationId: targetId, reason: "destination_not_found" })],
         );
         continue;
@@ -7896,7 +8034,7 @@ async function processRouteMessageForUser(input: {
       const destinationExternalId = String(group.external_id ?? "");
       if (!destinationSessionId || !destinationExternalId) {
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','failed','destination_session_offline','destination_validation')",
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','error','destination_session_offline','destination_validation')",
           [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, reason: "destination_session_offline" })],
         );
         continue;
@@ -7973,6 +8111,8 @@ async function processRouteMessageForUser(input: {
         }, scopedHeaders);
       }
 
+      await sleep(500);
+
       if (result.error) {
         logRouteMediaDebug("route.process.failed.destination_send_failed", {
           userId,
@@ -7988,7 +8128,7 @@ async function processRouteMessageForUser(input: {
           error: result.error.message,
         });
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound',$6,'failed','destination_send_failed','send_message')",
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound',$6,'error','destination_send_failed','send_message')",
           [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform, hasMedia: !!mediaForDestination }), mediaForDestination ? mediaForDestination.kind : "text"],
         );
         continue;
@@ -11205,7 +11345,7 @@ if (funcName === "whatsapp-connect") {
         messageType?: "text" | "image" | "video";
       }) => {
         await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'error',$4,'outbound',$5,'failed',$6,$7)",
+          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'error',$4,'outbound',$5,'error',$6,$7)",
           [
             uuid(),
             input.userId,
@@ -11892,6 +12032,164 @@ if (funcName === "whatsapp-connect") {
       const region = String(payload.region || fallbackRegion || "BR").toUpperCase();
       const reason = String(payload.reason || payload.error || payload.message || "Falha na conexão");
       ok(res, success ? { success: true, region } : { success: false, reason, region });
+      return;
+    }
+    if (funcName === "admin-shopee-commission-report") {
+      if (!effectiveAdmin) { fail(res, "Acesso negado", 403); return; }
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice nao configurado.", 503); return; }
+
+      const targetEmail = normalizeEmail(params.email);
+      if (!targetEmail || !isValidEmail(targetEmail)) {
+        fail(res, "Email alvo invalido", 400);
+        return;
+      }
+
+      const reportTypeRaw = String(params.reportType ?? params.type ?? "conversion_report").trim().toLowerCase();
+      const reportType = reportTypeRaw === "validation_report"
+        ? "validation_report"
+        : (reportTypeRaw === "conversion_report" ? "conversion_report" : "");
+      if (!reportType) {
+        fail(res, "Tipo de relatorio invalido. Use conversion_report ou validation_report.", 400);
+        return;
+      }
+
+      const normalizeDateYmd = (input: unknown): string | null => {
+        const raw = String(input ?? "").trim();
+        const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!match) return null;
+        const normalized = `${match[1]}-${match[2]}-${match[3]}`;
+        const date = new Date(`${normalized}T00:00:00Z`);
+        return Number.isNaN(date.getTime()) ? null : normalized;
+      };
+
+      const now = new Date();
+      now.setUTCHours(0, 0, 0, 0);
+      const defaultEndDate = now.toISOString().slice(0, 10);
+      const startBase = new Date(now.getTime());
+      startBase.setUTCDate(startBase.getUTCDate() - 29);
+      const defaultStartDate = startBase.toISOString().slice(0, 10);
+
+      const startRaw = String(params.startDate ?? params.start_date ?? "").trim();
+      const endRaw = String(params.endDate ?? params.end_date ?? "").trim();
+      const normalizedStart = startRaw ? normalizeDateYmd(startRaw) : null;
+      const normalizedEnd = endRaw ? normalizeDateYmd(endRaw) : null;
+
+      if (startRaw && !normalizedStart) {
+        fail(res, "startDate invalido. Use YYYY-MM-DD.", 400);
+        return;
+      }
+      if (endRaw && !normalizedEnd) {
+        fail(res, "endDate invalido. Use YYYY-MM-DD.", 400);
+        return;
+      }
+
+      const startDate = normalizedStart || defaultStartDate;
+      const endDate = normalizedEnd || defaultEndDate;
+      if (startDate > endDate) {
+        fail(res, "Periodo invalido: startDate deve ser menor ou igual a endDate.", 400);
+        return;
+      }
+
+      const targetUser = await queryOne<{
+        id: string;
+        email: string;
+        account_status: string | null;
+      }>(
+        `SELECT id,
+                email,
+                COALESCE(NULLIF(metadata->>'account_status', ''), 'active') AS account_status
+           FROM users
+          WHERE lower(email) = lower($1)
+          LIMIT 1`,
+        [targetEmail],
+      );
+      if (!targetUser) {
+        fail(res, "Usuario alvo nao encontrado", 404);
+        return;
+      }
+
+      const targetStatus = String(targetUser.account_status || "active").trim().toLowerCase();
+      if (targetStatus === "blocked" || targetStatus === "archived") {
+        fail(res, "Usuario alvo bloqueado ou arquivado", 400);
+        return;
+      }
+
+      const cred = await queryOne<{ app_id: string; secret_key: string; region: string }>(
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' LIMIT 1",
+        [targetUser.id],
+      );
+      if (!cred) {
+        fail(res, "Credenciais Shopee nao configuradas para o usuario alvo.", 404);
+        return;
+      }
+
+      const decryptedSecret = cred.secret_key ? decryptCredential(cred.secret_key) : "";
+      if (!String(cred.app_id || "").trim() || !decryptedSecret) {
+        fail(res, "Credenciais Shopee invalidas para o usuario alvo.", 400);
+        return;
+      }
+
+      const shopeeHeaders = buildUserScopedHeaders(String(targetUser.id));
+      const reportResult = await proxyMicroservice(
+        SHOPEE_URL,
+        "/api/shopee/commission-report",
+        "POST",
+        {
+          appId: cred.app_id,
+          secret: decryptedSecret,
+          region: cred.region,
+          reportType,
+          startDate,
+          endDate,
+        },
+        shopeeHeaders,
+        45_000,
+      );
+      if (reportResult.error) {
+        fail(res, reportResult.error.message || "Falha ao consultar relatorio Shopee", 502);
+        return;
+      }
+
+      const payload = (reportResult.data && typeof reportResult.data === "object")
+        ? reportResult.data as Record<string, unknown>
+        : {};
+      const totalCommissionRaw = Number(payload.totalCommission ?? 0);
+      const recordsCountRaw = Number(payload.recordsCount ?? 0);
+      const pagesScannedRaw = Number(payload.pagesScanned ?? 0);
+      const currency = String(payload.currency || "BRL").trim().toUpperCase() || "BRL";
+
+      const totalCommission = Number.isFinite(totalCommissionRaw)
+        ? Number(totalCommissionRaw.toFixed(2))
+        : 0;
+      const recordsCount = Number.isFinite(recordsCountRaw) ? Math.max(0, Math.trunc(recordsCountRaw)) : 0;
+      const pagesScanned = Number.isFinite(pagesScannedRaw) ? Math.max(0, Math.trunc(pagesScannedRaw)) : 0;
+
+      await appendAudit("admin_shopee_commission_report", userId, String(targetUser.id), {
+        target_email: String(targetUser.email || targetEmail),
+        report_type: reportType,
+        start_date: startDate,
+        end_date: endDate,
+        total_commission: totalCommission,
+        currency,
+        records_count: recordsCount,
+      });
+
+      ok(res, {
+        success: true,
+        targetUser: {
+          id: String(targetUser.id),
+          email: String(targetUser.email || targetEmail),
+        },
+        report: {
+          type: reportType,
+          startDate,
+          endDate,
+          totalCommission,
+          currency,
+          recordsCount,
+          pagesScanned,
+        },
+      });
       return;
     }
     if (funcName === "marketplace-convert-link") {

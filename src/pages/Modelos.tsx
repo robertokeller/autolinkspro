@@ -379,10 +379,12 @@ export default function Templates() {
         title="Templates Shopee"
         description="Monte modelos de mensagem e gere ofertas com dados reais da Shopee"
       >
-        <Button size="sm" onClick={openNew}>
-          <Plus className="h-4 w-4 mr-1.5" />
-          Novo template
-        </Button>
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+          <Button size="sm" onClick={openNew}>
+            <Plus className="h-4 w-4 mr-1.5" />
+            Novo template
+          </Button>
+        </div>
       </PageHeader>
 
       {!isConfigured && <ShopeeCredentialsBanner />}

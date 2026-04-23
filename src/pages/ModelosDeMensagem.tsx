@@ -73,17 +73,17 @@ const DEFAULT_TEMPLATE_FORM = {
   category: "oferta" as TemplateCategory,
 };
 
-const DEFAULT_TEMPLATE_CONTENT = "**{titulo}**\nDe R$ {preco_original} por R$ {preco}\nNota: {avaliacao}\n{link}";
+const DEFAULT_TEMPLATE_CONTENT = "**{titulo}**\nDe R$ {preco_original} por R$ {preco}\n{desconto}% OFF\nNota: {avaliacao}\n{link}";
 
 const PLACEHOLDER_LEGEND: Array<{ key: string; description: string }> = [
   { key: "{titulo}", description: "Nome do produto" },
   { key: "{preco}", description: "PreÃƒÂ§o com desconto" },
   { key: "{preco_original}", description: "PreÃƒÂ§o cheio (sem desconto)" },
+  { key: "{desconto}", description: "Desconto percentual da oferta" },
   { key: "{link}", description: "Seu link de afiliado" },
   { key: "{cta_aleatoria}", description: "CTA automÃƒÂ¡tica com variaÃƒÂ§ÃƒÂ£o anti-repetiÃƒÂ§ÃƒÂ£o" },
   { key: "{cta_personalizada}", description: "CTA personalizada aleatÃƒÂ³ria das suas frases ativas" },
   { key: "{cta_gerada_por_ia}", description: "CTA gerada por IA com tom configurado por modelo" },
-  { key: "{cta_rotativa}", description: "CTA por IA rotativa (alterna aleatoriamente entre tons)" },
   { key: "{imagem}", description: "Imagem do produto (vai como anexo)" },
   { key: "{avaliacao}", description: "Nota dos compradores" },
 ];
@@ -91,9 +91,15 @@ const PLACEHOLDER_LEGEND: Array<{ key: string; description: string }> = [
 const PLACEHOLDER_DESCRIPTION_OVERRIDES: Readonly<Partial<Record<string, string>>> = {
   "{preco}": "Preco com desconto",
   "{preco_original}": "Preco cheio (sem desconto)",
+  "{desconto}": "Percentual da oferta (preco original - preco atual)",
   "{cta_aleatoria}": "CTA automatica com variacao anti-repeticao",
   "{cta_personalizada}": "CTA personalizada aleatoria das suas frases ativas",
 };
+
+const PLACEHOLDER_FIELDS: ReadonlyArray<{ key: string; description: string }> = PLACEHOLDER_LEGEND.map((item) => ({
+  key: item.key,
+  description: PLACEHOLDER_DESCRIPTION_OVERRIDES[item.key] || item.description,
+}));
 
 type AiCtaToneSelectorOption = {
   toneToken: string;
@@ -165,6 +171,12 @@ const AI_CTA_TONE_SELECTOR_OPTIONS: ReadonlyArray<AiCtaToneSelectorOption> = [
     label: "Dica amiga",
     description: "Recomendacao rapida com tom proximo.",
   },
+  {
+    toneToken: "cta_rotativo",
+    toneKey: "rotativo",
+    label: "Rotativo",
+    description: "Alterna automaticamente entre os tons ativos da CTA IA.",
+  },
 ];
 
 const AI_CTA_TONE_SELECTOR_BY_TOKEN = new Map(
@@ -176,23 +188,23 @@ const PREVIEW_SAMPLE: Record<string, string> = {
   "{titulo}": "Fone Bluetooth TWS Pro",
   "{preco}": "67,90",
   "{preco_original}": "189,90",
+  "{desconto}": "64",
   "{link}": "https://shope.ee/exemplo",
   "{cta_aleatoria}": "Comenta QUERO e garante o seu antes que esgote!",
   "{cta_personalizada}": "Comenta QUERO pra receber o link com desconto agora.",
   "{cta_gerada_por_ia}": "Clica no link e aproveita essa oferta antes de acabar",
-  "{cta_rotativa}": "Achadinho bom, corre aproveitar",
   "{imagem}": "",
   "{avaliacao}": "4.8",
 };
 
-const MODEL_EDITOR_MODAL_FRAME_CLASS = "w-[min(calc(100vw-1rem),1120px)] max-h-[92dvh] overflow-hidden rounded-2xl border border-border/60 bg-background p-0 shadow-2xl";
+const MODEL_EDITOR_MODAL_FRAME_CLASS = "w-[min(calc(100vw-1rem),1020px)] max-h-[min(90dvh,calc(100dvh-1rem))] overflow-hidden rounded-2xl border border-border/60 bg-background p-0 shadow-2xl";
 const TONE_MODAL_FRAME_CLASS = "w-[min(calc(100vw-1rem),760px)] max-h-[88dvh] overflow-hidden rounded-2xl border border-border/60 bg-background p-0 shadow-2xl";
 const PERSONALIZED_MODAL_FRAME_CLASS = "w-[min(calc(100vw-1rem),860px)] max-h-[88dvh] overflow-hidden rounded-2xl border border-border/60 bg-background p-0 shadow-2xl";
 const MODAL_HEADER_CLASS = "border-b px-4 py-4 text-left sm:px-6 sm:py-5";
 const MODAL_BODY_CLASS = "min-h-0 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5";
 const MODAL_FOOTER_CLASS = "border-t bg-background/80 px-4 py-3 sm:px-6 sm:py-4";
 const MODEL_MAIN_CARD_CLASS = "glass overflow-hidden border-border/60 shadow-sm";
-const MODEL_MODAL_SECTION_CLASS = "space-y-3 rounded-xl border border-border/60 bg-card/40 p-4";
+const MODEL_MODAL_SECTION_CLASS = "mx-auto w-full max-w-3xl space-y-2.5 rounded-xl border border-border/60 bg-card/40 p-3 sm:space-y-3 sm:p-4";
 
 type SupportedMarketplace = "shopee" | "mercadolivre" | "amazon";
 
@@ -472,7 +484,7 @@ function mergeTemplatePlaceholderData(
     return {
       ...genericData,
       ...moduleData,
-      "{desconto}": firstNonEmptyString(moduleData["{desconto}"], genericData["{desconto}"]),
+      "{desconto}": firstNonEmptyString(genericData["{desconto}"], moduleData["{desconto}"]),
     };
   }
 
@@ -614,6 +626,7 @@ export default function ModelosDeMensagem() {
   // Ã¢â€â‚¬Ã¢â€â‚¬ converter tool Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const [converterLink, setConverterLink] = useState("");
   const [converterTemplateId, setConverterTemplateId] = useState("");
+  const [showConverterTemplateSelector, setShowConverterTemplateSelector] = useState(false);
   const [generatedOffer, setGeneratedOffer] = useState<GeneratedOffer | null>(null);
   const [convertedAffiliateResult, setConvertedAffiliateResult] = useState<ConvertedAffiliateResult | null>(null);
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
@@ -676,6 +689,21 @@ export default function ModelosDeMensagem() {
 
     setConverterTemplateId(fallbackTemplateId);
   }, [converterTemplateId, fallbackTemplateId, templates]);
+
+  const handleGenerateFromTemplateClick = () => {
+    if (!showConverterTemplateSelector) {
+      setShowConverterTemplateSelector(true);
+      if (!converterTemplateId && fallbackTemplateId) {
+        setConverterTemplateId(fallbackTemplateId);
+      }
+      if (templates.length === 0) {
+        toast.error("Crie um modelo antes de gerar mensagem.");
+      }
+      return;
+    }
+
+    void handleConvert();
+  };
 
   // Ã¢â€â‚¬Ã¢â€â‚¬ helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openNew = () => {
@@ -1492,10 +1520,12 @@ export default function ModelosDeMensagem() {
         title="Modelos de Mensagem"
         description="Crie modelos de mensagem e gere previas completas para Shopee, Mercado Livre e Amazon."
       >
-        <Button size="sm" onClick={openNew}>
-          <Plus className="h-4 w-4 mr-1.5" />
-          Novo modelo de mensagem
-        </Button>
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+          <Button size="sm" onClick={openNew}>
+            <Plus className="h-4 w-4 mr-1.5" />
+            Novo modelo de mensagem
+          </Button>
+        </div>
       </PageHeader>
 
       {!isConfigured && <ShopeeCredentialsBanner />}
@@ -1529,83 +1559,89 @@ export default function ModelosDeMensagem() {
                 >
                   {detectedMarketplace ? `Marketplace: ${marketplaceLabel(detectedMarketplace)}` : "Marketplace: aguardando link"}
                 </Badge>
-                <span className="rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
-                  Modelo ativo: <span className="font-medium text-foreground">{selectedConverterTemplateLabel}</span>
-                </span>
+                {(showConverterTemplateSelector || generatedOffer) ? (
+                  <span className="rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
+                    Modelo ativo: <span className="font-medium text-foreground">{selectedConverterTemplateLabel}</span>
+                  </span>
+                ) : null}
               </div>
             </CardHeader>
 
-            <CardContent className="space-y-4 pt-5">
-              <div className="space-y-3 rounded-xl border border-border/60 bg-muted/10 p-3 sm:p-4">
+            <CardContent className="space-y-5 pt-5">
+              <div className="mx-auto w-full max-w-3xl space-y-4 rounded-xl border border-border/60 bg-muted/10 p-4 sm:space-y-4 sm:p-5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <Label className="text-xs font-medium text-foreground">1. Converter link</Label>
+                  <Label className="text-xs font-medium text-foreground">Link do produto</Label>
                   <p className="text-[11px] text-muted-foreground">Shopee, Mercado Livre ou Amazon</p>
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Link do produto</Label>
+                  <Label className="text-xs text-muted-foreground">Cole o link para converter ou gerar mensagem</Label>
                   <Input
                     placeholder="Cole o link do produto aqui"
                     value={converterLink}
                     onChange={(e) => setConverterLink(e.target.value)}
+                    className="h-11"
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && canGenerateFromTemplate) {
-                        void handleConvert();
+                      if (e.key === "Enter" && canRunLinkActions) {
+                        void handleConvertAffiliateLink();
                       }
                     }}
                   />
                 </div>
 
-                <Button
-                  variant="outline"
-                  onClick={handleConvertAffiliateLink}
-                  disabled={!canRunLinkActions}
-                  className="h-10 w-full sm:w-auto sm:min-w-[180px]"
-                >
-                  {converting ? (
-                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                  ) : (
-                    <Link2 className="h-4 w-4 mr-1.5" />
-                  )}
-                  Converter link
-                </Button>
-              </div>
+                <div className="grid grid-cols-1 gap-2 pt-1 sm:flex sm:items-center sm:justify-center sm:gap-3">
+                  <Button
+                    variant="outline"
+                    onClick={handleConvertAffiliateLink}
+                    disabled={!canRunLinkActions}
+                    className="h-10 w-full sm:w-auto sm:min-w-[190px]"
+                  >
+                    {converting ? (
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <Link2 className="h-4 w-4 mr-1.5" />
+                    )}
+                    Converter link
+                  </Button>
 
-              <div className="space-y-3 rounded-xl border border-border/60 bg-background/70 p-3 sm:p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <Label className="text-xs font-medium text-foreground">2. Gerar mensagem</Label>
-                  <p className="text-[11px] text-muted-foreground">Selecionando o modelo salvo</p>
+                  <Button
+                    onClick={handleGenerateFromTemplateClick}
+                    disabled={!canRunLinkActions || (showConverterTemplateSelector && !canGenerateFromTemplate)}
+                    className="h-10 w-full sm:w-auto sm:min-w-[230px]"
+                  >
+                    {converting && showConverterTemplateSelector ? (
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="h-4 w-4 mr-1.5" />
+                    )}
+                    {showConverterTemplateSelector ? "Confirmar e gerar mensagem" : "Gerar mensagem"}
+                  </Button>
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Modelo de mensagem</Label>
-                  <Select value={converterTemplateId} onValueChange={setConverterTemplateId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder={selectedConverterTemplateLabel} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {templates.map((template) => (
-                        <SelectItem key={template.id} value={template.id}>
-                          {template.name}
-                          {template.isDefault ? " *" : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Button
-                  onClick={handleConvert}
-                  disabled={!canGenerateFromTemplate}
-                  className="h-10 w-full sm:w-auto sm:min-w-[180px]"
-                >
-                  {converting ? (
-                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                  ) : (
-                    <Wand2 className="h-4 w-4 mr-1.5" />
-                  )}
-                  Gerar mensagem
-                </Button>
+                {showConverterTemplateSelector ? (
+                  <div className="mx-auto w-full max-w-xl space-y-1.5 rounded-lg border border-border/60 bg-background/70 p-3">
+                    <Label className="text-xs text-muted-foreground">Modelo de mensagem</Label>
+                    {templates.length > 0 ? (
+                      <Select value={converterTemplateId} onValueChange={setConverterTemplateId}>
+                        <SelectTrigger className="h-10">
+                          <SelectValue placeholder={selectedConverterTemplateLabel} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {templates.map((template) => (
+                            <SelectItem key={template.id} value={template.id}>
+                              {template.name}
+                              {template.isDefault ? " *" : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <div className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                        Nenhum modelo disponivel. Crie um modelo para gerar mensagem.
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
               {templates.length === 0 ? (
@@ -1820,9 +1856,9 @@ export default function ModelosDeMensagem() {
       {/* Ã¢â€â‚¬Ã¢â€â‚¬ Modal criar / editar Ã¢â€â‚¬Ã¢â€â‚¬ */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className={MODEL_EDITOR_MODAL_FRAME_CLASS}>
-          <div className="grid h-full max-h-[92dvh] grid-rows-[auto_minmax(0,1fr)_auto]">
-            <DialogHeader className={cn(MODAL_HEADER_CLASS, "space-y-3")}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="grid h-full max-h-[94dvh] grid-rows-[auto_minmax(0,1fr)_auto]">
+            <DialogHeader className={cn(MODAL_HEADER_CLASS, "space-y-3 pr-12 text-center sm:pr-14 sm:text-center")}>
+              <div className="flex flex-wrap items-center justify-center gap-2 text-center">
                 <DialogTitle className="text-lg font-semibold tracking-tight">
                   {editing ? "Editar modelo de mensagem" : "Novo modelo de mensagem"}
                 </DialogTitle>
@@ -1830,13 +1866,13 @@ export default function ModelosDeMensagem() {
                   {editing ? "Edicao" : "Novo"}
                 </Badge>
               </div>
-              <p className="text-sm leading-relaxed text-muted-foreground">
+              <p className="mx-auto max-w-2xl text-sm leading-relaxed text-muted-foreground">
                 Estruture seu modelo com placeholders e visualize o resultado em tempo real.
               </p>
             </DialogHeader>
 
-            <div className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-              <div className="min-h-0 space-y-4 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+            <div className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1.18fr)_minmax(280px,0.82fr)]">
+              <div className="min-h-0 space-y-4 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
                 <section className={MODEL_MODAL_SECTION_CLASS}>
                   <Label className="text-sm font-medium">Nome</Label>
                   <Input
@@ -1850,7 +1886,7 @@ export default function ModelosDeMensagem() {
                 <section className={MODEL_MODAL_SECTION_CLASS}>
                   <div className="space-y-2">
                     <Label className="text-sm font-medium">Conteudo</Label>
-                    <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/20 px-2 py-2">
+                    <div className="flex flex-wrap items-center justify-center gap-2 rounded-lg border bg-muted/20 px-2 py-2">
                       <button
                         type="button"
                         onClick={() => wrapSelection("**", "**", "negrito")}
@@ -1875,7 +1911,7 @@ export default function ModelosDeMensagem() {
                       >
                         S
                       </button>
-                      <span className="ml-1 text-xs text-muted-foreground">
+                      <span className="basis-full text-center text-xs text-muted-foreground">
                         Selecione o texto e clique para formatar.
                       </span>
                     </div>
@@ -1887,22 +1923,22 @@ export default function ModelosDeMensagem() {
                     placeholder={DEFAULT_TEMPLATE_CONTENT}
                     value={form.content}
                     onChange={(e) => setForm({ ...form, content: e.target.value })}
-                    className="min-h-[220px] resize-none leading-relaxed"
+                    className="min-h-[210px] resize-none leading-relaxed sm:min-h-[230px]"
                   />
                 </section>
 
                 <section className={MODEL_MODAL_SECTION_CLASS}>
-                  <div className="space-y-1 text-center sm:text-left">
+                  <div className="space-y-0.5 text-center">
                     <Label className="text-sm font-medium">Campos disponiveis</Label>
                     <p className="text-xs text-muted-foreground">Clique em um campo para inserir no cursor.</p>
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-8 text-xs"
+                      className="h-8 justify-center text-xs"
                       onClick={openAiCtaModal}
                     >
                       CTA por IA ({selectedAiCtaTone?.label || "Beneficio"})
@@ -1911,47 +1947,49 @@ export default function ModelosDeMensagem() {
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-8 text-xs"
+                      className="h-8 justify-center text-xs"
                       onClick={openPersonalizedCtasModal}
                     >
                       CTAs personalizadas
                     </Button>
                   </div>
 
-                  <p className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground text-center sm:text-left">
-                    Tom atual da CTA IA: <span className="font-medium text-foreground">{selectedAiCtaTone?.label || "Beneficio"}</span>.
-                    Chave enviada ao backend: <span className="font-mono text-foreground">{selectedAiCtaTone?.toneToken || AI_CTA_DEFAULT_TONE_TOKEN}</span>.
-                  </p>
-
-                  <div className="space-y-3 rounded-xl border border-border/60 bg-background/70 p-4">
-                    <div className="flex flex-wrap justify-center gap-1.5 sm:justify-start">
-                      {PLACEHOLDER_LEGEND.map((item) => (
+                  <div className="grid grid-cols-1 gap-2 rounded-lg border border-border/60 bg-muted/10 p-2.5 sm:grid-cols-2">
+                    {PLACEHOLDER_FIELDS.map((item) => {
+                      const isInUse = form.content.includes(item.key);
+                      return (
                         <button
                           key={item.key}
                           type="button"
                           onClick={() => insertPlaceholder(item.key)}
-                          className="inline-flex items-center rounded-md border bg-background px-2 py-1 text-xs transition-colors hover:bg-secondary/50"
-                          title={PLACEHOLDER_DESCRIPTION_OVERRIDES[item.key] || item.description}
+                          title={item.description}
+                          className={cn(
+                            "min-h-[58px] rounded-md border px-2.5 py-2 text-left transition-colors",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+                            isInUse
+                              ? "border-border/80 bg-muted/45"
+                              : "border-border/55 bg-background/70 hover:border-border hover:bg-muted/30",
+                          )}
                         >
-                          <code className="font-mono text-primary">{item.key}</code>
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-[12px] font-medium text-foreground">{item.key}</span>
+                            {isInUse ? (
+                              <span className="rounded-full border border-border/70 bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Em uso
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">{item.description}</span>
                         </button>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-1 gap-2 border-t border-border/60 pt-3 sm:grid-cols-2">
-                      {PLACEHOLDER_LEGEND.map((item) => (
-                        <div key={item.key} className="rounded-md border border-border/60 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
-                          <code className="block font-mono text-primary">{item.key}</code>
-                          <p className="mt-1 leading-relaxed">{PLACEHOLDER_DESCRIPTION_OVERRIDES[item.key] || item.description}</p>
-                        </div>
-                      ))}
-                    </div>
+                      );
+                    })}
                   </div>
                 </section>
               </div>
 
-              <div className="min-h-0 overflow-y-auto border-t bg-muted/20 px-4 py-4 sm:px-6 sm:py-5 lg:border-l lg:border-t-0">
-                <div className="space-y-3 rounded-xl border border-border/60 bg-card/50 p-4">
-                  <div className="space-y-1">
+              <div className="min-h-0 overflow-y-auto border-t border-border/60 bg-muted/20 px-3 py-3 sm:px-5 sm:py-4 lg:border-l lg:border-t-0">
+                <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col rounded-xl border border-border/60 bg-card/50 p-3 sm:p-4">
+                  <div className="space-y-1.5">
                     <Label className="flex items-center gap-1.5 text-sm font-medium">
                       <Eye className="h-3 w-3" />
                       Preview em tempo real
@@ -1961,7 +1999,7 @@ export default function ModelosDeMensagem() {
                     </p>
                   </div>
                   <pre
-                    className="min-h-[320px] whitespace-pre-wrap rounded-xl border bg-background p-4 text-sm leading-relaxed lg:min-h-[520px]"
+                    className="mt-2.5 min-h-[220px] flex-1 overflow-auto whitespace-pre-wrap rounded-xl border bg-background p-3 text-sm leading-relaxed sm:p-4 lg:min-h-0"
                     dangerouslySetInnerHTML={{
                       __html: renderTemplatePreviewHtml(
                         form.content || DEFAULT_TEMPLATE_CONTENT,
@@ -1973,11 +2011,11 @@ export default function ModelosDeMensagem() {
               </div>
             </div>
 
-            <DialogFooter className={MODAL_FOOTER_CLASS}>
-              <Button variant="outline" onClick={() => setShowModal(false)}>
+            <DialogFooter className={cn(MODAL_FOOTER_CLASS, "justify-center sm:justify-center")}>
+              <Button variant="outline" className="w-full sm:w-auto sm:min-w-[160px]" onClick={() => setShowModal(false)}>
                 Cancelar
               </Button>
-              <Button onClick={handleSave} disabled={saving}>
+              <Button className="w-full sm:w-auto sm:min-w-[190px]" onClick={handleSave} disabled={saving}>
                 {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
                 {editing ? "Salvar alteracoes" : "Criar modelo"}
               </Button>
@@ -2011,7 +2049,7 @@ export default function ModelosDeMensagem() {
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                 <Input
                   className="h-9 text-sm"
-                  placeholder="Ex: Comenta QUERO que eu te envio o link com desconto"
+                  placeholder="Ex: O mais barato que já passou por aqui..."
                   value={newPersonalizedCta}
                   onChange={(e) => setNewPersonalizedCta(e.target.value)}
                   onKeyDown={(e) => {
@@ -2052,28 +2090,28 @@ export default function ModelosDeMensagem() {
                   Nenhuma CTA personalizada cadastrada ainda.
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {personalizedCtas.map((item) => {
                     const isEditing = editingPersonalizedCtaId === item.id;
 
                     return (
-                      <div key={item.id} className="rounded-lg border bg-card px-3 py-2.5">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div key={item.id} className="rounded-md border border-border/60 bg-background/45 px-2.5 py-2">
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
                           {isEditing ? (
                             <div className="flex-1 min-w-[220px]">
                               <Input
                                 value={editingPersonalizedCtaPhrase}
                                 onChange={(e) => setEditingPersonalizedCtaPhrase(e.target.value)}
-                                className="h-9 text-sm"
+                                className="h-8 text-sm"
                               />
                             </div>
                           ) : (
-                            <p className="text-sm leading-relaxed whitespace-pre-wrap break-words flex-1 min-w-[220px]">
+                            <p className="flex-1 min-w-[220px] whitespace-pre-wrap break-words text-sm leading-snug">
                               {item.phrase}
                             </p>
                           )}
 
-                          <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-1.5 shrink-0">
                             <Switch
                               checked={item.isActive}
                               disabled={personalizedCtasSaving}
@@ -2084,10 +2122,40 @@ export default function ModelosDeMensagem() {
                             <span className={`text-xs font-medium ${item.isActive ? "text-emerald-600" : "text-muted-foreground"}`}>
                               {item.isActive ? "Ativa" : "Inativa"}
                             </span>
+                            {!isEditing ? (
+                              <>
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  variant="ghost"
+                                  onClick={() => handleStartEditPersonalizedCta(item)}
+                                  disabled={personalizedCtasSaving}
+                                  aria-label="Editar CTA"
+                                  title="Editar CTA"
+                                  className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground"
+                                >
+                                  <Edit className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    void handleDeletePersonalizedCta(item.id);
+                                  }}
+                                  disabled={personalizedCtasSaving}
+                                  aria-label="Excluir CTA"
+                                  title="Excluir CTA"
+                                  className="h-7 w-7 rounded-md text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </>
+                            ) : null}
                           </div>
                         </div>
 
-                        <div className="mt-2.5 flex flex-wrap items-center justify-end gap-1.5">
+                        <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5">
                           {isEditing ? (
                             <>
                               <Button
@@ -2096,6 +2164,7 @@ export default function ModelosDeMensagem() {
                                 variant="outline"
                                 onClick={handleCancelEditPersonalizedCta}
                                 disabled={personalizedCtasSaving}
+                                className="h-8"
                               >
                                 Cancelar
                               </Button>
@@ -2106,41 +2175,13 @@ export default function ModelosDeMensagem() {
                                   void handleSaveEditedPersonalizedCta(item);
                                 }}
                                 disabled={personalizedCtasSaving}
+                                className="h-8"
                               >
                                 {personalizedCtasSaving && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
                                 Salvar
                               </Button>
                             </>
-                          ) : (
-                            <>
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="ghost"
-                                onClick={() => handleStartEditPersonalizedCta(item)}
-                                disabled={personalizedCtasSaving}
-                                aria-label="Editar CTA"
-                                title="Editar CTA"
-                                className="h-8 w-8 rounded-md text-muted-foreground hover:text-foreground"
-                              >
-                                <Edit className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="ghost"
-                                onClick={() => {
-                                  void handleDeletePersonalizedCta(item.id);
-                                }}
-                                disabled={personalizedCtasSaving}
-                                aria-label="Excluir CTA"
-                                title="Excluir CTA"
-                                className="h-8 w-8 rounded-md text-destructive hover:text-destructive hover:bg-destructive/10"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     );

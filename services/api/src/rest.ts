@@ -826,6 +826,14 @@ function buildWhere(filters: Filter[], params: unknown[], offset = 1): { sql: st
     }
     else if (f.type === "lte")  { parts.push(`${col} <= $${i++}`); params.push(f.val); }
     else if (f.type === "gte")  { parts.push(`${col} >= $${i++}`); params.push(f.val); }
+    else if (f.type === "nin")  {
+      const arr = (Array.isArray(f.val) ? f.val : [f.val]).filter((item) => item !== undefined);
+      if (arr.length > 0) {
+        const phs = arr.map(() => `$${i++}`).join(",");
+        parts.push(`${col} NOT IN (${phs})`);
+        params.push(...arr);
+      }
+    }
     else if (f.type === "like") {
       // SECURITY: Escape LIKE wildcards (% and _) to prevent wildcard scanning attacks
       const escapedVal = String(f.val ?? "").replace(/%/g, '\\%').replace(/_/g, '\\_');

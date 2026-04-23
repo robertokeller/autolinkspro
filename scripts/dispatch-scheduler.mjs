@@ -43,6 +43,39 @@ function log(message) {
 	console.log(`[scheduler] ${message}`);
 }
 
+function extractRpcErrorMessage(input) {
+  if (input == null) return "";
+  if (typeof input === "string") return input.trim();
+  if (input instanceof Error) return String(input.message || "").trim();
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const message = extractRpcErrorMessage(item);
+      if (message) return message;
+    }
+    return "";
+  }
+  if (typeof input === "object") {
+    const source = input;
+    const candidates = [
+      source.error,
+      source.message,
+      source.details,
+      source.reason,
+      source.raw,
+    ];
+    for (const candidate of candidates) {
+      const message = extractRpcErrorMessage(candidate);
+      if (message) return message;
+    }
+    try {
+      return JSON.stringify(source);
+    } catch {
+      return String(source);
+    }
+  }
+  return String(input).trim();
+}
+
 function getHeaders() {
 	const headers = { "content-type": "application/json" };
 	if (RPC_TOKEN) {
@@ -116,9 +149,7 @@ async function invokeFunction(name, body) {
 		}
 
 		if (!response.ok) {
-			const message = parsed && typeof parsed === "object" && "error" in parsed
-				? String(parsed.error)
-				: `HTTP ${response.status}`;
+      const message = extractRpcErrorMessage(parsed) || `HTTP ${response.status}`;
 			throw new Error(`${name} failed: ${message}`);
 		}
 

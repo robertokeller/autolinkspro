@@ -188,7 +188,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
     icon: "Package",
     steps: [
       "Acesse 'Amazon > Configurações' e insira seu ID de afiliado (se aplicável).",
-      "Use o 'Conversor de Links' para encurtar e rastrear URLs de produtos da Amazon.",
+      "Use o 'Conversor de links' para encurtar e rastrear URLs de produtos da Amazon.",
       "Em 'Vitrine Amazon' visualize e gerencie seus produtos em destaque.",
       "Configure automações em 'Amazon > Automações' para envio de links via mensageria.",
     ],

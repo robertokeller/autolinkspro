@@ -1,6 +1,5 @@
-import { useMemo, useState } from "react";
-import { subDays } from "date-fns";
-import { Clock, Loader2, RefreshCw, Search } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Clock, Loader2, RefreshCw, Search, TrendingUp } from "lucide-react";
 
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
@@ -14,14 +13,6 @@ import { useHistorico } from "@/hooks/useHistorico";
 import { formatBRT } from "@/lib/timezone";
 
 type HistoryEntry = ReturnType<typeof useHistorico>["entries"][number];
-
-const ALLOWED_MECHANISMS = new Set<HistoryEntry["mechanism"]>([
-  "schedule",
-  "automatic_routes",
-  "smart_automation",
-]);
-
-const ALLOWED_CONNECTIONS = new Set<HistoryEntry["connection"]>(["whatsapp", "telegram", "other"]);
 
 const COUNTER_LABELS: Record<"total" | "sent" | "failed" | "blocked", string> = {
   total: "Total",
@@ -90,35 +81,27 @@ function buildSearchText(entry: HistoryEntry): string {
 }
 
 export default function HistoryPage() {
-  const { entries, isLoading, isFetching, isFetchingNextPage, hasNextPage, fetchNextPage, refetch } = useHistorico();
+  const autoProbeAttemptsRef = useRef(0);
+  const AUTO_PROBE_MAX_ATTEMPTS = 8;
+
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [mechanism, setMechanism] = useState<MechanismFilter>("all");
   const [secondaryFilter, setSecondaryFilter] = useState("all");
   const [connection, setConnection] = useState("all");
-  const [timeRange, setTimeRange] = useState("last_7_days");
+  const [timeRange, setTimeRange] = useState("all");
 
-  const trackedEntries = useMemo(
-    () =>
-      entries.filter(
-        (entry) =>
-          entry.isMessageFlow
-          && entry.isFinalOutcome
-          && ALLOWED_MECHANISMS.has(entry.mechanism)
-          && ALLOWED_CONNECTIONS.has(entry.connection),
-      ),
-    [entries],
-  );
+  const { entries, isLoading, isFetching, isFetchingNextPage, hasNextPage, fetchNextPage, refetch, serverCounts, isLoadingCounts, hasClientNoiseFiltered, clientNoiseFilteredCount } = useHistorico({
+    timeRange,
+    status,
+    mechanism,
+  });
 
   const secondaryFilterConfig = useMemo<SecondaryFilterConfig>(() => {
-    const scopedEntries = mechanism === "all"
-      ? trackedEntries
-      : trackedEntries.filter((entry) => entry.mechanism === mechanism);
-
     if (mechanism === "automatic_routes") {
       const options = Array.from(
         new Set<string>(
-          scopedEntries
+          entries
             .filter((entry) => entry.routeId && !["none", "unmatched"].includes(entry.routeId) && entry.routeName)
             .map((entry) => entry.routeName.trim())
             .filter(Boolean),
@@ -135,7 +118,7 @@ export default function HistoryPage() {
     if (mechanism === "smart_automation") {
       const options = Array.from(
         new Set<string>(
-          scopedEntries
+          entries
             .map((entry) => String(entry.source || "").trim())
             .filter(Boolean),
         ),
@@ -151,7 +134,7 @@ export default function HistoryPage() {
     if (mechanism === "schedule") {
       const options = Array.from(
         new Set<string>(
-          scopedEntries
+          entries
             .map((entry) => mechanismName(entry))
             .filter(Boolean),
         ),
@@ -169,59 +152,68 @@ export default function HistoryPage() {
       allLabel: "Todos os itens",
       options: [],
     };
-  }, [mechanism, trackedEntries]);
+  }, [mechanism, entries]);
 
-  const preStatusFiltered = useMemo(() => {
-    const now = new Date();
-    const todayKey = formatBRT(now, "yyyy-MM-dd");
-    const yesterdayKey = formatBRT(subDays(now, 1), "yyyy-MM-dd");
-    const last3StartKey = formatBRT(subDays(now, 2), "yyyy-MM-dd");
-    const last7StartKey = formatBRT(subDays(now, 6), "yyyy-MM-dd");
-
-    const matchesTimeRange = (entryDateKey: string) => {
-      if (timeRange === "all") return true;
-      if (timeRange === "today") return entryDateKey === todayKey;
-      if (timeRange === "yesterday") return entryDateKey === yesterdayKey;
-      if (timeRange === "last_3_days") return entryDateKey >= last3StartKey && entryDateKey <= todayKey;
-      if (timeRange === "last_7_days") return entryDateKey >= last7StartKey && entryDateKey <= todayKey;
-      return true;
-    };
-
+  const visibleEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return trackedEntries.filter((entry) => {
-      const entryDateKey = formatBRT(entry.createdAt, "yyyy-MM-dd");
+    return entries.filter((entry) => {
       const matchesSecondaryFilter = secondaryFilter === "all"
         || (mechanism === "automatic_routes" && entry.routeName === secondaryFilter)
         || (mechanism === "smart_automation" && String(entry.source || "").trim() === secondaryFilter)
         || (mechanism === "schedule" && mechanismName(entry) === secondaryFilter)
         || mechanism === "all";
 
-      if (!matchesTimeRange(entryDateKey)) return false;
-      if (mechanism !== "all" && entry.mechanism !== mechanism) return false;
       if (!matchesSecondaryFilter) return false;
       if (connection !== "all" && entry.connection !== connection) return false;
       if (!q) return true;
 
       return buildSearchText(entry).includes(q);
     });
-  }, [connection, mechanism, search, secondaryFilter, timeRange, trackedEntries]);
+  }, [connection, mechanism, search, secondaryFilter, entries]);
 
-  const filtered = useMemo(() => {
-    if (status === "all") return preStatusFiltered;
-    return preStatusFiltered.filter((entry) => entry.processingStatus === status);
-  }, [preStatusFiltered, status]);
-
-  const counters = useMemo(() => {
-    return preStatusFiltered.reduce(
+  // Server counts reflect the full period — not limited by pagination.
+  // Fall back to client counts while the count query is loading.
+  const clientCounts = useMemo(() => {
+    return visibleEntries.reduce(
       (acc, entry) => {
         if (entry.processingStatus === "sent") acc.sent += 1;
-        else if (entry.processingStatus === "failed") acc.failed += 1;
+        else if (entry.processingStatus === "error" || entry.processingStatus === "failed") acc.failed += 1;
         else if (entry.processingStatus === "blocked") acc.blocked += 1;
         return acc;
       },
-      { total: preStatusFiltered.length, sent: 0, failed: 0, blocked: 0 },
+      { total: visibleEntries.length, sent: 0, failed: 0, blocked: 0 },
     );
-  }, [preStatusFiltered]);
+  }, [visibleEntries]);
+
+  const counters = serverCounts ?? clientCounts;
+
+  useEffect(() => {
+    autoProbeAttemptsRef.current = 0;
+  }, [timeRange, status, mechanism]);
+
+  useEffect(() => {
+    const hasClientScopedFilters = search.trim().length > 0 || connection !== "all" || secondaryFilter !== "all";
+    if (isLoading || isFetching || isFetchingNextPage) return;
+    if (visibleEntries.length > 0) return;
+    if (!hasClientNoiseFiltered) return;
+    if (!hasNextPage) return;
+    if (hasClientScopedFilters) return;
+    if (autoProbeAttemptsRef.current >= AUTO_PROBE_MAX_ATTEMPTS) return;
+
+    autoProbeAttemptsRef.current += 1;
+    void fetchNextPage();
+  }, [
+    connection,
+    fetchNextPage,
+    hasClientNoiseFiltered,
+    hasNextPage,
+    isFetching,
+    isFetchingNextPage,
+    isLoading,
+    search,
+    secondaryFilter,
+    visibleEntries.length,
+  ]);
 
   return (
     <div className="ds-page">
@@ -337,32 +329,52 @@ export default function HistoryPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          <div className="grid grid-cols-2 gap-2 rounded-xl border bg-muted/20 p-2 sm:grid-cols-4">
-            {COUNTER_KEYS.map((key) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => {
-                  const targetStatus = COUNTER_STATUS_MAP[key];
-                  setStatus((prev) => (prev === targetStatus ? "all" : targetStatus));
-                }}
-                className={`rounded-lg border px-3 py-2 text-center transition-colors ${
-                  status === COUNTER_STATUS_MAP[key]
-                    ? "border-primary bg-primary/10"
-                    : "border-transparent bg-background hover:border-border"
-                }`}
-                aria-pressed={status === COUNTER_STATUS_MAP[key]}
-              >
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{COUNTER_LABELS[key]}</p>
-                <p className="text-base font-semibold leading-none">{counters[key]}</p>
-              </button>
-            ))}
+          <div className="rounded-xl border bg-muted/20 p-2 space-y-1.5">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {COUNTER_KEYS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    const targetStatus = COUNTER_STATUS_MAP[key];
+                    setStatus((prev) => (prev === targetStatus ? "all" : targetStatus));
+                  }}
+                  className={`rounded-lg border px-3 py-2 text-center transition-colors ${
+                    status === COUNTER_STATUS_MAP[key]
+                      ? "border-primary bg-primary/10"
+                      : "border-transparent bg-background hover:border-border"
+                  }`}
+                  aria-pressed={status === COUNTER_STATUS_MAP[key]}
+                >
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{COUNTER_LABELS[key]}</p>
+                  {isLoadingCounts && !serverCounts ? (
+                    <p className="text-base font-semibold leading-none text-muted-foreground">—</p>
+                  ) : (
+                    <p className="text-base font-semibold leading-none">{counters[key]}</p>
+                  )}
+                </button>
+              ))}
+            </div>
+            {serverCounts && !hasClientNoiseFiltered && (
+              <p className="flex items-center gap-1 text-[11px] text-muted-foreground px-1">
+                <TrendingUp className="h-3 w-3 shrink-0" />
+                Total do período selecionado
+              </p>
+            )}
+            {serverCounts && hasClientNoiseFiltered && (
+              <p className="flex items-center gap-1 text-[11px] text-muted-foreground px-1">
+                <TrendingUp className="h-3 w-3 shrink-0" />
+                Contadores do período completo; lista ocultando ruídos recentes
+              </p>
+            )}
           </div>
-          {filtered.length === 0 ? (
+          {visibleEntries.length === 0 ? (
             <EmptyState
               icon={Clock}
-              title="Nenhuma mensagem aqui"
-              description="Mude os filtros pra encontrar o que você procura."
+              title={hasClientNoiseFiltered ? "Somente ruídos ocultados" : "Nenhuma mensagem aqui"}
+              description={hasClientNoiseFiltered
+                ? `Ocultamos ${clientNoiseFilteredCount} registros de ruído (ex.: sem rota ativa ou origem sem rota configurada). Ajuste o período/mecanismo para ver envios, bloqueios úteis e falhas reais.`
+                : "Mude os filtros pra encontrar o que você procura."}
             />
           ) : (
             <>
@@ -372,7 +384,7 @@ export default function HistoryPage() {
             <span>Mecanismo</span>
             <span className="text-right">Horário</span>
           </div>
-          {filtered.map((entry) => (
+          {visibleEntries.map((entry) => (
             <Card key={entry.id} className="glass">
               <CardContent className="grid gap-3 p-4 md:grid-cols-[1.9fr_1.1fr_1.1fr_170px] md:items-start">
                 <div className="min-w-0 space-y-1 text-left">

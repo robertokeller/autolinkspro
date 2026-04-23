@@ -194,7 +194,7 @@ function mergeTemplatePlaceholderData(
     return {
       ...genericData,
       ...moduleData,
-      "{desconto}": firstNonEmptyString(moduleData["{desconto}"], genericData["{desconto}"]),
+      "{desconto}": firstNonEmptyString(genericData["{desconto}"], moduleData["{desconto}"]),
     };
   }
 

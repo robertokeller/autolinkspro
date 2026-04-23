@@ -1,4 +1,13 @@
-﻿import { TrendingUp, Handshake, ExternalLink, Calculator, ArrowRight, Zap, BadgeDollarSign, Infinity as InfinityIcon } from "lucide-react";
+﻿import {
+  ArrowRight,
+  BadgeDollarSign,
+  Calculator,
+  ExternalLink,
+  Handshake,
+  Infinity as InfinityIcon,
+  Zap,
+} from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 
 export default function Afiliado() {
@@ -7,13 +16,17 @@ export default function Afiliado() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-16 px-4 py-10 pb-32 animate-in fade-in duration-500">
+    <div className="ds-page space-y-12 pb-24 animate-in fade-in duration-500">
+      <PageHeader
+        title="Programa de afiliados"
+        description="Indique o AutoLinks e receba comissão recorrente em cada renovação ativa."
+      />
       
       {/* Hero Section */}
-      <div className="text-center space-y-6 max-w-3xl mx-auto pt-4">
-        <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-4 py-1.5 text-primary text-sm font-bold tracking-wide">
+      <div className="mx-auto max-w-3xl space-y-6 text-center">
+        <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-4 py-1.5 text-sm font-bold tracking-wide text-primary">
           <Handshake className="h-4 w-4" />
-          Parceria Oficial AutoLinks
+          Parceria oficial AutoLinks
         </div>
         <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-foreground leading-tight">
           Transforme cada indicação em um pagamento <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-orange-400">que cai todos os meses.</span>
@@ -23,45 +36,45 @@ export default function Afiliado() {
         </p>
         <div className="pt-4">
           <Button 
-            size="lg" 
-            className="h-14 px-8 text-base shadow-lg transition-transform hover:-translate-y-1 bg-primary hover:bg-primary/90 text-primary-foreground gap-3 rounded-full"
+            size="default"
+            className="h-11 gap-2.5 rounded-full bg-primary px-7 text-sm text-primary-foreground shadow-lg transition-transform hover:-translate-y-0.5 hover:bg-primary/90 sm:text-base"
             onClick={handleClick}
           >
             Liberar Meu Link de Parceiro
-            <ArrowRight className="h-5 w-5" />
+            <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
       {/* The Core Argument - Why it works */}
       <div className="grid md:grid-cols-3 gap-6">
-        <div className="bg-card border rounded-2xl p-8 hover:border-primary/50 transition-colors shadow-sm">
+        <div className="glass rounded-2xl p-8 shadow-sm transition-colors hover:border-primary/50">
           <div className="h-12 w-12 bg-primary/10 rounded-xl flex items-center justify-center mb-6">
             <InfinityIcon className="h-6 w-6 text-primary" />
           </div>
-          <h3 className="text-xl font-bold mb-3">Ganhe Sobre Todos os Planos</h3>
+          <h3 className="mb-3 text-xl font-bold">Ganhe em todos os planos</h3>
           <p className="text-muted-foreground leading-relaxed">
             Nossos clientes podem assinar pacotes mensais, trimestrais ou até semestrais. Você recebe 40% de comissão independentemente do período escolhido. Em todas as renovações, por toda vida, você recebe comissão dos planos.
           </p>
         </div>
 
-        <div className="bg-card border rounded-2xl p-8 hover:border-primary/50 transition-colors shadow-sm">
+        <div className="glass rounded-2xl p-8 shadow-sm transition-colors hover:border-primary/50">
           <div className="h-12 w-12 bg-primary/10 rounded-xl flex items-center justify-center mb-6">
             <Zap className="h-6 w-6 text-primary" />
           </div>
-          <h3 className="text-xl font-bold mb-3">Produto Essencial (Alta Retenção)</h3>
+          <h3 className="mb-3 text-xl font-bold">Produto essencial (alta retenção)</h3>
           <p className="text-muted-foreground leading-relaxed">
             Diferente de cursos que as pessoas desistem, o AutoLinks é infraestrutura. Quando uma empresa automatiza as vendas com a ferramenta, ela não cancela.
           </p>
         </div>
 
-        <div className="bg-card border rounded-2xl p-8 hover:border-primary/50 transition-colors shadow-sm">
+        <div className="glass rounded-2xl p-8 shadow-sm transition-colors hover:border-primary/50">
           <div className="h-12 w-12 bg-primary/10 rounded-xl flex items-center justify-center mb-6">
             <BadgeDollarSign className="h-6 w-6 text-primary" />
           </div>
-          <h3 className="text-xl font-bold mb-3">Venda Indireta</h3>
+          <h3 className="mb-3 text-xl font-bold">Venda indireta</h3>
           <p className="text-muted-foreground leading-relaxed">
-            Você não precisa convencer ninguém a comprar. Basta exibir como o AutoLinks está te ajudando a economizar tempo e as pessoas naturalmete pedirão o seu link de acesso.
+            Você não precisa convencer ninguém a comprar. Basta exibir como o AutoLinks está te ajudando a economizar tempo e as pessoas naturalmente pedirão o seu link de acesso.
           </p>
         </div>
       </div>
@@ -74,9 +87,9 @@ export default function Afiliado() {
           <div className="space-y-6">
             <div className="inline-flex items-center gap-2 text-primary font-semibold">
               <Calculator className="h-5 w-5" />
-              A Matemática da Recorrência
+              A matemática da recorrência
             </div>
-            <h2 className="text-3xl font-bold text-foreground">Como o seu esforço se multiplica com o tempo.</h2>
+            <h2 className="text-3xl font-bold text-foreground">Como o seu esforço se multiplica com o tempo</h2>
             <p className="text-muted-foreground text-lg leading-relaxed">
               Vamos fazer uma simulação realista. Imagine que você comece a compartilhar seu link e faça apenas 1 venda por dia de uma assinatura (considerando um plano representativo com comissão líquida de ~R$ 38,80).
             </p>
@@ -87,7 +100,7 @@ export default function Afiliado() {
 
           <div className="bg-card border shadow-lg rounded-2xl p-6 md:p-8 space-y-6">
             <h3 className="font-semibold text-center text-muted-foreground uppercase tracking-wider text-sm mb-4">
-              Simulação Acumulativa
+              Simulação acumulativa
             </h3>
             
             <div className="space-y-4">
@@ -145,12 +158,12 @@ export default function Afiliado() {
         </p>
         
         <Button 
-          size="lg" 
-          className="h-14 px-8 text-base shadow-lg transition-transform hover:-translate-y-1 bg-primary hover:bg-primary/90 text-primary-foreground gap-3 rounded-full mx-auto flex"
+          size="default"
+          className="mx-auto flex h-11 gap-2.5 rounded-full bg-primary px-7 text-sm text-primary-foreground shadow-lg transition-transform hover:-translate-y-0.5 hover:bg-primary/90 sm:text-base"
           onClick={handleClick}
         >
           Tornar-se Parceiro Agora
-          <ExternalLink className="h-5 w-5" />
+          <ExternalLink className="h-4 w-4" />
         </Button>
       </div>
 

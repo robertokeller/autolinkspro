@@ -109,7 +109,9 @@ export default function RoutesPage() {
     duplicateRoute,
   } = useRotas();
   const { syncedGroups: rawGroups, masterGroups: rawMasterGroups, syncGroups, syncing: syncingGroups } = useGrupos();
+  const { templates: rawMessageTemplates } = useTemplates("message");
   const { templates: rawShopeeTemplates } = useTemplates("shopee");
+  const { templates: rawMeliTemplates } = useTemplates("meli");
   const { templates: rawAmazonTemplates } = useTemplates("amazon");
   const { allSessions: rawAllSessions, refreshSessions } = useSessoes();
   const { sessions: rawMeliSessions } = useMercadoLivreSessions({ enableAutoMonitor: false });
@@ -121,7 +123,9 @@ export default function RoutesPage() {
   });
   const groups = rawGroups as Group[];
   const masterGroups = rawMasterGroups as MasterGroup[];
+  const messageTemplates = rawMessageTemplates as Template[];
   const shopeeTemplates = rawShopeeTemplates as Template[];
+  const meliTemplates = rawMeliTemplates as Template[];
   const amazonTemplates = rawAmazonTemplates as Template[];
   const allSessions = rawAllSessions as UnifiedSession[];
   const meliSessions = rawMeliSessions as MeliSession[];
@@ -148,7 +152,7 @@ export default function RoutesPage() {
   const stepDescriptions: Record<number, string> = {
     1: "Dê um nome, escolha a sessão e o grupo que será monitorado.",
     2: "Escolha para onde as ofertas serão enviadas.",
-    3: "Ajuste a conversão de links, templates e filtros.",
+    3: "Ajuste a conversão de links, modelos de mensagem e filtros.",
   };
   const connectedSessions = allSessions.filter((s) => s.status === "online");
   const hasAvailableMeliSession = meliSessions.some((session) => session.status === "active" || session.status === "untested");
@@ -161,8 +165,8 @@ export default function RoutesPage() {
     [allSessions],
   );
   const templatesById = useMemo<Map<string, Template>>(
-    () => new Map([...shopeeTemplates, ...amazonTemplates].map((template) => [template.id, template])),
-    [shopeeTemplates, amazonTemplates],
+    () => new Map([...messageTemplates, ...shopeeTemplates, ...meliTemplates, ...amazonTemplates].map((template) => [template.id, template])),
+    [messageTemplates, shopeeTemplates, meliTemplates, amazonTemplates],
   );
   const meliSessionsById = useMemo<Map<string, MeliSession>>(
     () => new Map(meliSessions.map((session) => [session.id, session])),
@@ -211,6 +215,13 @@ export default function RoutesPage() {
       : nr.destinationGroupIds.length > 0
   );
   const canCreate = canGoStep2 && canGoStep3 && (!nr.autoConvertMercadoLivre || hasAvailableMeliSession);
+  const shouldShowMainMessageModelSelector = nr.autoConvertShopee || nr.autoConvertMercadoLivre;
+  const selectedTemplateInMessageScope = nr.templateId
+    ? messageTemplates.some((template) => template.id === nr.templateId)
+    : false;
+  const selectedAmazonTemplateInMessageScope = nr.amazonTemplateId
+    ? messageTemplates.some((template) => template.id === nr.amazonTemplateId)
+    : false;
 
   const handleFullSync = async () => {
     setIsSyncing(true);
@@ -929,26 +940,33 @@ export default function RoutesPage() {
                         setNr((prev) => ({
                           ...prev,
                           autoConvertShopee: checked,
-                          templateId: checked ? prev.templateId : "",
+                          templateId: checked || prev.autoConvertMercadoLivre ? prev.templateId : "",
                         }));
                       }}
                     />
                   </div>
 
-                  {nr.autoConvertShopee && (
+                  {shouldShowMainMessageModelSelector && (
                     <div className="space-y-3">
                       <div className="space-y-2">
-                        <Label className="text-xs">Template Shopee</Label>
-                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão da Shopee.</p>
+                        <Label className="text-xs">Modelo de mensagem</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Escolha como a mensagem vai ficar depois da conversão dos links.
+                        </p>
                         <Select value={nr.templateId || "original"} onValueChange={(v) => setNr({ ...nr, templateId: v })}>
                           <SelectTrigger><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="original">
                               <span className="flex items-center gap-2">Manter mensagem original</span>
                             </SelectItem>
-                            {shopeeTemplates.map((t) => (
+                            {!!nr.templateId && !selectedTemplateInMessageScope && (
+                              <SelectItem value={nr.templateId}>
+                                <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
+                              </SelectItem>
+                            )}
+                            {messageTemplates.map((t) => (
                               <SelectItem key={t.id} value={t.id}>
-                                <span className="flex items-center gap-2">Template {t.name}</span>
+                                <span className="flex items-center gap-2">Modelo {t.name}</span>
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -958,7 +976,7 @@ export default function RoutesPage() {
                       <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
                         <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
                         <p className="text-xs text-muted-foreground">
-                          Se marcar "Manter mensagem original", só o link vai ser convertido pra afiliado.
+                          Se marcar "Manter mensagem original", só os links ativados vão ser convertidos pra afiliado.
                         </p>
                       </div>
                     </div>
@@ -978,6 +996,7 @@ export default function RoutesPage() {
                         setNr((prev) => ({
                           ...prev,
                           autoConvertMercadoLivre: checked,
+                          templateId: checked || prev.autoConvertShopee ? prev.templateId : "",
                         }));
                       }}
                     />
@@ -1012,7 +1031,7 @@ export default function RoutesPage() {
                   {nr.autoConvertAmazon && (
                     <div className="space-y-3">
                       <div className="space-y-2">
-                        <Label className="text-xs">Template Amazon</Label>
+                        <Label className="text-xs">Modelo de mensagem Amazon</Label>
                         <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão da Amazon.</p>
                         <Select value={nr.amazonTemplateId || "original"} onValueChange={(v) => setNr({ ...nr, amazonTemplateId: v })}>
                           <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1020,9 +1039,14 @@ export default function RoutesPage() {
                             <SelectItem value="original">
                               <span className="flex items-center gap-2">Manter mensagem original</span>
                             </SelectItem>
-                            {amazonTemplates.map((t) => (
+                            {!!nr.amazonTemplateId && !selectedAmazonTemplateInMessageScope && (
+                              <SelectItem value={nr.amazonTemplateId}>
+                                <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
+                              </SelectItem>
+                            )}
+                            {messageTemplates.map((t) => (
                               <SelectItem key={t.id} value={t.id}>
-                                <span className="flex items-center gap-2">Template {t.name}</span>
+                                <span className="flex items-center gap-2">Modelo {t.name}</span>
                               </SelectItem>
                             ))}
                           </SelectContent>

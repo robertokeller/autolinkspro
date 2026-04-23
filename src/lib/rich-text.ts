@@ -1,3 +1,5 @@
+import { applyPlaceholders } from "@/lib/marketplace-utils";
+
 /**
  * Unified rich-text formatting utilities.
  *
@@ -121,10 +123,7 @@ export function renderTemplatePreviewHtml(
   // Step 2: apply all placeholder substitutions, with {imagem} → "" for any
   //         remaining inline occurrences.
   const sampleWithoutImage = { ...sampleData, "{imagem}": "", "{{imagem}}": "" };
-  let text = withSentinel;
-  for (const [key, value] of Object.entries(sampleWithoutImage)) {
-    text = text.split(key).join(value);
-  }
+  const text = applyPlaceholders(withSentinel, sampleWithoutImage);
 
   // Step 3: HTML-escape everything (\x00 chars in the sentinel are not
   //         HTML-special, so the sentinel survives this step intact).
