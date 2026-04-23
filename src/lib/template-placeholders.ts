@@ -3,6 +3,9 @@ import { applyPlaceholders } from "@/lib/marketplace-utils";
 
 type TemplatePlaceholderData = Record<string, string>;
 const IMAGE_PLACEHOLDER_LINE_REGEX = /^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim;
+const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}/i;
+const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}/i;
+const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}/i;
 
 function safeNumber(value: unknown, fallback = Number.NaN) {
   const parsed = Number(value);
@@ -78,6 +81,18 @@ export function templateRequestsImageAttachment(templateContent: string): boolea
   return normalized.includes("{imagem}") || normalized.includes("{{imagem}}");
 }
 
+export function templateRequestsRandomCta(templateContent: string): boolean {
+  return RANDOM_CTA_PLACEHOLDER_REGEX.test(String(templateContent || ""));
+}
+
+export function templateRequestsPersonalizedCta(templateContent: string): boolean {
+  return PERSONALIZED_CTA_PLACEHOLDER_REGEX.test(String(templateContent || ""));
+}
+
+export function templateRequestsAiGeneratedCta(templateContent: string): boolean {
+  return AI_GENERATED_CTA_PLACEHOLDER_REGEX.test(String(templateContent || ""));
+}
+
 export function applyTemplatePlaceholders(
   templateContent: string,
   placeholderData: Record<string, string>,
@@ -99,4 +114,7 @@ export const SAMPLE_TEMPLATE_PLACEHOLDER_DATA: TemplatePlaceholderData = {
   "{link}": "https://shope.ee/aff123",
   "{imagem}": "",
   "{avaliacao}": "4.8",
+  "{cta_aleatoria}": "Comenta QUERO e garanta o seu antes que acabe!",
+  "{cta_personalizada}": "Comenta QUERO que eu te envio os detalhes agora.",
+  "{cta_gerada_por_ia}": "Clique no link e aproveite essa oferta enquanto esta disponivel",
 };

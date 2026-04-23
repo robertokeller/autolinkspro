@@ -7,11 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CalendarDays, Clock, Send } from "lucide-react";
-import { useTemplateModule } from "@/contexts/TemplateModuleContext";
+import { useTemplates } from "@/hooks/useTemplates";
 import { useGrupos } from "@/hooks/useGrupos";
 import { useSessoes } from "@/hooks/useSessoes";
 import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
+import { applyTemplatePlaceholders } from "@/lib/template-placeholders";
 import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
 import { templateRequestsImageAttachment } from "@/lib/template-placeholders";
 import type { ScheduledMediaAttachment, ScheduledPost } from "@/lib/types";
@@ -89,16 +90,44 @@ async function fetchImageAsAttachment(imageUrl: string): Promise<ScheduledMediaA
 }
 
 export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, initialMessage, product, editingPost }: ScheduleProductModalProps) {
-  const { templates, defaultTemplate, applyTemplate } = useTemplateModule();
+  const { templates: messageTemplates, defaultTemplate: messageDefaultTemplate } = useTemplates("message");
+  const { templates: shopeeTemplates, defaultTemplate: shopeeDefaultTemplate } = useTemplates("shopee");
   const { syncedGroups, masterGroups } = useGrupos();
   const { allSessions } = useSessoes();
   const { createPost, updatePost } = useAgendamentos();
   const isEditing = Boolean(editingPost);
 
+  const activeTemplates = useMemo(
+    () => (messageTemplates.length > 0 ? messageTemplates : shopeeTemplates),
+    [messageTemplates, shopeeTemplates],
+  );
+  const activeDefaultTemplate = useMemo(
+    () => (messageTemplates.length > 0 ? messageDefaultTemplate : shopeeDefaultTemplate),
+    [messageDefaultTemplate, messageTemplates.length, shopeeDefaultTemplate],
+  );
+  const applyTemplate = useCallback((input: {
+    templateId?: string | null;
+    fallbackContent?: string;
+    placeholderData?: Record<string, string>;
+  }) => {
+    const template = (input.templateId
+      ? activeTemplates.find((item) => item.id === input.templateId) || null
+      : null)
+      || activeDefaultTemplate
+      || activeTemplates[0]
+      || null;
+
+    if (!template) {
+      return input.fallbackContent || "";
+    }
+
+    return applyTemplatePlaceholders(template.content, input.placeholderData || {});
+  }, [activeDefaultTemplate, activeTemplates]);
+
   const [scheduleName, setScheduleName] = useState("");
   const [messageContent, setMessageContent] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const resolvedTemplateId = selectedTemplateId || (!isEditing ? defaultTemplate?.id || "" : "");
+  const resolvedTemplateId = selectedTemplateId || (!isEditing ? activeDefaultTemplate?.id || "" : "");
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [selectedMasterGroups, setSelectedMasterGroups] = useState<string[]>([]);
   const [destinationMode, setDestinationMode] = useState<DestinationMode>("individual");
@@ -140,12 +169,12 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, in
   );
   const selectedTemplate = useMemo(
     () => (resolvedTemplateId
-      ? templates.find((item) => item.id === resolvedTemplateId) || null
+      ? activeTemplates.find((item) => item.id === resolvedTemplateId) || null
       : null)
-      || defaultTemplate
-      || templates[0]
+      || activeDefaultTemplate
+      || activeTemplates[0]
       || null,
-    [defaultTemplate, resolvedTemplateId, templates],
+    [activeDefaultTemplate, activeTemplates, resolvedTemplateId],
   );
   const templateRequiresImageAttachment = useMemo(
     () => templateRequestsImageAttachment(selectedTemplate?.content || ""),
@@ -406,11 +435,11 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, in
           </div>
 
           <div className="space-y-2">
-            <Label>Template</Label>
+            <Label>Modelo de mensagem</Label>
             <Select value={resolvedTemplateId} onValueChange={handleTemplateChange}>
-              <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Escolha um modelo de mensagem..." /></SelectTrigger>
               <SelectContent>
-                {templates.map((t) => (
+                {activeTemplates.map((t) => (
                   <SelectItem key={t.id} value={t.id}>{t.name}{t.isDefault ? " *" : ""}</SelectItem>
                 ))}
               </SelectContent>
@@ -426,7 +455,7 @@ export function ScheduleProductModal({ open, onOpenChange, initialTemplateId, in
               className="min-h-[100px]"
             />
             <p className="text-xs text-muted-foreground">
-              Quando você escolhe um template, o texto já vem pronto. Você pode editar à vontade.
+              Quando você escolhe um modelo de mensagem, o texto já vem pronto. Você pode editar à vontade.
             </p>
           </div>
 

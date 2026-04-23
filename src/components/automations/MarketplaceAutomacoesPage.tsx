@@ -232,7 +232,7 @@ export function MarketplaceAutomacoesPage({
   } = automationController;
 
   const { syncedGroups, masterGroups } = useGrupos();
-  const { templates, defaultTemplate } = useTemplates(marketplace);
+  const { templates, defaultTemplate } = useTemplates("message");
   const { allSessions } = useSessoes();
   const { refreshAllRoutes } = useRotas();
 
@@ -332,7 +332,7 @@ export function MarketplaceAutomacoesPage({
     const effectiveSessionId = form.sessionId || defaultConnectedSessionId;
     if (!form.name.trim()) { toast.error("De um nome para a automação"); return; }
     if (!effectiveSessionId) { toast.error("Conecte uma sessão de envio"); return; }
-    if (!form.templateId) { toast.error("Escolha um template de mensagem"); return; }
+    if (!form.templateId) { toast.error("Escolha um modelo de mensagem"); return; }
     if (form.destinationGroupIds.length === 0 && form.masterGroupIds.length === 0) {
       toast.error("Escolha pelo menos um grupo de destino");
       return;
@@ -782,12 +782,12 @@ export function MarketplaceAutomacoesPage({
             )}
 
             <div className="space-y-2">
-              <Label>Template *</Label>
+              <Label>Modelo de mensagem *</Label>
               <Select value={form.templateId} onValueChange={(value) => setForm({ ...form, templateId: value })}>
-                <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Escolha um modelo de mensagem..." /></SelectTrigger>
                 <SelectContent>
                   {templates.length === 0 && (
-                    <SelectItem value="_none" disabled>Nenhum template criado</SelectItem>
+                    <SelectItem value="_none" disabled>Nenhum modelo de mensagem criado</SelectItem>
                   )}
                   {templates.map((template) => (
                     <SelectItem key={template.id} value={template.id}>

@@ -20,8 +20,36 @@ export interface AmazonTemplateProductInput {
   reviewsCount?: number | null;
 }
 
+function parseLocalizedNumber(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : Number.NaN;
+  }
+
+  const raw = String(value || "").trim();
+  if (!raw) return Number.NaN;
+
+  let normalized = raw
+    .replace(/[R$\s]/gi, "")
+    .replace(/[^0-9.,-]/g, "");
+
+  if (!normalized) return Number.NaN;
+
+  if (/^-?\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  } else if (/^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/,/g, "");
+  } else if (/^-?\d+,\d+$/.test(normalized)) {
+    normalized = normalized.replace(",", ".");
+  } else if (/^-?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "");
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 function safeNumber(value: unknown, fallback = Number.NaN): number {
-  const parsed = Number(value);
+  const parsed = parseLocalizedNumber(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
@@ -111,8 +139,37 @@ export function applyAmazonTemplatePlaceholders(
   templateContent: string,
   placeholderData: Record<string, string>,
 ): string {
+  const source = placeholderData || {};
+  const readPlaceholder = (...keys: string[]): string => {
+    for (const key of keys) {
+      const value = String(source[key] || "").trim();
+      if (value) return value;
+    }
+    return "";
+  };
+
+  const price = readPlaceholder("{preco}", "{preço}", "{preco_atual}", "{preço_atual}");
+  const oldPrice = readPlaceholder(
+    "{preco_original}",
+    "{preço_original}",
+    "{preco original}",
+    "{preço original}",
+    "{preco-antigo}",
+    "{preço-antigo}",
+  );
+
   const replaced = applyTemplatePlaceholders(templateContent, {
-    ...placeholderData,
+    ...source,
+    "{preco}": price,
+    "{preço}": price,
+    "{preco_atual}": price,
+    "{preço_atual}": price,
+    "{preco_original}": oldPrice,
+    "{preço_original}": oldPrice,
+    "{preco original}": oldPrice,
+    "{preço original}": oldPrice,
+    "{preco-antigo}": oldPrice,
+    "{preço-antigo}": oldPrice,
     "{parcelamento}": String(placeholderData["{parcelamento}"] || ""),
     "{avaliacao}": String(placeholderData["{avaliacao}"] || ""),
     "{avaliacoes}": String(placeholderData["{avaliacoes}"] || ""),

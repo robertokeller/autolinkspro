@@ -55,6 +55,14 @@ services/.analytics/
 *.envrc
 *.secret
 *.secrets
+*.token
+*.token.txt
+*.secret.txt
+*openrouter*key*
+*resend*key*
+*cloudflare*token*
+*coolify*token*
+*hostinger*token*
 *.pem
 *.key
 *.crt

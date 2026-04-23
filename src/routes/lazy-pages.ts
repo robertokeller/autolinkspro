@@ -133,6 +133,7 @@ export const Pages = {
   TemplatesAmazon: lazyPage("TemplatesAmazon", "/src/pages/amazon/TemplatesAmazon.tsx", () => import("@/pages/amazon/TemplatesAmazon")),
   AmazonConfiguracoes: lazyPage("AmazonConfiguracoes", "/src/pages/amazon/AmazonConfiguracoes.tsx", () => import("@/pages/amazon/AmazonConfiguracoes")),
   Agendamentos: lazyPage("Agendamentos", "/src/pages/Agendamentos.tsx", () => import("@/pages/Agendamentos")),
+  ModelosDeMensagem: lazyPage("ModelosDeMensagem", "/src/pages/ModelosDeMensagem.tsx", () => import("@/pages/ModelosDeMensagem")),
   Modelos: lazyPage("Modelos", "/src/pages/Modelos.tsx", () => import("@/pages/Modelos")),
   LinkHub: lazyPage("LinkHub", "/src/pages/LinkHub.tsx", () => import("@/pages/LinkHub")),
   LinkHubPublicPage: lazyPage("LinkHubPublicPage", "/src/pages/LinkHubPublicPage.tsx", () => import("@/pages/LinkHubPublicPage")),

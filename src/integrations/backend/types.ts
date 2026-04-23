@@ -44,6 +44,38 @@ type TableMap = {
     app_id: string;
     region: string;
   }>;
+  cta_ai_generation_logs: TableDef<{
+    id: string;
+    user_id: string;
+    template_id: string | null;
+    tone_key: string;
+    offer_title: string;
+    generated_phrase: string;
+    provider: string;
+    model: string;
+    status: "success" | "fallback" | "error";
+    latency_ms: number | null;
+    error_message: string | null;
+    created_at: string;
+  }>;
+  cta_ai_tones: TableDef<{
+    key: string;
+    label: string;
+    description: string;
+    system_prompt: string;
+    sort_order: number;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  }>;
+  cta_random_phrases: TableDef<{
+    id: string;
+    phrase: string;
+    sort_order: number;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  }>;
   groups: TableDef<{
     id: string;
     created_at: string;
@@ -191,6 +223,30 @@ type TableMap = {
     read_at: string | null;
     dismissed_at: string | null;
     delivered_at: string;
+  }>;
+  user_cta_random_state: TableDef<{
+    user_id: string;
+    last_phrase_id: string | null;
+    recent_phrase_ids: string[];
+    created_at: string;
+    updated_at: string;
+  }>;
+  user_personalized_ctas: TableDef<{
+    id: string;
+    user_id: string;
+    phrase: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  }>;
+  user_template_cta_ai_config: TableDef<{
+    id: string;
+    user_id: string;
+    template_id: string;
+    tone_key: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
   }>;
   app_runtime_flags: TableDef<{
     id: string;

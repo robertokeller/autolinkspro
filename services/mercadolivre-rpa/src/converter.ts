@@ -136,8 +136,12 @@ export class MercadoLivreLinkConverter {
 
   private isScopeInCooldown(scopeId: string): boolean {
     const until = this.cooldownUntilByScope.get(scopeId) || 0;
+    if (until <= 0) return false;
+
     if (Date.now() >= until) {
       this.cooldownUntilByScope.delete(scopeId);
+      this.consecutiveFailuresByScope.delete(scopeId);
+      logger.info({ scopeId }, "Cooldown expired; reset failure state for scope");
       return false;
     }
     return true;

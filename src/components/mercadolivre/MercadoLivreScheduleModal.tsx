@@ -14,6 +14,7 @@ import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import type { ScheduledMediaAttachment, ScheduledPost, TemplateScope } from "@/lib/types";
 import { getMarketplaceTemplateModule } from "@/lib/marketplace-template-modules";
 import { templateRequestsImageAttachment } from "@/lib/template-placeholders";
+import { renderRichTextPreviewHtml } from "@/lib/rich-text";
 import { toast } from "sonner";
 import { DateTimeField } from "@/components/scheduling/DateTimeField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
@@ -202,6 +203,10 @@ export function MercadoLivreScheduleModal({
     if (!template) return fallbackContent;
     return templateModule.applyPlaceholders(template.content, scheduleTemplateData);
   }, [fallbackContent, scheduleTemplateData, selectedTemplate, templateModule]);
+  const messagePreviewHtml = useMemo(
+    () => renderRichTextPreviewHtml(messageContent || ""),
+    [messageContent],
+  );
 
   const requiresImageAttachment = useMemo(() => {
     if (product) {
@@ -470,7 +475,7 @@ export function MercadoLivreScheduleModal({
           </div>
 
           <div className="space-y-2">
-            <Label>Preview da mensagem *</Label>
+            <Label>Mensagem *</Label>
             <Textarea
               placeholder="Escreva a mensagem aqui..."
               value={messageContent}
@@ -480,6 +485,15 @@ export function MercadoLivreScheduleModal({
             <p className="text-xs text-muted-foreground">
               O texto já vem pronto quando você escolhe um template. Você pode ajustar antes de agendar.
             </p>
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Preview formatado</Label>
+              <div
+                className="max-h-44 overflow-y-auto rounded-md border bg-muted/20 p-3 text-sm leading-relaxed"
+                dangerouslySetInnerHTML={{
+                  __html: messagePreviewHtml || "<span class=\"text-muted-foreground\">Digite a mensagem para visualizar o preview.</span>",
+                }}
+              />
+            </div>
           </div>
 
           <DateTimeField

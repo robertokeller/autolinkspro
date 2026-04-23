@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,16 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, Copy, Link2, Loader2, Lock } from "lucide-react";
+import { CheckCircle2, Copy, FileText, Link2, Loader2, Lock } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useShopeeLinkModule } from "@/contexts/ShopeeLinkModuleContext";
 import { useMercadoLivreSessions } from "@/hooks/useMercadoLivreSessions";
 import { useAccessControl } from "@/hooks/useAccessControl";
+import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
 import { backend } from "@/integrations/backend/client";
 import { convertMarketplaceLink, type MarketplaceConversionResult } from "@/lib/marketplace-link-converter";
 import { ROUTES } from "@/lib/routes";
 import { toast } from "sonner";
 import { PageWrapper } from "@/components/PageWrapper";
+
+type ConversorScheduleProduct = NonNullable<ComponentProps<typeof ScheduleProductModal>["product"]>;
 
 function detectInputMarketplace(rawInput: string): "shopee" | "mercadolivre" | "amazon" | null {
   try {
@@ -34,6 +37,20 @@ function detectInputMarketplace(rawInput: string): "shopee" | "mercadolivre" | "
   return null;
 }
 
+function toScheduleProductFromConversion(result: MarketplaceConversionResult): ConversorScheduleProduct {
+  const marketplaceTitle = result.marketplace === "mercadolivre"
+    ? "Oferta Mercado Livre"
+    : result.marketplace === "amazon"
+      ? "Oferta Amazon"
+      : "Oferta Shopee";
+
+  return {
+    title: marketplaceTitle,
+    affiliateLink: result.affiliateLink,
+    shopName: marketplaceTitle,
+  };
+}
+
 export default function ShopeeConversor() {
   const { user } = useAuth();
   const { isConfigured, isLoading, convertLink } = useShopeeLinkModule();
@@ -45,8 +62,11 @@ export default function ShopeeConversor() {
   const [loadingAmazonTag, setLoadingAmazonTag] = useState(true);
   const [amazonTagConfigured, setAmazonTagConfigured] = useState(false);
   const [conversionResult, setConversionResult] = useState<MarketplaceConversionResult | null>(null);
+  const [scheduleProduct, setScheduleProduct] = useState<ConversorScheduleProduct | null>(null);
+  const [scheduleInitialMessage, setScheduleInitialMessage] = useState("");
 
   const hasMercadoLivreAccess = canAccess("mercadoLivre");
+  const canUseTemplates = canAccess("templates");
 
   const activeMeliSessions = sessions.filter((s) => s.status === "active" || s.status === "untested");
   const hasMeliSession = activeMeliSessions.length > 0;
@@ -135,6 +155,8 @@ export default function ShopeeConversor() {
       }
 
       setConversionResult(result);
+      setScheduleProduct(null);
+      setScheduleInitialMessage("");
       toast.success(result.cached ? "Link processado (cache)." : "Link processado com sucesso.", {
         description: result.conversionTimeMs ? `${result.conversionTimeMs}ms` : undefined,
       });
@@ -154,6 +176,23 @@ export default function ShopeeConversor() {
     if (!conversionResult?.affiliateLink) return;
     await navigator.clipboard.writeText(conversionResult.affiliateLink);
     toast.success("Link copiado!");
+  };
+
+  const handleOpenScheduleModal = () => {
+    if (!conversionResult?.affiliateLink) {
+      toast.error("Converta um link antes de gerar a mensagem.");
+      return;
+    }
+
+    if (!canUseTemplates) {
+      toast.error("Seu plano não inclui modelos de mensagem.", {
+        description: "Faça upgrade para gerar mensagens com templates no conversor.",
+      });
+      return;
+    }
+
+    setScheduleInitialMessage(conversionResult.affiliateLink);
+    setScheduleProduct(toScheduleProductFromConversion(conversionResult));
   };
 
   return (
@@ -309,11 +348,39 @@ export default function ShopeeConversor() {
                   <Copy className="mr-1.5 h-3.5 w-3.5" />
                   Copiar link
                 </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleOpenScheduleModal}
+                  disabled={!canUseTemplates}
+                  className="w-full sm:w-auto"
+                >
+                  <FileText className="mr-1.5 h-3.5 w-3.5" />
+                  Gerar mensagem
+                </Button>
                 <span className="text-xs text-muted-foreground">Copie e use em mensagens, grupos e automações.</span>
               </div>
+
+              {!canUseTemplates && (
+                <p className="text-xs text-muted-foreground">
+                  Seu plano atual não inclui modelos de mensagem no conversor.
+                </p>
+              )}
             </CardContent>
           </Card>
         )}
+
+        <ScheduleProductModal
+          open={!!scheduleProduct}
+          onOpenChange={(open) => {
+            if (!open) {
+              setScheduleProduct(null);
+              setScheduleInitialMessage("");
+            }
+          }}
+          initialMessage={scheduleInitialMessage}
+          product={scheduleProduct || undefined}
+        />
       </div>
       </div>
     </PageWrapper>

@@ -81,6 +81,21 @@ const AMAZON_URL = String(
   process.env.AMAZON_MICROSERVICE_URL || process.env.AMAZON_URL || "",
 ).trim().replace(/\/$/, "");
 const OPS_URL = String(process.env.OPS_CONTROL_URL || "").trim().replace(/\/$/, "");
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_API_KEY = String(process.env.OPENROUTER_API_KEY || "").trim();
+const OPENROUTER_MODEL = String(process.env.OPENROUTER_MODEL || "openai/gpt-oss-20b").trim() || "openai/gpt-oss-20b";
+const OPENROUTER_TIMEOUT_MS = Math.max(
+  5_000,
+  Math.min(60_000, Number(process.env.OPENROUTER_TIMEOUT_MS || "12000") || 12_000),
+);
+const OPENROUTER_MAX_RETRIES = Math.max(
+  0,
+  Math.min(2, Number(process.env.OPENROUTER_MAX_RETRIES || "1") || 1),
+);
+const OPENROUTER_HTTP_REFERER = String(
+  process.env.OPENROUTER_HTTP_REFERER || process.env.APP_PUBLIC_URL || "",
+).trim();
+const OPENROUTER_APP_TITLE = String(process.env.OPENROUTER_APP_TITLE || "AutoLinks CTA IA").trim() || "AutoLinks CTA IA";
 const WHATSAPP_SYNC_GROUPS_TIMEOUT_MS = Math.max(
   15_000,
   Math.min(300_000, Number(process.env.WHATSAPP_SYNC_GROUPS_TIMEOUT_MS || "120000") || 120_000),
@@ -488,6 +503,31 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
     max: 60,
     windowMs: 60_000,
     message: "Limite do conversor global atingido. Aguarde 1 minuto.",
+  },
+  "cta-ia-next": {
+    max: 20,
+    windowMs: 60_000,
+    message: "Limite de geracao de CTA IA atingido. Aguarde 1 minuto.",
+  },
+  "cta-ia-placeholders-next": {
+    max: 20,
+    windowMs: 60_000,
+    message: "Limite de geracao de placeholders CTA IA atingido. Aguarde 1 minuto.",
+  },
+  "cta-ia-config-save": {
+    max: 30,
+    windowMs: 60_000,
+    message: "Muitas alteracoes na configuracao de CTA IA. Aguarde 1 minuto.",
+  },
+  "cta-ia-config-get": {
+    max: 90,
+    windowMs: 60_000,
+    message: "Muitas consultas de configuracao de CTA IA. Aguarde 1 minuto.",
+  },
+  "cta-ia-tones-list": {
+    max: 90,
+    windowMs: 60_000,
+    message: "Muitas consultas de tons de CTA IA. Aguarde 1 minuto.",
   },
 };
 
@@ -1063,7 +1103,7 @@ async function loadRecentAutomationOfferTitleSet(input: {
 
 // Only allow placeholder tokens with simple names so we can safely build
 // replacement regexes without accepting arbitrary patterns.
-const ALLOWED_PLACEHOLDER_TOKEN = /^[\wáéíóúãõâêôçÁÉÍÓÚÃÕÂÊÔÇ-]{1,64}$/;
+const ALLOWED_PLACEHOLDER_TOKEN = /^[\wáéíóúãõâêôçÁÉÍÓÚÃÕÂÊÔÇ -]{1,64}$/;
 
 function normalizePlaceholderToken(key: string): string | null {
   const normalized = String(key || "").trim();
@@ -1105,7 +1145,1853 @@ const MELI_TEMPLATE_EMPTY_STORE_LINE_REGEX = /^[ \t]*Loja:\s*$/gim;
 const MELI_TEMPLATE_EMPTY_RATING_LINE_REGEX = /^[ \t]*Nota:\s*(?:\(\s*\))?\s*$/gim;
 const MELI_TEMPLATE_PARTIAL_RATING_LINE_REGEX = /^[ \t]*Nota:\s*([0-9]+(?:[.,][0-9])?)\s*\(\s*\)\s*$/gim;
 
-type TemplateScope = "shopee" | "meli" | "amazon";
+type TemplateScope = "shopee" | "meli" | "amazon" | "message";
+const RANDOM_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]aleatoria\s*\}\}/i;
+const PERSONALIZED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*cta[_ ]personalizada\s*\}\}/i;
+// Keep legacy token support (cta_ia_gerada) while standardizing on cta_gerada_por_ia
+// and tone-specific placeholders.
+const AI_GENERATED_CTA_PLACEHOLDER_REGEX = /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada|cta[_ ]urgencia|cta[_ ]escassez|cta[_ ]oportunidade|cta[_ ]beneficio|cta[_ ]curiosidade|cta[_ ]preco[_ ]forte|cta[_ ]achadinho|cta[_ ]prova[_ ]social|cta[_ ]desejo|cta[_ ]dica[_ ]amiga|cta[_ ]rotativa)\s*\}\}/i;
+const RANDOM_CTA_PHRASE_CACHE_TTL_MS = 60_000;
+const RANDOM_CTA_RECENT_WINDOW_MIN = 8;
+const RANDOM_CTA_RECENT_WINDOW_MAX = 24;
+const PERSONALIZED_CTA_MIN_LENGTH = 3;
+const PERSONALIZED_CTA_MAX_LENGTH = 280;
+const PERSONALIZED_CTA_MAX_ROWS = 200;
+const PERSONALIZED_CTA_PROFILE_PREFS_KEY = "personalized_ctas";
+const PERSONALIZED_CTA_STORAGE_CACHE_TTL_MS = 30_000;
+const RANDOM_CTA_PROFILE_PREFS_KEY = "random_cta_state";
+const RANDOM_CTA_STORAGE_CACHE_TTL_MS = 30_000;
+const AI_CTA_TONES_CACHE_TTL_MS = 60_000;
+const AI_CTA_DEFAULT_TONE_KEY = "beneficio";
+const AI_CTA_DEFAULT_FALLBACK_PHRASE = "Clique no link e confira essa oferta agora";
+const AI_CTA_MAX_OFFER_TITLE_LENGTH = 180;
+const AI_CTA_MAX_OUTPUT_LENGTH = 280;
+const AI_CTA_ROTATIVE_TONE_KEYS: ReadonlyArray<string> = [
+  "urgencia",
+  "escassez",
+  "oportunidade",
+  "beneficio",
+  "curiosidade",
+  "preco_forte",
+  "achadinho",
+  "prova_social",
+  "desejo",
+  "dica_amiga",
+];
+const BUILTIN_RANDOM_CTA_PHRASES: ReadonlyArray<RandomCtaPhraseRow> = [
+  { id: "builtin-random-1", phrase: "Clique no link e garanta o seu agora" },
+  { id: "builtin-random-2", phrase: "Aproveite agora antes que acabe" },
+  { id: "builtin-random-3", phrase: "Oferta por tempo limitado aproveite ja" },
+  { id: "builtin-random-4", phrase: "Corre que o estoque e limitado" },
+  { id: "builtin-random-5", phrase: "Garanta o seu com desconto de hoje" },
+  { id: "builtin-random-6", phrase: "Nao deixa para depois aproveite ja" },
+  { id: "builtin-random-7", phrase: "Ultimas unidades disponiveis no link" },
+  { id: "builtin-random-8", phrase: "So hoje com esse preco especial" },
+  { id: "builtin-random-9", phrase: "Aproveita essa chance agora mesmo" },
+  { id: "builtin-random-10", phrase: "Comenta QUERO e pega o seu" },
+  { id: "builtin-random-11", phrase: "Clique e confira o desconto ativo" },
+  { id: "builtin-random-12", phrase: "Oferta relampago ativa no link" },
+  { id: "builtin-random-13", phrase: "Aproveite sem perder tempo" },
+  { id: "builtin-random-14", phrase: "Garanta o seu com poucos cliques" },
+  { id: "builtin-random-15", phrase: "Preco de oportunidade no link" },
+  { id: "builtin-random-16", phrase: "Desconto temporario corre no link" },
+];
+function buildAiCtaTonePrompt(input: {
+  toneLabel: string;
+  line1: string;
+  line2: string;
+}): string {
+  return [
+    "Voce e um gerador de CTAs curtas para ofertas de produtos em WhatsApp.",
+    "",
+    "Sua tarefa e criar 1 unica CTA com base no titulo do produto informado.",
+    "",
+    "Regras obrigatorias:",
+    "- Responda em portugues do Brasil.",
+    "- Retorne somente a CTA final.",
+    "- A saida deve ter apenas 1 linha.",
+    "- Nao use aspas.",
+    "- Nao use emojis.",
+    "- Nao use explicacoes.",
+    "- Nao use observacoes.",
+    "- Nao use prefixos como CTA:, Resposta: ou similares.",
+    "- Nao use listas.",
+    "- Nao use quebra de linha.",
+    "- Nao use ponto final no fim.",
+    "- Maximo de 6 palavras.",
+    "- A CTA deve ser curta, natural, chamativa e persuasiva.",
+    "- A CTA deve parecer uma frase real de oferta para WhatsApp.",
+    `- O tom deve ser de ${input.toneLabel}.`,
+    `- ${input.line1}.`,
+    `- ${input.line2}.`,
+    "- Nao repita o titulo completo do produto.",
+    "- Evite frases genericas, fracas ou roboticas.",
+    "- Gere algo pronto para ser usado diretamente em um placeholder de template.",
+    "",
+    "Validacao obrigatoria antes de responder:",
+    "- Verifique se a resposta tem no maximo 6 palavras.",
+    "- Verifique se a resposta contem apenas a CTA.",
+    "- Verifique se nao ha nenhum texto extra.",
+    "",
+    "Saida obrigatoria:",
+    "Somente a CTA final.",
+    "",
+    "Titulo do produto: {{titulo}}",
+    "Crie a CTA agora.",
+  ].join("\n");
+}
+const BUILTIN_AI_CTA_TONES: ReadonlyArray<AiCtaToneRow> = [
+  {
+    key: "urgencia",
+    label: "Urgencia",
+    description: "Acao imediata com senso de agora.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "urgencia",
+      line1: "A CTA deve dar sensacao de acao imediata",
+      line2: "Deve parecer que a oportunidade e para agora",
+    }),
+    sort_order: 1,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "escassez",
+    label: "Escassez",
+    description: "Pouca disponibilidade e tempo curto.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "escassez",
+      line1: "A CTA deve transmitir que pode acabar logo",
+      line2: "Deve passar sensacao de pouca disponibilidade ou tempo curto",
+    }),
+    sort_order: 2,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "oportunidade",
+    label: "Oportunidade",
+    description: "Tom de achado com vantagem real.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "oportunidade",
+      line1: "A CTA deve transmitir vantagem real",
+      line2: "Deve soar como achado bom e oportunidade de compra",
+    }),
+    sort_order: 3,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "beneficio",
+    label: "Beneficio",
+    description: "Utilidade e valor percebido.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "beneficio",
+      line1: "A CTA deve destacar utilidade, conforto, praticidade ou vantagem percebida",
+      line2: "Deve fazer o produto parecer valioso para quem compra",
+    }),
+    sort_order: 4,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "curiosidade",
+    label: "Curiosidade",
+    description: "Intriga clara para clique rapido.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "curiosidade",
+      line1: "A CTA deve despertar interesse imediato",
+      line2: "Deve intrigar sem ficar confusa",
+    }),
+    sort_order: 5,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "preco_forte",
+    label: "Preco forte",
+    description: "Sensacao de preco muito bom.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "preco forte",
+      line1: "A CTA deve destacar sensacao de preco muito bom",
+      line2: "Deve transmitir custo-beneficio ou valor acima do esperado",
+    }),
+    sort_order: 6,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "achadinho",
+    label: "Achadinho",
+    description: "Descoberta boa, leve e certeira.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "achadinho",
+      line1: "A CTA deve soar como descoberta boa, leve e certeira",
+      line2: "Deve parecer uma dica de oferta encontrada na hora",
+    }),
+    sort_order: 7,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "prova_social",
+    label: "Prova social",
+    description: "Validacao social com naturalidade.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "prova social",
+      line1: "A CTA deve sugerir que e algo que chama atencao ou agrada muita gente",
+      line2: "Deve transmitir validacao social sem parecer artificial",
+    }),
+    sort_order: 8,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "desejo",
+    label: "Desejo",
+    description: "Aumenta vontade de ter o produto.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "desejo",
+      line1: "A CTA deve aumentar vontade de ter o produto",
+      line2: "Deve soar atraente sem ficar exagerada",
+    }),
+    sort_order: 9,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    key: "dica_amiga",
+    label: "Dica amiga",
+    description: "Recomendacao rapida com tom proximo.",
+    system_prompt: buildAiCtaTonePrompt({
+      toneLabel: "dica amiga",
+      line1: "A CTA deve soar como recomendacao rapida de alguem proximo",
+      line2: "Deve ser leve, convincente e natural",
+    }),
+    sort_order: 10,
+    is_active: true,
+    created_at: null,
+    updated_at: null,
+  },
+];
+
+type PersonalizedCtaTableName = "user_personalized_ctas" | "user_personalized_cta";
+
+type PersonalizedCtaStorageMode =
+  | { kind: "table"; tableName: PersonalizedCtaTableName }
+  | { kind: "profile-json" };
+
+type RandomCtaStorageMode =
+  | { kind: "table" }
+  | { kind: "profile-json" };
+
+let personalizedCtaStorageCache: {
+  expiresAt: number;
+  mode: PersonalizedCtaStorageMode | null;
+} = {
+  expiresAt: 0,
+  mode: null,
+};
+
+let randomCtaStorageCache: {
+  expiresAt: number;
+  mode: RandomCtaStorageMode | null;
+} = {
+  expiresAt: 0,
+  mode: null,
+};
+
+type RandomCtaPhraseRow = {
+  id: string;
+  phrase: string;
+};
+
+type UserRandomCtaStateRow = {
+  last_phrase_id: string | null;
+  recent_phrase_ids: string[] | null;
+};
+
+type PersonalizedCtaRow = {
+  id: string;
+  phrase: string;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type AiCtaToneRow = {
+  key: string;
+  label: string;
+  description: string;
+  system_prompt: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type UserTemplateAiCtaConfigRow = {
+  id: string;
+  user_id: string;
+  template_id: string;
+  tone_key: string;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type AiCtaGenerationStatus = "success" | "fallback" | "error";
+
+type AiCtaPlaceholderMode = "default" | "tone" | "rotative";
+
+type AiCtaPlaceholderDefinition = {
+  canonicalToken: string;
+  aliases: string[];
+  regex: RegExp;
+  mode: AiCtaPlaceholderMode;
+  toneKey?: string;
+};
+
+const AI_CTA_PLACEHOLDER_DEFINITIONS: ReadonlyArray<AiCtaPlaceholderDefinition> = [
+  {
+    canonicalToken: "cta_gerada_por_ia",
+    aliases: ["cta gerada por ia", "cta_ia_gerada", "cta ia gerada"],
+    regex: /\{\{?\s*(?:cta[_ ]gerada[_ ]por[_ ]ia|cta[_ ]ia[_ ]gerada)\s*\}\}/i,
+    mode: "default",
+  },
+  {
+    canonicalToken: "cta_urgencia",
+    aliases: ["cta urgencia"],
+    regex: /\{\{?\s*cta[_ ]urgencia\s*\}\}/i,
+    mode: "tone",
+    toneKey: "urgencia",
+  },
+  {
+    canonicalToken: "cta_escassez",
+    aliases: ["cta escassez"],
+    regex: /\{\{?\s*cta[_ ]escassez\s*\}\}/i,
+    mode: "tone",
+    toneKey: "escassez",
+  },
+  {
+    canonicalToken: "cta_oportunidade",
+    aliases: ["cta oportunidade"],
+    regex: /\{\{?\s*cta[_ ]oportunidade\s*\}\}/i,
+    mode: "tone",
+    toneKey: "oportunidade",
+  },
+  {
+    canonicalToken: "cta_beneficio",
+    aliases: ["cta beneficio"],
+    regex: /\{\{?\s*cta[_ ]beneficio\s*\}\}/i,
+    mode: "tone",
+    toneKey: "beneficio",
+  },
+  {
+    canonicalToken: "cta_curiosidade",
+    aliases: ["cta curiosidade"],
+    regex: /\{\{?\s*cta[_ ]curiosidade\s*\}\}/i,
+    mode: "tone",
+    toneKey: "curiosidade",
+  },
+  {
+    canonicalToken: "cta_preco_forte",
+    aliases: ["cta preco forte"],
+    regex: /\{\{?\s*cta[_ ]preco[_ ]forte\s*\}\}/i,
+    mode: "tone",
+    toneKey: "preco_forte",
+  },
+  {
+    canonicalToken: "cta_achadinho",
+    aliases: ["cta achadinho"],
+    regex: /\{\{?\s*cta[_ ]achadinho\s*\}\}/i,
+    mode: "tone",
+    toneKey: "achadinho",
+  },
+  {
+    canonicalToken: "cta_prova_social",
+    aliases: ["cta prova social"],
+    regex: /\{\{?\s*cta[_ ]prova[_ ]social\s*\}\}/i,
+    mode: "tone",
+    toneKey: "prova_social",
+  },
+  {
+    canonicalToken: "cta_desejo",
+    aliases: ["cta desejo"],
+    regex: /\{\{?\s*cta[_ ]desejo\s*\}\}/i,
+    mode: "tone",
+    toneKey: "desejo",
+  },
+  {
+    canonicalToken: "cta_dica_amiga",
+    aliases: ["cta dica amiga"],
+    regex: /\{\{?\s*cta[_ ]dica[_ ]amiga\s*\}\}/i,
+    mode: "tone",
+    toneKey: "dica_amiga",
+  },
+  {
+    canonicalToken: "cta_rotativa",
+    aliases: ["cta rotativa"],
+    regex: /\{\{?\s*cta[_ ]rotativa\s*\}\}/i,
+    mode: "rotative",
+  },
+];
+
+let randomCtaPhraseCache: { expiresAt: number; rows: RandomCtaPhraseRow[] } = {
+  expiresAt: 0,
+  rows: [],
+};
+
+let aiCtaToneCache: { expiresAt: number; rows: AiCtaToneRow[] } = {
+  expiresAt: 0,
+  rows: [],
+};
+
+function templateRequestsRandomCtaPlaceholder(templateContent: string): boolean {
+  return RANDOM_CTA_PLACEHOLDER_REGEX.test(String(templateContent || ""));
+}
+
+function templateRequestsPersonalizedCtaPlaceholder(templateContent: string): boolean {
+  return PERSONALIZED_CTA_PLACEHOLDER_REGEX.test(String(templateContent || ""));
+}
+
+function templateRequestsAiGeneratedCtaPlaceholder(templateContent: string): boolean {
+  return AI_GENERATED_CTA_PLACEHOLDER_REGEX.test(String(templateContent || ""));
+}
+
+function resolveAiCtaPlaceholderDefinitions(templateContent: string): AiCtaPlaceholderDefinition[] {
+  const normalizedContent = String(templateContent || "");
+  if (!normalizedContent.trim()) return [];
+
+  return AI_CTA_PLACEHOLDER_DEFINITIONS.filter((definition) => definition.regex.test(normalizedContent));
+}
+
+function injectAiCtaPlaceholderPhrase(
+  placeholderData: Record<string, string>,
+  definition: AiCtaPlaceholderDefinition,
+  phrase: string,
+): Record<string, string> {
+  const normalizedPhrase = String(phrase || "").trim();
+  if (!normalizedPhrase) return placeholderData;
+
+  const merged = {
+    ...(placeholderData || {}),
+  };
+
+  const tokens = new Set<string>([
+    definition.canonicalToken,
+    ...definition.aliases,
+  ]);
+
+  for (const token of tokens) {
+    const normalizedToken = String(token || "").trim();
+    if (!normalizedToken) continue;
+    merged[`{${normalizedToken}}`] = normalizedPhrase;
+  }
+
+  return merged;
+}
+
+function injectRandomCtaPlaceholderData(
+  placeholderData: Record<string, string>,
+  randomPhrase: string,
+): Record<string, string> {
+  const normalizedPhrase = String(randomPhrase || "").trim();
+  if (!normalizedPhrase) return placeholderData;
+
+  return {
+    ...(placeholderData || {}),
+    "{cta_aleatoria}": normalizedPhrase,
+    "{cta aleatoria}": normalizedPhrase,
+  };
+}
+
+function injectPersonalizedCtaPlaceholderData(
+  placeholderData: Record<string, string>,
+  personalizedPhrase: string,
+): Record<string, string> {
+  const normalizedPhrase = String(personalizedPhrase || "").trim();
+  if (!normalizedPhrase) return placeholderData;
+
+  return {
+    ...(placeholderData || {}),
+    "{cta_personalizada}": normalizedPhrase,
+    "{cta personalizada}": normalizedPhrase,
+  };
+}
+
+function injectAiGeneratedCtaPlaceholderData(
+  placeholderData: Record<string, string>,
+  generatedPhrase: string,
+): Record<string, string> {
+  const normalizedPhrase = String(generatedPhrase || "").trim();
+  if (!normalizedPhrase) return placeholderData;
+
+  return {
+    ...(placeholderData || {}),
+    "{cta_gerada_por_ia}": normalizedPhrase,
+    "{cta gerada por ia}": normalizedPhrase,
+    "{cta_ia_gerada}": normalizedPhrase,
+    "{cta ia gerada}": normalizedPhrase,
+  };
+}
+
+function normalizeAiCtaToneKey(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/^cta_/, "");
+}
+
+function normalizeAiOfferTitleForPrompt(value: unknown): string {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, AI_CTA_MAX_OFFER_TITLE_LENGTH);
+}
+
+function normalizeAiGeneratedCtaPhrase(value: unknown): string {
+  const normalized = String(value || "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/^['"`]+|['"`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?]+$/g, "")
+    .trim();
+
+  if (!normalized) return "";
+  if (normalized.length <= AI_CTA_MAX_OUTPUT_LENGTH) return normalized;
+  return normalized.slice(0, AI_CTA_MAX_OUTPUT_LENGTH).trim();
+}
+
+function extractOpenRouterAssistantText(rawContent: unknown): string {
+  if (typeof rawContent === "string") return rawContent;
+  if (!Array.isArray(rawContent)) return "";
+
+  const fragments = rawContent
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      const record = part as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      return "";
+    })
+    .filter(Boolean);
+
+  return fragments.join(" ");
+}
+
+function normalizePersonalizedCtaPhrase(value: unknown): string {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function validatePersonalizedCtaPhrase(phrase: string): string | null {
+  if (!phrase) return "Informe a frase da CTA personalizada.";
+  if (phrase.length < PERSONALIZED_CTA_MIN_LENGTH) {
+    return `A CTA personalizada precisa ter ao menos ${PERSONALIZED_CTA_MIN_LENGTH} caracteres.`;
+  }
+  if (phrase.length > PERSONALIZED_CTA_MAX_LENGTH) {
+    return `A CTA personalizada deve ter no maximo ${PERSONALIZED_CTA_MAX_LENGTH} caracteres.`;
+  }
+  return null;
+}
+
+function parseBooleanParam(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on" || normalized === "sim") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off" || normalized === "nao") {
+    return false;
+  }
+  return fallback;
+}
+
+function serializePersonalizedCtaRow(row: PersonalizedCtaRow): {
+  id: string;
+  phrase: string;
+  isActive: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+} {
+  return {
+    id: String(row.id || "").trim(),
+    phrase: String(row.phrase || "").trim(),
+    isActive: row.is_active === true,
+    createdAt: row.created_at ? String(row.created_at) : null,
+    updatedAt: row.updated_at ? String(row.updated_at) : null,
+  };
+}
+
+function serializeAiCtaToneRow(row: AiCtaToneRow): {
+  key: string;
+  label: string;
+  description: string;
+  sortOrder: number;
+  isActive: boolean;
+} {
+  return {
+    key: String(row.key || "").trim(),
+    label: String(row.label || "").trim(),
+    description: String(row.description || "").trim(),
+    sortOrder: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0,
+    isActive: row.is_active === true,
+  };
+}
+
+function serializeAiCtaConfigRow(row: UserTemplateAiCtaConfigRow): {
+  id: string;
+  templateId: string;
+  toneKey: string;
+  isActive: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+} {
+  return {
+    id: String(row.id || "").trim(),
+    templateId: String(row.template_id || "").trim(),
+    toneKey: normalizeAiCtaToneKey(row.tone_key),
+    isActive: row.is_active === true,
+    createdAt: row.created_at ? String(row.created_at) : null,
+    updatedAt: row.updated_at ? String(row.updated_at) : null,
+  };
+}
+
+function getDatabaseErrorCode(error: unknown): string {
+  if (typeof error === "object" && error && "code" in error) {
+    return String((error as { code?: unknown }).code ?? "");
+  }
+  return "";
+}
+
+function isUndefinedTableError(error: unknown): boolean {
+  return getDatabaseErrorCode(error) === "42P01";
+}
+
+function createPersonalizedCtaDuplicateError(): Error {
+  const error = new Error("Essa CTA personalizada ja existe.") as Error & { code?: string };
+  error.code = "23505";
+  return error;
+}
+
+function toSortTimestamp(value: string | null): number {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortPersonalizedCtaRows(rows: PersonalizedCtaRow[]): PersonalizedCtaRow[] {
+  return [...rows].sort((left, right) => {
+    const activeWeight = Number(right.is_active) - Number(left.is_active);
+    if (activeWeight !== 0) return activeWeight;
+
+    const updatedWeight = toSortTimestamp(right.updated_at) - toSortTimestamp(left.updated_at);
+    if (updatedWeight !== 0) return updatedWeight;
+
+    return toSortTimestamp(right.created_at) - toSortTimestamp(left.created_at);
+  });
+}
+
+function normalizePersonalizedCtaUniqueKey(phrase: string): string {
+  return normalizePersonalizedCtaPhrase(phrase).toLowerCase();
+}
+
+function asObjectRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function parseRandomCtaStateFromProfilePrefs(rawPrefs: unknown): UserRandomCtaStateRow {
+  const prefs = asObjectRecord(rawPrefs);
+  const rawState = asObjectRecord(prefs[RANDOM_CTA_PROFILE_PREFS_KEY]);
+
+  const lastPhraseIdRaw = String(rawState.last_phrase_id ?? rawState.lastPhraseId ?? "").trim();
+  const rawRecent = Array.isArray(rawState.recent_phrase_ids)
+    ? rawState.recent_phrase_ids
+    : (Array.isArray(rawState.recentPhraseIds) ? rawState.recentPhraseIds : []);
+
+  const recentPhraseIds = rawRecent
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, RANDOM_CTA_RECENT_WINDOW_MAX);
+
+  return {
+    last_phrase_id: lastPhraseIdRaw || null,
+    recent_phrase_ids: recentPhraseIds,
+  };
+}
+
+function serializeRandomCtaStateForProfilePrefs(state: UserRandomCtaStateRow): Record<string, unknown> {
+  const lastPhraseId = String(state.last_phrase_id || "").trim() || null;
+  const recentPhraseIds = normalizeUuidArray(state.recent_phrase_ids).slice(0, RANDOM_CTA_RECENT_WINDOW_MAX);
+
+  return {
+    last_phrase_id: lastPhraseId,
+    recent_phrase_ids: recentPhraseIds,
+  };
+}
+
+function parsePersonalizedCtasFromProfilePrefs(rawPrefs: unknown): PersonalizedCtaRow[] {
+  const prefs = asObjectRecord(rawPrefs);
+  const rawItems = Array.isArray(prefs[PERSONALIZED_CTA_PROFILE_PREFS_KEY])
+    ? prefs[PERSONALIZED_CTA_PROFILE_PREFS_KEY] as unknown[]
+    : [];
+
+  const rows: PersonalizedCtaRow[] = [];
+  const seenIds = new Set<string>();
+
+  for (const rawItem of rawItems) {
+    const item = asObjectRecord(rawItem);
+    const phrase = normalizePersonalizedCtaPhrase(item.phrase);
+    const validationError = validatePersonalizedCtaPhrase(phrase);
+    if (validationError) continue;
+
+    const rawId = String(item.id || "").trim();
+    const id = isUuid(rawId) ? rawId : uuid();
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    const createdAtRaw = String(item.created_at ?? item.createdAt ?? "").trim();
+    const updatedAtRaw = String(item.updated_at ?? item.updatedAt ?? "").trim();
+
+    const createdAt = createdAtRaw && !Number.isNaN(Date.parse(createdAtRaw))
+      ? new Date(createdAtRaw).toISOString()
+      : new Date().toISOString();
+    const updatedAt = updatedAtRaw && !Number.isNaN(Date.parse(updatedAtRaw))
+      ? new Date(updatedAtRaw).toISOString()
+      : createdAt;
+
+    rows.push({
+      id,
+      phrase,
+      is_active: parseBooleanParam(item.is_active ?? item.isActive, true),
+      created_at: createdAt,
+      updated_at: updatedAt,
+    });
+
+    if (rows.length >= PERSONALIZED_CTA_MAX_ROWS) break;
+  }
+
+  return sortPersonalizedCtaRows(rows).slice(0, PERSONALIZED_CTA_MAX_ROWS);
+}
+
+function serializePersonalizedCtasForProfilePrefs(rows: PersonalizedCtaRow[]): Array<Record<string, unknown>> {
+  return sortPersonalizedCtaRows(rows)
+    .slice(0, PERSONALIZED_CTA_MAX_ROWS)
+    .map((row) => ({
+      id: String(row.id || "").trim(),
+      phrase: normalizePersonalizedCtaPhrase(row.phrase),
+      is_active: row.is_active === true,
+      created_at: row.created_at ? String(row.created_at) : null,
+      updated_at: row.updated_at ? String(row.updated_at) : null,
+    }))
+    .filter((row) => !!row.id && !!row.phrase);
+}
+
+async function detectPersonalizedCtaTableName(): Promise<PersonalizedCtaTableName | null> {
+  const state = await queryOne<{ plural: string | null; singular: string | null }>(
+    `SELECT
+       to_regclass('public.user_personalized_ctas')::text AS plural,
+       to_regclass('public.user_personalized_cta')::text AS singular`,
+  );
+
+  if (String(state?.plural || "").trim()) return "user_personalized_ctas";
+  if (String(state?.singular || "").trim()) return "user_personalized_cta";
+  return null;
+}
+
+async function resolvePersonalizedCtaStorageMode(input?: { forceRefresh?: boolean }): Promise<PersonalizedCtaStorageMode> {
+  const forceRefresh = input?.forceRefresh === true;
+  const nowMs = Date.now();
+
+  if (!forceRefresh && personalizedCtaStorageCache.mode && personalizedCtaStorageCache.expiresAt > nowMs) {
+    return personalizedCtaStorageCache.mode;
+  }
+
+  try {
+    const tableName = await detectPersonalizedCtaTableName();
+    const mode: PersonalizedCtaStorageMode = tableName
+      ? { kind: "table", tableName }
+      : { kind: "profile-json" };
+
+    personalizedCtaStorageCache = {
+      expiresAt: nowMs + PERSONALIZED_CTA_STORAGE_CACHE_TTL_MS,
+      mode,
+    };
+
+    return mode;
+  } catch (error) {
+    console.warn("[rpc] personalized cta storage detection fallback:", error instanceof Error ? error.message : String(error));
+    const mode: PersonalizedCtaStorageMode = { kind: "profile-json" };
+    personalizedCtaStorageCache = {
+      expiresAt: nowMs + PERSONALIZED_CTA_STORAGE_CACHE_TTL_MS,
+      mode,
+    };
+    return mode;
+  }
+}
+
+async function resolveRandomCtaStorageMode(input?: { forceRefresh?: boolean }): Promise<RandomCtaStorageMode> {
+  const forceRefresh = input?.forceRefresh === true;
+  const nowMs = Date.now();
+
+  if (!forceRefresh && randomCtaStorageCache.mode && randomCtaStorageCache.expiresAt > nowMs) {
+    return randomCtaStorageCache.mode;
+  }
+
+  try {
+    const state = await queryOne<{ phrases: string | null; random_state: string | null }>(
+      `SELECT
+         to_regclass('public.cta_random_phrases')::text AS phrases,
+         to_regclass('public.user_cta_random_state')::text AS random_state`,
+    );
+
+    const hasTables = Boolean(String(state?.phrases || "").trim())
+      && Boolean(String(state?.random_state || "").trim());
+
+    const mode: RandomCtaStorageMode = hasTables
+      ? { kind: "table" }
+      : { kind: "profile-json" };
+
+    randomCtaStorageCache = {
+      expiresAt: nowMs + RANDOM_CTA_STORAGE_CACHE_TTL_MS,
+      mode,
+    };
+
+    return mode;
+  } catch (error) {
+    console.warn("[rpc] random cta storage detection fallback:", error instanceof Error ? error.message : String(error));
+    const mode: RandomCtaStorageMode = { kind: "profile-json" };
+    randomCtaStorageCache = {
+      expiresAt: nowMs + RANDOM_CTA_STORAGE_CACHE_TTL_MS,
+      mode,
+    };
+    return mode;
+  }
+}
+
+function resolvePersonalizedCtaTableNameForSql(tableName: PersonalizedCtaTableName): string {
+  if (tableName === "user_personalized_ctas") return "user_personalized_ctas";
+  if (tableName === "user_personalized_cta") return "user_personalized_cta";
+  throw new Error("Nome de tabela de CTA personalizada inválido.");
+}
+
+async function listPersonalizedCtasFromTable(userId: string, tableName: PersonalizedCtaTableName): Promise<PersonalizedCtaRow[]> {
+  const tableSql = resolvePersonalizedCtaTableNameForSql(tableName);
+  return query<PersonalizedCtaRow>(
+    `SELECT id, phrase, is_active, created_at, updated_at
+       FROM ${tableSql}
+      WHERE user_id = $1
+      ORDER BY is_active DESC, updated_at DESC NULLS LAST, created_at DESC
+      LIMIT $2`,
+    [userId, PERSONALIZED_CTA_MAX_ROWS],
+  );
+}
+
+async function listPersonalizedCtasFromProfile(userId: string): Promise<PersonalizedCtaRow[]> {
+  const profile = await queryOne<{ notification_prefs: unknown }>(
+    "SELECT notification_prefs FROM profiles WHERE user_id = $1",
+    [userId],
+  );
+  if (!profile) return [];
+  return parsePersonalizedCtasFromProfilePrefs(profile.notification_prefs);
+}
+
+async function lockOrCreateProfilePrefsRowTx(client: import("pg").PoolClient, userId: string): Promise<unknown> {
+  let profileResult = await client.query<{ notification_prefs: unknown }>(
+    "SELECT notification_prefs FROM profiles WHERE user_id = $1 FOR UPDATE",
+    [userId],
+  );
+
+  if (profileResult.rowCount === 0) {
+    const userResult = await client.query<{ email: string | null; metadata: unknown }>(
+      "SELECT email, metadata FROM users WHERE id = $1",
+      [userId],
+    );
+    if (userResult.rowCount === 0) return {};
+
+    const userRow = userResult.rows[0] || { email: "", metadata: {} };
+    const metadata = asObjectRecord(userRow.metadata);
+    const fallbackName = String(metadata.name || "").trim();
+    const fallbackEmail = String(userRow.email || "").trim();
+
+    await client.query(
+      `INSERT INTO profiles (user_id, name, email, notification_prefs)
+       VALUES ($1, $2, $3, '{}'::jsonb)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId, fallbackName, fallbackEmail],
+    );
+
+    profileResult = await client.query<{ notification_prefs: unknown }>(
+      "SELECT notification_prefs FROM profiles WHERE user_id = $1 FOR UPDATE",
+      [userId],
+    );
+  }
+
+  return profileResult.rows[0]?.notification_prefs ?? {};
+}
+
+async function savePersonalizedCtaInProfile(input: {
+  userId: string;
+  id: string;
+  phrase: string;
+  isActive: boolean;
+}): Promise<PersonalizedCtaRow | null> {
+  const { userId, id, phrase, isActive } = input;
+
+  return transaction<PersonalizedCtaRow | null>(async (client) => {
+    const basePrefs = asObjectRecord(await lockOrCreateProfilePrefsRowTx(client, userId));
+    const rows = parsePersonalizedCtasFromProfilePrefs(basePrefs);
+    const phraseKey = normalizePersonalizedCtaUniqueKey(phrase);
+    const nowIso = new Date().toISOString();
+
+    let savedItem: PersonalizedCtaRow | null = null;
+
+    if (id) {
+      const index = rows.findIndex((row) => row.id === id);
+      if (index < 0) return null;
+
+      const duplicated = rows.some((row, rowIndex) => rowIndex !== index && normalizePersonalizedCtaUniqueKey(row.phrase) === phraseKey);
+      if (duplicated) throw createPersonalizedCtaDuplicateError();
+
+      const current = rows[index];
+      savedItem = {
+        ...current,
+        phrase,
+        is_active: isActive,
+        updated_at: nowIso,
+      };
+      rows[index] = savedItem;
+    } else {
+      const duplicated = rows.some((row) => normalizePersonalizedCtaUniqueKey(row.phrase) === phraseKey);
+      if (duplicated) throw createPersonalizedCtaDuplicateError();
+
+      savedItem = {
+        id: uuid(),
+        phrase,
+        is_active: isActive,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+      rows.push(savedItem);
+    }
+
+    const nextPrefs = {
+      ...basePrefs,
+      [PERSONALIZED_CTA_PROFILE_PREFS_KEY]: serializePersonalizedCtasForProfilePrefs(rows),
+    };
+
+    await client.query(
+      `UPDATE profiles
+          SET notification_prefs = $2::jsonb,
+              updated_at = NOW()
+        WHERE user_id = $1`,
+      [userId, JSON.stringify(nextPrefs)],
+    );
+
+    if (!savedItem) return null;
+    return savedItem;
+  });
+}
+
+async function togglePersonalizedCtaInProfile(input: {
+  userId: string;
+  id: string;
+  isActive: boolean;
+}): Promise<PersonalizedCtaRow | null> {
+  const { userId, id, isActive } = input;
+
+  return transaction<PersonalizedCtaRow | null>(async (client) => {
+    const basePrefs = asObjectRecord(await lockOrCreateProfilePrefsRowTx(client, userId));
+    const rows = parsePersonalizedCtasFromProfilePrefs(basePrefs);
+    const index = rows.findIndex((row) => row.id === id);
+    if (index < 0) return null;
+
+    const updated: PersonalizedCtaRow = {
+      ...rows[index],
+      is_active: isActive,
+      updated_at: new Date().toISOString(),
+    };
+    rows[index] = updated;
+
+    const nextPrefs = {
+      ...basePrefs,
+      [PERSONALIZED_CTA_PROFILE_PREFS_KEY]: serializePersonalizedCtasForProfilePrefs(rows),
+    };
+
+    await client.query(
+      `UPDATE profiles
+          SET notification_prefs = $2::jsonb,
+              updated_at = NOW()
+        WHERE user_id = $1`,
+      [userId, JSON.stringify(nextPrefs)],
+    );
+
+    return updated;
+  });
+}
+
+async function deletePersonalizedCtaInProfile(input: {
+  userId: string;
+  id: string;
+}): Promise<string | null> {
+  const { userId, id } = input;
+
+  return transaction<string | null>(async (client) => {
+    const basePrefs = asObjectRecord(await lockOrCreateProfilePrefsRowTx(client, userId));
+    const rows = parsePersonalizedCtasFromProfilePrefs(basePrefs);
+    const nextRows = rows.filter((row) => row.id !== id);
+    if (nextRows.length === rows.length) return null;
+
+    const nextPrefs = {
+      ...basePrefs,
+      [PERSONALIZED_CTA_PROFILE_PREFS_KEY]: serializePersonalizedCtasForProfilePrefs(nextRows),
+    };
+
+    await client.query(
+      `UPDATE profiles
+          SET notification_prefs = $2::jsonb,
+              updated_at = NOW()
+        WHERE user_id = $1`,
+      [userId, JSON.stringify(nextPrefs)],
+    );
+
+    return id;
+  });
+}
+
+async function listPersonalizedCtasForUser(userId: string): Promise<PersonalizedCtaRow[]> {
+  const storageMode = await resolvePersonalizedCtaStorageMode();
+
+  if (storageMode.kind === "table") {
+    try {
+      return await listPersonalizedCtasFromTable(userId, storageMode.tableName);
+    } catch (error) {
+      if (!isUndefinedTableError(error)) throw error;
+      await resolvePersonalizedCtaStorageMode({ forceRefresh: true });
+    }
+  }
+
+  return listPersonalizedCtasFromProfile(userId);
+}
+
+async function savePersonalizedCtaForUser(input: {
+  userId: string;
+  id: string;
+  phrase: string;
+  isActive: boolean;
+}): Promise<PersonalizedCtaRow | null> {
+  const { userId, id, phrase, isActive } = input;
+  const storageMode = await resolvePersonalizedCtaStorageMode();
+
+  if (storageMode.kind === "table") {
+    const tableSql = resolvePersonalizedCtaTableNameForSql(storageMode.tableName);
+    try {
+      if (id) {
+        return queryOne<PersonalizedCtaRow>(
+          `UPDATE ${tableSql}
+              SET phrase = $3,
+                  is_active = $4,
+                  updated_at = NOW()
+            WHERE id = $1
+              AND user_id = $2
+          RETURNING id, phrase, is_active, created_at, updated_at`,
+          [id, userId, phrase, isActive],
+        );
+      }
+
+      return queryOne<PersonalizedCtaRow>(
+        `INSERT INTO ${tableSql} (user_id, phrase, is_active)
+         VALUES ($1, $2, $3)
+         RETURNING id, phrase, is_active, created_at, updated_at`,
+        [userId, phrase, isActive],
+      );
+    } catch (error) {
+      if (!isUndefinedTableError(error)) throw error;
+      await resolvePersonalizedCtaStorageMode({ forceRefresh: true });
+    }
+  }
+
+  return savePersonalizedCtaInProfile({ userId, id, phrase, isActive });
+}
+
+async function togglePersonalizedCtaForUser(input: {
+  userId: string;
+  id: string;
+  isActive: boolean;
+}): Promise<PersonalizedCtaRow | null> {
+  const { userId, id, isActive } = input;
+  const storageMode = await resolvePersonalizedCtaStorageMode();
+
+  if (storageMode.kind === "table") {
+    const tableSql = resolvePersonalizedCtaTableNameForSql(storageMode.tableName);
+    try {
+      return await queryOne<PersonalizedCtaRow>(
+        `UPDATE ${tableSql}
+            SET is_active = $3,
+                updated_at = NOW()
+          WHERE id = $1
+            AND user_id = $2
+        RETURNING id, phrase, is_active, created_at, updated_at`,
+        [id, userId, isActive],
+      );
+    } catch (error) {
+      if (!isUndefinedTableError(error)) throw error;
+      await resolvePersonalizedCtaStorageMode({ forceRefresh: true });
+    }
+  }
+
+  return togglePersonalizedCtaInProfile({ userId, id, isActive });
+}
+
+async function deletePersonalizedCtaForUser(input: {
+  userId: string;
+  id: string;
+}): Promise<string | null> {
+  const { userId, id } = input;
+  const storageMode = await resolvePersonalizedCtaStorageMode();
+
+  if (storageMode.kind === "table") {
+    const tableSql = resolvePersonalizedCtaTableNameForSql(storageMode.tableName);
+    try {
+      const deleted = await queryOne<{ id: string }>(
+        `DELETE FROM ${tableSql} WHERE id = $1 AND user_id = $2 RETURNING id`,
+        [id, userId],
+      );
+      return deleted ? String(deleted.id || "").trim() : null;
+    } catch (error) {
+      if (!isUndefinedTableError(error)) throw error;
+      await resolvePersonalizedCtaStorageMode({ forceRefresh: true });
+    }
+  }
+
+  return deletePersonalizedCtaInProfile({ userId, id });
+}
+
+async function resolvePersonalizedCtaPhraseForUser(
+  userId: string,
+  input?: { strict?: boolean; enforceAccess?: boolean },
+): Promise<string> {
+  const strict = input?.strict === true;
+  const enforceAccess = input?.enforceAccess !== false;
+
+  try {
+    if (enforceAccess) {
+      const access = await resolveTemplatesFeatureAccess(userId);
+      if (!access.allowed) return "";
+    }
+
+    const rows = await listPersonalizedCtasForUser(userId);
+
+    const phrases = rows
+      .filter((row) => row.is_active === true)
+      .map((row) => normalizePersonalizedCtaPhrase(row.phrase))
+      .filter(Boolean);
+
+    if (phrases.length === 0) return "";
+    const selected = phrases[Math.floor(Math.random() * phrases.length)];
+    return String(selected || "").trim();
+  } catch (error) {
+    if (strict) throw error;
+    console.warn("[rpc] personalized cta resolver fallback:", error instanceof Error ? error.message : String(error));
+    return "";
+  }
+}
+
+function normalizeUuidArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function computeRandomCtaRecentWindow(totalPhrases: number): number {
+  if (!Number.isFinite(totalPhrases) || totalPhrases <= 0) return RANDOM_CTA_RECENT_WINDOW_MIN;
+  const proportional = Math.round(totalPhrases * 0.2);
+  return Math.max(
+    RANDOM_CTA_RECENT_WINDOW_MIN,
+    Math.min(RANDOM_CTA_RECENT_WINDOW_MAX, proportional),
+  );
+}
+
+async function listActiveRandomCtaPhrasesFromTable(): Promise<RandomCtaPhraseRow[]> {
+  const nowMs = Date.now();
+  if (randomCtaPhraseCache.expiresAt > nowMs && randomCtaPhraseCache.rows.length > 0) {
+    return randomCtaPhraseCache.rows;
+  }
+
+  const rows = await query<RandomCtaPhraseRow>(
+    `SELECT id, phrase
+       FROM cta_random_phrases
+      WHERE is_active = TRUE
+      ORDER BY sort_order ASC NULLS LAST, created_at ASC`,
+  );
+
+  const normalizedRows = rows
+    .map((row) => ({
+      id: String(row.id || "").trim(),
+      phrase: String(row.phrase || "").trim(),
+    }))
+    .filter((row) => row.id && row.phrase);
+
+  randomCtaPhraseCache = {
+    expiresAt: nowMs + RANDOM_CTA_PHRASE_CACHE_TTL_MS,
+    rows: normalizedRows,
+  };
+
+  return normalizedRows;
+}
+
+function listBuiltinRandomCtaPhrases(): RandomCtaPhraseRow[] {
+  return BUILTIN_RANDOM_CTA_PHRASES.map((row) => ({
+    id: String(row.id || "").trim(),
+    phrase: String(row.phrase || "").trim(),
+  })).filter((row) => row.id && row.phrase);
+}
+
+async function readRandomCtaStateFromProfile(userId: string): Promise<UserRandomCtaStateRow> {
+  const profile = await queryOne<{ notification_prefs: unknown }>(
+    "SELECT notification_prefs FROM profiles WHERE user_id = $1",
+    [userId],
+  );
+  if (!profile) {
+    return { last_phrase_id: null, recent_phrase_ids: [] };
+  }
+  return parseRandomCtaStateFromProfilePrefs(profile.notification_prefs);
+}
+
+async function writeRandomCtaStateToProfile(userId: string, state: UserRandomCtaStateRow): Promise<void> {
+  await transaction<void>(async (client) => {
+    const basePrefs = asObjectRecord(await lockOrCreateProfilePrefsRowTx(client, userId));
+    const nextPrefs = {
+      ...basePrefs,
+      [RANDOM_CTA_PROFILE_PREFS_KEY]: serializeRandomCtaStateForProfilePrefs(state),
+    };
+
+    await client.query(
+      `UPDATE profiles
+          SET notification_prefs = $2::jsonb,
+              updated_at = NOW()
+        WHERE user_id = $1`,
+      [userId, JSON.stringify(nextPrefs)],
+    );
+  });
+}
+
+async function resolveRandomCtaPhraseForUser(
+  userId: string,
+  input?: { persist?: boolean; strict?: boolean; enforceAccess?: boolean },
+): Promise<string> {
+  const persist = input?.persist !== false;
+  const strict = input?.strict === true;
+  const enforceAccess = input?.enforceAccess !== false;
+
+  try {
+    if (enforceAccess) {
+      const access = await resolveTemplatesFeatureAccess(userId);
+      if (!access.allowed) return "";
+    }
+
+    let storageMode = await resolveRandomCtaStorageMode();
+    let phrases: RandomCtaPhraseRow[] = [];
+    let state: UserRandomCtaStateRow | null = null;
+
+    if (storageMode.kind === "table") {
+      try {
+        phrases = await listActiveRandomCtaPhrasesFromTable();
+        state = await queryOne<UserRandomCtaStateRow>(
+          "SELECT last_phrase_id, recent_phrase_ids FROM user_cta_random_state WHERE user_id = $1",
+          [userId],
+        );
+      } catch (error) {
+        if (!isUndefinedTableError(error)) throw error;
+        storageMode = await resolveRandomCtaStorageMode({ forceRefresh: true });
+      }
+    }
+
+    if (storageMode.kind === "profile-json") {
+      phrases = listBuiltinRandomCtaPhrases();
+      state = await readRandomCtaStateFromProfile(userId);
+    }
+
+    if (phrases.length === 0) return "";
+
+    const phraseIds = new Set(phrases.map((row) => row.id));
+    const recentWindow = computeRandomCtaRecentWindow(phrases.length);
+    const lastPhraseId = String(state?.last_phrase_id || "").trim();
+    const recentIds = normalizeUuidArray(state?.recent_phrase_ids)
+      .filter((id) => phraseIds.has(id))
+      .slice(0, recentWindow);
+    const recentSet = new Set(recentIds);
+
+    const primaryPool = phrases.filter((row) => !recentSet.has(row.id) && row.id !== lastPhraseId);
+    const secondaryPool = phrases.filter((row) => row.id !== lastPhraseId);
+    const pool = primaryPool.length > 0
+      ? primaryPool
+      : (secondaryPool.length > 0 ? secondaryPool : phrases);
+
+    if (pool.length === 0) return "";
+    const selected = pool[Math.floor(Math.random() * pool.length)];
+    if (!selected?.phrase) return "";
+
+    if (persist) {
+      const nextRecentIds = [selected.id, ...recentIds.filter((id) => id !== selected.id)]
+        .slice(0, recentWindow);
+
+      if (storageMode.kind === "table") {
+        try {
+          await execute(
+            `INSERT INTO user_cta_random_state (user_id, last_phrase_id, recent_phrase_ids)
+             VALUES ($1, $2, $3::uuid[])
+             ON CONFLICT (user_id)
+             DO UPDATE
+                SET last_phrase_id = EXCLUDED.last_phrase_id,
+                    recent_phrase_ids = EXCLUDED.recent_phrase_ids,
+                    updated_at = NOW()`,
+            [userId, selected.id, nextRecentIds],
+          );
+        } catch (error) {
+          if (!isUndefinedTableError(error)) throw error;
+          await resolveRandomCtaStorageMode({ forceRefresh: true });
+          await writeRandomCtaStateToProfile(userId, {
+            last_phrase_id: selected.id,
+            recent_phrase_ids: nextRecentIds,
+          });
+        }
+      } else {
+        await writeRandomCtaStateToProfile(userId, {
+          last_phrase_id: selected.id,
+          recent_phrase_ids: nextRecentIds,
+        });
+      }
+    }
+
+    return selected.phrase;
+  } catch (error) {
+    if (strict) throw error;
+    console.warn("[rpc] random cta resolver fallback:", error instanceof Error ? error.message : String(error));
+    return "";
+  }
+}
+
+function listBuiltinAiCtaTones(): AiCtaToneRow[] {
+  return BUILTIN_AI_CTA_TONES
+    .map((row) => ({
+      key: normalizeAiCtaToneKey(row.key),
+      label: String(row.label || "").trim(),
+      description: String(row.description || "").trim(),
+      system_prompt: String(row.system_prompt || "").trim(),
+      sort_order: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0,
+      is_active: row.is_active === true,
+      created_at: row.created_at ? String(row.created_at) : null,
+      updated_at: row.updated_at ? String(row.updated_at) : null,
+    }))
+    .filter((row) => !!row.key && !!row.system_prompt && row.is_active)
+    .sort((left, right) => left.sort_order - right.sort_order);
+}
+
+async function listActiveAiCtaTones(): Promise<AiCtaToneRow[]> {
+  const nowMs = Date.now();
+  if (aiCtaToneCache.expiresAt > nowMs && aiCtaToneCache.rows.length > 0) {
+    return aiCtaToneCache.rows;
+  }
+
+  try {
+    const rows = await query<AiCtaToneRow>(
+      `SELECT key, label, description, system_prompt, sort_order, is_active, created_at, updated_at
+         FROM cta_ai_tones
+        WHERE is_active = TRUE
+        ORDER BY sort_order ASC NULLS LAST, created_at ASC`,
+    );
+
+    const normalizedRows = rows
+      .map((row) => ({
+        key: normalizeAiCtaToneKey(row.key),
+        label: String(row.label || "").trim(),
+        description: String(row.description || "").trim(),
+        system_prompt: String(row.system_prompt || "").trim(),
+        sort_order: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0,
+        is_active: row.is_active === true,
+        created_at: row.created_at ? String(row.created_at) : null,
+        updated_at: row.updated_at ? String(row.updated_at) : null,
+      }))
+      .filter((row) => !!row.key && !!row.system_prompt && row.is_active);
+
+    const resolvedRows = normalizedRows.length > 0
+      ? normalizedRows
+      : listBuiltinAiCtaTones();
+
+    aiCtaToneCache = {
+      expiresAt: nowMs + AI_CTA_TONES_CACHE_TTL_MS,
+      rows: resolvedRows,
+    };
+    return resolvedRows;
+  } catch (error) {
+    if (!isUndefinedTableError(error)) {
+      console.warn("[rpc] ai cta tones fallback:", error instanceof Error ? error.message : String(error));
+    }
+    const fallbackRows = listBuiltinAiCtaTones();
+    aiCtaToneCache = {
+      expiresAt: nowMs + AI_CTA_TONES_CACHE_TTL_MS,
+      rows: fallbackRows,
+    };
+    return fallbackRows;
+  }
+}
+
+async function readAiCtaConfigForUserTemplate(input: {
+  userId: string;
+  templateId: string;
+}): Promise<UserTemplateAiCtaConfigRow | null> {
+  const templateId = String(input.templateId || "").trim();
+  if (!isUuid(templateId)) return null;
+
+  try {
+    return await queryOne<UserTemplateAiCtaConfigRow>(
+      `SELECT id, user_id, template_id, tone_key, is_active, created_at, updated_at
+         FROM user_template_cta_ai_config
+        WHERE user_id = $1
+          AND template_id = $2
+        LIMIT 1`,
+      [input.userId, templateId],
+    );
+  } catch (error) {
+    if (isUndefinedTableError(error)) return null;
+    throw error;
+  }
+}
+
+async function resolveAiCtaToneForUser(input: {
+  userId: string;
+  templateId: string;
+  toneKey?: string;
+}): Promise<AiCtaToneRow> {
+  const tones = await listActiveAiCtaTones();
+  const toneMap = new Map(tones.map((row) => [normalizeAiCtaToneKey(row.key), row]));
+
+  const fallbackTone = toneMap.get(AI_CTA_DEFAULT_TONE_KEY)
+    || tones[0]
+    || listBuiltinAiCtaTones()[0]
+    || {
+      key: AI_CTA_DEFAULT_TONE_KEY,
+      label: "Beneficio direto",
+      description: "",
+      system_prompt: "Gere uma CTA curta em PT-BR.",
+      sort_order: 0,
+      is_active: true,
+      created_at: null,
+      updated_at: null,
+    };
+
+  const overrideToneKey = normalizeAiCtaToneKey(input.toneKey);
+  if (overrideToneKey && toneMap.has(overrideToneKey)) {
+    return toneMap.get(overrideToneKey) || fallbackTone;
+  }
+
+  const templateId = String(input.templateId || "").trim();
+  if (isUuid(templateId)) {
+    const config = await readAiCtaConfigForUserTemplate({
+      userId: input.userId,
+      templateId,
+    });
+    if (config && config.is_active !== false) {
+      const configuredToneKey = normalizeAiCtaToneKey(config.tone_key);
+      if (configuredToneKey && toneMap.has(configuredToneKey)) {
+        return toneMap.get(configuredToneKey) || fallbackTone;
+      }
+    }
+  }
+
+  return fallbackTone;
+}
+
+async function resolveAiCtaConfigForUserTemplate(input: {
+  userId: string;
+  templateId: string;
+}): Promise<{ item: UserTemplateAiCtaConfigRow | null; effectiveToneKey: string }> {
+  const row = await readAiCtaConfigForUserTemplate(input);
+  const tones = await listActiveAiCtaTones();
+  const toneKeys = new Set(tones.map((tone) => normalizeAiCtaToneKey(tone.key)));
+
+  const rowToneKey = normalizeAiCtaToneKey(row?.tone_key);
+  const resolvedToneKey = toneKeys.has(rowToneKey)
+    ? rowToneKey
+    : (toneKeys.has(AI_CTA_DEFAULT_TONE_KEY)
+      ? AI_CTA_DEFAULT_TONE_KEY
+      : (tones[0] ? normalizeAiCtaToneKey(tones[0].key) : AI_CTA_DEFAULT_TONE_KEY));
+
+  return {
+    item: row,
+    effectiveToneKey: resolvedToneKey,
+  };
+}
+
+async function saveAiCtaConfigForUserTemplate(input: {
+  userId: string;
+  templateId: string;
+  toneKey: string;
+  isActive: boolean;
+}): Promise<UserTemplateAiCtaConfigRow> {
+  const templateId = String(input.templateId || "").trim();
+  const toneKey = normalizeAiCtaToneKey(input.toneKey);
+
+  if (!isUuid(templateId)) {
+    throw new Error("Template invalido para CTA IA.");
+  }
+  if (!toneKey) {
+    throw new Error("Tom de CTA IA invalido.");
+  }
+
+  const saved = await queryOne<UserTemplateAiCtaConfigRow>(
+    `INSERT INTO user_template_cta_ai_config (user_id, template_id, tone_key, is_active)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id, template_id)
+     DO UPDATE
+        SET tone_key = EXCLUDED.tone_key,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+     RETURNING id, user_id, template_id, tone_key, is_active, created_at, updated_at`,
+    [input.userId, templateId, toneKey, input.isActive],
+  );
+
+  if (!saved) {
+    throw new Error("Nao foi possivel salvar a configuracao de CTA IA.");
+  }
+  return saved;
+}
+
+async function insertAiCtaGenerationLog(input: {
+  userId: string;
+  templateId: string;
+  toneKey: string;
+  offerTitle: string;
+  generatedPhrase: string;
+  model: string;
+  status: AiCtaGenerationStatus;
+  latencyMs: number | null;
+  errorMessage?: string;
+}): Promise<void> {
+  const templateId = String(input.templateId || "").trim();
+  const safeTemplateId = isUuid(templateId) ? templateId : null;
+  const toneKey = normalizeAiCtaToneKey(input.toneKey) || AI_CTA_DEFAULT_TONE_KEY;
+  const generatedPhrase = normalizeAiGeneratedCtaPhrase(input.generatedPhrase) || AI_CTA_DEFAULT_FALLBACK_PHRASE;
+  const offerTitle = normalizeAiOfferTitleForPrompt(input.offerTitle);
+  const model = String(input.model || OPENROUTER_MODEL).trim() || OPENROUTER_MODEL;
+  const status = input.status;
+  const latencyMs = Number.isFinite(Number(input.latencyMs)) ? Number(input.latencyMs) : null;
+  const errorMessage = String(input.errorMessage || "").trim();
+
+  try {
+    await execute(
+      `INSERT INTO cta_ai_generation_logs
+         (user_id, template_id, tone_key, offer_title, generated_phrase, provider, model, status, latency_ms, error_message)
+       VALUES
+         ($1, $2, $3, $4, $5, 'openrouter', $6, $7, $8, $9)`,
+      [
+        input.userId,
+        safeTemplateId,
+        toneKey,
+        offerTitle,
+        generatedPhrase,
+        model,
+        status,
+        latencyMs,
+        errorMessage || null,
+      ],
+    );
+  } catch (error) {
+    if (!isUndefinedTableError(error)) {
+      console.warn("[rpc] ai cta log insert skipped:", error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+async function requestAiCtaPhraseFromOpenRouter(input: {
+  systemPrompt: string;
+  toneLabel: string;
+  offerTitle: string;
+}): Promise<{ phrase: string; latencyMs: number }> {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error("OPENROUTER_API_KEY nao configurada.");
+  }
+
+  const systemPrompt = String(input.systemPrompt || "").trim();
+  if (!systemPrompt) {
+    throw new Error("Tom de CTA IA sem prompt configurado.");
+  }
+
+  const offerTitle = normalizeAiOfferTitleForPrompt(input.offerTitle);
+  const toneLabel = String(input.toneLabel || "").trim();
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+  };
+  if (OPENROUTER_HTTP_REFERER) headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER;
+  if (OPENROUTER_APP_TITLE) headers["X-Title"] = OPENROUTER_APP_TITLE;
+
+  const userMessage = [
+    `Tom desejado: ${toneLabel || "beneficio direto"}`,
+    `Titulo da oferta: ${offerTitle || "Oferta sem titulo"}`,
+    "Retorne somente a CTA final, sem prefixos.",
+  ].join("\n");
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= OPENROUTER_MAX_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+    const startedAt = Date.now();
+
+    try {
+      const response = await fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: OPENROUTER_MODEL,
+          temperature: 0.7,
+          max_tokens: 80,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMessage },
+          ],
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+
+      const elapsedMs = Date.now() - startedAt;
+      const responseText = await response.text();
+      const payload = responseText
+        ? (() => {
+          try {
+            return JSON.parse(responseText) as Record<string, unknown>;
+          } catch {
+            return {};
+          }
+        })()
+        : {};
+
+      if (!response.ok) {
+        const rawError = payload.error;
+        const upstreamMessage = rawError && typeof rawError === "object"
+          ? String((rawError as Record<string, unknown>).message || "")
+          : String(rawError || "");
+
+        const status = Number(response.status || 0);
+        const retryable = status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+
+        if (retryable && attempt < OPENROUTER_MAX_RETRIES) {
+          await sleep(250 * (attempt + 1));
+          continue;
+        }
+
+        throw new Error(upstreamMessage || `OpenRouter HTTP ${status || 500}`);
+      }
+
+      const choices = Array.isArray(payload.choices) ? payload.choices : [];
+      const firstChoice = choices[0] && typeof choices[0] === "object"
+        ? choices[0] as Record<string, unknown>
+        : {};
+      const message = firstChoice.message && typeof firstChoice.message === "object"
+        ? firstChoice.message as Record<string, unknown>
+        : {};
+
+      const rawContent = "content" in message ? message.content : "";
+      const extracted = extractOpenRouterAssistantText(rawContent);
+      const phrase = normalizeAiGeneratedCtaPhrase(extracted);
+      if (!phrase) {
+        throw new Error("OpenRouter retornou CTA vazia.");
+      }
+
+      return {
+        phrase,
+        latencyMs: elapsedMs,
+      };
+    } catch (error) {
+      const parsedError = error instanceof Error ? error : new Error(String(error));
+      lastError = parsedError;
+
+      if (attempt < OPENROUTER_MAX_RETRIES) {
+        await sleep(250 * (attempt + 1));
+        continue;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (lastError) throw lastError;
+  throw new Error("Falha ao gerar CTA IA via OpenRouter.");
+}
+
+async function resolveAiGeneratedCtaForUser(
+  userId: string,
+  input?: {
+    templateId?: string;
+    toneKey?: string;
+    offerTitle?: string;
+    strict?: boolean;
+    enforceAccess?: boolean;
+    persistLog?: boolean;
+  },
+): Promise<{ phrase: string; toneKey: string; model: string; isFallback: boolean }> {
+  const strict = input?.strict === true;
+  const enforceAccess = input?.enforceAccess !== false;
+  const persistLog = input?.persistLog !== false;
+  const templateId = String(input?.templateId || "").trim();
+  const safeTemplateId = isUuid(templateId) ? templateId : "";
+  const offerTitle = normalizeAiOfferTitleForPrompt(input?.offerTitle);
+
+  try {
+    if (enforceAccess) {
+      const access = await resolveTemplatesFeatureAccess(userId);
+      if (!access.allowed) {
+        return {
+          phrase: "",
+          toneKey: normalizeAiCtaToneKey(input?.toneKey) || AI_CTA_DEFAULT_TONE_KEY,
+          model: OPENROUTER_MODEL,
+          isFallback: false,
+        };
+      }
+    }
+
+    const tone = await resolveAiCtaToneForUser({
+      userId,
+      templateId: safeTemplateId,
+      toneKey: input?.toneKey,
+    });
+
+    const generated = await requestAiCtaPhraseFromOpenRouter({
+      systemPrompt: tone.system_prompt,
+      toneLabel: tone.label,
+      offerTitle,
+    });
+
+    const phrase = normalizeAiGeneratedCtaPhrase(generated.phrase) || AI_CTA_DEFAULT_FALLBACK_PHRASE;
+    if (persistLog) {
+      await insertAiCtaGenerationLog({
+        userId,
+        templateId: safeTemplateId,
+        toneKey: tone.key,
+        offerTitle,
+        generatedPhrase: phrase,
+        model: OPENROUTER_MODEL,
+        status: "success",
+        latencyMs: generated.latencyMs,
+      });
+    }
+
+    return {
+      phrase,
+      toneKey: normalizeAiCtaToneKey(tone.key) || AI_CTA_DEFAULT_TONE_KEY,
+      model: OPENROUTER_MODEL,
+      isFallback: false,
+    };
+  } catch (error) {
+    const fallbackPhrase = AI_CTA_DEFAULT_FALLBACK_PHRASE;
+    const toneKey = normalizeAiCtaToneKey(input?.toneKey) || AI_CTA_DEFAULT_TONE_KEY;
+    const parsedError = error instanceof Error ? error : new Error(String(error));
+
+    if (persistLog) {
+      await insertAiCtaGenerationLog({
+        userId,
+        templateId: safeTemplateId,
+        toneKey,
+        offerTitle,
+        generatedPhrase: fallbackPhrase,
+        model: OPENROUTER_MODEL,
+        status: "fallback",
+        latencyMs: null,
+        errorMessage: parsedError.message,
+      });
+    }
+
+    if (strict) throw parsedError;
+    console.warn("[rpc] ai cta resolver fallback:", parsedError.message);
+
+    return {
+      phrase: fallbackPhrase,
+      toneKey,
+      model: OPENROUTER_MODEL,
+      isFallback: true,
+    };
+  }
+}
+
+async function resolveAiGeneratedCtaPlaceholderDataForTemplate(input: {
+  userId: string;
+  templateId: string;
+  templateContent: string;
+  offerTitle?: string;
+  strict?: boolean;
+  enforceAccess?: boolean;
+  persistLog?: boolean;
+}): Promise<Record<string, string>> {
+  const definitions = resolveAiCtaPlaceholderDefinitions(input.templateContent);
+  if (definitions.length === 0) return {};
+
+  const activeTones = await listActiveAiCtaTones();
+  const activeToneKeys = new Set(
+    activeTones
+      .map((tone) => normalizeAiCtaToneKey(tone.key))
+      .filter(Boolean),
+  );
+
+  const rotativePool = AI_CTA_ROTATIVE_TONE_KEYS.filter((toneKey) => activeToneKeys.has(toneKey));
+
+  const phraseByCacheKey = new Map<string, string>();
+  let mergedPlaceholderData: Record<string, string> = {};
+
+  for (const definition of definitions) {
+    let cacheKey = "default";
+    let toneOverride: string | undefined;
+
+    if (definition.mode === "tone") {
+      toneOverride = normalizeAiCtaToneKey(definition.toneKey);
+      cacheKey = `tone:${toneOverride}`;
+    } else if (definition.mode === "rotative") {
+      const randomTone = rotativePool.length > 0
+        ? rotativePool[Math.floor(Math.random() * rotativePool.length)]
+        : AI_CTA_DEFAULT_TONE_KEY;
+      toneOverride = randomTone;
+      cacheKey = `rotative:${randomTone}`;
+    }
+
+    if (!phraseByCacheKey.has(cacheKey)) {
+      const generated = await resolveAiGeneratedCtaForUser(input.userId, {
+        templateId: input.templateId,
+        toneKey: toneOverride,
+        offerTitle: input.offerTitle,
+        strict: input.strict,
+        enforceAccess: input.enforceAccess,
+        persistLog: input.persistLog,
+      });
+      phraseByCacheKey.set(cacheKey, generated.phrase);
+    }
+
+    const phrase = String(phraseByCacheKey.get(cacheKey) || "").trim();
+    mergedPlaceholderData = injectAiCtaPlaceholderPhrase(mergedPlaceholderData, definition, phrase);
+  }
+
+  return mergedPlaceholderData;
+}
 
 function stripStandaloneImagePlaceholderLines(templateContent: string): string {
   return String(templateContent || "").replace(PLACEHOLDER_IMAGE_LINE_REGEX, "");
@@ -1178,6 +3064,7 @@ function applyAmazonTemplatePlaceholdersServer(
 function normalizeTemplateScope(value: unknown): TemplateScope | null {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return null;
+  if (raw === "message") return "message";
   if (raw === "amazon") return "amazon";
   if (raw === "meli" || raw === "mercadolivre") return "meli";
   if (raw === "shopee") return "shopee";
@@ -1209,6 +3096,7 @@ function inferTemplateScopeFromTemplateRow(row: Record<string, unknown> | null |
 function inferTemplateScopeFromScheduleSource(value: unknown): TemplateScope | null {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return null;
+  if (raw.includes("message") || raw.includes("modelo")) return "message";
   if (raw.includes("amazon")) return "amazon";
   if (raw.includes("meli") || raw.includes("mercado")) return "meli";
   if (raw.includes("shopee")) return "shopee";
@@ -1258,7 +3146,10 @@ async function resolveAutomationTemplateForScope(input: {
     [input.userId, input.templateId || null],
   );
 
-  const scopedRows = rows.filter((row) => inferTemplateScopeFromTemplateRow(row as unknown as Record<string, unknown>) === input.scope);
+  const scopedRows = rows.filter((row) => {
+    const templateScope = inferTemplateScopeFromTemplateRow(row as unknown as Record<string, unknown>);
+    return templateScope === input.scope || templateScope === "message";
+  });
   if (input.templateId) {
     const exact = scopedRows.find((row) => String(row.id || "").trim() === input.templateId);
     if (exact) return exact;
@@ -1329,6 +3220,9 @@ function buildRouteTemplatePlaceholderData(
   product: Record<string, unknown> | null,
   affiliateLink: string,
   sourceText = "",
+  randomCta = "",
+  personalizedCta = "",
+  aiGeneratedCta = "",
 ): Record<string, string> {
   const source = product && typeof product === "object" ? product : {};
   const sourceMessage = String(sourceText || "");
@@ -1457,12 +3351,27 @@ function buildRouteTemplatePlaceholderData(
     "{preço_original}": formatPrice(resolvedOriginalPrice),
     "{desconto}": discount > 0 ? String(discount) : "",
     "{link}": link,
+    "{cta_aleatoria}": randomCta,
+    "{cta aleatoria}": randomCta,
+    "{cta_personalizada}": personalizedCta,
+    "{cta personalizada}": personalizedCta,
+    "{cta_gerada_por_ia}": aiGeneratedCta,
+    "{cta gerada por ia}": aiGeneratedCta,
+    "{cta_ia_gerada}": aiGeneratedCta,
+    "{cta ia gerada}": aiGeneratedCta,
     "{imagem}": "",
     "{avaliacao}": rating > 0 ? String(rating) : "",
   };
 }
 
-function buildShopeeAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
+function buildShopeeAutomationMessage(
+  templateContent: string,
+  product: Record<string, unknown>,
+  affiliateLink: string,
+  randomCta = "",
+  personalizedCta = "",
+  aiGeneratedCtaPlaceholderData: Record<string, string> = {},
+): string {
   const contentWithoutImageLine = String(templateContent || "")
     .replace(/^[ \t]*(?:\{imagem\}|\{\{imagem\}\})[ \t]*(?:\r?\n|$)/gim, "");
 
@@ -1472,6 +3381,11 @@ function buildShopeeAutomationMessage(templateContent: string, product: Record<s
     "{preco_original}": Number(toNumber(product.originalPrice, 0)).toFixed(2),
     "{desconto}": String(Math.max(0, toNumber(product.discount, 0))),
     "{link}": affiliateLink,
+    "{cta_aleatoria}": randomCta,
+    "{cta aleatoria}": randomCta,
+    "{cta_personalizada}": personalizedCta,
+    "{cta personalizada}": personalizedCta,
+    ...aiGeneratedCtaPlaceholderData,
     "{imagem}": "",
     "{avaliacao}": String(Math.max(0, toNumber(product.rating, 0))),
   });
@@ -1492,12 +3406,24 @@ function normalizeMeliTemplateInstallments(value: unknown): string {
   return `${match[1]}x de R$${match[2]}${suffix}`.trim();
 }
 
-function buildMeliAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
+function buildMeliAutomationMessage(
+  templateContent: string,
+  product: Record<string, unknown>,
+  affiliateLink: string,
+  randomCta = "",
+  personalizedCta = "",
+  aiGeneratedCtaPlaceholderData: Record<string, string> = {},
+): string {
   return applyMeliTemplatePlaceholdersServer(templateContent, {
     "{titulo}": String(product.title || "Produto Mercado Livre").trim(),
     "{preco}": formatMeliTemplatePrice(product.price),
     "{preco_original}": formatMeliTemplatePrice(product.oldPrice),
     "{link}": String(affiliateLink || "").trim(),
+    "{cta_aleatoria}": randomCta,
+    "{cta aleatoria}": randomCta,
+    "{cta_personalizada}": personalizedCta,
+    "{cta personalizada}": personalizedCta,
+    ...aiGeneratedCtaPlaceholderData,
     "{imagem}": "",
     "{avaliacao}": toNumber(product.rating, 0) > 0 ? Number(toNumber(product.rating, 0)).toFixed(1) : "",
     "{avaliacoes}": toNumber(product.reviewsCount, 0) > 0 ? String(Math.floor(toNumber(product.reviewsCount, 0))) : "",
@@ -1534,7 +3460,14 @@ function deriveAmazonAutomationDiscountText(product: Record<string, unknown>): s
   return "";
 }
 
-function buildAmazonAutomationMessage(templateContent: string, product: Record<string, unknown>, affiliateLink: string): string {
+function buildAmazonAutomationMessage(
+  templateContent: string,
+  product: Record<string, unknown>,
+  affiliateLink: string,
+  randomCta = "",
+  personalizedCta = "",
+  aiGeneratedCtaPlaceholderData: Record<string, string> = {},
+): string {
   const title = String(product.title || "Produto Amazon").trim();
   const price = formatAmazonTemplatePrice(product.price);
   const oldPrice = formatAmazonTemplatePrice(product.oldPrice);
@@ -1562,6 +3495,11 @@ function buildAmazonAutomationMessage(templateContent: string, product: Record<s
     "{selo}": badgeText,
     "{asin}": asin,
     "{link}": link,
+    "{cta_aleatoria}": randomCta,
+    "{cta aleatoria}": randomCta,
+    "{cta_personalizada}": personalizedCta,
+    "{cta personalizada}": personalizedCta,
+    ...aiGeneratedCtaPlaceholderData,
     "{imagem}": "",
     "{avaliacao}": toNumber(product.rating, 0) > 0 ? Number(toNumber(product.rating, 0)).toFixed(1) : "",
     "{avaliacoes}": toNumber(product.reviewsCount, 0) > 0 ? String(Math.floor(toNumber(product.reviewsCount, 0))) : "",
@@ -2070,6 +4008,11 @@ function isMeliSessionFileMissingSignal(raw: unknown): boolean {
   const normalized = normalizeComparableMessage(raw);
   if (!normalized) return false;
   if (normalized.includes("storagestate_meli_")) return true;
+  // The RPA may return this when the local encrypted session file exists but
+  // cannot be decrypted (key/salt drift, plaintext legacy, or corrupted file).
+  // In this case we should try DB rehydration once before asking for re-import.
+  if (normalized.includes("reenvie os cookies do mercado livre")) return true;
+  if (normalized.includes("plaintext?")) return true;
   return (
     (normalized.includes("sessao") && (normalized.includes("nao encontrada") || normalized.includes("nao encontrado")))
     || (normalized.includes("arquivo de sessao") && normalized.includes("nao encontrado"))
@@ -5655,7 +7598,33 @@ async function processRouteMessageForUser(input: {
       }
 
       if (templateData?.content) {
-        const placeholderData = buildRouteTemplatePlaceholderData(primaryProduct, primaryLink, outboundText);
+        const randomCtaPhrase = templateRequestsRandomCtaPlaceholder(templateData.content)
+          ? await resolveRandomCtaPhraseForUser(userId, { persist: true })
+          : "";
+        const personalizedCtaPhrase = templateRequestsPersonalizedCtaPlaceholder(templateData.content)
+          ? await resolvePersonalizedCtaPhraseForUser(userId)
+          : "";
+        const basePlaceholderData = buildRouteTemplatePlaceholderData(
+          primaryProduct,
+          primaryLink,
+          outboundText,
+          randomCtaPhrase,
+          personalizedCtaPhrase,
+          "",
+        );
+        const aiGeneratedCtaPlaceholderData = templateRequestsAiGeneratedCtaPlaceholder(templateData.content)
+          ? await resolveAiGeneratedCtaPlaceholderDataForTemplate({
+            userId,
+            templateId,
+            templateContent: templateData.content,
+            offerTitle: basePlaceholderData["{titulo}"],
+            strict: false,
+          })
+          : {};
+        const placeholderData = {
+          ...basePlaceholderData,
+          ...aiGeneratedCtaPlaceholderData,
+        };
         outboundText = applyScopedTemplatePlaceholders(templateData.scope, templateData.content, placeholderData);
       }
     }
@@ -7034,6 +9003,7 @@ const ADMIN_PANEL_PLAN_ID = "admin";
 const MERCADO_LIVRE_FEATURE_KEY = "mercadoLivre";
 const AMAZON_FEATURE_KEY = "amazon";
 const SHOPEE_AUTOMATIONS_FEATURE_KEY = "shopeeAutomations";
+const TEMPLATES_FEATURE_KEY = "templates";
 const MERCADO_LIVRE_FALLBACK_ENABLED_PLANS = new Set([
   "plan-starter",
   "plan-business",
@@ -7046,6 +9016,20 @@ const MERCADO_LIVRE_BLOCKED_MESSAGE = "Mercado Livre não está disponível no s
 const MERCADO_LIVRE_AUTOMATION_BLOCKED_MESSAGE = "Automações Mercado Livre não estão disponíveis no seu plano ou nível de acesso.";
 const AMAZON_BLOCKED_MESSAGE = "Amazon não está disponível no seu plano ou nível de acesso.";
 const SHOPEE_AUTOMATION_BLOCKED_MESSAGE = "Automações Shopee não estão disponíveis no seu plano ou nível de acesso.";
+const TEMPLATES_BLOCKED_MESSAGE = "Modelos de mensagem nao estao disponiveis no seu plano ou nivel de acesso.";
+const TEMPLATE_FEATURE_FUNCTION_NAMES = new Set([
+  "cta-random-next",
+  "cta-personalizada-next",
+  "cta-personalizada-list",
+  "cta-personalizada-save",
+  "cta-personalizada-toggle",
+  "cta-personalizada-delete",
+  "cta-ia-next",
+  "cta-ia-placeholders-next",
+  "cta-ia-tones-list",
+  "cta-ia-config-get",
+  "cta-ia-config-save",
+]);
 const IDENTITY_ALREADY_USED_MESSAGE = "E-mail ou WhatsApp já cadastrado. Faça login ou recupere sua conta.";
 const WHATSAPP_ALREADY_LINKED_MESSAGE = "Este WhatsApp já está conectado em outra conta. Use outro número ou recupere a conta original.";
 const TELEGRAM_ALREADY_LINKED_MESSAGE = "Este Telegram já está conectado em outra conta. Use outro número ou recupere a conta original.";
@@ -7367,6 +9351,15 @@ async function resolveShopeeAutomationAccess(userId: string): Promise<{ allowed:
   });
 }
 
+async function resolveTemplatesFeatureAccess(userId: string): Promise<{ allowed: boolean; message: string }> {
+  return resolveMarketplaceFeatureAccess(userId, {
+    featureKey: TEMPLATES_FEATURE_KEY,
+    fallbackEnabledPlans: BUILTIN_PLAN_IDS,
+    blockedMessage: TEMPLATES_BLOCKED_MESSAGE,
+    fallbackLimitKey: "templates",
+  });
+}
+
 async function listUsersWithMeta() {
   // Single JOIN instead of 3 sequential round-trips - reduces latency under load
   // and frees 2 pool connections per call.
@@ -7584,9 +9577,12 @@ rpcRouter.post("/rpc", async (req, res) => {
   const requiresMercadoLivreAutomationAccess = funcName === "meli-automation-run";
   const requiresAmazonAccess = funcName.startsWith("amazon-");
   const requiresShopeeAutomationAccess = funcName === "shopee-automation-run";
-  if ((requiresMercadoLivreAccess || requiresAmazonAccess || requiresShopeeAutomationAccess) && !effectiveAdmin) {
+  const requiresTemplatesAccess = TEMPLATE_FEATURE_FUNCTION_NAMES.has(funcName);
+  if ((requiresMercadoLivreAccess || requiresAmazonAccess || requiresShopeeAutomationAccess || requiresTemplatesAccess) && !effectiveAdmin) {
     try {
-      const featureAccess = requiresShopeeAutomationAccess
+      const featureAccess = requiresTemplatesAccess
+        ? await resolveTemplatesFeatureAccess(userId)
+        : requiresShopeeAutomationAccess
         ? await resolveShopeeAutomationAccess(userId)
         : requiresAmazonAccess
           ? await resolveAmazonFeatureAccess(userId)
@@ -7597,7 +9593,9 @@ rpcRouter.post("/rpc", async (req, res) => {
         fail(
           res,
           featureAccess.message || (
-            requiresShopeeAutomationAccess
+            requiresTemplatesAccess
+              ? TEMPLATES_BLOCKED_MESSAGE
+              : requiresShopeeAutomationAccess
               ? SHOPEE_AUTOMATION_BLOCKED_MESSAGE
               : requiresAmazonAccess
                 ? AMAZON_BLOCKED_MESSAGE
@@ -7612,7 +9610,9 @@ rpcRouter.post("/rpc", async (req, res) => {
     } catch {
       fail(
         res,
-        requiresShopeeAutomationAccess
+        requiresTemplatesAccess
+          ? "Nao foi possivel validar o acesso ao modulo de modelos de mensagem."
+          : requiresShopeeAutomationAccess
           ? "Nao foi possivel validar o acesso as automacoes Shopee."
           : requiresAmazonAccess
             ? "Nao foi possivel validar o acesso ao modulo Amazon."
@@ -9209,10 +11209,31 @@ if (funcName === "whatsapp-connect") {
           const templateData = parseScheduleTemplateData(meta);
           if (cachedTemplate && Object.keys(templateData).length > 0) {
             const scopeHint = inferTemplateScopeFromScheduleSource(meta.scheduleSource);
+            const randomCtaPhrase = templateRequestsRandomCtaPlaceholder(cachedTemplate.content)
+              ? await resolveRandomCtaPhraseForUser(String(post.user_id), { persist: true })
+              : "";
+            const personalizedCtaPhrase = templateRequestsPersonalizedCtaPlaceholder(cachedTemplate.content)
+              ? await resolvePersonalizedCtaPhraseForUser(String(post.user_id))
+              : "";
+            const aiGeneratedCtaPlaceholderData = templateRequestsAiGeneratedCtaPlaceholder(cachedTemplate.content)
+              ? await resolveAiGeneratedCtaPlaceholderDataForTemplate({
+                userId: String(post.user_id),
+                templateId: rawTemplateId,
+                templateContent: cachedTemplate.content,
+                offerTitle: String(templateData["{titulo}"] || templateData["{título}"] || "").trim(),
+                strict: false,
+              })
+              : {};
+            let resolvedTemplateData = injectRandomCtaPlaceholderData(templateData, randomCtaPhrase);
+            resolvedTemplateData = injectPersonalizedCtaPlaceholderData(resolvedTemplateData, personalizedCtaPhrase);
+            resolvedTemplateData = {
+              ...resolvedTemplateData,
+              ...aiGeneratedCtaPlaceholderData,
+            };
             message = applyScopedTemplatePlaceholders(
               scopeHint || cachedTemplate.scope,
               cachedTemplate.content,
-              templateData,
+              resolvedTemplateData,
             );
           }
         }
@@ -9473,6 +11494,247 @@ if (funcName === "whatsapp-connect") {
         message,
       });
       ok(res, { ok: true, dispatched: processed.dispatched, routesMatched: processed.routesMatched }); return;
+    }
+
+    if (funcName === "cta-random-next") {
+      const persist = params.persist !== false;
+      const source = String(params.source ?? "frontend").trim() || "frontend";
+      const phrase = await resolveRandomCtaPhraseForUser(userId, {
+        persist,
+        strict: false,
+      });
+      ok(res, { phrase, persist, source });
+      return;
+    }
+
+    if (funcName === "cta-personalizada-list") {
+      const source = String(params.source ?? "frontend").trim() || "frontend";
+      const rows = await listPersonalizedCtasForUser(userId);
+      ok(res, {
+        source,
+        items: rows.map(serializePersonalizedCtaRow),
+      });
+      return;
+    }
+
+    if (funcName === "cta-personalizada-next") {
+      const source = String(params.source ?? "frontend").trim() || "frontend";
+      const phrase = await resolvePersonalizedCtaPhraseForUser(userId, {
+        strict: false,
+      });
+      ok(res, { phrase, source });
+      return;
+    }
+
+    if (funcName === "cta-personalizada-save") {
+      const id = String(params.id ?? "").trim();
+      const phrase = normalizePersonalizedCtaPhrase(params.phrase);
+      const validationError = validatePersonalizedCtaPhrase(phrase);
+      if (validationError) {
+        fail(res, validationError, 400);
+        return;
+      }
+
+      const isActive = parseBooleanParam(params.isActive, true);
+
+      try {
+        if (id && !isUuid(id)) {
+          fail(res, "ID de CTA personalizada invalido.", 400);
+          return;
+        }
+
+        const saved = await savePersonalizedCtaForUser({
+          userId,
+          id,
+          phrase,
+          isActive,
+        });
+
+        if (!saved) {
+          fail(res, "CTA personalizada nao encontrada.", 404);
+          return;
+        }
+
+        ok(res, { item: serializePersonalizedCtaRow(saved) });
+        return;
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          fail(res, "Essa CTA personalizada ja existe.", 409);
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (funcName === "cta-personalizada-toggle") {
+      const id = String(params.id ?? "").trim();
+      if (!isUuid(id)) {
+        fail(res, "ID de CTA personalizada invalido.", 400);
+        return;
+      }
+
+      const isActive = parseBooleanParam(params.isActive, true);
+      const updated = await togglePersonalizedCtaForUser({ userId, id, isActive });
+
+      if (!updated) {
+        fail(res, "CTA personalizada nao encontrada.", 404);
+        return;
+      }
+
+      ok(res, { item: serializePersonalizedCtaRow(updated) });
+      return;
+    }
+
+    if (funcName === "cta-personalizada-delete") {
+      const id = String(params.id ?? "").trim();
+      if (!isUuid(id)) {
+        fail(res, "ID de CTA personalizada invalido.", 400);
+        return;
+      }
+
+      const deletedId = await deletePersonalizedCtaForUser({ userId, id });
+
+      if (!deletedId) {
+        fail(res, "CTA personalizada nao encontrada.", 404);
+        return;
+      }
+
+      ok(res, { ok: true, id: deletedId });
+      return;
+    }
+
+    if (funcName === "cta-ia-tones-list") {
+      const source = String(params.source ?? "frontend").trim() || "frontend";
+      const tones = await listActiveAiCtaTones();
+      ok(res, {
+        source,
+        items: tones.map(serializeAiCtaToneRow),
+      });
+      return;
+    }
+
+    if (funcName === "cta-ia-config-get") {
+      const source = String(params.source ?? "frontend").trim() || "frontend";
+      const templateId = String(params.templateId ?? params.template_id ?? "").trim();
+      if (!isUuid(templateId)) {
+        fail(res, "Template invalido para CTA IA.", 400);
+        return;
+      }
+
+      const config = await resolveAiCtaConfigForUserTemplate({
+        userId,
+        templateId,
+      });
+
+      ok(res, {
+        source,
+        templateId,
+        toneKey: config.effectiveToneKey,
+        isActive: config.item ? config.item.is_active === true : true,
+        item: config.item ? serializeAiCtaConfigRow(config.item) : null,
+      });
+      return;
+    }
+
+    if (funcName === "cta-ia-config-save") {
+      const templateId = String(params.templateId ?? params.template_id ?? "").trim();
+      if (!isUuid(templateId)) {
+        fail(res, "Template invalido para CTA IA.", 400);
+        return;
+      }
+
+      const toneKey = normalizeAiCtaToneKey(params.toneKey ?? params.tone_key);
+      if (!toneKey) {
+        fail(res, "Tom de CTA IA invalido.", 400);
+        return;
+      }
+
+      const tones = await listActiveAiCtaTones();
+      const activeToneKeys = new Set(tones.map((tone) => normalizeAiCtaToneKey(tone.key)));
+      if (!activeToneKeys.has(toneKey)) {
+        fail(res, "Tom de CTA IA nao encontrado.", 400);
+        return;
+      }
+
+      const isActive = parseBooleanParam(params.isActive, true);
+
+      try {
+        const saved = await saveAiCtaConfigForUserTemplate({
+          userId,
+          templateId,
+          toneKey,
+          isActive,
+        });
+        ok(res, {
+          item: serializeAiCtaConfigRow(saved),
+        });
+        return;
+      } catch (error) {
+        if (isUndefinedTableError(error)) {
+          fail(res, "Estrutura de CTA IA indisponivel. Execute as migrations mais recentes.", 503);
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (funcName === "cta-ia-next") {
+      const source = String(params.source ?? "frontend").trim() || "frontend";
+      const templateId = String(params.templateId ?? params.template_id ?? "").trim();
+      const toneKey = normalizeAiCtaToneKey(params.toneKey ?? params.tone_key);
+      const offerTitle = normalizeAiOfferTitleForPrompt(params.offerTitle ?? params.offer_title);
+      const persist = parseBooleanParam(params.persist, true);
+
+      const generated = await resolveAiGeneratedCtaForUser(userId, {
+        templateId,
+        toneKey,
+        offerTitle,
+        strict: false,
+        persistLog: persist,
+      });
+
+      ok(res, {
+        source,
+        phrase: generated.phrase,
+        toneKey: generated.toneKey,
+        model: generated.model,
+        isFallback: generated.isFallback,
+        persist,
+      });
+      return;
+    }
+
+    if (funcName === "cta-ia-placeholders-next") {
+      const source = String(params.source ?? "frontend").trim() || "frontend";
+      const templateId = String(params.templateId ?? params.template_id ?? "").trim();
+      const templateContent = String(params.templateContent ?? params.template_content ?? "");
+      const offerTitle = normalizeAiOfferTitleForPrompt(params.offerTitle ?? params.offer_title);
+      const persist = parseBooleanParam(params.persist, true);
+
+      if (!templateContent.trim()) {
+        ok(res, {
+          source,
+          items: {},
+          persist,
+        });
+        return;
+      }
+
+      const items = await resolveAiGeneratedCtaPlaceholderDataForTemplate({
+        userId,
+        templateId,
+        templateContent,
+        offerTitle,
+        strict: false,
+        persistLog: persist,
+      });
+
+      ok(res, {
+        source,
+        items,
+        persist,
+      });
+      return;
     }
 
     // â”€â”€ shopee handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -9743,9 +12005,78 @@ if (funcName === "whatsapp-connect") {
 
       try {
         const snapshot = await getAmazonProductSnapshot(targetUrl);
+        let mergedSnapshot = snapshot;
+
+        const snapshotPrice = Number(snapshot?.price);
+        const hasSnapshotPrice = Number.isFinite(snapshotPrice) && snapshotPrice > 0;
+
+        if (!hasSnapshotPrice && asin) {
+          const fallbackRow = await queryOne<{
+            asin: string | null;
+            product_url: string;
+            title: string;
+            image_url: string;
+            price_cents: number;
+            old_price_cents: number | null;
+            discount_text: string;
+            seller: string;
+            rating: string | number | null;
+            reviews_count: number | null;
+            badge_text: string;
+          }>(
+            `SELECT asin, product_url, title, image_url, price_cents, old_price_cents, discount_text, seller, rating, reviews_count, badge_text
+               FROM amazon_vitrine_products
+              WHERE is_active = TRUE
+                AND (
+                  (NULLIF(TRIM(asin), '') IS NOT NULL AND UPPER(TRIM(asin)) = $1)
+                  OR product_url ILIKE $2
+                )
+              ORDER BY collected_at DESC, updated_at DESC
+              LIMIT 1`,
+            [asin, `%/dp/${asin}%`],
+          );
+
+          const fallbackPriceCents = Number(fallbackRow?.price_cents || 0);
+          if (fallbackRow && Number.isFinite(fallbackPriceCents) && fallbackPriceCents > 0) {
+            const snapshotOldPrice = Number(snapshot?.oldPrice);
+            const snapshotRating = Number(snapshot?.rating);
+            const snapshotReviews = Number(snapshot?.reviewsCount);
+            const fallbackOldPrice = fallbackRow.old_price_cents === null || fallbackRow.old_price_cents === undefined
+              ? null
+              : Number((Number(fallbackRow.old_price_cents) / 100).toFixed(2));
+            const fallbackRatingRaw = fallbackRow.rating;
+            const fallbackRating = fallbackRatingRaw === null || fallbackRatingRaw === undefined || fallbackRatingRaw === ""
+              ? null
+              : Number(fallbackRatingRaw);
+
+            mergedSnapshot = {
+              ...snapshot,
+              productUrl: String(snapshot?.productUrl || fallbackRow.product_url || targetUrl),
+              title: String(snapshot?.title || fallbackRow.title || ""),
+              imageUrl: String(snapshot?.imageUrl || fallbackRow.image_url || ""),
+              price: Number((fallbackPriceCents / 100).toFixed(2)),
+              oldPrice: Number.isFinite(snapshotOldPrice) && snapshotOldPrice > 0
+                ? snapshotOldPrice
+                : fallbackOldPrice,
+              discountText: String(snapshot?.discountText || fallbackRow.discount_text || ""),
+              seller: String(snapshot?.seller || fallbackRow.seller || ""),
+              rating: Number.isFinite(snapshotRating) && snapshotRating > 0
+                ? snapshotRating
+                : (Number.isFinite(fallbackRating) ? fallbackRating : null),
+              reviewsCount: Number.isFinite(snapshotReviews) && snapshotReviews > 0
+                ? snapshotReviews
+                : (fallbackRow.reviews_count === null || fallbackRow.reviews_count === undefined
+                  ? null
+                  : Number(fallbackRow.reviews_count)),
+              badgeText: String(snapshot?.badgeText || fallbackRow.badge_text || ""),
+              asin: String(snapshot?.asin || fallbackRow.asin || asin || ""),
+            };
+          }
+        }
+
         ok(res, {
-          ...snapshot,
-          asin: String(snapshot.asin || asin || "").trim() || undefined,
+          ...mergedSnapshot,
+          asin: String(mergedSnapshot.asin || asin || "").trim() || undefined,
         });
       } catch (error) {
         fail(res, error instanceof Error ? error.message : "Falha ao extrair dados do produto Amazon");
@@ -10174,8 +12505,30 @@ if (funcName === "whatsapp-connect") {
 
         const templateContent = template && typeof template.content === "string" ? template.content : "";
         const fallbackTitle = String(selectedProduct.title || "Oferta Shopee");
+        const randomCtaPhrase = templateContent && templateRequestsRandomCtaPlaceholder(templateContent)
+          ? await resolveRandomCtaPhraseForUser(ownerUserId, { persist: true })
+          : "";
+        const personalizedCtaPhrase = templateContent && templateRequestsPersonalizedCtaPlaceholder(templateContent)
+          ? await resolvePersonalizedCtaPhraseForUser(ownerUserId)
+          : "";
+        const aiGeneratedCtaPlaceholderData = templateContent && templateRequestsAiGeneratedCtaPlaceholder(templateContent)
+          ? await resolveAiGeneratedCtaPlaceholderDataForTemplate({
+            userId: ownerUserId,
+            templateId,
+            templateContent,
+            offerTitle: String(selectedProduct.title || ""),
+            strict: false,
+          })
+          : {};
         const message = templateContent
-          ? buildShopeeAutomationMessage(templateContent, selectedProduct, affiliateLink)
+          ? buildShopeeAutomationMessage(
+              templateContent,
+              selectedProduct,
+              affiliateLink,
+              randomCtaPhrase,
+              personalizedCtaPhrase,
+              aiGeneratedCtaPlaceholderData,
+            )
           : `${fallbackTitle}\n${affiliateLink}`;
 
         const directGroupIds = toStringArray(claimed.destination_group_ids);
@@ -10818,8 +13171,30 @@ if (funcName === "whatsapp-connect") {
 
         const templateContent = template && typeof template.content === "string" ? template.content : "";
         const fallbackTitle = String(selectedProduct.title || "Oferta Mercado Livre");
+        const randomCtaPhrase = templateContent && templateRequestsRandomCtaPlaceholder(templateContent)
+          ? await resolveRandomCtaPhraseForUser(ownerUserId, { persist: true })
+          : "";
+        const personalizedCtaPhrase = templateContent && templateRequestsPersonalizedCtaPlaceholder(templateContent)
+          ? await resolvePersonalizedCtaPhraseForUser(ownerUserId)
+          : "";
+        const aiGeneratedCtaPlaceholderData = templateContent && templateRequestsAiGeneratedCtaPlaceholder(templateContent)
+          ? await resolveAiGeneratedCtaPlaceholderDataForTemplate({
+            userId: ownerUserId,
+            templateId,
+            templateContent,
+            offerTitle: String(selectedProduct.title || ""),
+            strict: false,
+          })
+          : {};
         const message = templateContent
-          ? buildMeliAutomationMessage(templateContent, selectedProduct, affiliateLink)
+          ? buildMeliAutomationMessage(
+              templateContent,
+              selectedProduct,
+              affiliateLink,
+              randomCtaPhrase,
+              personalizedCtaPhrase,
+              aiGeneratedCtaPlaceholderData,
+            )
           : `${fallbackTitle}\n${affiliateLink}`;
 
         const directGroupIds = toStringArray(claimed.destination_group_ids);
@@ -11491,8 +13866,30 @@ if (funcName === "whatsapp-connect") {
 
         const templateContent = template && typeof template.content === "string" ? template.content : "";
         const fallbackTitle = String(selectedProduct.title || "Oferta Amazon");
+        const randomCtaPhrase = templateContent && templateRequestsRandomCtaPlaceholder(templateContent)
+          ? await resolveRandomCtaPhraseForUser(ownerUserId, { persist: true })
+          : "";
+        const personalizedCtaPhrase = templateContent && templateRequestsPersonalizedCtaPlaceholder(templateContent)
+          ? await resolvePersonalizedCtaPhraseForUser(ownerUserId)
+          : "";
+        const aiGeneratedCtaPlaceholderData = templateContent && templateRequestsAiGeneratedCtaPlaceholder(templateContent)
+          ? await resolveAiGeneratedCtaPlaceholderDataForTemplate({
+            userId: ownerUserId,
+            templateId,
+            templateContent,
+            offerTitle: String(selectedProduct.title || ""),
+            strict: false,
+          })
+          : {};
         const message = templateContent
-          ? buildAmazonAutomationMessage(templateContent, selectedProduct, affiliateLink)
+          ? buildAmazonAutomationMessage(
+              templateContent,
+              selectedProduct,
+              affiliateLink,
+              randomCtaPhrase,
+              personalizedCtaPhrase,
+              aiGeneratedCtaPlaceholderData,
+            )
           : `${fallbackTitle}\n${affiliateLink}`;
 
         const directGroupIds = toStringArray(claimed.destination_group_ids);

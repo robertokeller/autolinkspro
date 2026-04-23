@@ -59,7 +59,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // 1. Set up the auth state listener FIRST
     const { data: { subscription } } = backend.auth.onAuthStateChange(
-      (_event, newSession) => {
+      (event, newSession) => {
+        // In a hard reload, INITIAL_SESSION can fire with null before getSession
+        // checks the HttpOnly cookie. If we mark loading=false here, guards may
+        // redirect to /auth/login and then to /dashboard, losing the original path.
+        if (!initializedRef.current && event === "INITIAL_SESSION" && !newSession) {
+          return;
+        }
+
         const newUser = newSession?.user ?? null;
         setUser(newUser);
         setSession(newSession);
@@ -105,6 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(initialUser);
         setSession(initialSession);
         setIsLoading(false);
+        initializedRef.current = true;
 
         if (initialUser) {
           setIsLocalCoreReady(false);

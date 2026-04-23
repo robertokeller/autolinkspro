@@ -28,7 +28,7 @@
     "preview:live": "node scripts/preview-ready.mjs --host 0.0.0.0 --port 5173",
     "preview:safe": "node scripts/preview-safe.mjs",
     "preview:ready": "node scripts/preview-ready.mjs",
-    "build": "vite build",
+    "build": "vite build && npm run svc:api:build",
     "build:dev": "vite build --mode development",
     "start": "node scripts/serve-dist.mjs",
     "scheduler:start": "node scripts/dispatch-scheduler.mjs",

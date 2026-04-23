@@ -110,6 +110,39 @@ function firstNonEmptyString(...values: unknown[]) {
   return "";
 }
 
+function parseLocalizedNumber(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : Number.NaN;
+  }
+
+  const raw = String(value || "").trim();
+  if (!raw) return Number.NaN;
+
+  let normalized = raw
+    .replace(/[R$\s]/gi, "")
+    .replace(/[^0-9.,-]/g, "");
+
+  if (!normalized) return Number.NaN;
+
+  if (/^-?\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  } else if (/^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(normalized)) {
+    normalized = normalized.replace(/,/g, "");
+  } else if (/^-?\d+,\d+$/.test(normalized)) {
+    normalized = normalized.replace(",", ".");
+  } else if (/^-?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "");
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  const parsed = parseLocalizedNumber(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function isLikelyAmazonUrl(rawUrl: string): boolean {
   try {
     const normalized = /^https?:\/\//i.test(rawUrl.trim()) ? rawUrl.trim() : `https://${rawUrl.trim()}`;
@@ -300,7 +333,7 @@ export default function TemplatesAmazon() {
 
       const originalLink = firstNonEmptyString(productSnapshot?.productUrl, snapshotTargetUrl);
       const hasSnapshotCoreFields = Boolean(firstNonEmptyString(productSnapshot?.title)) && (
-        Number(productSnapshot?.price) > 0
+        (toFiniteNumber(productSnapshot?.price) ?? 0) > 0
         || Boolean(firstNonEmptyString(productSnapshot?.discountText))
         || Boolean(firstNonEmptyString(productSnapshot?.imageUrl))
       );
@@ -314,15 +347,15 @@ export default function TemplatesAmazon() {
         title: productTitle,
         productUrl: firstNonEmptyString(productSnapshot?.productUrl, originalLink),
         imageUrl: firstNonEmptyString(productSnapshot?.imageUrl),
-        price: Number.isFinite(Number(productSnapshot?.price)) ? Number(productSnapshot?.price) : null,
-        oldPrice: Number.isFinite(Number(productSnapshot?.oldPrice)) ? Number(productSnapshot?.oldPrice) : null,
+        price: toFiniteNumber(productSnapshot?.price),
+        oldPrice: toFiniteNumber(productSnapshot?.oldPrice),
         discountText: firstNonEmptyString(productSnapshot?.discountText),
         installmentsText: firstNonEmptyString(productSnapshot?.installmentsText),
         seller: firstNonEmptyString(productSnapshot?.seller),
         badgeText: firstNonEmptyString(productSnapshot?.badgeText),
         asin: firstNonEmptyString(productSnapshot?.asin, conversion.asin, extractAmazonAsinFromUrl(originalLink)),
-        rating: Number.isFinite(Number(productSnapshot?.rating)) ? Number(productSnapshot?.rating) : null,
-        reviewsCount: Number.isFinite(Number(productSnapshot?.reviewsCount)) ? Number(productSnapshot?.reviewsCount) : null,
+        rating: toFiniteNumber(productSnapshot?.rating),
+        reviewsCount: toFiniteNumber(productSnapshot?.reviewsCount),
       };
 
       const placeholderData = AMAZON_TEMPLATE_MODULE.buildPlaceholderData(productInput, affiliateLink);

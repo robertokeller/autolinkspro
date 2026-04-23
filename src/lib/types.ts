@@ -139,7 +139,7 @@ export interface ScheduledPost {
 // ===== Templates =====
 
 export type TemplateCategory = "oferta" | "cupom" | "geral";
-export type TemplateScope = "shopee" | "meli" | "amazon";
+export type TemplateScope = "shopee" | "meli" | "amazon" | "message";
 
 // Template type - canonical version used by useTemplates hook (TemplateRow)
 export interface Template {

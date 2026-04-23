@@ -15,7 +15,7 @@ import { Bot, Plus, Pause, Trash2, Clock, Pencil, Copy, Play, RefreshCw, Filter 
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { useShopeeAutomacoes, type CreateAutomationInput, type ShopeeAutomationRow } from "@/hooks/useShopeeAutomacoes";
 import { useGrupos } from "@/hooks/useGrupos";
-import { useTemplateModule } from "@/contexts/TemplateModuleContext";
+import { useTemplates } from "@/hooks/useTemplates";
 import { useSessoes } from "@/hooks/useSessoes";
 import { ShopeeCredentialsBanner } from "@/components/ShopeeCredentialsBanner";
 import { CategoryMultiSelect } from "@/components/shopee/CategoryMultiSelect";
@@ -129,7 +129,7 @@ export default function ShopeeAutomacoes() {
     isRefreshingAll,
   } = useShopeeAutomacoes();
   const { syncedGroups, masterGroups } = useGrupos();
-  const { templates, defaultTemplate } = useTemplateModule();
+  const { templates, defaultTemplate } = useTemplates("message");
   const { allSessions } = useSessoes();
   const { refreshAllRoutes } = useRotas();
 

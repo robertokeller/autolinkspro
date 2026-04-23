@@ -156,6 +156,14 @@ export function ProtectedAppRoutes() {
           )}
         />
         <Route
+          path={ROUTES.app.modelosMensagem}
+          element={(
+            <FeatureRouteGuard feature="templates">
+              <Pages.ModelosDeMensagem />
+            </FeatureRouteGuard>
+          )}
+        />
+        <Route
           path={ROUTES.app.linkHub}
           element={(
             <FeatureRouteGuard feature="linkHub">

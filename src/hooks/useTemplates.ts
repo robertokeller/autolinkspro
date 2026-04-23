@@ -4,7 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import type { Tables } from "@/integrations/backend/types";
 import type { Template, TemplateCategory, TemplateScope } from "@/lib/types";
 import { toast } from "sonner";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
 import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
 
@@ -23,16 +23,38 @@ function normalizeTemplateCategory(value: unknown): TemplateCategory {
 
 function normalizeTemplateScope(value: unknown): TemplateScope {
   const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "message") return "message";
   if (normalized === "meli") return "meli";
   if (normalized === "amazon") return "amazon";
   return "shopee";
 }
 
 function isScopeConstraintViolation(error: unknown): boolean {
-  const message = String((error as { message?: unknown } | null)?.message || "").toLowerCase();
+  const source = (error as {
+    message?: unknown;
+    details?: unknown;
+    hint?: unknown;
+    code?: unknown;
+  } | null) || null;
+  const message = [source?.message, source?.details, source?.hint, source?.code]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean)
+    .join(" | ");
   if (!message) return false;
+
   return message.includes("templates_scope_check")
-    || (message.includes("scope") && message.includes("check"));
+    || (message.includes("scope") && message.includes("check"))
+    || message.includes("valor inválido para scope")
+    || message.includes("valor invalido para scope")
+    || message.includes("valor fora dos valores permitidos")
+    || (message.includes("scope") && message.includes("permitidos"))
+    || (message.includes("scope") && message.includes("allowed"));
+}
+
+function shouldFallbackToShopeeScope(scope: TemplateScope, error: unknown): boolean {
+  if (!isScopeConstraintViolation(error)) return false;
+  // Legacy DBs may not include newer scopes in templates_scope_check yet.
+  return scope === "amazon" || scope === "message";
 }
 
 function scopeTag(scope: TemplateScope): string {
@@ -49,6 +71,9 @@ function normalizeTags(value: unknown): string[] {
 function extractScopeFromRow(row: Tables<"templates">): TemplateScope {
   const source = row as unknown as Record<string, unknown>;
   const tags = normalizeTags(source.tags);
+  if (tags.some((tag) => tag.toLowerCase() === scopeTag("message"))) {
+    return "message";
+  }
   if (tags.some((tag) => tag.toLowerCase() === scopeTag("amazon"))) {
     return "amazon";
   }
@@ -87,6 +112,7 @@ function mapRow(row: Tables<"templates">): Template {
 export function useTemplates(scope: TemplateScope = "shopee") {
   const { user, isAdmin } = useAuth();
   const qc = useQueryClient();
+  const [isSyncing, setIsSyncing] = useState(false);
   const templatesQueryKey = useMemo(
     () => ["templates", user?.id, scope] as const,
     [scope, user?.id],
@@ -96,12 +122,23 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     qc.setQueryData<Template[]>(templatesQueryKey, (prev) => updater(prev || []));
   }, [qc, templatesQueryKey]);
 
+  const syncTemplatesWithServer = useCallback(async () => {
+    setIsSyncing(true);
+    try {
+      await qc.invalidateQueries({ queryKey: templatesQueryKey });
+      await qc.refetchQueries({ queryKey: templatesQueryKey, type: "active" });
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [qc, templatesQueryKey]);
+
   const { data: templates = [], isLoading } = useQuery({
     queryKey: templatesQueryKey,
     queryFn: async () => {
       const { data, error } = await backend
         .from("templates")
         .select("*")
+        .eq("user_id", user!.id)
         .order("created_at", { ascending: false });
       if (error) throw error;
       const rows = Array.isArray(data) ? (data as Tables<"templates">[]) : [];
@@ -153,13 +190,20 @@ export function useTemplates(scope: TemplateScope = "shopee") {
 
       const maxTemplates = limits.templates ?? 0;
         if (maxTemplates !== -1 && templates.length >= maxTemplates) {
-        const scopeLabel = scope === "amazon" ? "Amazon" : scope === "meli" ? "Mercado Livre" : "Shopee";
+        const scopeLabel = scope === "amazon"
+          ? "Amazon"
+          : scope === "meli"
+            ? "Mercado Livre"
+            : scope === "message"
+              ? "Modelos de Mensagem"
+              : "Shopee";
         toast.error(`Limite de templates ${scopeLabel} atingido para o seu nível de acesso.`);
         return null;
       }
     }
 
     const payload: Record<string, unknown> = {
+      user_id: user.id,
       name,
       content,
       category: normalizeTemplateCategory(category),
@@ -173,8 +217,8 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       .select()
       .single();
 
-    // Backward compatibility for environments where DB constraint still rejects scope='amazon'.
-    if (error && scope !== "shopee" && isScopeConstraintViolation(error)) {
+    // Backward compatibility for environments where DB constraint still rejects newer scopes.
+    if (error && shouldFallbackToShopeeScope(scope, error)) {
       ({ data, error } = await backend
         .from("templates")
         .insert({
@@ -191,19 +235,14 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     }
 
     const next = mapRow(data as Tables<"templates">);
-    
-    // Update cache with the newly created template
+
+    // Optimistic cache update followed by forced server sync.
     updateTemplatesCache((prev) => [next, ...prev]);
-    
-    // Force refetch to ensure consistency with server data
-    // Use setTimeout to let the optimistic update render first
-    setTimeout(() => {
-      qc.invalidateQueries({ queryKey: templatesQueryKey });
-    }, 0);
+    await syncTemplatesWithServer();
 
     toast.success("Template criado!");
     return next;
-  }, [isAdmin, qc, scope, templates.length, templatesQueryKey, updateTemplatesCache, user]);
+  }, [isAdmin, scope, syncTemplatesWithServer, templates.length, updateTemplatesCache, user]);
 
   const updateTemplate = useCallback(async (
     id: string,
@@ -237,16 +276,18 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     let { error } = await backend
       .from("templates")
       .update(sanitizedUpdates)
-      .eq("id", id);
+      .eq("id", id)
+      .eq("user_id", user.id);
 
-    if (error && scope !== "shopee" && isScopeConstraintViolation(error)) {
+    if (error && shouldFallbackToShopeeScope(scope, error)) {
       ({ error } = await backend
         .from("templates")
         .update({
           ...sanitizedUpdates,
           scope: "shopee",
         })
-        .eq("id", id));
+        .eq("id", id)
+        .eq("user_id", user.id));
     }
 
     if (error) {
@@ -255,14 +296,11 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       return false;
     }
 
-    // Force refetch to ensure consistency with server data
-    setTimeout(() => {
-      qc.invalidateQueries({ queryKey: templatesQueryKey });
-    }, 0);
+    await syncTemplatesWithServer();
 
     toast.success("Template atualizado");
     return true;
-  }, [qc, scope, templates, templatesQueryKey, updateTemplatesCache, user]);
+  }, [scope, syncTemplatesWithServer, templates, updateTemplatesCache, user]);
 
   const deleteTemplate = useCallback(async (id: string) => {
     if (!user) {
@@ -276,7 +314,8 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     const { error } = await backend
       .from("templates")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .eq("user_id", user.id);
 
     if (error) {
       updateTemplatesCache(() => previousTemplates);
@@ -284,13 +323,10 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       return;
     }
 
-    // Force refetch to ensure consistency with server data
-    setTimeout(() => {
-      qc.invalidateQueries({ queryKey: templatesQueryKey });
-    }, 0);
+    await syncTemplatesWithServer();
 
     toast.success("Template removido");
-  }, [qc, templates, templatesQueryKey, updateTemplatesCache, user]);
+  }, [syncTemplatesWithServer, templates, updateTemplatesCache, user]);
 
   const setDefaultTemplate = useCallback(async (id: string) => {
     if (!user) return;
@@ -310,6 +346,7 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     const clearResult = await backend
       .from("templates")
       .update({ is_default: false })
+      .eq("user_id", user.id)
       .in("id", scopeTemplateIds);
 
     if (clearResult.error) {
@@ -322,7 +359,8 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       const setResult = await backend
         .from("templates")
         .update({ is_default: true })
-        .eq("id", id);
+        .eq("id", id)
+        .eq("user_id", user.id);
 
       if (setResult.error) {
         updateTemplatesCache(() => previousTemplates);
@@ -334,11 +372,8 @@ export function useTemplates(scope: TemplateScope = "shopee") {
       toast.success("Template padrao removido");
     }
 
-    // Force refetch to ensure consistency with server data
-    setTimeout(() => {
-      qc.invalidateQueries({ queryKey: templatesQueryKey });
-    }, 0);
-  }, [qc, scope, templates, templatesQueryKey, updateTemplatesCache, user]);
+    await syncTemplatesWithServer();
+  }, [syncTemplatesWithServer, templates, updateTemplatesCache, user]);
 
   const duplicateTemplate = useCallback(async (id: string) => {
     const template = templates.find((item) => item.id === id);
@@ -351,7 +386,9 @@ export function useTemplates(scope: TemplateScope = "shopee") {
     templates,
     defaultTemplate,
     isLoading,
+    isSyncing,
     scope,
+    refreshTemplates: syncTemplatesWithServer,
     createTemplate,
     updateTemplate,
     deleteTemplate,

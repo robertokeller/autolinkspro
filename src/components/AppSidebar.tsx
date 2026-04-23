@@ -11,6 +11,7 @@ import {
   Layers,
   Link2,
   LogOut,
+  MessageSquare,
   Package,
   Route,
   SearchCheck,
@@ -50,21 +51,18 @@ const shopeeSubNav = [
   { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
   { title: "Pesquisa de Ofertas", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.shopeeAutomacoes },
-  { title: "Templates Shopee", icon: FileText, href: ROUTES.app.shopeeTemplates },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.shopeeConfiguracoes },
 ];
 
 const meliSubNav = [
   { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.vitrineMl },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.automacoesMeli },
-  { title: "Templates Mercado Livre", icon: FileText, href: ROUTES.app.templatesMeli },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.mercadolivreConfiguracoes },
 ];
 
 const amazonSubNav = [
   { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.vitrineAmazon },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.automacoesamazon },
-  { title: "Templates Amazon", icon: FileText, href: ROUTES.app.templatesAmazon },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.amazonConfiguracoes },
 ];
 
@@ -312,6 +310,17 @@ export function AppSidebar() {
                   <Link to={ROUTES.app.schedules} onClick={closeMobileSidebar}>
                     <CalendarDays className="h-4 w-4" />
                     <span>Agendamentos</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              )}
+
+              {featureVisibility.templates && (
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={isActive(ROUTES.app.modelosMensagem)} tooltip="Modelos de Mensagem">
+                  <Link to={ROUTES.app.modelosMensagem} onClick={closeMobileSidebar}>
+                    <MessageSquare className="h-4 w-4" />
+                    <span>Modelos de Mensagem</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

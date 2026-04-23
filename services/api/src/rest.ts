@@ -19,7 +19,7 @@ const SENSITIVE_MASKED_COLUMNS: Record<string, Set<string>> = {
 // Table-specific enum constraints validated before hitting the DB for clean error messages
 const TABLE_ENUM_CONSTRAINTS: Record<string, Record<string, readonly string[]>> = {
   templates: {
-    scope:    ["shopee", "meli", "amazon"],
+    scope:    ["shopee", "meli", "amazon", "message"],
     category: ["oferta", "cupom", "geral"],
   },
 };
@@ -43,7 +43,7 @@ const SCHEDULES_BLOCKED_MESSAGE = "Agendamentos nao estao disponiveis no seu pla
 const LINK_HUB_BLOCKED_MESSAGE = "Link Hub nao esta disponivel no seu plano ou nivel de acesso.";
 
 type RestFeatureKey = "shopeeAutomations" | "templates" | "routes" | "schedules" | "linkHub";
-type TemplateScope = "shopee" | "meli" | "amazon";
+type TemplateScope = "shopee" | "meli" | "amazon" | "message";
 type AutomationMarketplace = "shopee" | "meli" | "amazon";
 
 type RestPlanLimits = {
@@ -110,6 +110,7 @@ function normalizeFeatureMode(value: unknown): "enabled" | "hidden" | "blocked" 
 
 function normalizeTemplateScope(value: unknown): TemplateScope {
   const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "message") return "message";
   if (normalized === "meli") return "meli";
   if (normalized === "amazon") return "amazon";
   return "shopee";
@@ -153,6 +154,7 @@ function readAutomationDeliverySessionId(row: Record<string, unknown> | null | u
 }
 
 function getTemplateScopeLabel(scope: TemplateScope): string {
+  if (scope === "message") return "Modelos de Mensagem";
   if (scope === "amazon") return "Amazon";
   if (scope === "meli") return "Mercado Livre";
   return "Shopee";
@@ -383,8 +385,9 @@ async function validateShopeeAutomationRelations(
     if (!templateRow) {
       throw new Error("O modelo selecionado e invalido para esta conta.");
     }
-    if (inferTemplateScopeFromRow(templateRow) !== "shopee") {
-      throw new Error("O modelo selecionado nao pertence ao escopo Shopee.");
+    const templateScope = inferTemplateScopeFromRow(templateRow);
+    if (templateScope !== "shopee" && templateScope !== "message") {
+      throw new Error("O modelo selecionado nao pertence ao escopo permitido para automacao Shopee.");
     }
   }
 }

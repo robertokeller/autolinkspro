@@ -28,6 +28,12 @@ const REQUIRED_TABLES = [
   "system_settings",
 ];
 
+const OPTIONAL_CTA_TABLES = [
+  "user_personalized_ctas",
+  "cta_random_phrases",
+  "user_cta_random_state",
+];
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -74,6 +80,22 @@ try {
       const missing = REQUIRED_TABLES.filter((name) => !found.has(name));
       if (missing.length > 0) {
         throw new Error(`Missing required tables: ${missing.join(", ")}`);
+      }
+
+      const optionalResult = await pool.query(
+        `SELECT table_name
+           FROM information_schema.tables
+          WHERE table_schema = 'public'
+            AND table_name = ANY($1::text[])`,
+        [OPTIONAL_CTA_TABLES],
+      );
+      const optionalFound = new Set(optionalResult.rows.map((row) => String(row.table_name)));
+      const optionalMissing = OPTIONAL_CTA_TABLES.filter((name) => !optionalFound.has(name));
+      if (optionalMissing.length > 0) {
+        console.warn(
+          `[db:check] Optional CTA tables ausentes: ${optionalMissing.join(", ")}. `
+          + "Backend usara fallback em profiles.notification_prefs ate as migracoes serem aplicadas.",
+        );
       }
 
       console.log("[db:check] Database is reachable and schema looks ready.");
