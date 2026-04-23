@@ -6,6 +6,10 @@ RUN npm install
 
 COPY . .
 
+# Root build script runs `svc:api:build`; install API workspace deps in image
+# to avoid missing module/type errors on clean CI/CD builders (Coolify).
+RUN npm --prefix services/api install
+
 ARG VITE_API_URL
 ARG VITE_BROWSER_RUNTIME_ENABLED=false
 # NOTE: VITE_ build args are inlined into the browser JS bundle and visible
