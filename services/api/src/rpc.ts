@@ -3587,6 +3587,12 @@ function isSessionOnlineStatus(status: unknown): boolean {
   return normalized === "online" || normalized === "active" || normalized === "connected" || normalized === "ready";
 }
 
+function isWhatsAppDeliveryCandidateStatus(status: unknown): boolean {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (isSessionOnlineStatus(normalized)) return true;
+  return normalized === "connecting" || normalized === "qr_code" || normalized === "pairing_code";
+}
+
 async function resolveOnlineDestinationSessionSets(input: {
   ownerUserId: string;
   destinationGroups: Array<{ platform?: unknown; session_id?: unknown }>;
@@ -3644,7 +3650,7 @@ async function resolveOnlineDestinationSessionSets(input: {
 
   const onlineWaSessions = new Set(
     waSessionRows
-      .filter((row) => isSessionOnlineStatus(row.status))
+      .filter((row) => isWhatsAppDeliveryCandidateStatus(row.status))
       .map((row) => String(row.id || "").trim())
       .filter(Boolean),
   );
