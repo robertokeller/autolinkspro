@@ -1764,12 +1764,16 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
           );
         }
 
+        const sourceMessageId = String(message.key?.id ?? "").trim();
+        const sourceMessageDate = String(message.messageTimestamp ?? "").trim();
+
         logMediaCaptureDebug("webhook_emit_message_received", {
           sessionId,
           groupId: remoteJid,
           hasText: Boolean(text),
           textLength: text.length,
           hasMedia: Boolean(mediaData),
+          hasSourceMessageId: Boolean(sourceMessageId),
           mediaTokenPrefix: typeof mediaData?.token === "string" ? mediaData.token.slice(0, 8) : "",
         });
         await emitWebhook(state, "message_received", {
@@ -1777,6 +1781,8 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
           message: text,
           groupId: remoteJid,
           groupName,
+          messageId: sourceMessageId || undefined,
+          messageDate: sourceMessageDate || undefined,
           hasMedia: Boolean(inboundMedia),
           mediaKind: inboundMedia?.kind || undefined,
           mediaMimeType: inboundMedia?.mimetype || undefined,

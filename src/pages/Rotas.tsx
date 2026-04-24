@@ -154,7 +154,7 @@ export default function RoutesPage() {
     2: "Escolha para onde as ofertas serão enviadas.",
     3: "Ajuste a conversão de links, modelos de mensagem e filtros.",
   };
-  const connectedSessions = allSessions.filter((s) => s.status === "online");
+  const hasAnySession = allSessions.length > 0;
   const hasAvailableMeliSession = meliSessions.some((session) => session.status === "active" || session.status === "untested");
   const groupsById = useMemo<Map<string, Group>>(
     () => new Map(groups.map((group) => [group.id, group])),
@@ -209,7 +209,7 @@ export default function RoutesPage() {
   // When creating a new route, if a session was selected and options are available, allow advancing
   // (the warning will inform user that capture won't happen until connection is restored).
   const canGoStep2 = !!nr.name.trim() && !!nr.sourceSessionId && (isEditing || sourceSessionConnected || sourceGroups.length > 0) && !!nr.sourceGroupId;
-  const canGoStep3 = !!nr.destSessionId && (isEditing || destSessionConnected) && (
+  const canGoStep3 = !!nr.destSessionId && (isEditing || destSessionConnected || destGroups.length > 0 || destMasterGroups.length > 0) && (
     nr.destinationType === "master"
       ? nr.masterGroupIds.length > 0
       : nr.destinationGroupIds.length > 0
@@ -753,12 +753,12 @@ export default function RoutesPage() {
 
               <div className="space-y-2">
                 <Label>Sessão de Captura</Label>
-                {!isEditing && connectedSessions.length === 0 ? (
+                {!isEditing && !hasAnySession ? (
                   <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/5 border border-destructive/20">
                     <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
                     <div>
-                      <p className="text-xs font-medium text-destructive">Nenhuma sessão conectada</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">Conecte uma sessão WhatsApp ou Telegram antes de criar uma rota.</p>
+                      <p className="text-xs font-medium text-destructive">Nenhuma sessão disponível</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Cadastre ao menos uma sessão WhatsApp ou Telegram antes de criar uma rota.</p>
                     </div>
                   </div>
                 ) : (
@@ -766,7 +766,7 @@ export default function RoutesPage() {
                     <SessionSelect
                       value={nr.sourceSessionId}
                       onValueChange={(v) => setNr({ ...nr, sourceSessionId: v, sourceGroupId: "" })}
-                      sessions={isEditing ? allSessions : connectedSessions}
+                      sessions={allSessions}
                       placeholder="Escolha a sessão de captura..."
                     />
                     <p className="text-xs text-muted-foreground">A sessão que vai monitorar e capturar as mensagens do grupo de origem.</p>
@@ -818,7 +818,7 @@ export default function RoutesPage() {
                 <SessionSelect
                   value={nr.destSessionId}
                   onValueChange={(v) => setNr({ ...nr, destSessionId: v, destinationGroupIds: [], masterGroupIds: [] })}
-                  sessions={isEditing ? allSessions : connectedSessions}
+                  sessions={allSessions}
                   placeholder="Escolha a sessão de envio..."
                 />
                 <p className="text-xs text-muted-foreground">
@@ -827,14 +827,12 @@ export default function RoutesPage() {
               </div>
 
               {/* Show destinations only after selecting dest session */}
-              {nr.destSessionId && (destSessionConnected || isEditing) && (
-                !destSessionConnected && (
-                  <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                    Sessão de envio offline — mostrando grupos do último estado. As mensagens não vão ser enviadas enquanto a sessão estiver desconectada.
-                  </p>
-                )
+              {nr.destSessionId && !destSessionConnected && (
+                <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
+                  Sessão de envio offline — mostrando grupos do último estado. As mensagens não vão ser enviadas enquanto a sessão estiver desconectada.
+                </p>
               )}
-              {nr.destSessionId && (destSessionConnected || isEditing) && (
+              {nr.destSessionId && (
                 <>
                   <div className="space-y-2">
                     <Label>Tipo de Destino</Label>

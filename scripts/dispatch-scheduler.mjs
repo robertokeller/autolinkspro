@@ -20,7 +20,11 @@ const DISPATCH_LIMIT = Number.parseInt(process.env.DISPATCH_LIMIT || "100", 10);
 const DISPATCH_SOURCE = String(process.env.DISPATCH_SOURCE || "node-scheduler").trim();
 const RPC_BASE_URL = String(process.env.SCHEDULER_RPC_BASE_URL || "").trim().replace(/\/$/, "");
 const RPC_TOKEN = String(process.env.SCHEDULER_RPC_TOKEN || "").trim();
-const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.SCHEDULER_TIMEOUT_MS || "15000", 10);
+const REQUEST_TIMEOUT_MS = Math.max(5_000, Number.parseInt(process.env.SCHEDULER_TIMEOUT_MS || "30000", 10) || 30_000);
+const CHANNEL_EVENTS_REQUEST_TIMEOUT_MS = Math.max(
+  REQUEST_TIMEOUT_MS,
+  Number.parseInt(process.env.SCHEDULER_CHANNEL_EVENTS_TIMEOUT_MS || "90000", 10) || 90_000,
+);
 const PRESSURE_MEM_WARN_PERCENT = Number.parseFloat(process.env.SCHEDULER_MEM_WARN_PERCENT || "80");
 const PRESSURE_MEM_CRITICAL_PERCENT = Number.parseFloat(process.env.SCHEDULER_MEM_CRITICAL_PERCENT || "90");
 const PRESSURE_LOAD_WARN_PER_CPU = Number.parseFloat(process.env.SCHEDULER_LOAD_WARN_PER_CPU || "1.5");
@@ -127,9 +131,11 @@ function readPressure() {
 	};
 }
 
-async function invokeFunction(name, body) {
+async function invokeFunction(name, body, options = {}) {
+  const requestedTimeoutMs = Number(options.timeoutMs || REQUEST_TIMEOUT_MS);
+  const timeoutMs = Math.max(5_000, Number.isFinite(requestedTimeoutMs) ? requestedTimeoutMs : REQUEST_TIMEOUT_MS);
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
 	try {
 		const response = await fetch(`${RPC_BASE_URL}/functions/v1/rpc`, {
@@ -302,6 +308,8 @@ async function runChannelEventsCycle() {
 
     const result = await invokeFunction("poll-channel-events", {
       source: DISPATCH_SOURCE,
+    }, {
+      timeoutMs: CHANNEL_EVENTS_REQUEST_TIMEOUT_MS,
     });
     const payload = unwrapRpcData(result);
 

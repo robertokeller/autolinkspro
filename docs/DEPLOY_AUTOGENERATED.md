@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-24T13:50:27.986Z`
+> Atualizado em: `2026-04-24T15:55:02.310Z`
 
 ## Fluxo automático recomendado
 
@@ -44,8 +44,8 @@ npm run deploy:prepare
 | `RESEND_API_KEY` | api | - | re_xxxxxxxxxxxxxxxxxxxxxxxxx |
 | `RESEND_FROM` | api | - | Auto Links <suporte@autolinks.pro> |
 | `SERVICE_TOKEN` | api, scheduler | - | troque-por-token-forte-de-servico |
-| `SESSION_CIPHER_SALT` | meli, telegram, whatsapp | - | - |
-| `SESSION_ENCRYPTION_KEY` | meli, telegram, whatsapp | - | - |
+| `SESSION_CIPHER_SALT` | meli, telegram, whatsapp | - | troque-por-salt-hex-64-caracteres |
+| `SESSION_ENCRYPTION_KEY` | meli, telegram, whatsapp | - | troque-por-chave-hex-64-caracteres |
 | `TELEGRAM_API_HASH` | telegram | - | troque-por-telegram-api-hash |
 | `TELEGRAM_API_ID` | telegram | - | 123456 |
 | `WEBHOOK_SECRET` | amazon, api, meli, ops-control, shopee, telegram, whatsapp | - | troque-por-webhook-secret-forte |

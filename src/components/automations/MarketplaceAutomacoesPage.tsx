@@ -267,8 +267,9 @@ export function MarketplaceAutomacoesPage({
   }, [vitrineTabOptions]);
 
   const connectedSessions = allSessions.filter((session) => session.status === "online");
-  const defaultConnectedSessionId = connectedSessions[0]?.id || "";
-  const hasSingleConnectedSession = connectedSessions.length <= 1;
+  const availableSessions = allSessions;
+  const defaultSessionId = connectedSessions[0]?.id || availableSessions[0]?.id || "";
+  const hasSingleAvailableSession = availableSessions.length <= 1;
   const shouldPauseAll = automations.some((item) => item.is_active);
   const isBulkTogglePending = isPausingAll || isResumingAll;
   const isHeaderActionPending = isBulkTogglePending || isRefreshingAll || isSyncingRoutes;
@@ -309,7 +310,7 @@ export function MarketplaceAutomacoesPage({
       ...EMPTY_FORM,
       templateId: defaultTemplate?.id || "",
       vitrineTabs: [defaultTabKey],
-      sessionId: defaultConnectedSessionId,
+      sessionId: defaultSessionId,
     });
     setShowModal(true);
   };
@@ -319,7 +320,7 @@ export function MarketplaceAutomacoesPage({
     const mapped = automationToForm(automation, marketplace);
     setForm({
       ...mapped,
-      sessionId: mapped.sessionId || defaultConnectedSessionId,
+      sessionId: mapped.sessionId || defaultSessionId,
     });
     setShowModal(true);
   };
@@ -329,9 +330,9 @@ export function MarketplaceAutomacoesPage({
   };
 
   const handleSubmit = async () => {
-    const effectiveSessionId = form.sessionId || defaultConnectedSessionId;
+    const effectiveSessionId = form.sessionId || defaultSessionId;
     if (!form.name.trim()) { toast.error("De um nome para a automação"); return; }
-    if (!effectiveSessionId) { toast.error("Conecte uma sessão de envio"); return; }
+    if (!effectiveSessionId) { toast.error("Selecione uma sessão de envio"); return; }
     if (!form.templateId) { toast.error("Escolha um modelo de mensagem"); return; }
     if (form.destinationGroupIds.length === 0 && form.masterGroupIds.length === 0) {
       toast.error("Escolha pelo menos um grupo de destino");
@@ -383,9 +384,9 @@ export function MarketplaceAutomacoesPage({
   useEffect(() => {
     if (!showModal) return;
     if (form.sessionId) return;
-    if (!defaultConnectedSessionId) return;
-    setForm((prev) => ({ ...prev, sessionId: defaultConnectedSessionId }));
-  }, [defaultConnectedSessionId, form.sessionId, showModal]);
+    if (!defaultSessionId) return;
+    setForm((prev) => ({ ...prev, sessionId: defaultSessionId }));
+  }, [defaultSessionId, form.sessionId, showModal]);
 
   const getSessionLabel = (sessionId: string | null) => {
     if (!sessionId) return null;
@@ -724,17 +725,17 @@ export function MarketplaceAutomacoesPage({
 
             <div className="space-y-2">
               <Label>Sessão de envio *</Label>
-              {hasSingleConnectedSession ? (
+              {hasSingleAvailableSession ? (
                 <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
-                  {connectedSessions[0]?.label || "Nenhuma sessão conectada"}
+                  {availableSessions[0]?.label || "Nenhuma sessão disponível"}
                 </div>
               ) : (
                 <SessionSelect
                   value={form.sessionId}
                   onValueChange={handleSessionChange}
-                  sessions={connectedSessions}
+                  sessions={availableSessions}
                   placeholder="Escolha uma sessão..."
-                  emptyLabel="Nenhuma sessão conectada"
+                  emptyLabel="Nenhuma sessão disponível"
                 />
               )}
             </div>

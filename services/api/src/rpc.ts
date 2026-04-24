@@ -102,9 +102,47 @@ const WHATSAPP_SYNC_GROUPS_TIMEOUT_MS = Math.max(
   Math.min(300_000, Number(process.env.WHATSAPP_SYNC_GROUPS_TIMEOUT_MS || "120000") || 120_000),
 );
 const ROUTE_DESTINATION_SEND_TIMEOUT_MS = Math.max(
-  15_000,
-  Math.min(120_000, Number(process.env.ROUTE_DESTINATION_SEND_TIMEOUT_MS || "30000") || 30_000),
+  20_000,
+  Math.min(180_000, Number(process.env.ROUTE_DESTINATION_SEND_TIMEOUT_MS || "45000") || 45_000),
 );
+const ROUTE_DESTINATION_SEND_TIMEOUT_STEP_DESTINATIONS = Math.max(
+  1,
+  Math.min(100, Number(process.env.ROUTE_DESTINATION_SEND_TIMEOUT_STEP_DESTINATIONS || "10") || 10),
+);
+const ROUTE_DESTINATION_SEND_TIMEOUT_STEP_MS = Math.max(
+  0,
+  Math.min(30_000, Number(process.env.ROUTE_DESTINATION_SEND_TIMEOUT_STEP_MS || "5000") || 5_000),
+);
+const ROUTE_DESTINATION_SEND_TIMEOUT_DYNAMIC_MAX_MS = Math.max(
+  ROUTE_DESTINATION_SEND_TIMEOUT_MS,
+  Math.min(600_000, Number(process.env.ROUTE_DESTINATION_SEND_TIMEOUT_DYNAMIC_MAX_MS || "240000") || 240_000),
+);
+const ROUTE_DESTINATION_DELAY_BASE_MS = Math.max(
+  100,
+  Math.min(5_000, Number(process.env.ROUTE_DESTINATION_DELAY_BASE_MS || "500") || 500),
+);
+const ROUTE_DESTINATION_DELAY_STEP_DESTINATIONS = Math.max(
+  1,
+  Math.min(100, Number(process.env.ROUTE_DESTINATION_DELAY_STEP_DESTINATIONS || "20") || 20),
+);
+const ROUTE_DESTINATION_DELAY_STEP_MS = Math.max(
+  0,
+  Math.min(2_000, Number(process.env.ROUTE_DESTINATION_DELAY_STEP_MS || "120") || 120),
+);
+const ROUTE_DESTINATION_DELAY_MAX_MS = Math.max(
+  ROUTE_DESTINATION_DELAY_BASE_MS,
+  Math.min(10_000, Number(process.env.ROUTE_DESTINATION_DELAY_MAX_MS || "1500") || 1_500),
+);
+const CHANNEL_EVENTS_FETCH_TIMEOUT_MS = Math.max(
+  20_000,
+  Math.min(300_000, Number(process.env.CHANNEL_EVENTS_FETCH_TIMEOUT_MS || "60000") || 60_000),
+);
+const ROUTE_INBOUND_DEDUPE_WINDOW_MS = Math.max(
+  10_000,
+  Math.min(300_000, Number(process.env.ROUTE_INBOUND_DEDUPE_WINDOW_MS || "120000") || 120_000),
+);
+const ROUTE_INBOUND_DEDUPE_TEXT_LIMIT = 480;
+const ROUTE_INBOUND_DEDUPE_LINK_REGEX = /https?:\/\/[^\s<>"'(){}|\\^`[\]]+/gi;
 const ROUTE_LINK_CONVERSION_TIMEOUT_MS = Math.max(
   30_000,
   Math.min(300_000, Number(process.env.ROUTE_LINK_CONVERSION_TIMEOUT_MS || "60000") || 60_000),
@@ -553,9 +591,43 @@ const AUTOMATION_RECENT_OFFER_LIMIT = 200;
 const AUTOMATION_RECENT_OFFER_WINDOW_HOURS = 72;
 const MELI_AUTOMATION_MAX_CONVERSION_ATTEMPTS = 8;
 const MELI_AUTOMATION_MAX_FAILURE_DETAILS = 8;
+const OFFER_DUPLICATE_BLOCKED_MESSAGE = "Oferta nao enviada para evitar duplicidade. Essa oferta ja foi enviada recentemente. Aguarde uma nova oferta.";
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type DynamicDispatchPolicy = {
+  destinationCount: number;
+  sendTimeoutMs: number;
+  interDestinationDelayMs: number;
+};
+
+function buildDynamicDispatchPolicy(destinationCountRaw: number): DynamicDispatchPolicy {
+  const destinationCount = Math.max(1, Math.trunc(Number(destinationCountRaw) || 0));
+  const timeoutSteps = Math.floor((destinationCount - 1) / ROUTE_DESTINATION_SEND_TIMEOUT_STEP_DESTINATIONS);
+  const delaySteps = Math.floor((destinationCount - 1) / ROUTE_DESTINATION_DELAY_STEP_DESTINATIONS);
+
+  const sendTimeoutMs = Math.min(
+    ROUTE_DESTINATION_SEND_TIMEOUT_DYNAMIC_MAX_MS,
+    ROUTE_DESTINATION_SEND_TIMEOUT_MS + (timeoutSteps * ROUTE_DESTINATION_SEND_TIMEOUT_STEP_MS),
+  );
+  const interDestinationDelayMs = Math.min(
+    ROUTE_DESTINATION_DELAY_MAX_MS,
+    ROUTE_DESTINATION_DELAY_BASE_MS + (delaySteps * ROUTE_DESTINATION_DELAY_STEP_MS),
+  );
+
+  return {
+    destinationCount,
+    sendTimeoutMs,
+    interDestinationDelayMs,
+  };
+}
+
+async function maybeWaitBetweenDestinations(index: number, total: number, delayMs: number): Promise<void> {
+  if (delayMs <= 0) return;
+  if (index >= total - 1) return;
+  await sleep(delayMs);
 }
 
 function isLocalhostUrl(raw: string): boolean {
@@ -4172,7 +4244,7 @@ function extractMicroserviceError(payload: unknown, fallback: string): string {
   return fallback;
 }
 
-async function proxyMicroservice(baseUrl, path, method, body, extraHeaders = {}, timeoutMs = 10_000) {
+async function proxyMicroservice(baseUrl, path, method, body, extraHeaders = {}, timeoutMs = 20_000) {
   const url = `${baseUrl}${path}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -6436,6 +6508,53 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
       inviteCode: String(group.inviteCode || ""),
     });
   }
+
+  const staleGroupIds = existingRows
+    .filter((row) => {
+      const groupId = String(row.id || "").trim();
+      if (!groupId || claimedExistingIds.has(groupId)) return false;
+      const externalId = String(row.external_id || "").trim();
+      return !!externalId && !remoteExternalIds.has(externalId);
+    })
+    .map((row) => String(row.id || "").trim())
+    .filter(Boolean);
+
+  if (staleGroupIds.length === 0) return;
+
+  await transaction(async (client) => {
+    await client.query(
+      `UPDATE routes
+          SET source_group_id = '',
+              status = CASE WHEN status = 'active' THEN 'inactive' ELSE status END,
+              updated_at = NOW()
+        WHERE source_group_id = ANY($1::text[])`,
+      [staleGroupIds],
+    );
+
+    await client.query(
+      "DELETE FROM route_destinations WHERE group_id = ANY($1::uuid[])",
+      [staleGroupIds],
+    );
+
+    await client.query(
+      "DELETE FROM master_group_links WHERE group_id = ANY($1::uuid[])",
+      [staleGroupIds],
+    );
+
+    await client.query(
+      "DELETE FROM scheduled_post_destinations WHERE group_id = ANY($1::uuid[])",
+      [staleGroupIds],
+    );
+
+    await client.query(
+      `DELETE FROM groups
+        WHERE id = ANY($1::uuid[])
+          AND user_id = $2
+          AND platform = 'whatsapp'
+          AND session_id = $3`,
+      [staleGroupIds, userId, sessionId],
+    );
+  });
 }
 
 async function syncWhatsAppSessionGroups(input: {
@@ -6815,6 +6934,135 @@ async function logRouteProcessingFailure(input: {
   console.error(`[rpc] route processing ${platform} failed: ${errorMessage}`);
 }
 
+type InboundRouteDedupeMeta = {
+  key: string;
+  mode: "source_message_id" | "content_fingerprint";
+};
+
+function normalizeInboundRouteMessageForDedupe(raw: string): string {
+  const withoutUrls = String(raw || "").replace(ROUTE_INBOUND_DEDUPE_LINK_REGEX, " [url] ");
+  return normalizeComparableMessage(withoutUrls)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, ROUTE_INBOUND_DEDUPE_TEXT_LIMIT);
+}
+
+function buildInboundRouteDedupeMeta(input: {
+  sourceMessageId?: string;
+  message: string;
+  media: RouteForwardMedia | null;
+  hasMediaHint: boolean;
+  mediaKindHint: string;
+}): InboundRouteDedupeMeta {
+  const sourceMessageId = String(input.sourceMessageId || "").trim();
+  if (sourceMessageId) {
+    return {
+      key: `id:${sourceMessageId}`,
+      mode: "source_message_id",
+    };
+  }
+
+  const normalizedMessage = normalizeInboundRouteMessageForDedupe(input.message);
+  const mediaSignature = input.media
+    ? `media:${input.media.kind}:${String(input.media.mimeType || "").trim().toLowerCase() || "unknown"}`
+    : (input.hasMediaHint
+      ? `hint:${String(input.mediaKindHint || "").trim().toLowerCase() || "unknown"}`
+      : "none");
+  const contentSignature = normalizedMessage || `[${mediaSignature}]`;
+  return {
+    key: `content:${contentSignature}::${mediaSignature}`,
+    mode: "content_fingerprint",
+  };
+}
+
+async function wasInboundRouteRecentlyCaptured(input: {
+  userId: string;
+  sourceExternalId: string;
+  sessionId: string;
+  platform: "whatsapp" | "telegram";
+  dedupeKey: string;
+}): Promise<boolean> {
+  const {
+    userId,
+    sourceExternalId,
+    sessionId,
+    platform,
+    dedupeKey,
+  } = input;
+  if (!dedupeKey) return false;
+
+  const windowSeconds = Math.max(1, Math.ceil(ROUTE_INBOUND_DEDUPE_WINDOW_MS / 1000));
+  try {
+    const duplicate = await queryOne<{ id: string }>(
+      `SELECT id
+         FROM history_entries
+        WHERE user_id = $1
+          AND type = 'session_event'
+          AND direction = 'inbound'
+          AND COALESCE(details->>'platform', '') = $2
+          AND COALESCE(details->>'sessionId', '') = $3
+          AND COALESCE(details->>'sourceExternalId', '') = $4
+          AND COALESCE(details->>'routeInboundDedupeKey', '') = $5
+          AND created_at >= NOW() - make_interval(secs => $6::int)
+        LIMIT 1`,
+      [userId, platform, sessionId, sourceExternalId, dedupeKey, windowSeconds],
+    );
+    return Boolean(duplicate?.id);
+  } catch {
+    // Dedupe is a safety layer; on transient DB issues, prefer delivery.
+    return false;
+  }
+}
+
+async function appendInboundDuplicateBlockedHistory(input: {
+  userId: string;
+  sourceName: string;
+  sourceExternalId: string;
+  sessionId: string;
+  platform: "whatsapp" | "telegram";
+  message: string;
+  media: RouteForwardMedia | null;
+  sourceMessageId?: string;
+  sourceMessageDate?: string;
+  dedupeKey: string;
+  dedupeMode: string;
+}): Promise<void> {
+  const {
+    userId,
+    sourceName,
+    sourceExternalId,
+    sessionId,
+    platform,
+    message,
+    media,
+    sourceMessageId,
+    sourceMessageDate,
+    dedupeKey,
+    dedupeMode,
+  } = input;
+  const messageType = media ? media.kind : "text";
+
+  try {
+    await execute(
+      "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'info',$5,'inbound',$6,'blocked','inbound_duplicate','route_dedupe')",
+      [uuid(), userId, sourceName || "Grupo", "-", JSON.stringify({
+        message,
+        sourceExternalId,
+        sessionId,
+        platform,
+        sourceMessageId: String(sourceMessageId || "").trim() || undefined,
+        sourceMessageDate: String(sourceMessageDate || "").trim() || undefined,
+        dedupeKey,
+        dedupeMode,
+        dedupeWindowMs: ROUTE_INBOUND_DEDUPE_WINDOW_MS,
+        reason: "inbound_duplicate",
+      }), messageType],
+    );
+  } catch {
+    // Duplicate block logging is best-effort only.
+  }
+}
+
 async function appendInboundCaptureHistory(input: {
   userId: string;
   sourceName: string;
@@ -6827,6 +7075,8 @@ async function appendInboundCaptureHistory(input: {
   mediaKindHint: string;
   sourceMessageId?: string;
   sourceMessageDate?: string;
+  routeInboundDedupeKey?: string;
+  routeInboundDedupeMode?: string;
 }): Promise<void> {
   const {
     userId,
@@ -6840,6 +7090,8 @@ async function appendInboundCaptureHistory(input: {
     mediaKindHint,
     sourceMessageId,
     sourceMessageDate,
+    routeInboundDedupeKey,
+    routeInboundDedupeMode,
   } = input;
 
   const capturedAt = nowIso();
@@ -6863,6 +7115,8 @@ async function appendInboundCaptureHistory(input: {
         capturedAt,
         sourceMessageId: String(sourceMessageId || "").trim() || undefined,
         sourceMessageDate: String(sourceMessageDate || "").trim() || undefined,
+        routeInboundDedupeKey: String(routeInboundDedupeKey || "").trim() || undefined,
+        routeInboundDedupeMode: String(routeInboundDedupeMode || "").trim() || undefined,
       }), messageType],
     );
   } catch {
@@ -7001,6 +7255,37 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
           continue;
         }
 
+        const inboundDedupe = buildInboundRouteDedupeMeta({
+          sourceMessageId,
+          message,
+          media,
+          hasMediaHint,
+          mediaKindHint,
+        });
+        const isDuplicateInbound = await wasInboundRouteRecentlyCaptured({
+          userId,
+          sourceExternalId,
+          sessionId,
+          platform: "whatsapp",
+          dedupeKey: inboundDedupe.key,
+        });
+        if (isDuplicateInbound) {
+          await appendInboundDuplicateBlockedHistory({
+            userId,
+            sourceName,
+            sourceExternalId,
+            sessionId,
+            platform: "whatsapp",
+            message,
+            media,
+            sourceMessageId,
+            sourceMessageDate,
+            dedupeKey: inboundDedupe.key,
+            dedupeMode: inboundDedupe.mode,
+          });
+          continue;
+        }
+
         await appendInboundCaptureHistory({
           userId,
           sourceName,
@@ -7013,6 +7298,8 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
           mediaKindHint,
           sourceMessageId,
           sourceMessageDate,
+          routeInboundDedupeKey: inboundDedupe.key,
+          routeInboundDedupeMode: inboundDedupe.mode,
         });
 
         if (!message && !media && hasMediaHint) {
@@ -7199,6 +7486,37 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
           continue;
         }
 
+        const inboundDedupe = buildInboundRouteDedupeMeta({
+          sourceMessageId,
+          message,
+          media,
+          hasMediaHint,
+          mediaKindHint,
+        });
+        const isDuplicateInbound = await wasInboundRouteRecentlyCaptured({
+          userId,
+          sourceExternalId,
+          sessionId,
+          platform: "telegram",
+          dedupeKey: inboundDedupe.key,
+        });
+        if (isDuplicateInbound) {
+          await appendInboundDuplicateBlockedHistory({
+            userId,
+            sourceName,
+            sourceExternalId,
+            sessionId,
+            platform: "telegram",
+            message,
+            media,
+            sourceMessageId,
+            sourceMessageDate,
+            dedupeKey: inboundDedupe.key,
+            dedupeMode: inboundDedupe.mode,
+          });
+          continue;
+        }
+
         await appendInboundCaptureHistory({
           userId,
           sourceName,
@@ -7211,6 +7529,8 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
           mediaKindHint,
           sourceMessageId,
           sourceMessageDate,
+          routeInboundDedupeKey: inboundDedupe.key,
+          routeInboundDedupeMode: inboundDedupe.mode,
         });
 
         if (!message && !media && hasMediaHint) {
@@ -8256,7 +8576,10 @@ async function processRouteMessageForUser(input: {
       continue;
     }
 
-    for (const targetId of filteredTargetIds) {
+    const routeDispatchPolicy = buildDynamicDispatchPolicy(filteredTargetIds.length);
+    for (let targetIndex = 0; targetIndex < filteredTargetIds.length; targetIndex++) {
+      const targetId = filteredTargetIds[targetIndex];
+      let sendAttempted = false;
       const group = destGroupMap.get(String(targetId));
       if (!group) {
         await execute(
@@ -8333,22 +8656,26 @@ async function processRouteMessageForUser(input: {
       }
       let result = { data: null as unknown, error: { message: "Plataforma inválida" } as { message: string } | null };
       if (platform === "whatsapp" && WHATSAPP_URL) {
+        sendAttempted = true;
         result = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
           sessionId: destinationSessionId,
           jid: destinationExternalId,
           content: outboundTextSafe,
           media: mediaForDestination ?? undefined,
-        }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
+        }, scopedHeaders, routeDispatchPolicy.sendTimeoutMs);
       } else if (platform === "telegram" && TELEGRAM_URL) {
+        sendAttempted = true;
         result = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
           sessionId: destinationSessionId,
           chatId: destinationExternalId,
           message: outboundTextSafe,
           media: mediaForDestination ?? undefined,
-        }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
+        }, scopedHeaders, routeDispatchPolicy.sendTimeoutMs);
       }
 
-      await sleep(500);
+      if (sendAttempted) {
+        await maybeWaitBetweenDestinations(targetIndex, filteredTargetIds.length, routeDispatchPolicy.interDestinationDelayMs);
+      }
 
       if (result.error) {
         logRouteMediaDebug("route.process.failed.destination_send_failed", {
@@ -8423,6 +8750,7 @@ async function pollWhatsAppEventsForSession(userId: string, sessionId: string): 
     "GET",
     null,
     headers,
+    CHANNEL_EVENTS_FETCH_TIMEOUT_MS,
   );
   if (upstream.error) {
     pushChannelPollError({
@@ -8604,6 +8932,7 @@ async function pollTelegramEventsForSession(userId: string, sessionId: string): 
     "GET",
     null,
     headers,
+    CHANNEL_EVENTS_FETCH_TIMEOUT_MS,
   );
   if (upstream.error) {
     pushChannelPollError({
@@ -9059,7 +9388,9 @@ async function runChannelOrphanCleanup(input: {
   for (const group of activeGroups) {
     const externalId = String(group.external_id || "").trim().toLowerCase();
     if (!externalId) continue;
-    const key = `${String(group.user_id)}::${String(group.platform)}::${externalId}`;
+    const sessionId = String(group.session_id || "").trim();
+    if (!sessionId) continue;
+    const key = `${String(group.user_id)}::${String(group.platform)}::${sessionId}::${externalId}`;
     const bucket = duplicateBuckets.get(key) || [];
     bucket.push(group);
     duplicateBuckets.set(key, bucket);
@@ -11886,7 +12217,9 @@ if (funcName === "whatsapp-connect") {
           ? await query("SELECT id, name, platform, session_id, external_id FROM groups WHERE id = ANY($1) AND user_id = $2", [destIds, post.user_id])
           : [];
         const groupMap = new Map(groupRows.map((g) => [g.id, g]));
-        for (const gid of destIds) {
+        const scheduleDispatchPolicy = buildDynamicDispatchPolicy(destIds.length);
+        for (let destinationIndex = 0; destinationIndex < destIds.length; destinationIndex++) {
+          const gid = destIds[destinationIndex];
           const g = groupMap.get(gid);
           if (!g) {
             ok_ = false;
@@ -11945,20 +12278,23 @@ if (funcName === "whatsapp-connect") {
           }
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
           let sentResult = { data: null, error: { message: "Plataforma inválida" } };
+          let sendAttempted = false;
           if (platform === "whatsapp" && WHATSAPP_URL) {
+            sendAttempted = true;
             sentResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
               sessionId: session,
               jid: externalId,
               content: outboundMessage,
               media: mediaForDestination ?? undefined,
-            }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
+            }, scopedHeaders, scheduleDispatchPolicy.sendTimeoutMs);
           } else if (platform === "telegram" && TELEGRAM_URL) {
+            sendAttempted = true;
             sentResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
               sessionId: session,
               chatId: externalId,
               message: outboundMessage,
               media: mediaForDestination ?? undefined,
-            }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
+            }, scopedHeaders, scheduleDispatchPolicy.sendTimeoutMs);
           } else {
             sentResult = { data: null, error: { message: `Serviço ${platform || "desconhecido"} indisponível` } };
           }
@@ -11982,6 +12318,9 @@ if (funcName === "whatsapp-connect") {
             [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform, hasMedia: !!mediaForDestination }), mediaForDestination ? mediaForDestination.kind : "text"]);
           sent++;
           postSentCount += 1;
+          if (sendAttempted) {
+            await maybeWaitBetweenDestinations(destinationIndex, destIds.length, scheduleDispatchPolicy.interDestinationDelayMs);
+          }
         }
         if (!ok_) {
           const cancelledMeta = markScheduledPostMediaCleanup(meta, nowMs);
@@ -13217,7 +13556,7 @@ if (funcName === "whatsapp-connect") {
             destination: "automation:diagnostic",
             status: "warning",
             processingStatus: "blocked",
-            message: "Sem oferta nova agora. As opções disponíveis já foram enviadas recentemente.",
+            message: OFFER_DUPLICATE_BLOCKED_MESSAGE,
             details: {
               automationId,
               source,
@@ -13380,7 +13719,9 @@ if (funcName === "whatsapp-connect") {
         });
 
         let sentNow = 0;
-        for (const group of destinationGroups) {
+        const automationDispatchPolicy = buildDynamicDispatchPolicy(destinationGroups.length);
+        for (let destinationIndex = 0; destinationIndex < destinationGroups.length; destinationIndex++) {
+          const group = destinationGroups[destinationIndex];
           const groupName = String(group.name || group.id || "Grupo");
           const platform = String(group.platform || "").trim();
           const sessionId = String(group.session_id || "").trim();
@@ -13464,21 +13805,29 @@ if (funcName === "whatsapp-connect") {
             continue;
           }
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
-          const sendResult = platform === "whatsapp" && WHATSAPP_URL
-            ? await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-                sessionId,
-                jid: externalId,
-                content: outboundMessage,
-                media: mediaForDestination,
-              }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
-            : platform === "telegram" && TELEGRAM_URL
-              ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-                  sessionId,
-                  chatId: externalId,
-                  message: outboundMessage,
-                  media: mediaForDestination,
-                }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
-              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
+          let sendAttempted = false;
+          let sendResult = { data: null as unknown, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } as { message: string } | null };
+          if (platform === "whatsapp" && WHATSAPP_URL) {
+            sendAttempted = true;
+            sendResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+              sessionId,
+              jid: externalId,
+              content: outboundMessage,
+              media: mediaForDestination,
+            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
+          } else if (platform === "telegram" && TELEGRAM_URL) {
+            sendAttempted = true;
+            sendResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+              sessionId,
+              chatId: externalId,
+              message: outboundMessage,
+              media: mediaForDestination,
+            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
+          }
+
+          if (sendAttempted) {
+            await maybeWaitBetweenDestinations(destinationIndex, destinationGroups.length, automationDispatchPolicy.interDestinationDelayMs);
+          }
 
           if (sendResult.error) {
             failed += 1;
@@ -13805,7 +14154,7 @@ if (funcName === "whatsapp-connect") {
             destination: "automation:diagnostic",
             status: "warning",
             processingStatus: "blocked",
-            message: "Sem oferta nova agora. As opcoes disponiveis ja foram enviadas recentemente.",
+            message: OFFER_DUPLICATE_BLOCKED_MESSAGE,
             details: {
               automationId,
               source,
@@ -14044,7 +14393,9 @@ if (funcName === "whatsapp-connect") {
         });
 
         let sentNow = 0;
-        for (const group of destinationGroups) {
+        const automationDispatchPolicy = buildDynamicDispatchPolicy(destinationGroups.length);
+        for (let destinationIndex = 0; destinationIndex < destinationGroups.length; destinationIndex++) {
+          const group = destinationGroups[destinationIndex];
           const groupName = String(group.name || group.id || "Grupo");
           const platform = String(group.platform || "").trim();
           const sessionId = String(group.session_id || "").trim();
@@ -14129,21 +14480,29 @@ if (funcName === "whatsapp-connect") {
           }
 
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
-          const sendResult = platform === "whatsapp" && WHATSAPP_URL
-            ? await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-                sessionId,
-                jid: externalId,
-                content: outboundMessage,
-                media: mediaForDestination,
-              }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
-            : platform === "telegram" && TELEGRAM_URL
-              ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-                  sessionId,
-                  chatId: externalId,
-                  message: outboundMessage,
-                  media: mediaForDestination,
-                }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
-              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
+          let sendAttempted = false;
+          let sendResult = { data: null as unknown, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } as { message: string } | null };
+          if (platform === "whatsapp" && WHATSAPP_URL) {
+            sendAttempted = true;
+            sendResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+              sessionId,
+              jid: externalId,
+              content: outboundMessage,
+              media: mediaForDestination,
+            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
+          } else if (platform === "telegram" && TELEGRAM_URL) {
+            sendAttempted = true;
+            sendResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+              sessionId,
+              chatId: externalId,
+              message: outboundMessage,
+              media: mediaForDestination,
+            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
+          }
+
+          if (sendAttempted) {
+            await maybeWaitBetweenDestinations(destinationIndex, destinationGroups.length, automationDispatchPolicy.interDestinationDelayMs);
+          }
 
           if (sendResult.error) {
             failed += 1;
@@ -14509,7 +14868,7 @@ if (funcName === "whatsapp-connect") {
             destination: "automation:diagnostic",
             status: "warning",
             processingStatus: "blocked",
-            message: "Sem oferta nova agora. As opcoes disponiveis ja foram enviadas recentemente.",
+            message: OFFER_DUPLICATE_BLOCKED_MESSAGE,
             details: {
               automationId,
               source,
@@ -14705,7 +15064,9 @@ if (funcName === "whatsapp-connect") {
         });
 
         let sentNow = 0;
-        for (const group of destinationGroups) {
+        const automationDispatchPolicy = buildDynamicDispatchPolicy(destinationGroups.length);
+        for (let destinationIndex = 0; destinationIndex < destinationGroups.length; destinationIndex++) {
+          const group = destinationGroups[destinationIndex];
           const groupName = String(group.name || group.id || "Grupo");
           const platform = String(group.platform || "").trim();
           const sessionId = String(group.session_id || "").trim();
@@ -14791,21 +15152,29 @@ if (funcName === "whatsapp-connect") {
           }
 
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
-          const sendResult = platform === "whatsapp" && WHATSAPP_URL
-            ? await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-                sessionId,
-                jid: externalId,
-                content: outboundMessage,
-                media: mediaForDestination,
-              }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
-            : platform === "telegram" && TELEGRAM_URL
-              ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-                  sessionId,
-                  chatId: externalId,
-                  message: outboundMessage,
-                  media: mediaForDestination,
-                }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
-              : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
+          let sendAttempted = false;
+          let sendResult = { data: null as unknown, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } as { message: string } | null };
+          if (platform === "whatsapp" && WHATSAPP_URL) {
+            sendAttempted = true;
+            sendResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
+              sessionId,
+              jid: externalId,
+              content: outboundMessage,
+              media: mediaForDestination,
+            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
+          } else if (platform === "telegram" && TELEGRAM_URL) {
+            sendAttempted = true;
+            sendResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
+              sessionId,
+              chatId: externalId,
+              message: outboundMessage,
+              media: mediaForDestination,
+            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
+          }
+
+          if (sendAttempted) {
+            await maybeWaitBetweenDestinations(destinationIndex, destinationGroups.length, automationDispatchPolicy.interDestinationDelayMs);
+          }
 
           if (sendResult.error) {
             failed += 1;
