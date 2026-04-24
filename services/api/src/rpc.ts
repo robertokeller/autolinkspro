@@ -6936,6 +6936,7 @@ async function logRouteProcessingFailure(input: {
 
 type InboundRouteDedupeMeta = {
   key: string;
+  contentKey: string;
   mode: "source_message_id" | "content_fingerprint";
 };
 
@@ -6954,14 +6955,6 @@ function buildInboundRouteDedupeMeta(input: {
   hasMediaHint: boolean;
   mediaKindHint: string;
 }): InboundRouteDedupeMeta {
-  const sourceMessageId = String(input.sourceMessageId || "").trim();
-  if (sourceMessageId) {
-    return {
-      key: `id:${sourceMessageId}`,
-      mode: "source_message_id",
-    };
-  }
-
   const normalizedMessage = normalizeInboundRouteMessageForDedupe(input.message);
   const mediaSignature = input.media
     ? `media:${input.media.kind}:${String(input.media.mimeType || "").trim().toLowerCase() || "unknown"}`
@@ -6969,8 +6962,20 @@ function buildInboundRouteDedupeMeta(input: {
       ? `hint:${String(input.mediaKindHint || "").trim().toLowerCase() || "unknown"}`
       : "none");
   const contentSignature = normalizedMessage || `[${mediaSignature}]`;
+  const contentKey = `content:${contentSignature}::${mediaSignature}`;
+
+  const sourceMessageId = String(input.sourceMessageId || "").trim();
+  if (sourceMessageId) {
+    return {
+      key: `id:${sourceMessageId}`,
+      contentKey,
+      mode: "source_message_id",
+    };
+  }
+
   return {
-    key: `content:${contentSignature}::${mediaSignature}`,
+    key: contentKey,
+    contentKey,
     mode: "content_fingerprint",
   };
 }
@@ -6980,16 +6985,17 @@ async function wasInboundRouteRecentlyCaptured(input: {
   sourceExternalId: string;
   sessionId: string;
   platform: "whatsapp" | "telegram";
-  dedupeKey: string;
+  dedupeKeys: string[];
 }): Promise<boolean> {
   const {
     userId,
     sourceExternalId,
     sessionId,
     platform,
-    dedupeKey,
+    dedupeKeys,
   } = input;
-  if (!dedupeKey) return false;
+  const keys = [...new Set((Array.isArray(dedupeKeys) ? dedupeKeys : []).map((value) => String(value || "").trim()).filter(Boolean))];
+  if (keys.length === 0) return false;
 
   const windowSeconds = Math.max(1, Math.ceil(ROUTE_INBOUND_DEDUPE_WINDOW_MS / 1000));
   try {
@@ -7002,10 +7008,13 @@ async function wasInboundRouteRecentlyCaptured(input: {
           AND COALESCE(details->>'platform', '') = $2
           AND COALESCE(details->>'sessionId', '') = $3
           AND COALESCE(details->>'sourceExternalId', '') = $4
-          AND COALESCE(details->>'routeInboundDedupeKey', '') = $5
+          AND (
+            COALESCE(details->>'routeInboundDedupeKey', '') = ANY($5::text[])
+            OR COALESCE(details->>'routeInboundContentDedupeKey', '') = ANY($5::text[])
+          )
           AND created_at >= NOW() - make_interval(secs => $6::int)
         LIMIT 1`,
-      [userId, platform, sessionId, sourceExternalId, dedupeKey, windowSeconds],
+      [userId, platform, sessionId, sourceExternalId, keys, windowSeconds],
     );
     return Boolean(duplicate?.id);
   } catch {
@@ -7025,6 +7034,7 @@ async function appendInboundDuplicateBlockedHistory(input: {
   sourceMessageId?: string;
   sourceMessageDate?: string;
   dedupeKey: string;
+  contentDedupeKey?: string;
   dedupeMode: string;
 }): Promise<void> {
   const {
@@ -7038,6 +7048,7 @@ async function appendInboundDuplicateBlockedHistory(input: {
     sourceMessageId,
     sourceMessageDate,
     dedupeKey,
+    contentDedupeKey,
     dedupeMode,
   } = input;
   const messageType = media ? media.kind : "text";
@@ -7053,6 +7064,7 @@ async function appendInboundDuplicateBlockedHistory(input: {
         sourceMessageId: String(sourceMessageId || "").trim() || undefined,
         sourceMessageDate: String(sourceMessageDate || "").trim() || undefined,
         dedupeKey,
+        contentDedupeKey: String(contentDedupeKey || "").trim() || undefined,
         dedupeMode,
         dedupeWindowMs: ROUTE_INBOUND_DEDUPE_WINDOW_MS,
         reason: "inbound_duplicate",
@@ -7076,6 +7088,7 @@ async function appendInboundCaptureHistory(input: {
   sourceMessageId?: string;
   sourceMessageDate?: string;
   routeInboundDedupeKey?: string;
+  routeInboundContentDedupeKey?: string;
   routeInboundDedupeMode?: string;
 }): Promise<void> {
   const {
@@ -7091,6 +7104,7 @@ async function appendInboundCaptureHistory(input: {
     sourceMessageId,
     sourceMessageDate,
     routeInboundDedupeKey,
+    routeInboundContentDedupeKey,
     routeInboundDedupeMode,
   } = input;
 
@@ -7116,6 +7130,7 @@ async function appendInboundCaptureHistory(input: {
         sourceMessageId: String(sourceMessageId || "").trim() || undefined,
         sourceMessageDate: String(sourceMessageDate || "").trim() || undefined,
         routeInboundDedupeKey: String(routeInboundDedupeKey || "").trim() || undefined,
+        routeInboundContentDedupeKey: String(routeInboundContentDedupeKey || "").trim() || undefined,
         routeInboundDedupeMode: String(routeInboundDedupeMode || "").trim() || undefined,
       }), messageType],
     );
@@ -7267,7 +7282,7 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
           sourceExternalId,
           sessionId,
           platform: "whatsapp",
-          dedupeKey: inboundDedupe.key,
+          dedupeKeys: [inboundDedupe.key, inboundDedupe.contentKey],
         });
         if (isDuplicateInbound) {
           await appendInboundDuplicateBlockedHistory({
@@ -7281,6 +7296,7 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
             sourceMessageId,
             sourceMessageDate,
             dedupeKey: inboundDedupe.key,
+            contentDedupeKey: inboundDedupe.contentKey,
             dedupeMode: inboundDedupe.mode,
           });
           continue;
@@ -7299,6 +7315,7 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
           sourceMessageId,
           sourceMessageDate,
           routeInboundDedupeKey: inboundDedupe.key,
+          routeInboundContentDedupeKey: inboundDedupe.contentKey,
           routeInboundDedupeMode: inboundDedupe.mode,
         });
 
@@ -7498,7 +7515,7 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
           sourceExternalId,
           sessionId,
           platform: "telegram",
-          dedupeKey: inboundDedupe.key,
+          dedupeKeys: [inboundDedupe.key, inboundDedupe.contentKey],
         });
         if (isDuplicateInbound) {
           await appendInboundDuplicateBlockedHistory({
@@ -7512,6 +7529,7 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
             sourceMessageId,
             sourceMessageDate,
             dedupeKey: inboundDedupe.key,
+            contentDedupeKey: inboundDedupe.contentKey,
             dedupeMode: inboundDedupe.mode,
           });
           continue;
@@ -7530,6 +7548,7 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
           sourceMessageId,
           sourceMessageDate,
           routeInboundDedupeKey: inboundDedupe.key,
+          routeInboundContentDedupeKey: inboundDedupe.contentKey,
           routeInboundDedupeMode: inboundDedupe.mode,
         });
 
