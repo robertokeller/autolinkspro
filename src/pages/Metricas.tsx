@@ -47,12 +47,14 @@ import { cn } from "@/lib/utils";
 type DashboardOverview = {
   totalMembers: number;
   totalGroups: number;
+  groupsConsidered: number;
   growthRate: number;
   totalJoined: number;
   totalLeft: number;
   capacityPercent: number;
   geography: GeographyMetrics;
   groupsWithData: number;
+  groupsFailed: number;
 };
 
 const WHATSAPP_GROUP_CAPACITY = 1024;
@@ -279,69 +281,69 @@ export default function Metricas() {
         return {
           totalMembers: 0,
           totalGroups: 0,
+          groupsConsidered: 0,
           growthRate: 0,
           totalJoined: 0,
           totalLeft: 0,
           capacityPercent: 0,
           geography: createEmptyGeography(),
           groupsWithData: 0,
+          groupsFailed: 0,
         };
       }
 
       const settled = await Promise.allSettled(
         displayGroups.map((group) => fetchGroupSummary(group.id, days)),
       );
-      const summaries = settled.flatMap((item) => (item.status === "fulfilled" ? [item.value] : []));
-      const totalMembers = settled.reduce((sum, item, index) => {
-        if (item.status === "fulfilled") {
-          const summaryMembersRaw = item.value.composition?.totalMembers;
-          if (Number.isFinite(Number(summaryMembersRaw))) {
-            return sum + Math.max(0, toSafeNumber(summaryMembersRaw));
-          }
-        }
+      const successfulSummaries = settled.flatMap((item) => (item.status === "fulfilled" ? [item.value] : []));
+      const groupsWithData = successfulSummaries.length;
+      const groupsFailed = Math.max(0, displayGroups.length - groupsWithData);
 
-        const fallbackMembers = Math.max(0, toSafeNumber(displayGroups[index]?.memberCount));
-        return sum + fallbackMembers;
-      }, 0);
-
-      if (summaries.length === 0) {
+      if (groupsWithData === 0) {
         return {
-          totalMembers,
+          totalMembers: 0,
           totalGroups: displayGroups.length,
+          groupsConsidered: 0,
           growthRate: 0,
           totalJoined: 0,
           totalLeft: 0,
-          capacityPercent: displayGroups.length > 0
-            ? Number(((totalMembers / (displayGroups.length * WHATSAPP_GROUP_CAPACITY)) * 100).toFixed(1))
-            : 0,
+          capacityPercent: 0,
           geography: createEmptyGeography(),
           groupsWithData: 0,
+          groupsFailed,
         };
       }
 
-      const totalJoined = summaries.reduce(
+      const totalMembers = successfulSummaries.reduce(
+        (sum, summary) => sum + Math.max(0, toSafeNumber(summary.composition?.totalMembers)),
+        0,
+      );
+
+      const totalJoined = successfulSummaries.reduce(
         (sum, summary) => sum + Math.max(0, toSafeNumber(summary.churn?.summary?.totalJoined)),
         0,
       );
-      const totalLeft = summaries.reduce(
+      const totalLeft = successfulSummaries.reduce(
         (sum, summary) => sum + Math.max(0, toSafeNumber(summary.churn?.summary?.totalLeft)),
         0,
       );
       const netGrowth = totalJoined - totalLeft;
       const growthRate = Number(((netGrowth / Math.max(1, days)) * 7).toFixed(1));
-      const capacityPercent = displayGroups.length > 0
-        ? Number(((totalMembers / (displayGroups.length * WHATSAPP_GROUP_CAPACITY)) * 100).toFixed(1))
+      const capacityPercent = groupsWithData > 0
+        ? Number(((totalMembers / (groupsWithData * WHATSAPP_GROUP_CAPACITY)) * 100).toFixed(1))
         : 0;
 
       return {
         totalMembers,
         totalGroups: displayGroups.length,
+        groupsConsidered: groupsWithData,
         growthRate,
         totalJoined,
         totalLeft,
         capacityPercent,
-        geography: aggregateGeography(summaries.map((summary) => summary.geography)),
-        groupsWithData: summaries.length,
+        geography: aggregateGeography(successfulSummaries.map((summary) => summary.geography)),
+        groupsWithData,
+        groupsFailed,
       };
     },
   });
@@ -410,9 +412,9 @@ export default function Metricas() {
         title="Métricas de grupos"
         description="Dashboard consolidado dos grupos em que você é admin nas sessões WhatsApp conectadas."
       >
-        <div className="z-30 flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+        <div className="z-30 flex w-full min-w-0 flex-wrap items-start gap-2.5 sm:justify-end">
           {selectedGroupIds.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 sm:mr-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {selectedGroupIds.map((groupId) => {
                 const group = scopedAdminGroups.find((g) => g.id === groupId);
                 if (!group) return null;
@@ -427,7 +429,7 @@ export default function Metricas() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setSelectedGroupIds(selectedGroupIds.filter((id) => id !== groupId));
+                        setSelectedGroupIds((current) => current.filter((id) => id !== groupId));
                       }}
                       className="ml-0.5 rounded-full p-0.5 hover:bg-primary/20 transition-colors"
                     >
@@ -439,56 +441,59 @@ export default function Metricas() {
             </div>
           )}
 
-          {/* Seletor de Grupos - Flex GROW no mobile, largura fixa no desktop */}
-          <div className="relative w-full sm:w-[280px] lg:w-[320px]">
-            <MultiOptionDropdown
-              value={selectedGroupIds}
-              onChange={setSelectedGroupIds}
-              items={scopedAdminGroups.map((group) => ({
-                id: group.id,
-                label: group.name,
-                meta: `${group.memberCount} membros`,
-              }))}
-              placeholder="Todos os meus grupos"
-              selectedLabel={(count) => count === 0 ? "Todos os meus grupos" : `${count} selecionado(s)`}
-              emptyMessage={groupFilterEmptyMessage}
-              title="Filtrar por grupos"
-            />
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* Seletor de Período */}
-            <div className="relative w-full sm:w-[170px]">
-              <Select value={period} onValueChange={setPeriod}>
-                <SelectTrigger className="h-10 bg-background shadow-sm transition-all hover:bg-muted/50 border-border/60">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="z-[100]">
-                  <SelectItem value="7d">Últimos 7 dias</SelectItem>
-                  <SelectItem value="30d">Últimos 30 dias</SelectItem>
-                  <SelectItem value="90d">Últimos 90 dias</SelectItem>
-                </SelectContent>
-              </Select>
+          <div className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+            {/* Seletor de Grupos */}
+            <div className="relative w-full sm:w-[280px] lg:w-[320px]">
+              <MultiOptionDropdown
+                value={selectedGroupIds}
+                onChange={setSelectedGroupIds}
+                items={scopedAdminGroups.map((group) => ({
+                  id: group.id,
+                  label: group.name,
+                  meta: `${group.memberCount} membros`,
+                }))}
+                placeholder="Todos os meus grupos"
+                selectedLabel={(count) => count === 0 ? "Todos os meus grupos" : `${count} selecionado(s)`}
+                emptyMessage={groupFilterEmptyMessage}
+                title="Filtrar por grupos"
+                showSelectedBadges={false}
+              />
             </div>
 
-            {/* Botão Sincronizar */}
-            <Button 
-              onClick={handleSyncAndRefresh} 
-              disabled={isSyncing} 
-              variant="default"
-              className={cn(
-                "h-10 px-4 shadow-md transition-all active:scale-95 whitespace-nowrap font-bold",
-                isSyncing ? "opacity-70 cursor-wait bg-primary/80" : "bg-primary text-primary-foreground hover:shadow-lg hover:-translate-y-0.5"
-              )}
-            >
-              {isSyncing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4 mr-2" />
-              )}
-              <span className="hidden lg:inline">{isSyncing ? "Sincronizando..." : "Sincronizar"}</span>
-              <span className="lg:hidden">{isSyncing ? "..." : "Sinc."}</span>
-            </Button>
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+              {/* Seletor de Período */}
+              <div className="relative w-full sm:w-[170px]">
+                <Select value={period} onValueChange={setPeriod}>
+                  <SelectTrigger className="h-10 bg-background shadow-sm transition-all hover:bg-muted/50 border-border/60">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="z-[100]">
+                    <SelectItem value="7d">Últimos 7 dias</SelectItem>
+                    <SelectItem value="30d">Últimos 30 dias</SelectItem>
+                    <SelectItem value="90d">Últimos 90 dias</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Botão Sincronizar */}
+              <Button 
+                onClick={handleSyncAndRefresh} 
+                disabled={isSyncing} 
+                variant="default"
+                className={cn(
+                  "h-10 w-full px-4 shadow-md transition-all active:scale-95 whitespace-nowrap font-bold sm:w-auto",
+                  isSyncing ? "opacity-70 cursor-wait bg-primary/80" : "bg-primary text-primary-foreground hover:shadow-lg hover:-translate-y-0.5"
+                )}
+              >
+                {isSyncing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                <span className="hidden lg:inline">{isSyncing ? "Sincronizando..." : "Sincronizar"}</span>
+                <span className="lg:hidden">{isSyncing ? "..." : "Sinc."}</span>
+              </Button>
+            </div>
           </div>
         </div>
       </PageHeader>
@@ -608,7 +613,7 @@ export default function Metricas() {
                       {overview?.totalGroups !== undefined && (
                         <p className="mt-2.5 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground/60">
                           <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-                          ~{Math.round((overview.totalMembers || 0) / Math.max(1, overview.totalGroups || 1))} / grupo
+                          ~{Math.round((overview.totalMembers || 0) / Math.max(1, overview.groupsConsidered || overview.totalGroups || 1))} / grupo
                         </p>
                       )}
                     </div>
@@ -755,6 +760,7 @@ export default function Metricas() {
             <Card className="border-warning/40 bg-warning/5">
               <CardContent className="pt-4 text-sm text-muted-foreground">
                 {overview.groupsWithData} de {overview.totalGroups} grupo(s) retornaram dados completos no período.
+                {overview.groupsFailed > 0 && ` ${overview.groupsFailed} grupo(s) foram excluidos da soma por falha de coleta.`}
                 Clique em "Atualizar" para sincronizar novamente.
               </CardContent>
             </Card>
@@ -847,7 +853,7 @@ export default function Metricas() {
               />
             </div>
             <div className="lg:col-span-1">
-              <CapacidadePorGrupo groups={scopedAdminGroups} capacity={WHATSAPP_GROUP_CAPACITY} />
+              <CapacidadePorGrupo groups={displayGroups} capacity={WHATSAPP_GROUP_CAPACITY} />
             </div>
           </div>
           </div>

@@ -127,6 +127,63 @@ function isLikelyMeliUrl(rawUrl: string): boolean {
   }
 }
 
+function isStrictMeliProductUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(String(rawUrl || "").trim());
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (!(host.includes("mercadolivre.") || host.includes("mercadolibre."))) {
+      return false;
+    }
+
+    let decodedPath = String(parsed.pathname || "");
+    try {
+      decodedPath = decodeURIComponent(decodedPath);
+    } catch {
+      // Keep raw path when decode fails.
+    }
+
+    const normalizedPath = decodedPath.toLowerCase();
+    if (
+      normalizedPath.includes("/social/")
+      || normalizedPath.includes("/sec/")
+      || normalizedPath.includes("/afiliados/")
+      || normalizedPath.includes("/noindex/services/")
+      || normalizedPath.includes("/authentication")
+      || normalizedPath.includes("/login")
+    ) {
+      return false;
+    }
+
+    const hasProductPathHint = (
+      /\/(p|up|item)\//i.test(decodedPath)
+      || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath)
+    );
+    if (!hasProductPathHint) {
+      return false;
+    }
+
+    return /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath);
+  } catch {
+    return false;
+  }
+}
+
+function addMeliResolveNonce(rawUrl: string): string {
+  const source = String(rawUrl || "").trim();
+  if (!source) return "";
+  const normalized = /^https?:\/\//i.test(source) ? source : `https://${source}`;
+
+  try {
+    const parsed = new URL(normalized);
+    const hash = String(parsed.hash || "").replace(/^#/, "").trim();
+    const nonce = `autolinks-resolve-${Date.now()}`;
+    parsed.hash = hash ? `${hash}-${nonce}` : nonce;
+    return parsed.toString();
+  } catch {
+    return normalized;
+  }
+}
+
 export default function TemplatesMeli() {
   const {
     templates,
@@ -289,23 +346,60 @@ export default function TemplatesMeli() {
         url: link,
         source: "templatesmeli-converter",
         sessionId: activeSessions[0]?.id,
+        forceResolve: true,
       });
       if (conversion.marketplace !== "mercadolivre") {
         throw new Error("Use um link válido do Mercado Livre.");
       }
 
-      const snapshotTargetUrl = firstNonEmptyString(
+      let snapshotTargetUrl = firstNonEmptyString(
         conversion.resolvedLink,
         conversion.originalLink,
         link,
       );
-      const affiliateLink = firstNonEmptyString(conversion.affiliateLink, snapshotTargetUrl);
+      let resolvedForSnapshot = conversion;
+
+      if (!isStrictMeliProductUrl(snapshotTargetUrl)) {
+        const sourceToResolve = firstNonEmptyString(conversion.originalLink, link, snapshotTargetUrl);
+        const forcedResolveUrl = addMeliResolveNonce(sourceToResolve);
+
+        try {
+          const resolvedConversion = await convertMarketplaceLink({
+            url: forcedResolveUrl,
+            source: "templatesmeli-converter-resolve-url",
+            sessionId: activeSessions[0]?.id,
+            forceResolve: true,
+          });
+          if (resolvedConversion.marketplace === "mercadolivre") {
+            resolvedForSnapshot = resolvedConversion;
+            snapshotTargetUrl = firstNonEmptyString(
+              resolvedConversion.resolvedLink,
+              resolvedConversion.originalLink,
+              snapshotTargetUrl,
+            );
+          }
+        } catch {
+          // Keep existing target URL and fail below with the same clear message.
+        }
+      }
+
+      if (!isStrictMeliProductUrl(snapshotTargetUrl)) {
+        throw new Error("URL precisa estar resolvida para uma pagina real de produto do Mercado Livre (ex.: .../MLB..., .../p/MLB..., .../up/MLBU...).");
+      }
+
+      const affiliateLink = firstNonEmptyString(
+        resolvedForSnapshot.affiliateLink,
+        conversion.affiliateLink,
+        snapshotTargetUrl,
+      );
       let productSnapshot: MeliProductSnapshotResponse;
 
       try {
         productSnapshot = await invokeBackendRpc<MeliProductSnapshotResponse>("meli-product-snapshot", {
           body: {
             productUrl: snapshotTargetUrl,
+            sessionId: activeSessions[0]?.id,
+            forceResolve: true,
           },
         });
       } catch (error) {
@@ -346,8 +440,8 @@ export default function TemplatesMeli() {
         message,
         affiliateLink,
         originalLink,
-        conversionTimeMs: Number.isFinite(Number(conversion.conversionTimeMs))
-          ? Number(conversion.conversionTimeMs)
+        conversionTimeMs: Number.isFinite(Number(resolvedForSnapshot.conversionTimeMs))
+          ? Number(resolvedForSnapshot.conversionTimeMs)
           : null,
         requestsImageAttachment: templateRequestsImageAttachment(template.content),
         product: {

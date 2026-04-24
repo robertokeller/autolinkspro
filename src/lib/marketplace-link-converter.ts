@@ -26,6 +26,7 @@ type ConvertMarketplaceLinkInput = {
   url: string;
   source?: string;
   sessionId?: string;
+  forceResolve?: boolean;
   shopeeFallback?: (url: string, source: string) => Promise<ShopeeFallbackResult>;
 };
 
@@ -94,15 +95,24 @@ async function fallbackConvertMarketplaceLink(input: ConvertMarketplaceLinkInput
   }
 
   if (marketplace === "amazon") {
-    const result = await invokeBackendRpc<{ affiliateLink?: string; asin?: string; conversionTimeMs?: number }>(
+    const result = await invokeBackendRpc<{
+      affiliateLink?: string;
+      asin?: string;
+      conversionTimeMs?: number;
+      resolvedUrl?: string;
+      resolvedLink?: string;
+      originalLink?: string;
+    }>(
       "amazon-convert-link",
       { body: { url: sourceUrl, source: input.source || "global-conversor-fallback" } },
     );
     const affiliateLink = String(result.affiliateLink || sourceUrl).trim();
+    const originalLink = String(result.originalLink || sourceUrl).trim() || sourceUrl;
+    const resolvedLink = String(result.resolvedLink || result.resolvedUrl || originalLink).trim() || originalLink;
     return {
       marketplace: "amazon",
-      originalLink: sourceUrl,
-      resolvedLink: sourceUrl,
+      originalLink,
+      resolvedLink,
       affiliateLink,
       asin: result.asin,
       conversionTimeMs: Number(result.conversionTimeMs || 0) || undefined,
@@ -110,21 +120,32 @@ async function fallbackConvertMarketplaceLink(input: ConvertMarketplaceLinkInput
   }
 
   if (marketplace === "mercadolivre") {
-    const result = await invokeBackendRpc<{ affiliateLink?: string; cached?: boolean; conversionTimeMs?: number }>(
+    const result = await invokeBackendRpc<{
+      affiliateLink?: string;
+      cached?: boolean;
+      conversionTimeMs?: number;
+      originalLink?: string;
+      originalUrl?: string;
+      resolvedLink?: string;
+      resolvedUrl?: string;
+    }>(
       "meli-convert-link",
       {
         body: {
           url: sourceUrl,
           sessionId: input.sessionId,
           source: input.source || "global-conversor-fallback",
+          forceResolve: input.forceResolve === true,
         },
       },
     );
     const affiliateLink = String(result.affiliateLink || sourceUrl).trim();
+    const originalLink = String(result.originalLink || result.originalUrl || sourceUrl).trim() || sourceUrl;
+    const resolvedLink = String(result.resolvedLink || result.resolvedUrl || originalLink).trim() || originalLink;
     return {
       marketplace: "mercadolivre",
-      originalLink: sourceUrl,
-      resolvedLink: sourceUrl,
+      originalLink,
+      resolvedLink,
       affiliateLink,
       cached: result.cached === true,
       conversionTimeMs: Number(result.conversionTimeMs || 0) || undefined,
@@ -165,6 +186,7 @@ export async function convertMarketplaceLink(input: ConvertMarketplaceLinkInput)
         url: sourceUrl,
         source: input.source || "global-conversor",
         sessionId: input.sessionId,
+        forceResolve: input.forceResolve === true,
       },
     });
     return {

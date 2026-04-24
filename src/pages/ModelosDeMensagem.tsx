@@ -442,6 +442,66 @@ function detectMarketplaceFromUrl(rawUrl: string): SupportedMarketplace | null {
   return null;
 }
 
+function isStrictMercadoLivreProductUrl(rawUrl: string): boolean {
+  const normalized = normalizeUrlInput(rawUrl);
+  if (!normalized) return false;
+
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (!(host.includes("mercadolivre.") || host.includes("mercadolibre."))) {
+      return false;
+    }
+
+    let decodedPath = String(parsed.pathname || "");
+    try {
+      decodedPath = decodeURIComponent(decodedPath);
+    } catch {
+      // Keep raw path when decode fails.
+    }
+
+    const normalizedPath = decodedPath.toLowerCase();
+    if (
+      normalizedPath.includes("/social/")
+      || normalizedPath.includes("/sec/")
+      || normalizedPath.includes("/afiliados/")
+      || normalizedPath.includes("/noindex/services/")
+      || normalizedPath.includes("/authentication")
+      || normalizedPath.includes("/login")
+    ) {
+      return false;
+    }
+
+    const hasProductPathHint = (
+      /\/(p|up|item)\//i.test(decodedPath)
+      || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath)
+    );
+    if (!hasProductPathHint) {
+      return false;
+    }
+
+    return /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath);
+  } catch {
+    return false;
+  }
+}
+
+function addMercadoLivreResolveNonce(rawUrl: string): string {
+  const normalized = normalizeUrlInput(rawUrl);
+  if (!normalized) return "";
+  if (detectMarketplaceFromUrl(normalized) !== "mercadolivre") return normalized;
+
+  try {
+    const parsed = new URL(normalized);
+    const existingHash = String(parsed.hash || "").replace(/^#/, "").trim();
+    const nonce = `autolinks-resolve-${Date.now()}`;
+    parsed.hash = existingHash ? `${existingHash}-${nonce}` : nonce;
+    return parsed.toString();
+  } catch {
+    return normalized;
+  }
+}
+
 function marketplaceLabel(value: SupportedMarketplace): string {
   if (value === "mercadolivre") return "Mercado Livre";
   if (value === "amazon") return "Amazon";
@@ -1177,6 +1237,7 @@ export default function ModelosDeMensagem() {
           url: link,
           source: "modelos-converter-link-meli",
           sessionId: activeMeliSessionId || undefined,
+          forceResolve: true,
         });
         if (conversion.marketplace !== "mercadolivre") {
           throw new Error("Use um link válido do Mercado Livre.");
@@ -1307,25 +1368,61 @@ export default function ModelosDeMensagem() {
       if (marketplace === "mercadolivre") {
         const conversion = await convertMarketplaceLink({
           url: link,
-          source: "modelos-converter-meli",
+          source: "modelos-converter-link-meli",
           sessionId: activeMeliSessionId || undefined,
+          forceResolve: true,
         });
         if (conversion.marketplace !== "mercadolivre") {
           throw new Error("Use um link válido do Mercado Livre.");
         }
 
-        const snapshotTargetUrl = firstNonEmptyString(
+        let snapshotTargetUrl = firstNonEmptyString(
           conversion.resolvedLink,
           conversion.originalLink,
           link,
         );
-        const affiliateLink = firstNonEmptyString(conversion.affiliateLink, snapshotTargetUrl);
+        let resolvedForSnapshot = conversion;
+
+        if (!isStrictMercadoLivreProductUrl(snapshotTargetUrl)) {
+          const sourceToResolve = firstNonEmptyString(conversion.originalLink, link, snapshotTargetUrl);
+          const forcedResolveUrl = addMercadoLivreResolveNonce(sourceToResolve);
+
+          try {
+            const resolvedConversion = await convertMarketplaceLink({
+              url: forcedResolveUrl,
+              source: "modelos-converter-link-meli-resolve-url",
+              sessionId: activeMeliSessionId || undefined,
+              forceResolve: true,
+            });
+            if (resolvedConversion.marketplace === "mercadolivre") {
+              resolvedForSnapshot = resolvedConversion;
+              snapshotTargetUrl = firstNonEmptyString(
+                resolvedConversion.resolvedLink,
+                resolvedConversion.originalLink,
+                snapshotTargetUrl,
+              );
+            }
+          } catch {
+            // Keep existing target URL and let strict validation below fail with a clear message.
+          }
+        }
+
+        if (!isStrictMercadoLivreProductUrl(snapshotTargetUrl)) {
+          throw new Error("URL precisa estar resolvida para uma pagina real de produto do Mercado Livre (ex.: .../MLB..., .../p/MLB..., .../up/MLBU...).");
+        }
+        const affiliateLink = firstNonEmptyString(
+          resolvedForSnapshot.affiliateLink,
+          conversion.affiliateLink,
+          snapshotTargetUrl,
+        );
 
         let productSnapshot: MeliProductSnapshotResponse;
         try {
           productSnapshot = await invokeBackendRpc<MeliProductSnapshotResponse>("meli-product-snapshot", {
             body: {
               productUrl: snapshotTargetUrl,
+              sessionId: activeMeliSessionId || undefined,
+              forceResolve: true,
             },
           });
         } catch (error) {
@@ -1377,8 +1474,8 @@ export default function ModelosDeMensagem() {
           message,
           affiliateLink,
           originalLink: firstNonEmptyString(productSnapshot?.productUrl, snapshotTargetUrl),
-          conversionTimeMs: Number.isFinite(Number(conversion.conversionTimeMs))
-            ? Number(conversion.conversionTimeMs)
+          conversionTimeMs: Number.isFinite(Number(resolvedForSnapshot.conversionTimeMs))
+            ? Number(resolvedForSnapshot.conversionTimeMs)
             : null,
           product,
           imageUrl: firstNonEmptyString(product.imageUrl),

@@ -654,11 +654,39 @@ function isMercadoLivreStrictProductUrlLike(raw: string): boolean {
   if (!parsed) return false;
   if (!isMercadoLivreUrlHost(parsed.hostname)) return false;
 
-  const host = parsed.hostname.toLowerCase();
-  const path = parsed.pathname.toLowerCase();
-  if (host.startsWith("produto.")) return true;
-  if (/\/(ml[a-z]-|item\/|p\/)/i.test(path)) return true;
-  return false;
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  if (!(host.includes("mercadolivre.") || host.includes("mercadolibre."))) {
+    return false;
+  }
+
+  let decodedPath = String(parsed.pathname || "");
+  try {
+    decodedPath = decodeURIComponent(decodedPath);
+  } catch {
+    // Keep raw path when decode fails.
+  }
+
+  const normalizedPath = decodedPath.toLowerCase();
+  if (
+    normalizedPath.includes("/social/")
+    || normalizedPath.includes("/sec/")
+    || normalizedPath.includes("/afiliados/")
+    || normalizedPath.includes("/noindex/services/")
+    || normalizedPath.includes("/authentication")
+    || normalizedPath.includes("/login")
+  ) {
+    return false;
+  }
+
+  const hasProductPathHint = (
+    /\/(p|up|item)\//i.test(decodedPath)
+    || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath)
+  );
+  if (!hasProductPathHint) {
+    return false;
+  }
+
+  return /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath);
 }
 
 function isAmazonProductUrlLike(raw: string): boolean {
@@ -4731,6 +4759,7 @@ async function proxyMeliConvertWithRehydrate(input: {
   sessionId: string;
   productUrl: string;
   timeoutMs: number;
+  forceResolve?: boolean;
 }): Promise<MeliConvertProxyResult> {
   if (!MELI_URL) {
     return { payload: null, errorMessage: "MeLi RPA não configurado.", restoredSessionFile: false };
@@ -4745,7 +4774,11 @@ async function proxyMeliConvertWithRehydrate(input: {
       MELI_URL,
       "/api/meli/convert",
       "POST",
-      { productUrl: input.productUrl, sessionId: scopedSessionId },
+      {
+        productUrl: input.productUrl,
+        sessionId: scopedSessionId,
+        forceResolve: input.forceResolve === true,
+      },
       meliHeaders,
       input.timeoutMs,
     );
@@ -12212,6 +12245,7 @@ if (funcName === "whatsapp-connect") {
       const sourceInput = String(params.url ?? params.link ?? "").trim();
       if (!sourceInput) { fail(res, "URL obrigatoria"); return; }
       if (sourceInput.length > MAX_URL_LENGTH) { fail(res, "URL excede o tamanho maximo permitido"); return; }
+      const forceResolve = parseBooleanParam(params.forceResolve, false);
 
       const sourceUrl = /^https?:\/\//i.test(sourceInput) ? sourceInput : `https://${sourceInput}`;
       if (!parseHttpUrl(sourceUrl)) { fail(res, "URL invalida"); return; }
@@ -12284,6 +12318,7 @@ if (funcName === "whatsapp-connect") {
           sessionId,
           productUrl,
           timeoutMs: 90_000,
+          forceResolve,
         });
         if (converted.errorMessage) { fail(res, converted.errorMessage); return; }
 
@@ -15150,6 +15185,7 @@ if (funcName === "whatsapp-connect") {
 
       const productUrl = String(params.productUrl ?? params.url ?? "").trim();
       const requestedSessionId = String(params.sessionId ?? "").trim();
+      const forceResolve = parseBooleanParam(params.forceResolve, false);
       if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
       if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
       if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada não parece ser do Mercado Livre"); return; }
@@ -15161,6 +15197,7 @@ if (funcName === "whatsapp-connect") {
         sessionId,
         productUrl,
         timeoutMs: 90_000,
+        forceResolve,
       });
       if (converted.errorMessage) {
         fail(res, converted.errorMessage);
@@ -15187,11 +15224,36 @@ if (funcName === "whatsapp-connect") {
       return;
     }
     if (funcName === "meli-product-snapshot") {
-      const productUrl = String(params.productUrl ?? params.url ?? "").trim();
+      let productUrl = String(params.productUrl ?? params.url ?? "").trim();
+      const requestedSessionId = String(params.sessionId ?? "").trim();
       if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
       if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
+
+      if (!isMercadoLivreStrictProductUrlLike(productUrl) && MELI_URL) {
+        const sessionId = await resolveRouteMeliSessionId(userId, requestedSessionId);
+        if (sessionId) {
+          const converted = await proxyMeliConvertWithRehydrate({
+            userId,
+            sessionId,
+            productUrl,
+            timeoutMs: 90_000,
+            forceResolve: true,
+          });
+
+          if (!converted.errorMessage) {
+            const payload = converted.payload || {};
+            if (payload.success === true) {
+              const resolvedCandidate = String(payload.resolvedUrl || payload.originalUrl || "").trim();
+              if (resolvedCandidate) {
+                productUrl = resolvedCandidate;
+              }
+            }
+          }
+        }
+      }
+
       if (!isMercadoLivreStrictProductUrlLike(productUrl)) {
-        fail(res, "URL precisa estar resolvida para a pagina real do produto (produto.mercadolivre.../MLB-...).");
+        fail(res, "URL precisa estar resolvida para uma pagina real de produto do Mercado Livre (ex.: .../MLB..., .../p/MLB..., .../up/MLBU...).");
         return;
       }
 

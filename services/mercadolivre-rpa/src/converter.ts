@@ -17,6 +17,7 @@ function readPositiveIntEnv(name: string, fallback: number): number {
 
 interface ConversionCache {
   affiliateLink: string;
+  resolvedUrl?: string;
   timestamp: number;
 }
 
@@ -41,6 +42,10 @@ export interface ConversionResult {
   cached?: boolean;
   conversionTimeMs?: number;
 }
+
+type ConvertLinkOptions = {
+  forceResolve?: boolean;
+};
 
 type PlaywrightStorageState = {
   cookies: {
@@ -421,6 +426,124 @@ export class MercadoLivreLinkConverter {
     }
   }
 
+  private decodeMercadoLivrePathname(pathname: string): string {
+    const raw = String(pathname || "");
+    if (!raw) return "";
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+
+  private isIntermediateMercadoLivrePath(pathname: string): boolean {
+    const normalized = this.decodeMercadoLivrePathname(pathname).toLowerCase();
+    if (!normalized) return false;
+    return (
+      normalized.includes("/social/")
+      || normalized.includes("/sec/")
+      || normalized.includes("/afiliados/")
+      || normalized.includes("/noindex/services/")
+      || normalized.includes("/authentication")
+      || normalized.includes("/login")
+    );
+  }
+
+  private hasMercadoLivreProductPathHint(pathname: string): boolean {
+    const decoded = this.decodeMercadoLivrePathname(pathname);
+    if (!decoded) return false;
+    return (
+      /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decoded)
+      || /\/(p|up|item)\//i.test(decoded)
+    );
+  }
+
+  private extractMercadoLivreItemId(parsed: URL): string | null {
+    const pathname = this.decodeMercadoLivrePathname(parsed.pathname);
+
+    const pathMatch = pathname.match(/(?:^|\/)(ML[A-Z]{1,4}-?\d+)(?:[\/_-]|$)/i);
+    if (pathMatch && pathMatch[1]) {
+      return String(pathMatch[1]).toUpperCase();
+    }
+
+    const queryCandidates = [
+      parsed.searchParams.get("item_id"),
+      parsed.searchParams.get("item"),
+      parsed.searchParams.get("id"),
+      parsed.searchParams.get("productId"),
+    ];
+    for (const candidate of queryCandidates) {
+      const match = String(candidate || "").trim().match(/(ML[A-Z]{1,4}-?\d+)/i);
+      if (match && match[1]) {
+        return String(match[1]).toUpperCase();
+      }
+    }
+
+    return null;
+  }
+
+  private buildCanonicalMercadoLivreHost(hostname: string): string | null {
+    const host = String(hostname || "").toLowerCase().replace(/^www\./, "");
+    if (!host) return null;
+
+    if (host.startsWith("produto.mercadolivre.") || host.startsWith("produto.mercadolibre.")) {
+      return host;
+    }
+
+    const mercadoLivreToken = "mercadolivre.";
+    const mercadoLivreIndex = host.indexOf(mercadoLivreToken);
+    if (mercadoLivreIndex >= 0) {
+      const suffix = host.slice(mercadoLivreIndex + mercadoLivreToken.length).trim();
+      if (suffix) return `produto.mercadolivre.${suffix}`;
+    }
+
+    const mercadoLibreToken = "mercadolibre.";
+    const mercadoLibreIndex = host.indexOf(mercadoLibreToken);
+    if (mercadoLibreIndex >= 0) {
+      const suffix = host.slice(mercadoLibreIndex + mercadoLibreToken.length).trim();
+      if (suffix) return `produto.mercadolibre.${suffix}`;
+    }
+
+    return null;
+  }
+
+  private toCanonicalMercadoLivreProductUrl(rawUrl: string): string | null {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(rawUrl);
+    if (!parsed) return null;
+
+    parsed.hash = "";
+    const itemId = this.extractMercadoLivreItemId(parsed);
+    const hasPathHint = this.hasMercadoLivreProductPathHint(parsed.pathname);
+    const isIntermediatePath = this.isIntermediateMercadoLivrePath(parsed.pathname);
+
+    if (itemId && hasPathHint && !isIntermediatePath) {
+      return parsed.toString();
+    }
+
+    if (itemId && isIntermediatePath) {
+      const canonicalHost = this.buildCanonicalMercadoLivreHost(parsed.hostname);
+      if (!canonicalHost) return null;
+      return `https://${canonicalHost}/${itemId}`;
+    }
+
+    return null;
+  }
+
+  private isStrictMercadoLivreProductUrl(url: string): boolean {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
+    if (!parsed) return false;
+
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (!(host.includes("mercadolivre.") || host.includes("mercadolibre."))) {
+      return false;
+    }
+
+    if (this.isIntermediateMercadoLivrePath(parsed.pathname)) return false;
+    if (!this.hasMercadoLivreProductPathHint(parsed.pathname)) return false;
+
+    return this.extractMercadoLivreItemId(parsed) !== null;
+  }
+
   private normalizeCandidateMercadoLivreUrl(rawUrl: string, baseUrl: string): string | null {
     const raw = String(rawUrl || "").trim();
     if (!raw) return null;
@@ -430,21 +553,14 @@ export class MercadoLivreLinkConverter {
       if (!parsed) return null;
       // Linkbuilder does not need recommendation fragments and they can vary per render.
       parsed.hash = "";
-      return parsed.toString();
+      return this.toCanonicalMercadoLivreProductUrl(parsed.toString()) || parsed.toString();
     } catch {
       return null;
     }
   }
 
   private isLikelyProductUrl(url: string): boolean {
-    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
-    if (!parsed) return false;
-
-    const host = parsed.hostname.toLowerCase();
-    const path = parsed.pathname.toLowerCase();
-    if (host.startsWith("produto.")) return true;
-    if (/\/(ml[a-z]-|item\/|p\/)/i.test(path)) return true;
-    return false;
+    return this.toCanonicalMercadoLivreProductUrl(url) !== null;
   }
 
   private normalizeTextForMatch(value: string): string {
@@ -473,7 +589,8 @@ export class MercadoLivreLinkConverter {
     const normalized = String(href || "");
     return (
       /produto\.mercadolivre\.com\.br/i.test(normalized)
-      || /\/(ml[a-z]-|item\/|p\/)/i.test(normalized)
+      || /\/(p|up|item)\//i.test(normalized)
+      || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(normalized)
     );
   }
 
@@ -546,7 +663,7 @@ export class MercadoLivreLinkConverter {
         { source: "title-link", selector: "a.poly-component__title" },
         { source: "title-link", selector: "a[class*='poly-component__title']" },
         { source: "product-link", selector: "a[href*='produto.mercadolivre.com.br']" },
-        { source: "product-link", selector: "a[href*='/MLA-'], a[href*='/MLB-'], a[href*='/MLC-'], a[href*='/MLM-'], a[href*='/MLU-'], a[href*='/p/']" },
+        { source: "product-link", selector: "a[href*='/p/'], a[href*='/up/'], a[href*='/MLA'], a[href*='/MLB'], a[href*='/MLC'], a[href*='/MLM'], a[href*='/MLU']" },
       ];
 
       const candidates: PageDestinationCandidate[] = [];
@@ -619,6 +736,8 @@ export class MercadoLivreLinkConverter {
       "a.poly-component__link--action-link",
       "a.poly-component__title",
       "a[href*='produto.mercadolivre.com.br']",
+      "a[href*='/up/']",
+      "a[href*='/p/']",
     ];
   }
 
@@ -629,6 +748,8 @@ export class MercadoLivreLinkConverter {
       "a.poly-component__link--action-link",
       "a.poly-component__title",
       "a[href*='produto.mercadolivre.com.br']",
+      "a[href*='/up/']",
+      "a[href*='/p/']",
     ];
   }
 
@@ -671,7 +792,8 @@ export class MercadoLivreLinkConverter {
 
         const hrefLooksLikeProduct = (href: string): boolean => (
           /produto\.mercadolivre\.com\.br/i.test(href)
-          || /\/(ml[a-z]-|item\/|p\/)/i.test(href)
+          || /\/(p|up|item)\//i.test(href)
+          || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(href)
         );
 
         const anchors = Array.from(document.querySelectorAll("a[href]"));
@@ -729,7 +851,8 @@ export class MercadoLivreLinkConverter {
 
       const hrefLooksLikeProduct = (href: string): boolean => (
         /produto\.mercadolivre\.com\.br/i.test(href)
-        || /\/(ml[a-z]-|item\/|p\/)/i.test(href)
+        || /\/(p|up|item)\//i.test(href)
+        || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(href)
       );
 
       const anchors = Array.from(document.querySelectorAll("a[href]"));
@@ -1725,6 +1848,21 @@ export class MercadoLivreLinkConverter {
         resolvedDestinationUrl,
         resolvedDestinationUrl,
       ) || resolvedDestinationUrl;
+      const canonicalResolvedDestinationUrl = this.toCanonicalMercadoLivreProductUrl(resolvedDestinationUrl);
+      if (!canonicalResolvedDestinationUrl || !this.isStrictMercadoLivreProductUrl(canonicalResolvedDestinationUrl)) {
+        this.traceConversionStep("resolution_failed_non_canonical_product_url", {
+          productUrl,
+          resolvedDestinationUrl,
+          sessionId,
+        });
+        return {
+          success: false,
+          originalUrl: productUrl,
+          resolvedUrl: resolvedDestinationUrl,
+          error: "Nao foi possivel resolver o link informado para a pagina real do produto (produto.mercadolivre.../MLB-...).",
+        };
+      }
+      resolvedDestinationUrl = canonicalResolvedDestinationUrl;
       const linkbuilderInputUrl = this.prepareUrlForLinkbuilder(resolvedDestinationUrl);
       this.traceConversionStep("linkbuilder_start", {
         productUrl,
@@ -1877,11 +2015,31 @@ export class MercadoLivreLinkConverter {
   /**
    * Public convert method — checks cache first, then queues.
    */
-  async convertLink(productUrl: string, sessionId: string): Promise<ConversionResult> {
+  async convertLink(productUrl: string, sessionId: string, options?: ConvertLinkOptions): Promise<ConversionResult> {
+    const forceResolve = options?.forceResolve === true;
     const cacheKey = `${sessionId}::${productUrl}`;
-    const cached = this.cache.get(cacheKey);
+    const cached = forceResolve ? null : this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-      return { success: true, originalUrl: productUrl, affiliateLink: cached.affiliateLink, cached: true };
+      const cachedResolvedUrl = this.toCanonicalMercadoLivreProductUrl(
+        String(cached.resolvedUrl || "").trim(),
+      );
+      const fallbackResolvedUrl = this.toCanonicalMercadoLivreProductUrl(productUrl);
+      const effectiveResolvedUrl = [cachedResolvedUrl, fallbackResolvedUrl]
+        .find((candidate) => candidate && this.isStrictMercadoLivreProductUrl(candidate)) || null;
+
+      if (effectiveResolvedUrl) {
+        return {
+          success: true,
+          originalUrl: productUrl,
+          resolvedUrl: effectiveResolvedUrl,
+          affiliateLink: cached.affiliateLink,
+          cached: true,
+        };
+      }
+
+      // Legacy cache entries (or stale corrupted cache) may miss the resolved
+      // product URL. Drop them so the full resolver pipeline recomputes safely.
+      this.cache.delete(cacheKey);
     }
 
     const scopeId = this.getQueueScope(sessionId);
@@ -1922,7 +2080,16 @@ export class MercadoLivreLinkConverter {
     }).then((result) => {
       if (result.success && result.affiliateLink) {
         this.registerScopeSuccess(scopeId);
-        this.cache.set(cacheKey, { affiliateLink: result.affiliateLink, timestamp: Date.now() });
+        const normalizedResolvedUrl = this.toCanonicalMercadoLivreProductUrl(
+          String(result.resolvedUrl || result.originalUrl || productUrl),
+        );
+        this.cache.set(cacheKey, {
+          affiliateLink: result.affiliateLink,
+          resolvedUrl: normalizedResolvedUrl && this.isStrictMercadoLivreProductUrl(normalizedResolvedUrl)
+            ? normalizedResolvedUrl
+            : undefined,
+          timestamp: Date.now(),
+        });
       } else {
         this.registerScopeFailure(scopeId, result.error);
       }

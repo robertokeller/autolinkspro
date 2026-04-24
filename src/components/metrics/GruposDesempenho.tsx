@@ -80,13 +80,11 @@ export function GruposDesempenho({ groups, selectedScope, days }: Props) {
   }));
 
   const hasUsefulData = chartData.some((point) => point.members > 0 || point.groupsRepresented > 0);
-  const selectedGroupName = selectedScope === "all"
-    ? ""
-    : (groups.find((group) => group.id === selectedScope)?.name || "Grupo");
-
   const title = selectedScope === "all"
     ? "Evolucao de membros (escopo atual)"
-    : `Evolucao de membros - ${selectedGroupName}`;
+    : groups.length === 1
+      ? `Evolucao de membros - ${groups[0]?.name || "Grupo"}`
+      : `Evolucao de membros (${groups.length} grupos selecionados)`;
 
   const subtitle = summary
     ? `${summary.startMembers.toLocaleString("pt-BR")} -> ${summary.endMembers.toLocaleString("pt-BR")} (${formatSigned(summary.delta)}). Cobertura ${summary.coveragePercent.toFixed(1)}% no periodo.`

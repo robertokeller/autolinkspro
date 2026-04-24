@@ -20,7 +20,7 @@ export function PageHeader({ title, description, children }: PageHeaderProps) {
         )}
       </div>
       {children && (
-        <div className={cn("flex w-full flex-wrap items-center gap-2.5 sm:justify-end py-1", compactHeader && "rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-3 shadow-premium")}>
+        <div className={cn("flex w-full flex-wrap items-stretch gap-2.5 py-1 sm:items-center sm:justify-end", compactHeader && "rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-3 shadow-premium")}>
           {children}
         </div>
       )}

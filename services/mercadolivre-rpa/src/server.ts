@@ -329,7 +329,11 @@ app.post("/api/meli/convert", async (req, res) => {
     return;
   }
 
-  const { productUrl, sessionId } = req.body as { productUrl?: string; sessionId?: string };
+  const {
+    productUrl,
+    sessionId,
+    forceResolve,
+  } = req.body as { productUrl?: string; sessionId?: string; forceResolve?: unknown };
 
   if (!productUrl || typeof productUrl !== "string") {
     res.status(400).json({ error: "productUrl é obrigatório" });
@@ -362,7 +366,9 @@ app.post("/api/meli/convert", async (req, res) => {
   }
 
   try {
-    const result = await converter.convertLink(productUrl, sessionId);
+    const result = await converter.convertLink(productUrl, sessionId, {
+      forceResolve: forceResolve === true || String(forceResolve ?? "").trim().toLowerCase() === "true",
+    });
     if (result.success) {
       res.json(result);
     } else {

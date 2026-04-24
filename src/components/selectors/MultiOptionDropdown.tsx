@@ -22,6 +22,7 @@ interface MultiOptionDropdownProps {
   emptyMessage: string;
   title?: string;
   maxHeightClassName?: string;
+  showSelectedBadges?: boolean;
 }
 
 export function MultiOptionDropdown({
@@ -33,6 +34,7 @@ export function MultiOptionDropdown({
   emptyMessage,
   title,
   maxHeightClassName = "max-h-[min(56dvh,16rem)]",
+  showSelectedBadges = true,
 }: MultiOptionDropdownProps) {
   const [open, setOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -141,7 +143,7 @@ export function MultiOptionDropdown({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {selectedItems.length > 0 && (
+      {showSelectedBadges && selectedItems.length > 0 && (
         <div className="flex flex-wrap gap-1.5 pt-1">
           {selectedItems.map((item) => (
             <Badge key={item.id} variant="secondary" className="text-xs gap-1 pl-2 pr-1.5">
