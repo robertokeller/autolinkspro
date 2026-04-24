@@ -224,8 +224,8 @@ rpcRouter.post("/rpc", async (req, res, next) => {
       is_active: page.is_active,
     };
     const cfg = page.config ?? {};
-    const gids = Array.isArray(cfg.groupIds) ? cfg.groupIds : [];
-    const mgids = Array.isArray(cfg.masterGroupIds) ? cfg.masterGroupIds : [];
+    const gids = Array.isArray(cfg.groupIds) ? toUuidArray(cfg.groupIds) : [];
+    const mgids = Array.isArray(cfg.masterGroupIds) ? toUuidArray(cfg.masterGroupIds) : [];
     const groupLabels = cfg.groupLabels ?? {};
     const directGroups = gids.length > 0
       ? await query(
@@ -494,6 +494,11 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
     max: 20,
     windowMs: 60_000,
     message: "Limite de consultas Shopee atingido. Aguarde 1 minuto.",
+  },
+  "shopee-reports": {
+    max: 12,
+    windowMs: 60_000,
+    message: "Limite de consultas de relatórios Shopee atingido. Aguarde 1 minuto.",
   },
   "shopee-automation-run": {
     max: 6,
@@ -12616,9 +12621,9 @@ if (funcName === "whatsapp-connect") {
         }
 
         const mgids = Array.isArray(meta.masterGroupIds)
-          ? meta.masterGroupIds.filter((item): item is string => typeof item === "string")
+          ? toUuidArray(meta.masterGroupIds)
           : [];
-        const directIds = Array.isArray(post.dest_ids) ? post.dest_ids : [];
+        const directIds = toUuidArray(post.dest_ids);
         let linkedIds = [];
         if (mgids.length > 0) {
           const links = await query<{ group_id: string }>(
@@ -13321,6 +13326,75 @@ if (funcName === "whatsapp-connect") {
       const region = String(payload.region || fallbackRegion || "BR").toUpperCase();
       const reason = String(payload.reason || payload.error || payload.message || "Falha na conexão");
       ok(res, success ? { success: true, region } : { success: false, reason, region });
+      return;
+    }
+    if (funcName === "shopee-reports") {
+      if (!SHOPEE_URL) { fail(res, "Shopee microservice nao configurado.", 503); return; }
+
+      const cred = await queryOne<{ app_id: string; secret_key: string; region: string }>(
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' LIMIT 1",
+        [userId],
+      );
+      if (!cred) { fail(res, "Credenciais Shopee nao configuradas.", 404); return; }
+
+      const appId = String(cred.app_id || "").trim();
+      const secret = cred.secret_key ? decryptCredential(cred.secret_key) : "";
+      if (!appId || !secret) {
+        fail(res, "Credenciais Shopee invalidas.", 400);
+        return;
+      }
+
+      const normalizeDateYmd = (input: unknown): string | null => {
+        const raw = String(input ?? "").trim();
+        const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!match) return null;
+        const normalized = `${match[1]}-${match[2]}-${match[3]}`;
+        const date = new Date(`${normalized}T00:00:00Z`);
+        return Number.isNaN(date.getTime()) ? null : normalized;
+      };
+
+      const now = new Date();
+      now.setUTCHours(0, 0, 0, 0);
+      const defaultEndDate = now.toISOString().slice(0, 10);
+      const startBase = new Date(now.getTime());
+      startBase.setUTCDate(startBase.getUTCDate() - 29);
+      const defaultStartDate = startBase.toISOString().slice(0, 10);
+
+      const startRaw = String(params.startDate ?? params.start_date ?? "").trim();
+      const endRaw = String(params.endDate ?? params.end_date ?? "").trim();
+      const normalizedStart = startRaw ? normalizeDateYmd(startRaw) : null;
+      const normalizedEnd = endRaw ? normalizeDateYmd(endRaw) : null;
+      if (startRaw && !normalizedStart) { fail(res, "startDate invalido. Use YYYY-MM-DD.", 400); return; }
+      if (endRaw && !normalizedEnd) { fail(res, "endDate invalido. Use YYYY-MM-DD.", 400); return; }
+
+      const startDate = normalizedStart || defaultStartDate;
+      const endDate = normalizedEnd || defaultEndDate;
+      if (startDate > endDate) {
+        fail(res, "Periodo invalido: startDate deve ser menor ou igual a endDate.", 400);
+        return;
+      }
+
+      const shopeeHeaders = buildUserScopedHeaders(userId);
+      const reportResult = await proxyMicroservice(
+        SHOPEE_URL,
+        "/api/shopee/reports",
+        "POST",
+        {
+          appId,
+          secret,
+          region: cred.region,
+          startDate,
+          endDate,
+        },
+        shopeeHeaders,
+        120_000,
+      );
+      if (reportResult.error) {
+        fail(res, reportResult.error.message || "Falha ao consultar relatorios Shopee", 502);
+        return;
+      }
+
+      ok(res, reportResult.data);
       return;
     }
     if (funcName === "admin-shopee-commission-report") {
@@ -14214,8 +14288,8 @@ if (funcName === "whatsapp-connect") {
             )
           : `${fallbackTitle}\n${affiliateLink}`;
 
-        const directGroupIds = toStringArray(claimed.destination_group_ids);
-        const masterGroupIds = toStringArray(claimed.master_group_ids);
+        const directGroupIds = toUuidArray(claimed.destination_group_ids);
+        const masterGroupIds = toUuidArray(claimed.master_group_ids);
         const linkedGroupIds = masterGroupIds.length > 0
           ? (await query<{ group_id: string }>(
               `SELECT l.group_id
@@ -14935,8 +15009,8 @@ if (funcName === "whatsapp-connect") {
             )
           : `${fallbackTitle}\n${affiliateLink}`;
 
-        const directGroupIds = toStringArray(claimed.destination_group_ids);
-        const masterGroupIds = toStringArray(claimed.master_group_ids);
+        const directGroupIds = toUuidArray(claimed.destination_group_ids);
+        const masterGroupIds = toUuidArray(claimed.master_group_ids);
         const linkedGroupIds = masterGroupIds.length > 0
           ? (await query<{ group_id: string }>(
               `SELECT l.group_id
@@ -15653,8 +15727,8 @@ if (funcName === "whatsapp-connect") {
             )
           : `${fallbackTitle}\n${affiliateLink}`;
 
-        const directGroupIds = toStringArray(claimed.destination_group_ids);
-        const masterGroupIds = toStringArray(claimed.master_group_ids);
+        const directGroupIds = toUuidArray(claimed.destination_group_ids);
+        const masterGroupIds = toUuidArray(claimed.master_group_ids);
         const linkedGroupIds = masterGroupIds.length > 0
           ? (await query<{ group_id: string }>(
               `SELECT l.group_id

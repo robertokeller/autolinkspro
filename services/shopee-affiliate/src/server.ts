@@ -59,6 +59,14 @@ const REPORT_PAGE_LIMIT = Math.max(
   1,
   Math.min(200, Number.parseInt(String(process.env.SHOPEE_REPORT_PAGE_LIMIT || "50"), 10) || 50),
 );
+const REPORT_GRAPHQL_MAX_RANGE_DAYS = Math.max(
+  1,
+  Math.min(180, Number.parseInt(String(process.env.SHOPEE_REPORT_GRAPHQL_MAX_RANGE_DAYS || "93"), 10) || 93),
+);
+const REPORT_MAX_ROWS = Math.max(
+  50,
+  Math.min(5000, Number.parseInt(String(process.env.SHOPEE_REPORT_MAX_ROWS || "1500"), 10) || 1500),
+);
 const REPORT_CONVERSION_PATH = String(
   process.env.SHOPEE_REPORT_CONVERSION_PATH || "/open_api/list?type=conversion_report",
 ).trim();
@@ -156,6 +164,100 @@ type CommissionReportSummary = {
   currency: string;
   recordsCount: number;
   pagesScanned: number;
+};
+
+type ShopeeReportSource = "conversion" | "validated";
+
+type ShopeeReportRow = {
+  source: ShopeeReportSource;
+  purchaseTime: number;
+  clickTime: number;
+  conversionId: string;
+  orderId: string;
+  orderStatus: string;
+  buyerType: string;
+  device: string;
+  referrer: string;
+  campaignType: string;
+  campaignPartnerName: string;
+  utmContent: string;
+  shopId: string;
+  shopName: string;
+  itemId: string;
+  itemName: string;
+  qty: number;
+  actualAmount: number;
+  itemPrice: number;
+  totalCommission: number;
+  sellerCommission: number;
+  shopeeCommission: number;
+  netCommission: number;
+  fraudStatus: string;
+  displayItemStatus: string;
+  itemNotes: string;
+};
+
+type ShopeeReportStatusPoint = {
+  status: string;
+  count: number;
+};
+
+type ShopeeReportShopPoint = {
+  shopId: string;
+  shopName: string;
+  sales: number;
+  totalCommission: number;
+  items: number;
+  orders: number;
+};
+
+type ShopeeReportDailyPoint = {
+  date: string;
+  sales: number;
+  totalCommission: number;
+  netCommission: number;
+  orders: number;
+  items: number;
+};
+
+type ShopeeReportSummary = {
+  conversions: number;
+  orders: number;
+  items: number;
+  totalSales: number;
+  totalCommission: number;
+  netCommission: number;
+  sellerCommission: number;
+  shopeeCommission: number;
+  averageTicket: number;
+  cancelledOrders: number;
+  pendingOrders: number;
+  completedOrders: number;
+  unpaidOrders: number;
+  fraudItems: number;
+};
+
+type ShopeeReportBlock = {
+  summary: ShopeeReportSummary;
+  rows: ShopeeReportRow[];
+  daily: ShopeeReportDailyPoint[];
+  statusBreakdown: ShopeeReportStatusPoint[];
+  topShops: ShopeeReportShopPoint[];
+  pagesScanned: number;
+  rawConversions: number;
+};
+
+type ShopeeReportsResponse = {
+  success: true;
+  currency: string;
+  period: {
+    startDate: string;
+    endDate: string;
+    startTimestamp: number;
+    endTimestamp: number;
+  };
+  conversion: ShopeeReportBlock;
+  validated: ShopeeReportBlock;
 };
 
 type BatchQuery = {
@@ -627,6 +729,510 @@ async function fetchCommissionReport(
   };
 }
 
+const REGION_DEFAULT_CURRENCY: Record<string, string> = {
+  br: "BRL",
+  mx: "MXN",
+  sg: "SGD",
+  my: "MYR",
+  ph: "PHP",
+  th: "THB",
+  vn: "VND",
+  id: "IDR",
+  tw: "TWD",
+  pl: "PLN",
+};
+
+const CONVERSION_REPORT_GRAPHQL_QUERY = `
+  query ConversionReport(
+    $purchaseTimeStart: Int
+    $purchaseTimeEnd: Int
+    $limit: Int
+    $scrollId: String
+  ) {
+    conversionReport(
+      purchaseTimeStart: $purchaseTimeStart
+      purchaseTimeEnd: $purchaseTimeEnd
+      limit: $limit
+      scrollId: $scrollId
+    ) {
+      nodes {
+        purchaseTime
+        clickTime
+        conversionId
+        buyerType
+        device
+        referrer
+        totalCommission
+        sellerCommission
+        shopeeCommissionCapped
+        netCommission
+        utmContent
+        campaignType
+        orders {
+          orderId
+          orderStatus
+          items {
+            shopId
+            shopName
+            itemId
+            itemName
+            qty
+            itemPrice
+            actualAmount
+            itemTotalCommission
+            itemSellerCommission
+            itemShopeeCommissionCapped
+            campaignType
+            campaignPartnerName
+            fraudStatus
+            displayItemStatus
+            itemNotes
+          }
+        }
+      }
+      pageInfo {
+        limit
+        hasNextPage
+        scrollId
+      }
+    }
+  }
+`;
+
+const VALIDATED_REPORT_GRAPHQL_QUERY = `
+  query ValidatedReport(
+    $limit: Int
+    $scrollId: String
+  ) {
+    validatedReport(
+      limit: $limit
+      scrollId: $scrollId
+    ) {
+      nodes {
+        purchaseTime
+        clickTime
+        conversionId
+        buyerType
+        device
+        referrer
+        totalCommission
+        sellerCommission
+        shopeeCommissionCapped
+        netCommission
+        utmContent
+        campaignType
+        orders {
+          orderId
+          orderStatus
+          items {
+            shopId
+            shopName
+            itemId
+            itemName
+            qty
+            itemPrice
+            actualAmount
+            itemTotalCommission
+            itemSellerCommission
+            itemShopeeCommissionCapped
+            campaignType
+            campaignPartnerName
+            fraudStatus
+            displayItemStatus
+            itemNotes
+          }
+        }
+      }
+      pageInfo {
+        limit
+        hasNextPage
+        scrollId
+      }
+    }
+  }
+`;
+
+function defaultCurrencyForRegion(region: string): string {
+  return REGION_DEFAULT_CURRENCY[normalizeRegion(region)] || "BRL";
+}
+
+function toCurrencyAmount(input: unknown): number {
+  const parsed = parseDecimalLike(input);
+  if (!Number.isFinite(parsed)) return 0;
+  return Number(parsed.toFixed(2));
+}
+
+function toUnixDayRange(startDate: string, endDate: string): { startTimestamp: number; endTimestamp: number } {
+  const startTimestamp = Math.floor(Date.parse(`${startDate}T00:00:00Z`) / 1000);
+  const endTimestamp = Math.floor(Date.parse(`${endDate}T23:59:59Z`) / 1000);
+  return { startTimestamp, endTimestamp };
+}
+
+function inTimestampRange(value: number, startTimestamp: number, endTimestamp: number): boolean {
+  return value >= startTimestamp && value <= endTimestamp;
+}
+
+function toReportId(input: unknown): string {
+  const value = String(input || "").trim();
+  return value;
+}
+
+function toReportTimestamp(input: unknown): number {
+  const value = toInt(input, 0);
+  return value > 0 ? value : 0;
+}
+
+function toReportDateKey(timestampSec: number): string {
+  if (!Number.isFinite(timestampSec) || timestampSec <= 0) return "unknown";
+  return new Date(timestampSec * 1000).toISOString().slice(0, 10);
+}
+
+function round2(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Number(value.toFixed(2));
+}
+
+function daysInRange(startDate: string, endDate: string): number {
+  const start = Date.parse(`${startDate}T00:00:00Z`);
+  const end = Date.parse(`${endDate}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return Math.floor((end - start) / (24 * 60 * 60 * 1000)) + 1;
+}
+
+function normalizeOrderStatus(status: unknown): string {
+  const value = String(status || "").trim().toUpperCase();
+  return value || "UNKNOWN";
+}
+
+async function fetchGraphqlReportNodes(
+  credentials: ShopeeCredentials,
+  source: ShopeeReportSource,
+  period: { startTimestamp: number; endTimestamp: number },
+): Promise<{ nodes: Record<string, unknown>[]; pagesScanned: number }> {
+  let scrollId: string | null = null;
+  let pagesScanned = 0;
+  const nodes: Record<string, unknown>[] = [];
+
+  while (pagesScanned < REPORT_MAX_PAGES) {
+    const variables: Record<string, unknown> = {
+      limit: REPORT_PAGE_LIMIT,
+      scrollId: scrollId || null,
+    };
+    if (source === "conversion") {
+      variables.purchaseTimeStart = period.startTimestamp;
+      variables.purchaseTimeEnd = period.endTimestamp;
+    }
+
+    const data = await callShopeeGraphql(
+      credentials,
+      source === "conversion" ? CONVERSION_REPORT_GRAPHQL_QUERY : VALIDATED_REPORT_GRAPHQL_QUERY,
+      variables,
+    );
+
+    const reportConnection = asRecord(source === "conversion" ? data.conversionReport : data.validatedReport);
+    const nodeListRaw = Array.isArray(reportConnection?.nodes) ? reportConnection?.nodes : [];
+    const nodeList = nodeListRaw
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item));
+    nodes.push(...nodeList);
+
+    pagesScanned += 1;
+
+    const pageInfo = asRecord(reportConnection?.pageInfo);
+    const nextScrollId = String(pageInfo?.scrollId || "").trim();
+    const hasNextPage = pageInfo?.hasNextPage === true && !!nextScrollId;
+    if (!hasNextPage) break;
+
+    if (source === "validated" && nodeList.length > 0) {
+      // Validated report query does not expose purchaseTime filter.
+      // Stop early when all current rows are older than selected start date.
+      let maxTimestamp = 0;
+      for (const node of nodeList) {
+        const ts = toReportTimestamp(node.purchaseTime);
+        if (ts > maxTimestamp) maxTimestamp = ts;
+      }
+      if (maxTimestamp > 0 && maxTimestamp < period.startTimestamp) break;
+    }
+
+    scrollId = nextScrollId;
+  }
+
+  return { nodes, pagesScanned };
+}
+
+function buildShopeeReportBlock(
+  source: ShopeeReportSource,
+  nodes: Record<string, unknown>[],
+  pagesScanned: number,
+  period: { startTimestamp: number; endTimestamp: number },
+): ShopeeReportBlock {
+  const rows: ShopeeReportRow[] = [];
+  const uniqueConversions = new Set<string>();
+  const uniqueOrders = new Set<string>();
+  const statusByOrder = new Map<string, string>();
+  const statusBreakdownMap = new Map<string, number>();
+  const shopMap = new Map<string, {
+    shopId: string;
+    shopName: string;
+    sales: number;
+    totalCommission: number;
+    items: number;
+    orderIds: Set<string>;
+  }>();
+  const dailyMap = new Map<string, {
+    sales: number;
+    totalCommission: number;
+    netCommission: number;
+    items: number;
+    orderIds: Set<string>;
+  }>();
+
+  let totalSales = 0;
+  let totalCommission = 0;
+  let totalNetCommission = 0;
+  let totalSellerCommission = 0;
+  let totalShopeeCommission = 0;
+  let totalItems = 0;
+  let fraudItems = 0;
+
+  for (const node of nodes) {
+    const purchaseTime = toReportTimestamp(node.purchaseTime);
+    if (!inTimestampRange(purchaseTime, period.startTimestamp, period.endTimestamp)) continue;
+
+    const clickTime = toReportTimestamp(node.clickTime);
+    const conversionId = toReportId(node.conversionId) || `fallback-${source}-${purchaseTime}-${rows.length}`;
+    const conversionKey = `${source}:${conversionId}`;
+    const buyerType = String(node.buyerType || "").trim().toUpperCase();
+    const device = String(node.device || "").trim().toUpperCase();
+    const referrer = String(node.referrer || "").trim();
+    const campaignType = String(node.campaignType || "").trim();
+    const utmContent = String(node.utmContent || "").trim();
+    const conversionNetCommission = toCurrencyAmount(node.netCommission || node.totalCommission);
+    const conversionDateKey = toReportDateKey(purchaseTime);
+
+    if (!uniqueConversions.has(conversionKey)) {
+      uniqueConversions.add(conversionKey);
+      totalNetCommission += conversionNetCommission;
+      const daily = dailyMap.get(conversionDateKey) || {
+        sales: 0,
+        totalCommission: 0,
+        netCommission: 0,
+        items: 0,
+        orderIds: new Set<string>(),
+      };
+      daily.netCommission += conversionNetCommission;
+      dailyMap.set(conversionDateKey, daily);
+    }
+
+    const ordersRaw = Array.isArray(node.orders) ? node.orders : [];
+    const orders = ordersRaw
+      .filter((order): order is Record<string, unknown> => !!order && typeof order === "object" && !Array.isArray(order));
+
+    for (const order of orders) {
+      const orderId = toReportId(order.orderId);
+      const orderStatus = normalizeOrderStatus(order.orderStatus);
+      const orderUniqueKey = `${source}:${conversionId}:${orderId || "unknown"}`;
+      if (orderId && !uniqueOrders.has(orderUniqueKey)) {
+        uniqueOrders.add(orderUniqueKey);
+        statusByOrder.set(orderUniqueKey, orderStatus);
+        statusBreakdownMap.set(orderStatus, (statusBreakdownMap.get(orderStatus) || 0) + 1);
+      }
+
+      const itemsRaw = Array.isArray(order.items) ? order.items : [];
+      const items = itemsRaw
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item));
+
+      for (const item of items) {
+        const actualAmount = toCurrencyAmount(item.actualAmount);
+        const itemPrice = toCurrencyAmount(item.itemPrice);
+        const rowTotalCommission = toCurrencyAmount(item.itemTotalCommission);
+        const rowSellerCommission = toCurrencyAmount(item.itemSellerCommission);
+        const rowShopeeCommission = toCurrencyAmount(item.itemShopeeCommissionCapped);
+        const rowNetCommission = rowTotalCommission > 0 ? rowTotalCommission : 0;
+        const shopId = toReportId(item.shopId);
+        const shopName = String(item.shopName || "").trim() || "Loja sem nome";
+        const qty = Math.max(0, toInt(item.qty, 0));
+        const fraudStatus = String(item.fraudStatus || "").trim().toUpperCase();
+        const campaignPartnerName = String(item.campaignPartnerName || "").trim();
+        const displayItemStatus = String(item.displayItemStatus || "").trim();
+        const itemNotes = String(item.itemNotes || "").trim();
+
+        totalSales += actualAmount;
+        totalCommission += rowTotalCommission;
+        totalSellerCommission += rowSellerCommission;
+        totalShopeeCommission += rowShopeeCommission;
+        totalItems += 1;
+        if (fraudStatus === "FRAUD") fraudItems += 1;
+
+        const row: ShopeeReportRow = {
+          source,
+          purchaseTime,
+          clickTime,
+          conversionId,
+          orderId,
+          orderStatus,
+          buyerType,
+          device,
+          referrer,
+          campaignType: String(item.campaignType || campaignType || "").trim(),
+          campaignPartnerName,
+          utmContent,
+          shopId,
+          shopName,
+          itemId: toReportId(item.itemId),
+          itemName: String(item.itemName || "").trim() || "Item sem nome",
+          qty,
+          actualAmount,
+          itemPrice,
+          totalCommission: rowTotalCommission,
+          sellerCommission: rowSellerCommission,
+          shopeeCommission: rowShopeeCommission,
+          netCommission: rowNetCommission,
+          fraudStatus,
+          displayItemStatus,
+          itemNotes,
+        };
+        rows.push(row);
+
+        const shopKey = `${shopId || "unknown"}:${shopName.toLowerCase()}`;
+        const currentShop = shopMap.get(shopKey) || {
+          shopId,
+          shopName,
+          sales: 0,
+          totalCommission: 0,
+          items: 0,
+          orderIds: new Set<string>(),
+        };
+        currentShop.sales += actualAmount;
+        currentShop.totalCommission += rowTotalCommission;
+        currentShop.items += 1;
+        if (orderId) currentShop.orderIds.add(orderUniqueKey);
+        shopMap.set(shopKey, currentShop);
+
+        const daily = dailyMap.get(conversionDateKey) || {
+          sales: 0,
+          totalCommission: 0,
+          netCommission: 0,
+          items: 0,
+          orderIds: new Set<string>(),
+        };
+        daily.sales += actualAmount;
+        daily.totalCommission += rowTotalCommission;
+        daily.items += 1;
+        if (orderId) daily.orderIds.add(orderUniqueKey);
+        dailyMap.set(conversionDateKey, daily);
+      }
+    }
+  }
+
+  const statusBreakdown = Array.from(statusBreakdownMap.entries())
+    .map(([status, count]) => ({ status, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const topShops = Array.from(shopMap.values())
+    .map((entry) => ({
+      shopId: entry.shopId,
+      shopName: entry.shopName,
+      sales: round2(entry.sales),
+      totalCommission: round2(entry.totalCommission),
+      items: entry.items,
+      orders: entry.orderIds.size,
+    }))
+    .sort((a, b) => (
+      b.totalCommission - a.totalCommission
+      || b.sales - a.sales
+      || b.items - a.items
+    ))
+    .slice(0, 10);
+
+  const daily = Array.from(dailyMap.entries())
+    .map(([date, point]) => ({
+      date,
+      sales: round2(point.sales),
+      totalCommission: round2(point.totalCommission),
+      netCommission: round2(point.netCommission),
+      orders: point.orderIds.size,
+      items: point.items,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const sortedRows = rows
+    .sort((a, b) => (
+      b.purchaseTime - a.purchaseTime
+      || b.actualAmount - a.actualAmount
+      || b.totalCommission - a.totalCommission
+    ))
+    .slice(0, REPORT_MAX_ROWS);
+
+  const totalOrders = uniqueOrders.size;
+  const cancelledOrders = statusBreakdownMap.get("CANCELLED") || 0;
+  const pendingOrders = statusBreakdownMap.get("PENDING") || 0;
+  const completedOrders = statusBreakdownMap.get("COMPLETED") || 0;
+  const unpaidOrders = statusBreakdownMap.get("UNPAID") || 0;
+  const averageTicket = totalOrders > 0 ? totalSales / totalOrders : 0;
+
+  return {
+    summary: {
+      conversions: uniqueConversions.size,
+      orders: totalOrders,
+      items: totalItems,
+      totalSales: round2(totalSales),
+      totalCommission: round2(totalCommission),
+      netCommission: round2(totalNetCommission),
+      sellerCommission: round2(totalSellerCommission),
+      shopeeCommission: round2(totalShopeeCommission),
+      averageTicket: round2(averageTicket),
+      cancelledOrders,
+      pendingOrders,
+      completedOrders,
+      unpaidOrders,
+      fraudItems,
+    },
+    rows: sortedRows,
+    daily,
+    statusBreakdown,
+    topShops,
+    pagesScanned,
+    rawConversions: nodes.length,
+  };
+}
+
+async function fetchShopeeReports(
+  credentials: ShopeeCredentials,
+  input: { startDate: string; endDate: string },
+): Promise<ShopeeReportsResponse> {
+  const period = toUnixDayRange(input.startDate, input.endDate);
+  const [conversionRaw, validatedRaw] = await Promise.all([
+    fetchGraphqlReportNodes(credentials, "conversion", period),
+    fetchGraphqlReportNodes(credentials, "validated", period),
+  ]);
+
+  const conversion = buildShopeeReportBlock(
+    "conversion",
+    conversionRaw.nodes,
+    conversionRaw.pagesScanned,
+    period,
+  );
+  const validated = buildShopeeReportBlock(
+    "validated",
+    validatedRaw.nodes,
+    validatedRaw.pagesScanned,
+    period,
+  );
+
+  return {
+    success: true,
+    currency: defaultCurrencyForRegion(credentials.region),
+    period: {
+      startDate: input.startDate,
+      endDate: input.endDate,
+      startTimestamp: period.startTimestamp,
+      endTimestamp: period.endTimestamp,
+    },
+    conversion,
+    validated,
+  };
+}
+
 function isRetryableShopeeError(error: unknown): boolean {
   const message = sanitizeError(error).toLowerCase();
   return (
@@ -1028,6 +1634,58 @@ app.post("/api/shopee/commission-report", async (req, res) => {
   }
 });
 
+app.post("/api/shopee/reports", async (req, res) => {
+  const parsed = requireCredentials(req.body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+
+  const startInput = String(req.body?.startDate ?? req.body?.start_date ?? "").trim();
+  const endInput = String(req.body?.endDate ?? req.body?.end_date ?? "").trim();
+  const normalizedStart = startInput ? normalizeDateYmd(startInput) : null;
+  const normalizedEnd = endInput ? normalizeDateYmd(endInput) : null;
+
+  if (startInput && !normalizedStart) {
+    res.status(400).json({ error: "startDate invalido. Use formato YYYY-MM-DD." });
+    return;
+  }
+  if (endInput && !normalizedEnd) {
+    res.status(400).json({ error: "endDate invalido. Use formato YYYY-MM-DD." });
+    return;
+  }
+
+  const startDate = normalizedStart || dateYmdDaysAgo(29);
+  const endDate = normalizedEnd || dateYmdDaysAgo(0);
+  if (startDate > endDate) {
+    res.status(400).json({ error: "Periodo invalido: startDate deve ser menor ou igual a endDate." });
+    return;
+  }
+
+  const daysRequested = daysInRange(startDate, endDate);
+  if (daysRequested > REPORT_GRAPHQL_MAX_RANGE_DAYS) {
+    res.status(400).json({
+      error: `Periodo maximo permitido: ${REPORT_GRAPHQL_MAX_RANGE_DAYS} dias.`,
+      maxDays: REPORT_GRAPHQL_MAX_RANGE_DAYS,
+    });
+    return;
+  }
+
+  try {
+    const report = await fetchShopeeReports(parsed.credentials, {
+      startDate,
+      endDate,
+    });
+    res.json(report);
+  } catch (error) {
+    res.status(400).json({
+      error: sanitizeError(error),
+      startDate,
+      endDate,
+    });
+  }
+});
+
 app.post("/api/shopee/convert-link", async (req, res) => {
   const parsed = requireCredentials(req.body);
   if (!parsed.ok) {
@@ -1176,4 +1834,3 @@ httpServer.on("error", (error) => {
   logger.error({ error: sanitizeError(error), host: HOST, port: PORT }, "failed to bind shopee service");
   process.exit(1);
 });
-
