@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,7 @@ import { useAgendamentos } from "@/hooks/useAgendamentos";
 import { useSessionScopedGroups } from "@/hooks/useSessionScopedGroups";
 import type { ScheduledMediaAttachment, ScheduledPost, TemplateScope } from "@/lib/types";
 import { getMarketplaceTemplateModule } from "@/lib/marketplace-template-modules";
+import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
 import { templateRequestsImageAttachment } from "@/lib/template-placeholders";
 import { renderRichTextPreviewHtml } from "@/lib/rich-text";
 import { toast } from "sonner";
@@ -29,8 +30,10 @@ interface MercadoLivreScheduleModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialTemplateId?: string;
+  initialMessage?: string;
   templateScope?: MarketplaceTemplateScope;
   marketplaceLabel?: string;
+  preferMessageTemplates?: boolean;
   product?: {
     title?: string;
     affiliateLink: string;
@@ -104,29 +107,48 @@ function formatProductPrice(value: number | null | undefined): string {
   });
 }
 
+function firstNonEmptyString(...values: unknown[]): string {
+  for (const value of values) {
+    const parsed = String(value || "").trim();
+    if (parsed) return parsed;
+  }
+  return "";
+}
+
 export function MercadoLivreScheduleModal({
   open,
   onOpenChange,
   initialTemplateId,
+  initialMessage,
   templateScope = "meli",
   marketplaceLabel,
+  preferMessageTemplates = false,
   product,
   editingPost,
 }: MercadoLivreScheduleModalProps) {
   const resolvedScope: MarketplaceTemplateScope = templateScope === "amazon" ? "amazon" : "meli";
   const marketplaceShortLabel = String(marketplaceLabel || "").trim() || (resolvedScope === "amazon" ? "Amazon" : "ML");
   const defaultScheduleName = resolvedScope === "amazon" ? "Agendamento Amazon" : "Oferta Mercado Livre";
-  const defaultSchedulePrefix = resolvedScope === "amazon" ? "" : "Oferta ML: ";
   const templateFieldLabel = resolvedScope === "amazon" ? "Template Amazon" : "Template Meli";
   const defaultScheduleSource = `${resolvedScope}_vitrine`;
   const defaultImageFileName = `${resolvedScope}_offer.jpg`;
   const templateModule = useMemo(() => getMarketplaceTemplateModule(resolvedScope), [resolvedScope]);
 
-  const { templates, defaultTemplate } = useTemplates(resolvedScope);
+  const { templates: messageTemplates, defaultTemplate: messageDefaultTemplate } = useTemplates("message");
+  const { templates: scopedTemplates, defaultTemplate: scopedDefaultTemplate } = useTemplates(resolvedScope);
   const { syncedGroups, masterGroups } = useGrupos();
   const { allSessions } = useSessoes();
   const { createPost, updatePost } = useAgendamentos();
   const isEditing = Boolean(editingPost);
+  const useMessageTemplates = preferMessageTemplates && messageTemplates.length > 0;
+  const activeTemplates = useMemo(
+    () => (useMessageTemplates ? messageTemplates : scopedTemplates),
+    [messageTemplates, scopedTemplates, useMessageTemplates],
+  );
+  const activeDefaultTemplate = useMemo(
+    () => (useMessageTemplates ? messageDefaultTemplate : scopedDefaultTemplate),
+    [messageDefaultTemplate, scopedDefaultTemplate, useMessageTemplates],
+  );
   const onlineSessions = useMemo(
     () => allSessions.filter((session) => session.status === "online"),
     [allSessions],
@@ -138,7 +160,7 @@ export function MercadoLivreScheduleModal({
   const [scheduleName, setScheduleName] = useState("");
   const [messageContent, setMessageContent] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const resolvedTemplateId = selectedTemplateId || (!isEditing ? defaultTemplate?.id || "" : "");
+  const resolvedTemplateId = selectedTemplateId || (!isEditing ? activeDefaultTemplate?.id || "" : "");
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [selectedMasterGroups, setSelectedMasterGroups] = useState<string[]>([]);
   const [destinationMode, setDestinationMode] = useState<DestinationMode>("individual");
@@ -157,7 +179,19 @@ export function MercadoLivreScheduleModal({
 
   const fallbackContent = editingPost?.content || product?.affiliateLink || product?.productUrl || "";
   const placeholderData = useMemo(() => {
-    return templateModule.buildPlaceholderData(
+    const genericData = buildTemplatePlaceholderData(
+      product ? {
+        title: product.title,
+        imageUrl: product.imageUrl,
+        salePrice: product.price,
+        originalPrice: product.oldPrice,
+        discount: product.discountText,
+        shopName: product.seller,
+      } : null,
+      product?.affiliateLink || "",
+    );
+
+    const moduleData = templateModule.buildPlaceholderData(
       product ? {
         title: product.title,
         productUrl: product.productUrl,
@@ -174,7 +208,21 @@ export function MercadoLivreScheduleModal({
       } : null,
       product?.affiliateLink || "",
     );
-  }, [product, templateModule]);
+
+    if (resolvedScope === "meli") {
+      return {
+        ...genericData,
+        ...moduleData,
+        "{desconto}": String(genericData["{desconto}"] || "").trim(),
+      };
+    }
+
+    return {
+      ...genericData,
+      ...moduleData,
+      "{desconto}": firstNonEmptyString(genericData["{desconto}"], moduleData["{desconto}"]),
+    };
+  }, [product, resolvedScope, templateModule]);
   const baseTemplateData = useMemo(
     () => (editingPost?.templateData && Object.keys(editingPost.templateData).length > 0
       ? editingPost.templateData
@@ -187,12 +235,12 @@ export function MercadoLivreScheduleModal({
   );
   const selectedTemplate = useMemo(
     () => (resolvedTemplateId
-      ? templates.find((item) => item.id === resolvedTemplateId) || null
+      ? activeTemplates.find((item) => item.id === resolvedTemplateId) || null
       : null)
-      || defaultTemplate
-      || templates[0]
+      || activeDefaultTemplate
+      || activeTemplates[0]
       || null,
-    [defaultTemplate, resolvedTemplateId, templates],
+    [activeDefaultTemplate, activeTemplates, resolvedTemplateId],
   );
   const templateRequiresImageAttachment = useMemo(
     () => templateRequestsImageAttachment(selectedTemplate?.content || ""),
@@ -203,6 +251,8 @@ export function MercadoLivreScheduleModal({
     if (!template) return fallbackContent;
     return templateModule.applyPlaceholders(template.content, scheduleTemplateData);
   }, [fallbackContent, scheduleTemplateData, selectedTemplate, templateModule]);
+  const normalizedInitialTemplateId = String(initialTemplateId || "").trim();
+  const normalizedInitialMessage = String(initialMessage || "").trim();
   const messagePreviewHtml = useMemo(
     () => renderRichTextPreviewHtml(messageContent || ""),
     [messageContent],
@@ -287,14 +337,24 @@ export function MercadoLivreScheduleModal({
 
   useEffect(() => {
     if (!open || editingPost || !product) return;
+    if (normalizedInitialTemplateId && resolvedTemplateId !== normalizedInitialTemplateId) return;
 
     const generatedName = product.title
-      ? `${defaultSchedulePrefix}${product.title.slice(0, 60)}`
+      ? product.title.slice(0, 60)
       : defaultScheduleName;
 
     setScheduleName(generatedName);
-    setMessageContent(templateContent || product.affiliateLink || product.productUrl || "");
-  }, [defaultScheduleName, defaultSchedulePrefix, editingPost, open, product, templateContent]);
+    setMessageContent(normalizedInitialMessage || templateContent || product.affiliateLink || product.productUrl || "");
+  }, [
+    defaultScheduleName,
+    editingPost,
+    normalizedInitialMessage,
+    normalizedInitialTemplateId,
+    open,
+    product,
+    resolvedTemplateId,
+    templateContent,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -318,7 +378,7 @@ export function MercadoLivreScheduleModal({
 
   const handleTemplateChange = (templateId: string) => {
     setSelectedTemplateId(templateId);
-    const template = templates.find((item) => item.id === templateId) || null;
+    const template = activeTemplates.find((item) => item.id === templateId) || null;
     const nextContent = template
       ? templateModule.applyPlaceholders(template.content, scheduleTemplateData)
       : fallbackContent;
@@ -423,6 +483,11 @@ export function MercadoLivreScheduleModal({
             <CalendarDays className="h-5 w-5 text-primary" />
             {isEditing ? `Editar agendamento ${marketplaceShortLabel}` : "Agendar envio"}
           </DialogTitle>
+          <DialogDescription>
+            {isEditing
+              ? "Ajuste a mensagem, sessão e horário antes de salvar o agendamento."
+              : "Configure a mensagem, os destinos e o horário para criar o agendamento."}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5">
@@ -464,7 +529,7 @@ export function MercadoLivreScheduleModal({
             <Select value={resolvedTemplateId} onValueChange={handleTemplateChange}>
               <SelectTrigger><SelectValue placeholder="Escolha um template..." /></SelectTrigger>
               <SelectContent>
-                {templates.map((template) => (
+                {activeTemplates.map((template) => (
                   <SelectItem key={template.id} value={template.id}>
                     {template.name}
                     {template.isDefault ? " *" : ""}

@@ -1471,8 +1471,8 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
         res.json({ data: { user: null }, error: { message: "E-mail inválido" } }); return;
       }
 
-      const userRowForEmail = await queryOne<{ password_hash: string; email: string; name: string }>(
-        "SELECT password_hash, email, name FROM users WHERE id = $1",
+      const userRowForEmail = await queryOne<{ password_hash: string; email: string; metadata: Record<string, unknown> | null }>(
+        "SELECT password_hash, email, metadata FROM users WHERE id = $1",
         [userId],
       );
       if (!userRowForEmail) { res.json({ data: { user: null }, error: { message: "Usuário não encontrado" } }); return; }
@@ -1497,7 +1497,7 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
         }
 
         const previousEmail = userRowForEmail.email;
-        const userName = userRowForEmail.name;
+        const userName = resolveUserName(userRowForEmail.metadata, userRowForEmail.email);
 
         // Security: mark email unconfirmed, invalidate all existing sessions (including stolen tokens)
         await execute(

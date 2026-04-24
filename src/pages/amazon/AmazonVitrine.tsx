@@ -544,6 +544,7 @@ export default function AmazonVitrine() {
         }}
         templateScope="amazon"
         marketplaceLabel="Amazon"
+        preferMessageTemplates
         product={scheduleProduct || undefined}
       />
       </div>

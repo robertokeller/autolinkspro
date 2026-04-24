@@ -23,6 +23,7 @@ import {
   fetchAdminGroups,
   fetchGroupSummary,
   fetchCrossGroupOverlap,
+  fetchDashboardKpis,
   syncAllWhatsAppGroups,
 } from "@/integrations/analytics-client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
@@ -292,9 +293,16 @@ export default function Metricas() {
         };
       }
 
-      const settled = await Promise.allSettled(
-        displayGroups.map((group) => fetchGroupSummary(group.id, days)),
-      );
+      const groupIds = displayGroups.map((g) => g.id);
+
+      // Fetch group summaries (Baileys — composition/geography/trends) and
+      // PostgreSQL KPIs (entries/exits) in parallel. PostgreSQL is the source
+      // of truth for movement counts; Baileys is the source for member counts.
+      const [settled, pgKpis] = await Promise.all([
+        Promise.allSettled(displayGroups.map((group) => fetchGroupSummary(group.id, days))),
+        fetchDashboardKpis(groupIds, days).catch(() => null),
+      ]);
+
       const successfulSummaries = settled.flatMap((item) => (item.status === "fulfilled" ? [item.value] : []));
       const groupsWithData = successfulSummaries.length;
       const groupsFailed = Math.max(0, displayGroups.length - groupsWithData);
@@ -305,8 +313,8 @@ export default function Metricas() {
           totalGroups: displayGroups.length,
           groupsConsidered: 0,
           growthRate: 0,
-          totalJoined: 0,
-          totalLeft: 0,
+          totalJoined: pgKpis?.totalJoins ?? 0,
+          totalLeft: pgKpis?.totalLeaves ?? 0,
           capacityPercent: 0,
           geography: createEmptyGeography(),
           groupsWithData: 0,
@@ -319,18 +327,26 @@ export default function Metricas() {
         0,
       );
 
-      const totalJoined = successfulSummaries.reduce(
-        (sum, summary) => sum + Math.max(0, toSafeNumber(summary.churn?.summary?.totalJoined)),
-        0,
-      );
-      const totalLeft = successfulSummaries.reduce(
-        (sum, summary) => sum + Math.max(0, toSafeNumber(summary.churn?.summary?.totalLeft)),
-        0,
-      );
+      // Prefer PostgreSQL counts (durable, consistent with history tab).
+      // Fall back to Baileys file counts if the new endpoint is unavailable.
+      const totalJoined = pgKpis != null
+        ? pgKpis.totalJoins
+        : successfulSummaries.reduce(
+            (sum, summary) => sum + Math.max(0, toSafeNumber(summary.churn?.summary?.totalJoined)),
+            0,
+          );
+      const totalLeft = pgKpis != null
+        ? pgKpis.totalLeaves
+        : successfulSummaries.reduce(
+            (sum, summary) => sum + Math.max(0, toSafeNumber(summary.churn?.summary?.totalLeft)),
+            0,
+          );
+
       const netGrowth = totalJoined - totalLeft;
       const growthRate = Number(((netGrowth / Math.max(1, days)) * 7).toFixed(1));
-      const capacityPercent = groupsWithData > 0
-        ? Number(((totalMembers / (groupsWithData * WHATSAPP_GROUP_CAPACITY)) * 100).toFixed(1))
+      const capacityDenominator = displayGroups.length > 0 ? displayGroups.length : groupsWithData;
+      const capacityPercent = capacityDenominator > 0
+        ? Number(((totalMembers / (capacityDenominator * WHATSAPP_GROUP_CAPACITY)) * 100).toFixed(1))
         : 0;
 
       return {

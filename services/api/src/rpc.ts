@@ -551,6 +551,8 @@ function nowIso() { return new Date().toISOString(); }
 
 const AUTOMATION_RECENT_OFFER_LIMIT = 200;
 const AUTOMATION_RECENT_OFFER_WINDOW_HOURS = 72;
+const MELI_AUTOMATION_MAX_CONVERSION_ATTEMPTS = 8;
+const MELI_AUTOMATION_MAX_FAILURE_DETAILS = 8;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -648,6 +650,12 @@ function parseHttpUrl(raw: string): URL | null {
   }
 }
 
+function normalizeHttpUrlInput(raw: string): string {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
 function isShopeeProductUrlLike(raw: string): boolean {
   const parsed = parseHttpUrl(raw);
   if (!parsed) return false;
@@ -708,14 +716,38 @@ function isAmazonProductUrlLike(raw: string): boolean {
   return host === "amazon.com.br" || host.endsWith(".amazon.com.br");
 }
 
+function isAmazonShortUrlLike(raw: string): boolean {
+  const parsed = parseHttpUrl(raw);
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  return host === "amzn.to";
+}
+
+function isAmazonResolvableUrlLike(raw: string): boolean {
+  return isAmazonProductUrlLike(raw) || isAmazonShortUrlLike(raw);
+}
+
+async function resolveAmazonProductUrl(raw: string): Promise<string | null> {
+  const normalized = normalizeHttpUrlInput(raw);
+  if (!normalized) return null;
+  if (!isAmazonResolvableUrlLike(normalized)) return null;
+  if (isAmazonProductUrlLike(normalized)) return normalized;
+
+  const resolved = await resolveRouteLinkWithRedirect(normalized);
+  if (!isAmazonProductUrlLike(resolved)) return null;
+  return resolved;
+}
+
 type AffiliateMarketplace = "shopee" | "mercadolivre" | "amazon";
 
 function detectAffiliateMarketplace(raw: string): AffiliateMarketplace | null {
-  if (isAmazonProductUrlLike(raw)) return "amazon";
+  if (isAmazonResolvableUrlLike(raw)) return "amazon";
   if (isMercadoLivreProductUrlLike(raw)) return "mercadolivre";
   if (isShopeeProductUrlLike(raw)) return "shopee";
   const routeMarketplace = detectRoutePartnerMarketplace(raw);
-  if (routeMarketplace === "shopee" || routeMarketplace === "mercadolivre") return routeMarketplace;
+  if (routeMarketplace === "shopee" || routeMarketplace === "mercadolivre" || routeMarketplace === "amazon") {
+    return routeMarketplace;
+  }
   return null;
 }
 
@@ -790,18 +822,26 @@ async function buildAmazonAffiliateConversionForUser(
   userId: string,
   rawUrl: string,
 ): Promise<AmazonAffiliateConversionResult> {
-  const sourceUrl = String(rawUrl || "").trim();
-  if (!sourceUrl) {
+  const sourceInput = String(rawUrl || "").trim();
+  if (!sourceInput) {
     throw new Error("URL Amazon obrigatoria");
   }
+  const sourceUrl = normalizeHttpUrlInput(sourceInput);
   if (sourceUrl.length > MAX_URL_LENGTH) {
     throw new Error("URL Amazon excede o tamanho maximo permitido");
   }
-  if (!isAmazonProductUrlLike(sourceUrl)) {
+  if (!isAmazonResolvableUrlLike(sourceUrl)) {
     throw new Error("URL informada não parece ser da Amazon (deve ser amazon.com.br)");
   }
 
-  const asin = String(extractAmazonAsin(sourceUrl) || "").trim().toUpperCase();
+  const resolvedSourceUrl = await resolveAmazonProductUrl(sourceUrl);
+  if (!resolvedSourceUrl) {
+    throw new Error("Nao foi possivel resolver o link Amazon informado. Verifique se a URL aponta para amazon.com.br.");
+  }
+
+  const canonicalResolvedUrl = canonicalizeAmazonProductUrl(resolvedSourceUrl) || resolvedSourceUrl;
+
+  const asin = String(extractAmazonAsin(canonicalResolvedUrl) || "").trim().toUpperCase();
   if (!asin) {
     throw new Error("Não consegui extrair o ASIN da URL. Verifique se é um produto da Amazon.");
   }
@@ -811,7 +851,7 @@ async function buildAmazonAffiliateConversionForUser(
     throw new Error("Configure sua tag de afiliado em /amazon/configuracoes");
   }
 
-  const preservedParams = extractAmazonPreservedParams(sourceUrl);
+  const preservedParams = extractAmazonPreservedParams(resolvedSourceUrl);
   const affiliateLink = buildAmazonAffiliateLink(asin, preservedParams, userTag);
   if (!affiliateLink.includes(`tag=${encodeURIComponent(userTag)}`)) {
     throw new Error("Falha ao construir link de afiliado. Tente novamente.");
@@ -819,7 +859,7 @@ async function buildAmazonAffiliateConversionForUser(
 
   return {
     sourceUrl,
-    resolvedUrl: sourceUrl,
+    resolvedUrl: canonicalResolvedUrl,
     affiliateLink,
     asin,
     userTag,
@@ -3579,6 +3619,100 @@ function normalizeMeliTemplateInstallments(value: unknown): string {
   return `${match[1]}x de R$${match[2]}${suffix}`.trim();
 }
 
+function isHttpUrlLike(value: unknown): boolean {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function normalizeMeliAutomationProductCandidate(product: Record<string, unknown>): Record<string, unknown> | null {
+  const title = String(product.title || "").trim();
+  const productUrl = String(product.productUrl || "").trim();
+  const imageUrl = String(product.imageUrl || "").trim();
+  const price = toNumber(product.price, 0);
+  if (!title || !productUrl || !imageUrl || !isHttpUrlLike(imageUrl) || !Number.isFinite(price) || price <= 0) {
+    return null;
+  }
+
+  const oldPriceRaw = toNumber(product.oldPrice, 0);
+  const oldPrice = Number.isFinite(oldPriceRaw) && oldPriceRaw > 0
+    ? Number(oldPriceRaw.toFixed(2))
+    : null;
+  const ratingRaw = toNumber(product.rating, 0);
+  const reviewsCountRaw = toNumber(product.reviewsCount, 0);
+
+  return {
+    ...product,
+    title,
+    productUrl,
+    imageUrl,
+    price: Number(price.toFixed(2)),
+    oldPrice,
+    seller: String(product.seller || "").trim(),
+    rating: Number.isFinite(ratingRaw) && ratingRaw > 0 ? Number(ratingRaw.toFixed(1)) : 0,
+    reviewsCount: Number.isFinite(reviewsCountRaw) && reviewsCountRaw > 0 ? Math.floor(reviewsCountRaw) : 0,
+    installmentsText: String(product.installmentsText || "").trim(),
+  };
+}
+
+function mergeMeliAutomationProductWithSnapshot(
+  product: Record<string, unknown>,
+  snapshot: Record<string, unknown> | null,
+): Record<string, unknown> {
+  if (!snapshot) return product;
+
+  const basePrice = toNumber(product.price, 0);
+  const snapshotPrice = toNumber(snapshot.price, 0);
+  const baseOldPrice = toNumber(product.oldPrice, 0);
+  const snapshotOldPrice = toNumber(snapshot.oldPrice, 0);
+  const baseRating = toNumber(product.rating, 0);
+  const snapshotRating = toNumber(snapshot.rating, 0);
+  const baseReviews = toNumber(product.reviewsCount, 0);
+  const snapshotReviews = toNumber(snapshot.reviewsCount, 0);
+
+  return {
+    ...product,
+    productUrl: String(snapshot.productUrl || product.productUrl || "").trim(),
+    title: String(snapshot.title || product.title || "").trim(),
+    imageUrl: String(snapshot.imageUrl || product.imageUrl || "").trim(),
+    price: snapshotPrice > 0
+      ? Number(snapshotPrice.toFixed(2))
+      : (basePrice > 0 ? Number(basePrice.toFixed(2)) : product.price),
+    oldPrice: snapshotOldPrice > 0
+      ? Number(snapshotOldPrice.toFixed(2))
+      : (baseOldPrice > 0 ? Number(baseOldPrice.toFixed(2)) : null),
+    installmentsText: String(snapshot.installmentsText || product.installmentsText || "").trim(),
+    seller: String(snapshot.seller || product.seller || "").trim(),
+    rating: snapshotRating > 0
+      ? Number(snapshotRating.toFixed(1))
+      : (baseRating > 0 ? Number(baseRating.toFixed(1)) : 0),
+    reviewsCount: snapshotReviews > 0
+      ? Math.floor(snapshotReviews)
+      : (baseReviews > 0 ? Math.floor(baseReviews) : 0),
+  };
+}
+
+async function buildMeliAutomationProductForMessage(input: {
+  candidate: Record<string, unknown>;
+  resolvedProductUrl: string;
+}): Promise<Record<string, unknown> | null> {
+  const base = normalizeMeliAutomationProductCandidate({
+    ...input.candidate,
+    productUrl: String(input.resolvedProductUrl || input.candidate.productUrl || "").trim(),
+  });
+  if (!base) return null;
+
+  const strictUrl = String(input.resolvedProductUrl || base.productUrl || "").trim();
+  if (!strictUrl || !isMercadoLivreStrictProductUrlLike(strictUrl)) {
+    return base;
+  }
+
+  const snapshot = await getMeliProductSnapshot(strictUrl).catch(() => null);
+  const merged = mergeMeliAutomationProductWithSnapshot(
+    base,
+    snapshot && typeof snapshot === "object" ? snapshot as Record<string, unknown> : null,
+  );
+  return normalizeMeliAutomationProductCandidate(merged);
+}
+
 function buildMeliAutomationMessage(
   templateContent: string,
   product: Record<string, unknown>,
@@ -3587,21 +3721,35 @@ function buildMeliAutomationMessage(
   personalizedCta = "",
   aiGeneratedCtaPlaceholderData: Record<string, string> = {},
 ): string {
+  const title = String(product.title || "Produto Mercado Livre").trim();
+  const price = formatMeliTemplatePrice(product.price);
+  const oldPrice = formatMeliTemplatePrice(product.oldPrice);
+  const rating = toNumber(product.rating, 0);
+  const basePlaceholderData = buildRouteTemplatePlaceholderData(
+    product,
+    affiliateLink,
+    "",
+    randomCta,
+    personalizedCta,
+    "",
+  );
+
   return applyMeliTemplatePlaceholdersServer(templateContent, {
-    "{titulo}": String(product.title || "Produto Mercado Livre").trim(),
-    "{preco}": formatMeliTemplatePrice(product.price),
-    "{preco_original}": formatMeliTemplatePrice(product.oldPrice),
+    ...basePlaceholderData,
+    "{titulo}": title,
+    "{título}": title,
+    "{preco}": price,
+    "{preço}": price,
+    "{preco_original}": oldPrice,
+    "{preço_original}": oldPrice,
     "{link}": String(affiliateLink || "").trim(),
-    "{cta_aleatoria}": randomCta,
-    "{cta aleatoria}": randomCta,
-    "{cta_personalizada}": personalizedCta,
-    "{cta personalizada}": personalizedCta,
-    ...aiGeneratedCtaPlaceholderData,
+    "{desconto}": String(basePlaceholderData["{desconto}"] || "").trim(),
     "{imagem}": "",
-    "{avaliacao}": toNumber(product.rating, 0) > 0 ? Number(toNumber(product.rating, 0)).toFixed(1) : "",
+    "{avaliacao}": rating > 0 ? Number(rating).toFixed(1) : "",
     "{avaliacoes}": toNumber(product.reviewsCount, 0) > 0 ? String(Math.floor(toNumber(product.reviewsCount, 0))) : "",
     "{parcelamento}": normalizeMeliTemplateInstallments(product.installmentsText),
     "{vendedor}": String(product.seller || "").trim(),
+    ...aiGeneratedCtaPlaceholderData,
   });
 }
 
@@ -10617,6 +10765,92 @@ rpcRouter.post("/rpc", async (req, res) => {
       return;
     }
 
+    // ── analytics-dashboard-kpis ──────────────────────────────────────────────
+    // Aggregate entry/exit KPIs from PostgreSQL for one or more groups.
+    // Used by the dashboard top cards so they match the movement history tab.
+    if (funcName === "analytics-dashboard-kpis") {
+      const rawIds = params.groupIds;
+      const groupUuids: string[] = (Array.isArray(rawIds) ? rawIds : [])
+        .map((id: unknown) => String(id || "").trim())
+        .filter((id: string) => isUuid(id));
+      const days = Math.min(365, Math.max(1, Number(params.days) || 30));
+
+      if (groupUuids.length === 0) {
+        ok(res, { totalJoins: 0, totalLeaves: 0 });
+        return;
+      }
+
+      // Verify all requested groups belong to this user
+      const owned = await query<{ id: string }>(
+        `SELECT id FROM groups WHERE id = ANY($1::uuid[]) AND user_id = $2 AND deleted_at IS NULL`,
+        [groupUuids, userId],
+      );
+      const ownedIds = owned.map((r) => r.id).filter(isUuid);
+
+      if (ownedIds.length === 0) {
+        ok(res, { totalJoins: 0, totalLeaves: 0 });
+        return;
+      }
+
+      const kpiRow = await queryOne<{ total_joins: string; total_leaves: string }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE event_type = 'member_joined') AS total_joins,
+           COUNT(*) FILTER (WHERE event_type IN ('member_left', 'member_removed')) AS total_leaves
+         FROM group_member_movements
+         WHERE group_id = ANY($1::uuid[])
+           AND user_id  = $2
+           AND event_timestamp >= NOW() - ($3 || ' days')::interval`,
+        [ownedIds, userId, String(days)],
+      );
+
+      ok(res, {
+        totalJoins:  Number(kpiRow?.total_joins  ?? 0),
+        totalLeaves: Number(kpiRow?.total_leaves ?? 0),
+      });
+      return;
+    }
+
+    // ── analytics-upsert-history-daily ───────────────────────────────────────
+    // Called by the Baileys service after each group snapshot (fire-and-forget).
+    // Writes the current member count to group_member_history_daily so the
+    // evolution chart stays populated even without a manual sync click.
+    if (funcName === "analytics-upsert-history-daily") {
+      if (!isService && !effectiveAdmin) {
+        fail(res, "Não autorizado", 403);
+        return;
+      }
+
+      const groupExternalId = String(params.groupExternalId || "").trim();
+      const memberCount     = Math.max(0, Math.trunc(Number(params.memberCount) || 0));
+      const sessionId       = params.sessionId ? String(params.sessionId).trim() : null;
+
+      if (!groupExternalId) {
+        fail(res, "groupExternalId obrigatório", 400);
+        return;
+      }
+
+      const groupRow = await queryOne<{ id: string; user_id: string; session_id: string | null }>(
+        `SELECT id, user_id, session_id FROM groups
+          WHERE external_id = $1 AND platform = 'whatsapp' AND deleted_at IS NULL
+          LIMIT 1`,
+        [groupExternalId],
+      );
+      if (!groupRow) {
+        ok(res, { stored: false, reason: "group_not_found" });
+        return;
+      }
+
+      await upsertGroupMemberHistoryDaily({
+        userId: groupRow.user_id,
+        groupId: groupRow.id,
+        sessionId: sessionId ?? groupRow.session_id ?? "",
+        memberCount,
+      });
+
+      ok(res, { stored: true });
+      return;
+    }
+
     // ── analytics-recapture-rule-save ─────────────────────────────────────────
     // Upsert a recapture rule for a group (one per group).
     if (funcName === "analytics-recapture-rule-save") {
@@ -12315,7 +12549,7 @@ if (funcName === "whatsapp-connect") {
       if (sourceInput.length > MAX_URL_LENGTH) { fail(res, "URL excede o tamanho maximo permitido"); return; }
       const forceResolve = parseBooleanParam(params.forceResolve, false);
 
-      const sourceUrl = /^https?:\/\//i.test(sourceInput) ? sourceInput : `https://${sourceInput}`;
+      const sourceUrl = normalizeHttpUrlInput(sourceInput);
       if (!parseHttpUrl(sourceUrl)) { fail(res, "URL invalida"); return; }
 
       const resolvedUrl = await resolveRouteLinkWithRedirect(sourceUrl);
@@ -12351,8 +12585,7 @@ if (funcName === "whatsapp-connect") {
       }
 
       if (marketplace === "amazon") {
-        const amazonUrl = isAmazonProductUrlLike(resolvedUrl) ? resolvedUrl : sourceUrl;
-        if (!isAmazonProductUrlLike(amazonUrl)) { fail(res, "URL informada nao parece ser da Amazon (amazon.com.br)"); return; }
+        const amazonUrl = isAmazonResolvableUrlLike(resolvedUrl) ? resolvedUrl : sourceUrl;
         let conversion: AmazonAffiliateConversionResult;
         try {
           conversion = await buildAmazonAffiliateConversionForUser(userId, amazonUrl);
@@ -12470,7 +12703,10 @@ if (funcName === "whatsapp-connect") {
       if (dedupedUrls.length === 0) { fail(res, "Lista de URLs Amazon obrigatoria"); return; }
       if (dedupedUrls.length > 50) { fail(res, "Limite de 50 URLs por lote Amazon"); return; }
       if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
-      if (dedupedUrls.some((item) => !isAmazonProductUrlLike(item))) { fail(res, "Uma ou mais URLs não parecem ser da Amazon"); return; }
+      if (dedupedUrls.some((item) => !isAmazonResolvableUrlLike(normalizeHttpUrlInput(item)))) {
+        fail(res, "Uma ou mais URLs não parecem ser da Amazon");
+        return;
+      }
       
       const conversions = [];
       for (const originalLink of dedupedUrls) {
@@ -12504,7 +12740,8 @@ if (funcName === "whatsapp-connect") {
       if (!sourceUrl && !asinHint) { fail(res, "URL ou ASIN Amazon obrigatorio"); return; }
       if (sourceUrl && sourceUrl.length > MAX_URL_LENGTH) { fail(res, "URL Amazon excede o tamanho maximo permitido"); return; }
 
-      const canonicalUrl = sourceUrl ? (canonicalizeAmazonProductUrl(sourceUrl) || "") : "";
+      const resolvedAmazonSourceUrl = sourceUrl ? await resolveAmazonProductUrl(sourceUrl) : null;
+      const canonicalUrl = resolvedAmazonSourceUrl ? (canonicalizeAmazonProductUrl(resolvedAmazonSourceUrl) || "") : "";
       if (sourceUrl && !canonicalUrl) { fail(res, "URL informada não parece ser da Amazon (deve ser amazon.com.br)"); return; }
 
       const asin = asinHint || (canonicalUrl ? String(extractAmazonAsin(canonicalUrl) || "").trim().toUpperCase() : "");
@@ -13549,18 +13786,17 @@ if (funcName === "whatsapp-connect") {
         });
 
         let duplicateRejectedCount = 0;
-        let selectedProduct: Record<string, unknown> | null = null;
+        const dedupedCandidates: Record<string, unknown>[] = [];
         for (const candidate of candidates) {
           const normalizedTitle = normalizeOfferTitle(candidate.title);
           if (normalizedTitle && recentOfferTitles.has(normalizedTitle)) {
             duplicateRejectedCount += 1;
             continue;
           }
-          selectedProduct = candidate;
-          break;
+          dedupedCandidates.push(candidate);
         }
 
-        if (!selectedProduct) {
+        if (dedupedCandidates.length === 0) {
           skipped += 1;
           errors.push(`${automationName}: sem nova oferta disponível (duplicadas descartadas: ${duplicateRejectedCount})`);
           await insertAutomationHistoryEntry({
@@ -13602,42 +13838,75 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
-        const conversion = await proxyMeliConvertWithRehydrate({
-          userId: ownerUserId,
-          sessionId: meliSessionId,
-          productUrl: String(selectedProduct.productUrl || "").trim(),
-          timeoutMs: MELI_CONVERSION_TIMEOUT_MS,
-        });
-        if (conversion.errorMessage) {
+        const conversionAttemptLimit = Math.min(dedupedCandidates.length, MELI_AUTOMATION_MAX_CONVERSION_ATTEMPTS);
+        const conversionAttemptFailures: string[] = [];
+        let selectedProduct: Record<string, unknown> | null = null;
+        let affiliateLink = "";
+
+        for (const candidate of dedupedCandidates.slice(0, conversionAttemptLimit)) {
+          const candidateUrl = String(candidate.productUrl || "").trim();
+          if (!candidateUrl) {
+            conversionAttemptFailures.push("oferta com URL vazia");
+            continue;
+          }
+
+          const conversion = await proxyMeliConvertWithRehydrate({
+            userId: ownerUserId,
+            sessionId: meliSessionId,
+            productUrl: candidateUrl,
+            timeoutMs: MELI_CONVERSION_TIMEOUT_MS,
+          });
+          if (conversion.errorMessage) {
+            conversionAttemptFailures.push(conversion.errorMessage);
+            continue;
+          }
+
+          const conversionPayload = conversion.payload || {};
+          const candidateAffiliateLink = String(conversionPayload.affiliateLink || "").trim();
+          if (!candidateAffiliateLink) {
+            conversionAttemptFailures.push("conversão sem link afiliado");
+            continue;
+          }
+
+          const resolvedProductUrl = String(
+            conversionPayload.resolvedUrl
+            || conversionPayload.originalUrl
+            || candidateUrl,
+          ).trim() || candidateUrl;
+
+          const candidateProduct = await buildMeliAutomationProductForMessage({
+            candidate,
+            resolvedProductUrl,
+          });
+          if (!candidateProduct) {
+            conversionAttemptFailures.push("snapshot sem dados essenciais");
+            continue;
+          }
+
+          selectedProduct = candidateProduct;
+          affiliateLink = candidateAffiliateLink;
+          break;
+        }
+
+        if (!selectedProduct || !affiliateLink) {
           failed += 1;
-          errors.push(`${automationName}: ${conversion.errorMessage}`);
+          errors.push(`${automationName}: nenhuma oferta elegível pôde ser convertida neste ciclo`);
           await insertAutomationHistoryEntry({
             userId: ownerUserId,
             automationName,
             destination: "automation:diagnostic",
             status: "error",
             processingStatus: "failed",
-            message: `Falha ao converter link Mercado Livre: ${conversion.errorMessage}`,
-            details: { automationId, source, reason: "meli_conversion_failed" },
-            blockReason: "meli_conversion_failed",
-            errorStep: "link_conversion",
-          });
-          continue;
-        }
-
-        const conversionPayload = conversion.payload || {};
-        const affiliateLink = String(conversionPayload.affiliateLink || "").trim();
-        if (!affiliateLink) {
-          skipped += 1;
-          await insertAutomationHistoryEntry({
-            userId: ownerUserId,
-            automationName,
-            destination: "automation:diagnostic",
-            status: "warning",
-            processingStatus: "blocked",
-            message: "Conversão sem link afiliado válido.",
-            details: { automationId, source, reason: "missing_affiliate_link" },
-            blockReason: "missing_affiliate_link",
+            message: "Falha ao preparar oferta da Vitrine ML para envio automático.",
+            details: {
+              automationId,
+              source,
+              reason: "meli_offer_prepare_failed",
+              duplicateRejectedCount,
+              attemptedCandidates: conversionAttemptLimit,
+              failures: conversionAttemptFailures.slice(0, MELI_AUTOMATION_MAX_FAILURE_DETAILS),
+            },
+            blockReason: "meli_offer_prepare_failed",
             errorStep: "link_conversion",
           });
           continue;

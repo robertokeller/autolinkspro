@@ -33,6 +33,7 @@ import { TimePickerField } from "@/components/scheduling/TimePickerField";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
 import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
+import { OfferMessageGeneratorModal, type OfferGeneratorResult } from "@/components/schedules/OfferMessageGeneratorModal";
 
 const statusVariant: Record<string, "info" | "success" | "warning" | "destructive" | "secondary"> = {
   scheduled: "info", pending: "info", sent: "success",
@@ -150,6 +151,7 @@ export default function Schedules() {
   const { allSessions } = useSessoes();
 
   const [showModal, setShowModal] = useState(false);
+  const [showOfferGeneratorModal, setShowOfferGeneratorModal] = useState(false);
   const [draft, setDraft] = useState<DraftPost>({ ...emptyDraft });
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
@@ -179,14 +181,29 @@ export default function Schedules() {
     }, 0);
   }, [destinationMode, draft.destinationGroupIds.length, draft.masterGroupIds, filteredGroupIds, filteredMasterGroups]);
 
-  const openNew = () => {
-    setDraft({ ...emptyDraft });
+  const openNew = (prefill?: Partial<DraftPost>) => {
+    setDraft({ ...emptyDraft, ...(prefill || {}) });
     setIsRecurring(false);
     setDestinationMode("individual");
     setRecurrenceTimeInput("");
     setEditingId(null);
     setEditingShopeePost(null);
     setShowModal(true);
+  };
+
+  const handleOfferGenerated = (result: OfferGeneratorResult) => {
+    setShowOfferGeneratorModal(false);
+    openNew({
+      name: result.name,
+      content: result.message,
+      templateId: result.templateId,
+      templateData: result.placeholderData,
+      imagePolicy: result.imagePolicy,
+      scheduleSource: result.scheduleSource,
+      productImageUrl: result.productImageUrl,
+      messageType: "offer",
+      detectedLinks: result.affiliateLink ? [result.affiliateLink] : [],
+    });
   };
 
   const openEdit = (post: ScheduledPost) => {
@@ -469,7 +486,10 @@ export default function Schedules() {
     <div className="ds-page">
       <PageHeader title="Agendamentos" description="Agende mensagens para enviar na hora certa">
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-          <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1.5" />Novo agendamento</Button>
+          <Button size="sm" variant="outline" onClick={() => setShowOfferGeneratorModal(true)}>
+            <ShoppingBag className="h-4 w-4 mr-1.5" />Nova Oferta
+          </Button>
+          <Button size="sm" onClick={() => openNew()}><Plus className="h-4 w-4 mr-1.5" />Nova mensagem</Button>
         </div>
       </PageHeader>
 
@@ -483,7 +503,7 @@ export default function Schedules() {
             icon={CalendarDays}
             title="Fila de envios vazia"
             description="Quando um envio for concluído ele sai daqui e fica disponível no histórico."
-            actionLabel="Criar agendamento"
+            actionLabel="Nova mensagem"
             onAction={openNew}
           />
         )}
@@ -746,6 +766,12 @@ export default function Schedules() {
         open={!!editingShopeePost}
         onOpenChange={(open) => { if (!open) setEditingShopeePost(null); }}
         editingPost={editingShopeePost || undefined}
+      />
+
+      <OfferMessageGeneratorModal
+        open={showOfferGeneratorModal}
+        onOpenChange={setShowOfferGeneratorModal}
+        onGenerated={handleOfferGenerated}
       />
     </div>
   );

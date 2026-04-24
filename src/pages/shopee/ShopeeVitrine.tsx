@@ -9,9 +9,11 @@ import { ProductCard, ProductCardSkeleton, type ShopeeProduct } from "@/componen
 import { EmptyState } from "@/components/EmptyState";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { PageWrapper } from "@/components/PageWrapper";
+import { useTemplateModule } from "@/contexts/TemplateModuleContext";
 import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { toScheduleProduct } from "@/lib/schedule-product-helpers";
+import { buildTemplatePlaceholderData } from "@/lib/template-placeholders";
 import { toast } from "sonner";
 
 interface TabConfig {
@@ -96,12 +98,15 @@ interface TabState {
 const emptyTab: TabState = { products: [], loading: false, page: 1, hasMore: false, loadingMore: false, fetched: false };
 
 export default function ShopeeVitrine() {
+  const { templates, defaultTemplate, applyTemplate } = useTemplateModule();
   const { isConfigured, isLoading } = useShopeeCredentials();
   const [activeTab, setActiveTab] = useState<TabKey>("sales");
   const [tabs, setTabs] = useState<Record<TabKey, TabState>>(() =>
     (Object.fromEntries(TABS.map((t) => [t.key, { ...emptyTab }])) as Record<TabKey, TabState>)
   );
   const [scheduleProduct, setScheduleProduct] = useState<ShopeeProduct | null>(null);
+  const [scheduleTemplateId, setScheduleTemplateId] = useState("");
+  const [scheduleInitialMessage, setScheduleInitialMessage] = useState("");
   const fetchedRef = useRef(false);
 
   const fetchTab = useCallback(async (tabKey: TabKey, pageNum = 1, append = false) => {
@@ -176,6 +181,21 @@ export default function ShopeeVitrine() {
     if (state) fetchTab(activeTab, state.page + 1, true);
   };
 
+  const handleScheduleProduct = (product: ShopeeProduct) => {
+    const scheduleInput = toScheduleProduct(product);
+    const selectedTemplate = defaultTemplate || templates[0] || null;
+    const placeholderData = buildTemplatePlaceholderData(scheduleInput, scheduleInput.affiliateLink);
+    const generatedMessage = applyTemplate({
+      templateId: selectedTemplate?.id,
+      fallbackContent: scheduleInput.affiliateLink,
+      placeholderData,
+    });
+
+    setScheduleTemplateId(selectedTemplate?.id || "");
+    setScheduleInitialMessage(generatedMessage || scheduleInput.affiliateLink);
+    setScheduleProduct(product);
+  };
+
   const state = tabs[activeTab] || emptyTab;
   const anyLoading = state.loading;
 
@@ -230,7 +250,7 @@ export default function ShopeeVitrine() {
             <>
               <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:gap-5">
                 {state.products.map((p, idx) => (
-                  <ProductCard key={p.id} product={p} onSchedule={setScheduleProduct} priorityImage={idx < 4} />
+                  <ProductCard key={p.id} product={p} onSchedule={handleScheduleProduct} priorityImage={idx < 4} />
                 ))}
               </div>
               {state.hasMore && (
@@ -252,7 +272,15 @@ export default function ShopeeVitrine() {
 
       <ScheduleProductModal
         open={!!scheduleProduct}
-        onOpenChange={(open) => { if (!open) setScheduleProduct(null); }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setScheduleProduct(null);
+            setScheduleTemplateId("");
+            setScheduleInitialMessage("");
+          }
+        }}
+        initialTemplateId={scheduleTemplateId}
+        initialMessage={scheduleInitialMessage}
         product={scheduleProduct ? toScheduleProduct(scheduleProduct) : undefined}
       />
       </div>

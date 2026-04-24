@@ -7,6 +7,7 @@ import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Search, Loader2, ShoppingBag, SlidersHorizontal, ChevronDown, ChevronRight, LayoutList } from "lucide-react";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
+import { useTemplates } from "@/hooks/useTemplates";
 import { ShopeeCredentialsBanner } from "@/components/ShopeeCredentialsBanner";
 import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
 import { ProductCard, ProductCardSkeleton, type ShopeeProduct } from "@/components/shopee/ProductCard";
@@ -17,6 +18,13 @@ import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { toast } from "sonner";
 import { SHOPEE_CATEGORIES, deduplicateProducts, type ShopeeCategory } from "@/lib/shopee-categories";
+import {
+  applyTemplatePlaceholders,
+  buildTemplatePlaceholderData,
+  templateRequestsAiGeneratedCta,
+  templateRequestsPersonalizedCta,
+  templateRequestsRandomCta,
+} from "@/lib/template-placeholders";
 import { toScheduleProduct } from "@/lib/schedule-product-helpers";
 import { cn } from "@/lib/utils";
 import { PageWrapper } from "@/components/PageWrapper";
@@ -38,8 +46,75 @@ function getVisualCategoryIcon(icon: string) {
   return value;
 }
 
+type RandomCtaNextResponse = {
+  phrase?: string;
+};
+
+type PersonalizedCtaNextResponse = {
+  phrase?: string;
+};
+
+type AiCtaPlaceholdersNextResponse = {
+  items?: Record<string, string>;
+};
+
+function firstNonEmptyString(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = String(value || "").trim();
+    if (parsed) return parsed;
+  }
+  return "";
+}
+
+function withRandomCtaPlaceholderData(
+  placeholderData: Record<string, string>,
+  randomPhrase: string,
+): Record<string, string> {
+  const normalizedPhrase = String(randomPhrase || "").trim();
+  if (!normalizedPhrase) return placeholderData;
+
+  return {
+    ...placeholderData,
+    "{cta_aleatoria}": normalizedPhrase,
+    "{{cta_aleatoria}}": normalizedPhrase,
+    "{cta aleatoria}": normalizedPhrase,
+    "{{cta aleatoria}}": normalizedPhrase,
+  };
+}
+
+function withPersonalizedCtaPlaceholderData(
+  placeholderData: Record<string, string>,
+  personalizedPhrase: string,
+): Record<string, string> {
+  const normalizedPhrase = String(personalizedPhrase || "").trim();
+  if (!normalizedPhrase) return placeholderData;
+
+  return {
+    ...placeholderData,
+    "{cta_personalizada}": normalizedPhrase,
+    "{{cta_personalizada}}": normalizedPhrase,
+    "{cta personalizada}": normalizedPhrase,
+    "{{cta personalizada}}": normalizedPhrase,
+  };
+}
+
+function withAiGeneratedCtaPlaceholderData(
+  placeholderData: Record<string, string>,
+  generatedPlaceholderData: Record<string, string>,
+): Record<string, string> {
+  if (!generatedPlaceholderData || Object.keys(generatedPlaceholderData).length === 0) {
+    return placeholderData;
+  }
+
+  return {
+    ...placeholderData,
+    ...generatedPlaceholderData,
+  };
+}
+
 export default function ShopeePesquisa() {
   const { isConfigured, isLoading } = useShopeeCredentials();
+  const { templates: messageTemplates, defaultTemplate: messageDefaultTemplate } = useTemplates("message");
   const viewport = useViewportProfile();
   const isMobileView = viewport.isMobile || viewport.isTiny;
   const [categoriesOpen, setCategoriesOpen] = useState(false);
@@ -68,6 +143,8 @@ export default function ShopeePesquisa() {
 
   // Schedule modal
   const [scheduleProduct, setScheduleProduct] = useState<ShopeeProduct | null>(null);
+  const [scheduleTemplateId, setScheduleTemplateId] = useState("");
+  const [scheduleInitialMessage, setScheduleInitialMessage] = useState("");
 
   const abortRef = useRef<AbortController | null>(null);
   const categoryListTypeRef = useRef<Map<number, 3 | 4>>(new Map());
@@ -300,6 +377,117 @@ export default function ShopeePesquisa() {
     if (minCommission > 0 && p.commission * 100 < minCommission) return false;
     return true;
   });
+
+  const resolveRandomCtaPreviewPhrase = useCallback(async (templateContent: string): Promise<string> => {
+    if (!templateRequestsRandomCta(templateContent)) return "";
+
+    try {
+      const response = await invokeBackendRpc<RandomCtaNextResponse>("cta-random-next", {
+        body: {
+          source: "shopee-pesquisa-schedule",
+          persist: false,
+        },
+      });
+      return firstNonEmptyString(response?.phrase);
+    } catch {
+      return "";
+    }
+  }, []);
+
+  const resolvePersonalizedCtaPreviewPhrase = useCallback(async (templateContent: string): Promise<string> => {
+    if (!templateRequestsPersonalizedCta(templateContent)) return "";
+
+    try {
+      const response = await invokeBackendRpc<PersonalizedCtaNextResponse>("cta-personalizada-next", {
+        body: {
+          source: "shopee-pesquisa-schedule",
+        },
+      });
+      return firstNonEmptyString(response?.phrase);
+    } catch {
+      return "";
+    }
+  }, []);
+
+  const resolveAiGeneratedCtaPreviewData = useCallback(async (
+    templateId: string,
+    templateContent: string,
+    offerTitle: string,
+  ): Promise<Record<string, string>> => {
+    if (!templateRequestsAiGeneratedCta(templateContent)) return {};
+
+    try {
+      const response = await invokeBackendRpc<AiCtaPlaceholdersNextResponse>("cta-ia-placeholders-next", {
+        body: {
+          templateId,
+          templateContent,
+          offerTitle,
+          source: "shopee-pesquisa-schedule",
+          persist: false,
+        },
+      });
+      return response?.items && typeof response.items === "object"
+        ? response.items
+        : {};
+    } catch {
+      return {};
+    }
+  }, []);
+
+  const handleScheduleFromProduct = useCallback(async (product: ShopeeProduct) => {
+    const affiliateLink = String(product.affiliateLink || "").trim();
+    const fallbackMessage = firstNonEmptyString(affiliateLink, product.link);
+    const selectedTemplate = messageDefaultTemplate || messageTemplates[0] || null;
+
+    if (!selectedTemplate) {
+      toast.warning("Crie um modelo em /modelos para montar a mensagem antes de agendar.");
+      setScheduleTemplateId("");
+      setScheduleInitialMessage(fallbackMessage);
+      setScheduleProduct(product);
+      return;
+    }
+
+    try {
+      const randomCtaPhrase = await resolveRandomCtaPreviewPhrase(selectedTemplate.content);
+      const personalizedCtaPhrase = await resolvePersonalizedCtaPreviewPhrase(selectedTemplate.content);
+
+      if (templateRequestsPersonalizedCta(selectedTemplate.content) && !personalizedCtaPhrase) {
+        toast.warning("Esse modelo usa {cta_personalizada}, mas nenhuma CTA personalizada ativa foi encontrada.");
+      }
+
+      const basePlaceholderData = buildTemplatePlaceholderData(product, affiliateLink);
+      const aiGeneratedCtaPlaceholderData = await resolveAiGeneratedCtaPreviewData(
+        selectedTemplate.id,
+        selectedTemplate.content,
+        firstNonEmptyString(product.title, "Oferta Shopee"),
+      );
+      const placeholderData = withAiGeneratedCtaPlaceholderData(
+        withPersonalizedCtaPlaceholderData(
+          withRandomCtaPlaceholderData(basePlaceholderData, randomCtaPhrase),
+          personalizedCtaPhrase,
+        ),
+        aiGeneratedCtaPlaceholderData,
+      );
+
+      const generatedMessage = applyTemplatePlaceholders(selectedTemplate.content, placeholderData);
+
+      setScheduleTemplateId(selectedTemplate.id);
+      setScheduleInitialMessage(generatedMessage || fallbackMessage);
+    } catch {
+      const fallbackData = buildTemplatePlaceholderData(product, affiliateLink);
+      const fallbackTemplateMessage = applyTemplatePlaceholders(selectedTemplate.content, fallbackData);
+      setScheduleTemplateId(selectedTemplate.id);
+      setScheduleInitialMessage(fallbackTemplateMessage || fallbackMessage);
+    }
+
+    setScheduleProduct(product);
+  }, [
+    messageDefaultTemplate,
+    messageTemplates,
+    resolveAiGeneratedCtaPreviewData,
+    resolvePersonalizedCtaPreviewPhrase,
+    resolveRandomCtaPreviewPhrase,
+  ]);
 
   return (
     <PageWrapper fallbackLabel="Carregando pesquisa...">
@@ -552,7 +740,7 @@ export default function ShopeePesquisa() {
                 <>
                   <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 md:gap-4 lg:grid-cols-4 xl:gap-5">
                     {filtered.map((p) => (
-                      <ProductCard key={p.id} product={p} onSchedule={setScheduleProduct} />
+                      <ProductCard key={p.id} product={p} onSchedule={(item) => { void handleScheduleFromProduct(item); }} />
                     ))}
                   </div>
                   {hasMore && (
@@ -581,7 +769,15 @@ export default function ShopeePesquisa() {
 
       <ScheduleProductModal
         open={!!scheduleProduct}
-        onOpenChange={(open) => { if (!open) setScheduleProduct(null); }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setScheduleProduct(null);
+            setScheduleTemplateId("");
+            setScheduleInitialMessage("");
+          }
+        }}
+        initialTemplateId={scheduleTemplateId}
+        initialMessage={scheduleInitialMessage}
         product={scheduleProduct ? toScheduleProduct(scheduleProduct) : undefined}
       />
       </div>

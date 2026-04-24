@@ -32,6 +32,40 @@ export async function captureSnapshot(snapshot: GroupSnapshot): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, `${snapshot.date}.json`);
   await fs.writeFile(file, JSON.stringify(snapshot, null, 2), "utf-8");
+
+  // Bridge to PostgreSQL so the evolution chart stays populated automatically
+  // (fire-and-forget — never blocks real-time snapshot flow)
+  void persistHistoryDailyToSQL({
+    groupExternalId: snapshot.groupId,
+    memberCount: snapshot.totalMembers,
+  });
+}
+
+async function persistHistoryDailyToSQL(input: {
+  groupExternalId: string;
+  memberCount: number;
+  sessionId?: string;
+}): Promise<void> {
+  if (!API_URL || !SERVICE_SECRET) return;
+
+  try {
+    await fetch(`${API_URL}/rpc`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-service-secret": SERVICE_SECRET,
+      },
+      body: JSON.stringify({
+        name: "analytics-upsert-history-daily",
+        groupExternalId: input.groupExternalId,
+        memberCount: input.memberCount,
+        sessionId: input.sessionId ?? null,
+      }),
+      signal: AbortSignal.timeout(8_000),
+    });
+  } catch {
+    // intentionally silent — history snapshot must not block real-time flow
+  }
 }
 
 export async function loadEventsForDays(days: number): Promise<GroupEvent[]> {

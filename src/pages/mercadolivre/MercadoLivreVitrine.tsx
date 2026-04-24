@@ -455,11 +455,6 @@ export default function MercadoLivreVitrine() {
               </p>
             </div>
 
-            {!!convertedPreview?.conversionTimeMs && (
-              <p className="text-xs text-muted-foreground">
-                Tempo de conversão: {convertedPreview.conversionTimeMs} ms
-              </p>
-            )}
           </div>
 
           <DialogFooter className="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
@@ -489,6 +484,7 @@ export default function MercadoLivreVitrine() {
         onOpenChange={(open) => {
           if (!open) setScheduleProduct(null);
         }}
+        preferMessageTemplates
         product={scheduleProduct || undefined}
       />
       </div>

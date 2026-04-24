@@ -317,6 +317,21 @@ export async function fetchMovementKpis(groupId: string, days = 30): Promise<Mov
   return unwrapRpcPayload<MovementKpisResult>(payload);
 }
 
+export interface DashboardKpisResult {
+  totalJoins: number;
+  totalLeaves: number;
+}
+
+export async function fetchDashboardKpis(
+  groupIds: string[],
+  days = 30,
+): Promise<DashboardKpisResult> {
+  const payload = await invokeBackendRpc<unknown>("analytics-dashboard-kpis", {
+    body: { groupIds, days },
+  });
+  return unwrapRpcPayload<DashboardKpisResult>(payload);
+}
+
 // ── Recapture ────────────────────────────────────────────────────────────────
 
 export interface RecaptureRule {
