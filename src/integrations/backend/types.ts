@@ -107,6 +107,22 @@ type TableMap = {
     block_reason: string;
     error_step: string;
   }>;
+  history_entry_targets: TableDef<{
+    id: string;
+    created_at: string;
+    history_entry_id: string;
+    user_id: string;
+    destination_group_id: string | null;
+    destination: string;
+    platform: string;
+    status: string;
+    processing_status: string;
+    block_reason: string;
+    error_step: string;
+    message_type: string;
+    send_order: number;
+    details: Json;
+  }>;
   link_hub_pages: TableDef<{
     id: string;
     created_at: string;

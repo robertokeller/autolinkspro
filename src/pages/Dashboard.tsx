@@ -486,7 +486,7 @@ export default function Dashboard() {
   const meliError = sanitizeError(meliHealth?.error);
   const amazonError = sanitizeError(amazonHealth?.error);
 
-  const healthCards: readonly HealthCardViewModel[] = [
+  const healthCards = useMemo<readonly HealthCardViewModel[]>(() => [
     {
       id: "wa",
       title: "WhatsApp",
@@ -571,7 +571,29 @@ export default function Dashboard() {
       iconColorClass: "text-warning",
       iconBgClass: "bg-warning/10",
     },
-  ];
+  ], [
+    amazonError,
+    amazonFullyOnline,
+    amazonServiceOnline,
+    amazonTagConfigured,
+    analytics.meliActive,
+    meliError,
+    meliServiceOnline,
+    meliSessions.length,
+    shopeeConfigured,
+    shopeeError,
+    shopeeServiceOnline,
+    tgConnecting,
+    tgError,
+    tgOnline,
+    tgServiceOnline,
+    tgSessions.length,
+    waConnecting,
+    waError,
+    waOnline,
+    waServiceOnline,
+    waSessions.length,
+  ]);
 
   const serviceFeatureAccess = useMemo(() => {
       const resolve = (feature: AppFeature) => {

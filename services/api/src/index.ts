@@ -673,7 +673,6 @@ async function main() {
   let standbyProbeInFlight = false;
   let standbyMisses = 0;
   let shuttingDown = false;
-  // eslint-disable-next-line prefer-const
   let server: ReturnType<typeof app.listen>;
 
   function clearStandby() {

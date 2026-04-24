@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { loadProjectEnv } from "./load-env.mjs";
@@ -215,6 +215,39 @@ function parsePositionalPort() {
   return candidate ? Number(candidate) : null;
 }
 
+function getLatestMtimeMs(paths) {
+  let latest = 0;
+  for (const relativePath of paths) {
+    try {
+      const absolutePath = path.resolve(process.cwd(), relativePath);
+      if (!existsSync(absolutePath)) continue;
+      const mtime = statSync(absolutePath).mtimeMs;
+      if (Number.isFinite(mtime) && mtime > latest) {
+        latest = mtime;
+      }
+    } catch {
+      // Ignore missing/inaccessible files and keep best-effort behavior.
+    }
+  }
+  return latest;
+}
+
+function shouldForceFreshStartFromArtifacts(serviceConfig) {
+  const sourcePaths = Array.isArray(serviceConfig?.sourcePaths)
+    ? serviceConfig.sourcePaths
+    : [];
+  const distPaths = Array.isArray(serviceConfig?.artifactPaths)
+    ? serviceConfig.artifactPaths
+    : (serviceConfig?.distPath ? [serviceConfig.distPath] : []);
+
+  if (sourcePaths.length === 0 || distPaths.length === 0) return false;
+
+  const latestSourceMtime = getLatestMtimeMs(sourcePaths);
+  const latestDistMtime = getLatestMtimeMs(distPaths);
+  if (latestSourceMtime <= 0 || latestDistMtime <= 0) return false;
+  return latestSourceMtime > latestDistMtime;
+}
+
 async function canBindPort(port, host = null) {
   const { createServer } = await import("node:net");
   return new Promise((resolve) => {
@@ -386,8 +419,11 @@ async function ensureServiceOnline(serviceConfig) {
     forceFreshStartWhenOnline = false,
   } = serviceConfig;
 
+  const forceFreshStartByArtifacts = shouldForceFreshStartFromArtifacts(serviceConfig);
+  const mustForceFreshStart = forceFreshStartWhenOnline || forceFreshStartByArtifacts;
+
   const alreadyOnline = await fetchHealth(healthUrl, 2500, healthHeaders || null);
-  if (alreadyOnline && !forceFreshStartWhenOnline) {
+  if (alreadyOnline && !mustForceFreshStart) {
     console.log(`[preview:ready] ${name} já estava online`);
     return {
       name,
@@ -399,8 +435,11 @@ async function ensureServiceOnline(serviceConfig) {
     };
   }
 
-  if (alreadyOnline && forceFreshStartWhenOnline) {
-    console.warn(`[preview:ready] ${name} já estava online, mas será iniciado um runtime novo para evitar código stale.`);
+  if (alreadyOnline && mustForceFreshStart) {
+    const reason = forceFreshStartByArtifacts
+      ? "build desatualizado em relação ao código fonte"
+      : "forçado por configuração";
+    console.warn(`[preview:ready] ${name} já estava online, mas será iniciado um runtime novo para evitar código stale (${reason}).`);
   }
 
   let servicePort = defaultPort;
@@ -739,6 +778,16 @@ async function main() {
     defaultPort: 3116,
     buildScript: "svc:api:build",
     distPath: "services/api/dist/index.js",
+    sourcePaths: [
+      "services/api/src/index.ts",
+      "services/api/src/rpc.ts",
+      "services/api/src/rest.ts",
+    ],
+    artifactPaths: [
+      "services/api/dist/index.js",
+      "services/api/dist/rpc.js",
+      "services/api/dist/rest.js",
+    ],
     envKey: "VITE_API_URL",
     forceFreshStartWhenOnline: String(process.env.PREVIEW_API_FORCE_FRESH_START || "0").trim() === "1",
     runtimeEnv: () => ({

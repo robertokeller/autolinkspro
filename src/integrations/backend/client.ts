@@ -236,6 +236,7 @@ class QueryBuilder<T = unknown> {
   private _filters: Filter[] = [];
   private _order: OrderOpt[] = [];
   private _limit: number | null = null;
+  private _offset: number | null = null;
   private _single = false;
   private _maybeSingle = false;
   private _count: string | null = null;
@@ -278,6 +279,7 @@ class QueryBuilder<T = unknown> {
     this._order.push({ col, ascending: opts?.ascending ?? true }); return this;
   }
   limit(n: number): this { this._limit = n; return this; }
+  offset(n: number): this { this._offset = n; return this; }
   cursor(value: { created_at: string; id: string } | null): this { this._cursor = value; return this; }
 
   async maybeSingle(): Promise<QueryResult<T>> { this._maybeSingle = true; return this._execute(); }
@@ -294,6 +296,7 @@ class QueryBuilder<T = unknown> {
     const options: Record<string, unknown> = {};
     if (this._order.length) options.order = this._order;
     if (this._limit !== null) options.limit = this._limit;
+    if (this._offset !== null) options.offset = this._offset;
     if (this._single) options.single = true;
     if (this._maybeSingle) options.maybeSingle = true;
     if (this._count) options.count = this._count;

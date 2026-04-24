@@ -772,13 +772,13 @@ function isMercadoLivreStrictProductUrlLike(raw: string): boolean {
 
   const hasProductPathHint = (
     /\/(p|up|item)\//i.test(decodedPath)
-    || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath)
+    || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(decodedPath)
   );
   if (!hasProductPathHint) {
     return false;
   }
 
-  return /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath);
+  return /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(decodedPath);
 }
 
 function isAmazonProductUrlLike(raw: string): boolean {
@@ -3900,6 +3900,249 @@ function buildAmazonAutomationMessage(
 }
 
 type HistoryEntryProcessingStatus = "sent" | "processed" | "skipped" | "error" | "blocked";
+type HistoryEntryStatus = "success" | "error" | "warning" | "info";
+
+type HistoryEntryTargetInput = {
+  destination: string;
+  destinationGroupId?: string | null;
+  platform?: string;
+  status: HistoryEntryStatus;
+  processingStatus: HistoryEntryProcessingStatus | "failed" | string;
+  blockReason?: string;
+  errorStep?: string;
+  messageType?: string;
+  sendOrder?: number;
+  details?: Record<string, unknown>;
+};
+
+let historyEntryTargetsTableAvailable: boolean | null = null;
+
+function normalizeHistoryEntryStatus(status: unknown): HistoryEntryStatus {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "success" || normalized === "error" || normalized === "warning" || normalized === "info") {
+    return normalized;
+  }
+  return "info";
+}
+
+function tryParseUuid(value: unknown): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw)) return null;
+  return raw;
+}
+
+async function canWriteHistoryEntryTargets(): Promise<boolean> {
+  if (historyEntryTargetsTableAvailable != null) return historyEntryTargetsTableAvailable;
+  try {
+    const row = await queryOne<{ exists: boolean }>(
+      "SELECT to_regclass('public.history_entry_targets') IS NOT NULL AS exists",
+      [],
+    );
+    historyEntryTargetsTableAvailable = Boolean(row?.exists);
+  } catch {
+    historyEntryTargetsTableAvailable = false;
+  }
+  return historyEntryTargetsTableAvailable;
+}
+
+function summarizeHistoryEntryTargets(targets: HistoryEntryTargetInput[]): {
+  total: number;
+  sent: number;
+  failed: number;
+  blocked: number;
+  processed: number;
+  skipped: number;
+  status: HistoryEntryStatus;
+  processingStatus: HistoryEntryProcessingStatus;
+  blockReason: string;
+  errorStep: string;
+} {
+  const summary = {
+    total: targets.length,
+    sent: 0,
+    failed: 0,
+    blocked: 0,
+    processed: 0,
+    skipped: 0,
+  };
+
+  for (const target of targets) {
+    const normalized = normalizeHistoryEntryProcessingStatus(target.processingStatus);
+    if (normalized === "sent") summary.sent += 1;
+    else if (normalized === "error") summary.failed += 1;
+    else if (normalized === "blocked") summary.blocked += 1;
+    else if (normalized === "skipped") summary.skipped += 1;
+    else summary.processed += 1;
+  }
+
+  const primaryIssue = targets.find((target) => {
+    const normalized = normalizeHistoryEntryProcessingStatus(target.processingStatus);
+    return normalized === "error" || normalized === "blocked";
+  });
+
+  if (summary.total === 0) {
+    return {
+      ...summary,
+      status: "info",
+      processingStatus: "processed",
+      blockReason: "",
+      errorStep: "",
+    };
+  }
+
+  if (summary.failed > 0 || (summary.sent > 0 && summary.blocked > 0) || (summary.sent > 0 && summary.skipped > 0)) {
+    return {
+      ...summary,
+      status: "error",
+      processingStatus: "error",
+      blockReason: String(primaryIssue?.blockReason || ""),
+      errorStep: String(primaryIssue?.errorStep || ""),
+    };
+  }
+
+  if (summary.sent > 0 && summary.failed === 0 && summary.blocked === 0 && summary.skipped === 0) {
+    return {
+      ...summary,
+      status: "success",
+      processingStatus: "sent",
+      blockReason: "",
+      errorStep: "",
+    };
+  }
+
+  if (summary.sent === 0 && summary.blocked > 0 && summary.failed === 0) {
+    return {
+      ...summary,
+      status: "warning",
+      processingStatus: "blocked",
+      blockReason: String(primaryIssue?.blockReason || ""),
+      errorStep: String(primaryIssue?.errorStep || ""),
+    };
+  }
+
+  return {
+    ...summary,
+    status: "info",
+    processingStatus: "processed",
+    blockReason: "",
+    errorStep: "",
+  };
+}
+
+async function insertHistoryEntryWithTargets(input: {
+  userId: string;
+  type: "route_forward" | "schedule_sent" | "automation_run" | "session_event";
+  source: string;
+  destination: string;
+  direction: "inbound" | "outbound";
+  details: Record<string, unknown>;
+  messageType?: string;
+  targets: HistoryEntryTargetInput[];
+  status?: HistoryEntryStatus;
+  processingStatus?: HistoryEntryProcessingStatus | "failed" | string;
+  blockReason?: string;
+  errorStep?: string;
+}): Promise<void> {
+  const normalizedTargets = input.targets.map((target, index) => ({
+    destination: String(target.destination || "").trim() || "-",
+    destinationGroupId: tryParseUuid(target.destinationGroupId),
+    platform: String(target.platform || "").trim(),
+    status: normalizeHistoryEntryStatus(target.status),
+    processingStatus: normalizeHistoryEntryProcessingStatus(target.processingStatus),
+    blockReason: String(target.blockReason || "").trim(),
+    errorStep: String(target.errorStep || "").trim(),
+    messageType: String(target.messageType || input.messageType || "text").trim() || "text",
+    sendOrder: Number.isFinite(Number(target.sendOrder)) ? Math.max(0, Math.trunc(Number(target.sendOrder))) : index,
+    details: target.details && typeof target.details === "object" && !Array.isArray(target.details)
+      ? target.details
+      : {},
+  }));
+
+  const summary = summarizeHistoryEntryTargets(normalizedTargets);
+  const parentStatus = normalizeHistoryEntryStatus(input.status || summary.status);
+  const parentProcessingStatus = normalizeHistoryEntryProcessingStatus(input.processingStatus || summary.processingStatus);
+  const parentBlockReason = String(input.blockReason ?? summary.blockReason ?? "").trim();
+  const parentErrorStep = String(input.errorStep ?? summary.errorStep ?? "").trim();
+
+  const parentId = uuid();
+  const canWriteTargets = normalizedTargets.length > 0 ? await canWriteHistoryEntryTargets() : false;
+  const parentDetails: Record<string, unknown> = {
+    ...(input.details || {}),
+    eventModel: "parent_child_v1",
+    targetSummary: {
+      total: summary.total,
+      sent: summary.sent,
+      failed: summary.failed,
+      blocked: summary.blocked,
+      processed: summary.processed,
+      skipped: summary.skipped,
+    },
+    hasTargets: summary.total > 0,
+    targetPreview: normalizedTargets.slice(0, 5).map((target) => target.destination),
+  };
+
+  if (!canWriteTargets && normalizedTargets.length > 0) {
+    parentDetails.targets = normalizedTargets.map((target) => ({
+      destination: target.destination,
+      platform: target.platform,
+      status: target.status,
+      processingStatus: target.processingStatus,
+      blockReason: target.blockReason,
+      errorStep: target.errorStep,
+      messageType: target.messageType,
+      sendOrder: target.sendOrder,
+      details: target.details,
+    }));
+  }
+
+  await execute(
+    "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+    [
+      parentId,
+      input.userId,
+      input.type,
+      input.source,
+      input.destination,
+      parentStatus,
+      JSON.stringify(parentDetails),
+      input.direction,
+      String(input.messageType || "text") || "text",
+      parentProcessingStatus,
+      parentBlockReason,
+      parentErrorStep,
+    ],
+  );
+
+  if (!canWriteTargets || normalizedTargets.length === 0) return;
+
+  const valueClauses: string[] = [];
+  const params: unknown[] = [];
+  for (const target of normalizedTargets) {
+    const base = params.length;
+    valueClauses.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13})`);
+    params.push(
+      uuid(),
+      parentId,
+      input.userId,
+      target.destinationGroupId,
+      target.destination,
+      target.platform,
+      target.status,
+      target.processingStatus,
+      target.blockReason,
+      target.errorStep,
+      target.messageType,
+      target.sendOrder,
+      JSON.stringify(target.details),
+    );
+  }
+
+  await execute(
+    `INSERT INTO history_entry_targets (id, history_entry_id, user_id, destination_group_id, destination, platform, status, processing_status, block_reason, error_step, message_type, send_order, details) VALUES ${valueClauses.join(",")}`,
+    params,
+  );
+}
 
 function normalizeHistoryEntryProcessingStatus(status: unknown): HistoryEntryProcessingStatus {
   const normalized = String(status || "").trim().toLowerCase();
@@ -7139,8 +7382,61 @@ async function appendInboundCaptureHistory(input: {
   }
 }
 
+async function hasActiveRouteForInboundSource(input: {
+  userId: string;
+  sessionId: string;
+  sourceExternalId: string;
+}): Promise<boolean> {
+  const {
+    userId,
+    sessionId,
+    sourceExternalId,
+  } = input;
+
+  const sourceExternalCandidates = buildSourceExternalIdCandidates(sourceExternalId);
+  if (sourceExternalCandidates.length === 0) return false;
+
+  const sourceGroupRows = await query<{ id: string }>(
+    `SELECT id
+       FROM groups
+      WHERE user_id = $1
+        AND session_id = $2
+        AND external_id = ANY($3)
+        AND deleted_at IS NULL`,
+    [userId, sessionId, sourceExternalCandidates],
+  );
+  const sourceCandidateIds = Array.from(new Set(
+    sourceGroupRows
+      .map((row) => String(row?.id || "").trim())
+      .filter(Boolean),
+  ));
+
+  const route = await queryOne<{ id: string }>(
+    `SELECT r.id
+       FROM routes r
+       LEFT JOIN groups sg
+         ON sg.id::text = r.source_group_id
+        AND sg.user_id::text = r.user_id::text
+        AND sg.deleted_at IS NULL
+      WHERE r.user_id::text = $1
+        AND r.status = 'active'
+        AND (
+          r.source_group_id = ANY($2::text[])
+          OR (
+            sg.session_id = $4
+            AND sg.external_id = ANY($3::text[])
+          )
+        )
+      LIMIT 1`,
+    [userId, sourceCandidateIds, sourceExternalCandidates, sessionId],
+  );
+
+  return Boolean(route?.id);
+}
+
 async function applyWhatsAppEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
   let groupsSynced = 0;
+  const activeRouteBySourceCache = new Map<string, boolean>();
   for (const raw of events) {
     const event = String(raw?.event ?? "").trim();
     const data = raw?.data && typeof raw.data === "object" && !Array.isArray(raw.data)
@@ -7255,6 +7551,32 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
           media: summarizeRouteForwardMedia(media),
         });
         if (!sourceExternalId || (!message && !media && !hasMediaHint)) continue;
+
+        const sourceCacheKey = `${sessionId}:${sourceExternalId}`;
+        let hasActiveRoute = activeRouteBySourceCache.get(sourceCacheKey);
+        if (hasActiveRoute == null) {
+          hasActiveRoute = await hasActiveRouteForInboundSource({
+            userId,
+            sessionId,
+            sourceExternalId,
+          });
+          activeRouteBySourceCache.set(sourceCacheKey, hasActiveRoute);
+        }
+
+        if (!hasActiveRoute) {
+          logRouteMediaDebug("incoming.whatsapp.message_skipped.no_active_routes", {
+            userId,
+            sessionId,
+            sourceExternalId,
+            sourceName,
+            hasText: Boolean(message),
+            textLength: message.length,
+            hasMediaHint,
+            mediaKindHint,
+            media: summarizeRouteForwardMedia(media),
+          });
+          continue;
+        }
 
         if (fromMe) {
           await execute(
@@ -7371,6 +7693,7 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
 
 async function applyTelegramEvents(userId: string, sessionId: string, events: IntegrationEvent[]) {
   let groupsSynced = 0;
+  const activeRouteBySourceCache = new Map<string, boolean>();
   for (const raw of events) {
     const event = String(raw?.event ?? "").trim();
     const data = raw?.data && typeof raw.data === "object" && !Array.isArray(raw.data)
@@ -7488,6 +7811,32 @@ async function applyTelegramEvents(userId: string, sessionId: string, events: In
           media: summarizeRouteForwardMedia(media),
         });
         if (!sourceExternalId || (!message && !media && !hasMediaHint)) continue;
+
+        const sourceCacheKey = `${sessionId}:${sourceExternalId}`;
+        let hasActiveRoute = activeRouteBySourceCache.get(sourceCacheKey);
+        if (hasActiveRoute == null) {
+          hasActiveRoute = await hasActiveRouteForInboundSource({
+            userId,
+            sessionId,
+            sourceExternalId,
+          });
+          activeRouteBySourceCache.set(sourceCacheKey, hasActiveRoute);
+        }
+
+        if (!hasActiveRoute) {
+          logRouteMediaDebug("incoming.telegram.message_skipped.no_active_routes", {
+            userId,
+            sessionId,
+            sourceExternalId,
+            sourceName,
+            hasText: Boolean(message),
+            textLength: message.length,
+            hasMediaHint,
+            mediaKindHint,
+            media: summarizeRouteForwardMedia(media),
+          });
+          continue;
+        }
 
         if (fromMe) {
           await execute(
@@ -7863,8 +8212,9 @@ async function processRouteMessageForUser(input: {
   try {
 
   const sourceExternalCandidates = buildSourceExternalIdCandidates(sourceExternalId);
-  const sourceCandidates = new Set<string>([sessionId, ...sourceExternalCandidates].filter(Boolean));
 
+  // Route source matching must stay scoped to the inbound session to avoid
+  // cross-session collisions when the same external_id exists in multiple sessions.
   const sourceGroupRows = await query<{ id: string }>(
     `SELECT id
        FROM groups
@@ -7874,22 +8224,11 @@ async function processRouteMessageForUser(input: {
         AND deleted_at IS NULL`,
     [userId, sessionId, sourceExternalCandidates],
   );
-  for (const row of sourceGroupRows) {
-    if (row?.id) sourceCandidates.add(String(row.id));
-  }
-  if (sourceGroupRows.length === 0 && sourceExternalCandidates.length > 0) {
-    const fallbackSourceRows = await query<{ id: string }>(
-      `SELECT id
-         FROM groups
-        WHERE user_id = $1
-          AND external_id = ANY($2)
-          AND deleted_at IS NULL`,
-      [userId, sourceExternalCandidates],
-    );
-    for (const row of fallbackSourceRows) {
-      if (row?.id) sourceCandidates.add(String(row.id));
-    }
-  }
+  const sourceCandidates = new Set(
+    sourceGroupRows
+      .map((row) => String(row?.id || "").trim())
+      .filter(Boolean),
+  );
 
   const sourceExternalCandidateSet = new Set(sourceExternalCandidates);
 
@@ -7898,6 +8237,7 @@ async function processRouteMessageForUser(input: {
     name: string;
     source_group_id: string;
     source_external_id: string;
+    source_session_id: string;
     rules: unknown;
     dest_ids: string[];
   }>(
@@ -7906,29 +8246,34 @@ async function processRouteMessageForUser(input: {
        r.name,
        r.source_group_id,
        COALESCE(sg.external_id, '') AS source_external_id,
+       COALESCE(sg.session_id, '') AS source_session_id,
        r.rules,
        COALESCE(json_agg(rd.group_id) FILTER (WHERE rd.group_id IS NOT NULL),'[]') AS dest_ids
      FROM routes r
-     LEFT JOIN groups sg ON sg.id::text = r.source_group_id AND sg.user_id::text = r.user_id::text
+     LEFT JOIN groups sg
+       ON sg.id::text = r.source_group_id
+      AND sg.user_id::text = r.user_id::text
+      AND sg.deleted_at IS NULL
      LEFT JOIN route_destinations rd ON rd.route_id = r.id
      WHERE r.user_id::text = $1
        AND r.status = 'active'
        AND (
          r.source_group_id = ANY($2::text[])
-         OR EXISTS (
-           SELECT 1 FROM groups g
-            WHERE g.id::text = r.source_group_id
-              AND g.external_id = ANY($3::text[])
-              AND g.deleted_at IS NULL
+         OR (
+           sg.session_id = $4
+           AND sg.external_id = ANY($3::text[])
          )
        )
-     GROUP BY r.id, sg.external_id`,
-    [userId, Array.from(sourceCandidates), sourceExternalCandidates],
+     GROUP BY r.id, sg.external_id, sg.session_id`,
+    [userId, Array.from(sourceCandidates), sourceExternalCandidates, sessionId],
   );
 
   const matching = routes.filter((route) => {
     const routeSourceGroupId = String(route.source_group_id || "").trim();
     if (routeSourceGroupId && sourceCandidates.has(routeSourceGroupId)) return true;
+
+    const routeSourceSessionId = String(route.source_session_id || "").trim();
+    if (routeSourceSessionId !== sessionId) return false;
 
     const routeSourceExternalId = String(route.source_external_id || "").trim();
     if (!routeSourceExternalId) return false;
@@ -7946,10 +8291,6 @@ async function processRouteMessageForUser(input: {
       textLength: message.length,
       media: summarizeRouteForwardMedia(media),
     });
-    await execute(
-      "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,'-','warning',$4,'inbound',$5,'blocked','no_active_routes','route_match')",
-      [uuid(), userId, sourceName, JSON.stringify({ message, sourceExternalId, sessionId, reason: "no_active_routes", hasMedia: !!media }), media ? media.kind : "text"],
-    );
     return { dispatched: 0, routesMatched: 0 };
   }
 
@@ -8596,15 +8937,29 @@ async function processRouteMessageForUser(input: {
     }
 
     const routeDispatchPolicy = buildDynamicDispatchPolicy(filteredTargetIds.length);
+    const routeTargets: HistoryEntryTargetInput[] = [];
     for (let targetIndex = 0; targetIndex < filteredTargetIds.length; targetIndex++) {
       const targetId = filteredTargetIds[targetIndex];
       let sendAttempted = false;
       const group = destGroupMap.get(String(targetId));
       if (!group) {
-        await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','error','destination_not_found','destination_lookup')",
-          [uuid(), userId, sourceName, route.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, destinationId: targetId, reason: "destination_not_found" })],
-        );
+        routeTargets.push({
+          destination: `Destino ${String(targetId || "-")}`,
+          destinationGroupId: tryParseUuid(targetId),
+          status: "error",
+          processingStatus: "error",
+          blockReason: "destination_not_found",
+          errorStep: "destination_lookup",
+          messageType: "text",
+          sendOrder: targetIndex,
+          details: {
+            message: outboundText,
+            routeId: route.id,
+            routeName: route.name,
+            destinationId: targetId,
+            reason: "destination_not_found",
+          },
+        });
         continue;
       }
 
@@ -8612,10 +8967,23 @@ async function processRouteMessageForUser(input: {
       const destinationSessionId = String(group.session_id ?? "");
       const destinationExternalId = String(group.external_id ?? "");
       if (!destinationSessionId || !destinationExternalId) {
-        await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound','text','error','destination_session_offline','destination_validation')",
-          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundText, routeId: route.id, routeName: route.name, reason: "destination_session_offline" })],
-        );
+        routeTargets.push({
+          destination: String(group.name || targetId || "Destino"),
+          destinationGroupId: tryParseUuid(group.id),
+          platform,
+          status: "error",
+          processingStatus: "error",
+          blockReason: "destination_session_offline",
+          errorStep: "destination_validation",
+          messageType: "text",
+          sendOrder: targetIndex,
+          details: {
+            message: outboundText,
+            routeId: route.id,
+            routeName: route.name,
+            reason: "destination_session_offline",
+          },
+        });
         continue;
       }
 
@@ -8634,17 +9002,25 @@ async function processRouteMessageForUser(input: {
           destinationGroupName: group.name,
           sourceMedia: summarizeRouteForwardMedia(routeMedia),
         });
-        await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'outbound','text','blocked','missing_image_required','media_requirements')",
-          [uuid(), userId, sourceName, group.name, JSON.stringify({
+        routeTargets.push({
+          destination: String(group.name || targetId || "Destino"),
+          destinationGroupId: tryParseUuid(group.id),
+          platform,
+          status: "warning",
+          processingStatus: "blocked",
+          blockReason: "missing_image_required",
+          errorStep: "media_requirements",
+          messageType: "text",
+          sendOrder: targetIndex,
+          details: {
             message: outboundText,
             routeId: route.id,
             routeName: route.name,
             platform,
             reason: "missing_image_required",
             hasMedia: false,
-          })],
-        );
+          },
+        });
         continue;
       }
       const formattedOutboundText = formatMessageForDestinationPlatform(outboundText, platform);
@@ -8660,17 +9036,25 @@ async function processRouteMessageForUser(input: {
           destinationGroupName: group.name,
           media: summarizeRouteForwardMedia(mediaForDestination),
         });
-        await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'warning',$5,'outbound','text','blocked','missing_text_required','message_validation')",
-          [uuid(), userId, sourceName, group.name, JSON.stringify({
+        routeTargets.push({
+          destination: String(group.name || targetId || "Destino"),
+          destinationGroupId: tryParseUuid(group.id),
+          platform,
+          status: "warning",
+          processingStatus: "blocked",
+          blockReason: "missing_text_required",
+          errorStep: "message_validation",
+          messageType: "text",
+          sendOrder: targetIndex,
+          details: {
             message: outboundText,
             routeId: route.id,
             routeName: route.name,
             platform,
             reason: "missing_text_required",
             hasMedia: true,
-          })],
-        );
+          },
+        });
         continue;
       }
       let result = { data: null as unknown, error: { message: "Plataforma inválida" } as { message: string } | null };
@@ -8710,20 +9094,68 @@ async function processRouteMessageForUser(input: {
           media: summarizeRouteForwardMedia(mediaForDestination),
           error: result.error.message,
         });
-        await execute(
-          "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'error',$5,'outbound',$6,'error','destination_send_failed','send_message')",
-          [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, routeId: route.id, routeName: route.name, error: result.error.message, platform, hasMedia: !!mediaForDestination }), mediaForDestination ? mediaForDestination.kind : "text"],
-        );
+        routeTargets.push({
+          destination: String(group.name || targetId || "Destino"),
+          destinationGroupId: tryParseUuid(group.id),
+          platform,
+          status: "error",
+          processingStatus: "error",
+          blockReason: "destination_send_failed",
+          errorStep: "send_message",
+          messageType: mediaForDestination ? mediaForDestination.kind : "text",
+          sendOrder: targetIndex,
+          details: {
+            message: outboundTextSafe,
+            routeId: route.id,
+            routeName: route.name,
+            error: result.error.message,
+            platform,
+            hasMedia: !!mediaForDestination,
+          },
+        });
         continue;
       }
 
       dispatched += 1;
       routeDispatched += 1;
-      await execute(
-        "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'route_forward',$3,$4,'success',$5,'outbound',$6,'sent','','')",
-        [uuid(), userId, sourceName, group.name, JSON.stringify({ message: outboundTextSafe, platform, routeId: route.id, routeName: route.name, hasMedia: !!mediaForDestination, ...(autoImageSource ? { autoImageSource } : {}) }), mediaForDestination ? mediaForDestination.kind : "text"],
-      );
+      routeTargets.push({
+        destination: String(group.name || targetId || "Destino"),
+        destinationGroupId: tryParseUuid(group.id),
+        platform,
+        status: "success",
+        processingStatus: "sent",
+        blockReason: "",
+        errorStep: "",
+        messageType: mediaForDestination ? mediaForDestination.kind : "text",
+        sendOrder: targetIndex,
+        details: {
+          message: outboundTextSafe,
+          platform,
+          routeId: route.id,
+          routeName: route.name,
+          hasMedia: !!mediaForDestination,
+          ...(autoImageSource ? { autoImageSource } : {}),
+        },
+      });
     }
+
+    await insertHistoryEntryWithTargets({
+      userId,
+      type: "route_forward",
+      source: sourceName,
+      destination: route.name,
+      direction: "outbound",
+      messageType: routeMessageType,
+      details: {
+        message: outboundText,
+        routeId: route.id,
+        routeName: route.name,
+        destinationCount: filteredTargetIds.length,
+        hasMedia: !!routeMedia,
+        ...(autoImageSource ? { autoImageSource } : {}),
+      },
+      targets: routeTargets,
+    });
 
     if (routeDispatched > 0) {
       await execute(
@@ -12237,20 +12669,27 @@ if (funcName === "whatsapp-connect") {
           : [];
         const groupMap = new Map(groupRows.map((g) => [g.id, g]));
         const scheduleDispatchPolicy = buildDynamicDispatchPolicy(destIds.length);
+        const scheduleTargets: HistoryEntryTargetInput[] = [];
         for (let destinationIndex = 0; destinationIndex < destIds.length; destinationIndex++) {
           const gid = destIds[destinationIndex];
           const g = groupMap.get(gid);
           if (!g) {
             ok_ = false;
             failed += 1;
-            await insertScheduleFailedHistory({
-              userId: String(post.user_id),
+            scheduleTargets.push({
               destination: String(gid),
-              message,
-              reason: "destination_not_found",
+              destinationGroupId: tryParseUuid(gid),
+              status: "error",
+              processingStatus: "error",
+              blockReason: "destination_not_found",
               errorStep: "destination_lookup",
-              error: `Grupo destino não encontrado: ${gid}`,
               messageType: scheduleMedia ? scheduleMedia.kind : "text",
+              sendOrder: destinationIndex,
+              details: {
+                message,
+                reason: "destination_not_found",
+                error: `Grupo destino não encontrado: ${gid}`,
+              },
             });
             break;
           }
@@ -12261,15 +12700,22 @@ if (funcName === "whatsapp-connect") {
           if (!session || !externalId) {
             ok_ = false;
             failed += 1;
-            await insertScheduleFailedHistory({
-              userId: String(post.user_id),
+            scheduleTargets.push({
               destination: String(g.name || gid),
-              message,
+              destinationGroupId: tryParseUuid(g.id),
               platform,
-              reason: "destination_session_offline",
+              status: "error",
+              processingStatus: "error",
+              blockReason: "destination_session_offline",
               errorStep: "destination_validation",
-              error: "Sessão do destino offline ou grupo sem identificador externo.",
               messageType: scheduleMedia ? scheduleMedia.kind : "text",
+              sendOrder: destinationIndex,
+              details: {
+                message,
+                platform,
+                reason: "destination_session_offline",
+                error: "Sessão do destino offline ou grupo sem identificador externo.",
+              },
             });
             break;
           }
@@ -12283,16 +12729,24 @@ if (funcName === "whatsapp-connect") {
           if (requiresScheduleImage && !mediaForDestination) {
             ok_ = false;
             failed += 1;
-            await execute(
-              "INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'warning',$4,'outbound','text','blocked','missing_image_required','media_requirements')",
-              [uuid(), post.user_id, g.name, JSON.stringify({
+            scheduleTargets.push({
+              destination: String(g.name || gid),
+              destinationGroupId: tryParseUuid(g.id),
+              platform,
+              status: "warning",
+              processingStatus: "blocked",
+              blockReason: "missing_image_required",
+              errorStep: "media_requirements",
+              messageType: "text",
+              sendOrder: destinationIndex,
+              details: {
                 message,
                 platform,
                 reason: "missing_image_required",
                 requiresImage: true,
                 hasMedia: false,
-              })],
-            );
+              },
+            });
             break;
           }
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
@@ -12320,27 +12774,69 @@ if (funcName === "whatsapp-connect") {
           if (sentResult.error) {
             ok_ = false;
             failed += 1;
-            await insertScheduleFailedHistory({
-              userId: String(post.user_id),
+            scheduleTargets.push({
               destination: String(g.name || gid),
-              message,
+              destinationGroupId: tryParseUuid(g.id),
               platform,
-              reason: "destination_send_failed",
+              status: "error",
+              processingStatus: "error",
+              blockReason: "destination_send_failed",
               errorStep: "send_message",
-              error: String(sentResult.error.message || "Falha ao enviar para o destino."),
               messageType: mediaForDestination ? mediaForDestination.kind : "text",
+              sendOrder: destinationIndex,
+              details: {
+                message,
+                platform,
+                reason: "destination_send_failed",
+                error: String(sentResult.error.message || "Falha ao enviar para o destino."),
+                hasMedia: !!mediaForDestination,
+              },
             });
             break;
           }
 
-          await execute("INSERT INTO history_entries (id, user_id, type, source, destination, status, details, direction, message_type, processing_status, block_reason, error_step) VALUES ($1,$2,'schedule_sent','Agendamento',$3,'success',$4,'outbound',$5,'sent','','')",
-            [uuid(), post.user_id, g.name, JSON.stringify({ message, platform: g.platform, hasMedia: !!mediaForDestination }), mediaForDestination ? mediaForDestination.kind : "text"]);
+          scheduleTargets.push({
+            destination: String(g.name || gid),
+            destinationGroupId: tryParseUuid(g.id),
+            platform,
+            status: "success",
+            processingStatus: "sent",
+            blockReason: "",
+            errorStep: "",
+            messageType: mediaForDestination ? mediaForDestination.kind : "text",
+            sendOrder: destinationIndex,
+            details: {
+              message,
+              platform: g.platform,
+              hasMedia: !!mediaForDestination,
+            },
+          });
           sent++;
           postSentCount += 1;
           if (sendAttempted) {
             await maybeWaitBetweenDestinations(destinationIndex, destIds.length, scheduleDispatchPolicy.interDestinationDelayMs);
           }
         }
+
+        await insertHistoryEntryWithTargets({
+          userId: String(post.user_id),
+          type: "schedule_sent",
+          source: "Agendamento",
+          destination: String(post.id),
+          direction: "outbound",
+          messageType: scheduleMedia ? scheduleMedia.kind : "text",
+          details: {
+            message,
+            postId: String(post.id),
+            recurrence,
+            scheduleSource: meta.scheduleSource || "",
+            destinationCount: destIds.length,
+            hasMedia: !!scheduleMedia,
+            requiresImage: requiresScheduleImage,
+          },
+          targets: scheduleTargets,
+        });
+
         if (!ok_) {
           const cancelledMeta = markScheduledPostMediaCleanup(meta, nowMs);
           await execute(
@@ -13699,6 +14195,7 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
+        const automationTargets: HistoryEntryTargetInput[] = [];
         let automationMedia: RouteForwardMedia | null = null;
         try {
           automationMedia = await buildAutomationImageMedia(selectedProduct);
@@ -13706,29 +14203,46 @@ if (funcName === "whatsapp-connect") {
           const reason = error instanceof Error ? error.message : "Envio cancelado: falha ao anexar imagem.";
           failed += destinationGroups.length;
           errors.push(`${automationName}: ${reason}`);
-          for (const group of destinationGroups) {
+          for (let destinationIndex = 0; destinationIndex < destinationGroups.length; destinationIndex++) {
+            const group = destinationGroups[destinationIndex];
             const groupName = String(group.name || group.id || "Grupo");
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform: String(group.platform || ""),
               status: "warning",
               processingStatus: "blocked",
-              message,
+              blockReason: "missing_image_required",
+              errorStep: "automation_media_failed",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
-                platform: String(group.platform || ""),
                 reason: "missing_image_required",
                 mediaError: reason,
                 product: selectedProduct,
                 hasMedia: false,
               },
-              blockReason: "missing_image_required",
-              errorStep: "automation_media_failed",
-              messageType: "text",
             });
           }
+          await insertHistoryEntryWithTargets({
+            userId: ownerUserId,
+            type: "automation_run",
+            source: automationName,
+            destination: `${destinationGroups.length} destino(s)`,
+            direction: "outbound",
+            messageType: "text",
+            details: {
+              message,
+              automationId,
+              source,
+              reason: "missing_image_required",
+              mediaError: reason,
+              destinationCount: destinationGroups.length,
+            },
+            targets: automationTargets,
+          });
           continue;
         }
 
@@ -13748,21 +14262,23 @@ if (funcName === "whatsapp-connect") {
           if (!sessionId || !externalId) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: grupo sem sessão/external_id`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "error",
               processingStatus: "failed",
-              message,
+              blockReason: "invalid_destination",
+              errorStep: "destination_validate",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
                 platform,
                 reason: "invalid_destination",
+                message,
               },
-              blockReason: "invalid_destination",
-              errorStep: "destination_validate",
             });
             continue;
           }
@@ -13774,21 +14290,23 @@ if (funcName === "whatsapp-connect") {
               : false;
           if (!isOnline) {
             skipped += 1;
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "info",
               processingStatus: "blocked",
-              message,
+              blockReason: "destination_session_offline",
+              errorStep: "destination_precheck",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
                 platform,
                 reason: "destination_session_offline",
+                message,
               },
-              blockReason: "destination_session_offline",
-              errorStep: "destination_precheck",
             });
             continue;
           }
@@ -13802,13 +14320,16 @@ if (funcName === "whatsapp-connect") {
           if (!mediaForDestination) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: imagem obrigatoria ausente`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "warning",
               processingStatus: "blocked",
-              message,
+              blockReason: "missing_image_required",
+              errorStep: "media_requirements",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
@@ -13816,10 +14337,8 @@ if (funcName === "whatsapp-connect") {
                 reason: "missing_image_required",
                 product: selectedProduct,
                 hasMedia: false,
+                message,
               },
-              blockReason: "missing_image_required",
-              errorStep: "media_requirements",
-              messageType: "text",
             });
             continue;
           }
@@ -13851,13 +14370,16 @@ if (funcName === "whatsapp-connect") {
           if (sendResult.error) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: ${sendResult.error.message}`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "error",
               processingStatus: "failed",
-              message,
+              blockReason: "destination_send_failed",
+              errorStep: "automation_send",
+              messageType: "image",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
@@ -13866,31 +14388,52 @@ if (funcName === "whatsapp-connect") {
                 error: sendResult.error.message,
                 product: selectedProduct,
                 hasMedia: true,
+                message,
               },
-              blockReason: "destination_send_failed",
-              errorStep: "automation_send",
-              messageType: "image",
             });
             continue;
           }
 
           sent += 1;
           sentNow += 1;
-          await insertAutomationHistoryEntry({
-            userId: ownerUserId,
-            automationName,
+          automationTargets.push({
             destination: groupName,
+            destinationGroupId: tryParseUuid(group.id),
+            platform,
             status: "success",
             processingStatus: "sent",
-            message,
+            blockReason: "",
+            errorStep: "",
+            messageType: "image",
+            sendOrder: destinationIndex,
             details: {
               automationId,
               source,
               platform,
               product: selectedProduct,
               hasMedia: true,
+              message,
             },
+          });
+        }
+
+        if (automationTargets.length > 0) {
+          await insertHistoryEntryWithTargets({
+            userId: ownerUserId,
+            type: "automation_run",
+            source: automationName,
+            destination: `${destinationGroups.length} destino(s)`,
+            direction: "outbound",
             messageType: "image",
+            details: {
+              message,
+              automationId,
+              source,
+              destinationCount: destinationGroups.length,
+              product: selectedProduct,
+              hasMedia: true,
+            },
+            targets: automationTargets,
           });
         }
 
@@ -14373,6 +14916,7 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
+        const automationTargets: HistoryEntryTargetInput[] = [];
         let automationMedia: RouteForwardMedia | null = null;
         try {
           automationMedia = await buildAutomationImageMedia(selectedProduct);
@@ -14380,29 +14924,46 @@ if (funcName === "whatsapp-connect") {
           const reason = error instanceof Error ? error.message : "Envio cancelado: falha ao anexar imagem.";
           failed += destinationGroups.length;
           errors.push(`${automationName}: ${reason}`);
-          for (const group of destinationGroups) {
+          for (let destinationIndex = 0; destinationIndex < destinationGroups.length; destinationIndex++) {
+            const group = destinationGroups[destinationIndex];
             const groupName = String(group.name || group.id || "Grupo");
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform: String(group.platform || ""),
               status: "warning",
               processingStatus: "blocked",
-              message,
+              blockReason: "missing_image_required",
+              errorStep: "automation_media_failed",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
-                platform: String(group.platform || ""),
                 reason: "missing_image_required",
                 mediaError: reason,
                 product: selectedProduct,
                 hasMedia: false,
               },
-              blockReason: "missing_image_required",
-              errorStep: "automation_media_failed",
-              messageType: "text",
             });
           }
+          await insertHistoryEntryWithTargets({
+            userId: ownerUserId,
+            type: "automation_run",
+            source: automationName,
+            destination: `${destinationGroups.length} destino(s)`,
+            direction: "outbound",
+            messageType: "text",
+            details: {
+              message,
+              automationId,
+              source,
+              reason: "missing_image_required",
+              mediaError: reason,
+              destinationCount: destinationGroups.length,
+            },
+            targets: automationTargets,
+          });
           continue;
         }
 
@@ -14422,21 +14983,23 @@ if (funcName === "whatsapp-connect") {
           if (!sessionId || !externalId) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: grupo sem sessão/external_id`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "error",
               processingStatus: "failed",
-              message,
+              blockReason: "invalid_destination",
+              errorStep: "destination_validate",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
                 platform,
                 reason: "invalid_destination",
+                message,
               },
-              blockReason: "invalid_destination",
-              errorStep: "destination_validate",
             });
             continue;
           }
@@ -14448,21 +15011,23 @@ if (funcName === "whatsapp-connect") {
               : false;
           if (!isOnline) {
             skipped += 1;
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "info",
               processingStatus: "blocked",
-              message,
+              blockReason: "destination_session_offline",
+              errorStep: "destination_precheck",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
                 platform,
                 reason: "destination_session_offline",
+                message,
               },
-              blockReason: "destination_session_offline",
-              errorStep: "destination_precheck",
             });
             continue;
           }
@@ -14476,13 +15041,16 @@ if (funcName === "whatsapp-connect") {
           if (!mediaForDestination) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: imagem obrigatoria ausente`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "warning",
               processingStatus: "blocked",
-              message,
+              blockReason: "missing_image_required",
+              errorStep: "media_requirements",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
@@ -14490,10 +15058,8 @@ if (funcName === "whatsapp-connect") {
                 reason: "missing_image_required",
                 product: selectedProduct,
                 hasMedia: false,
+                message,
               },
-              blockReason: "missing_image_required",
-              errorStep: "media_requirements",
-              messageType: "text",
             });
             continue;
           }
@@ -14526,13 +15092,16 @@ if (funcName === "whatsapp-connect") {
           if (sendResult.error) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: ${sendResult.error.message}`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "error",
               processingStatus: "failed",
-              message,
+              blockReason: "destination_send_failed",
+              errorStep: "automation_send",
+              messageType: "image",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
@@ -14541,31 +15110,52 @@ if (funcName === "whatsapp-connect") {
                 error: sendResult.error.message,
                 product: selectedProduct,
                 hasMedia: true,
+                message,
               },
-              blockReason: "destination_send_failed",
-              errorStep: "automation_send",
-              messageType: "image",
             });
             continue;
           }
 
           sent += 1;
           sentNow += 1;
-          await insertAutomationHistoryEntry({
-            userId: ownerUserId,
-            automationName,
+          automationTargets.push({
             destination: groupName,
+            destinationGroupId: tryParseUuid(group.id),
+            platform,
             status: "success",
             processingStatus: "sent",
-            message,
+            blockReason: "",
+            errorStep: "",
+            messageType: "image",
+            sendOrder: destinationIndex,
             details: {
               automationId,
               source,
               platform,
               product: selectedProduct,
               hasMedia: true,
+              message,
             },
+          });
+        }
+
+        if (automationTargets.length > 0) {
+          await insertHistoryEntryWithTargets({
+            userId: ownerUserId,
+            type: "automation_run",
+            source: automationName,
+            destination: `${destinationGroups.length} destino(s)`,
+            direction: "outbound",
             messageType: "image",
+            details: {
+              message,
+              automationId,
+              source,
+              destinationCount: destinationGroups.length,
+              product: selectedProduct,
+              hasMedia: true,
+            },
+            targets: automationTargets,
           });
         }
 
@@ -15044,6 +15634,7 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
+        const automationTargets: HistoryEntryTargetInput[] = [];
         let automationMedia: RouteForwardMedia | null = null;
         try {
           automationMedia = await buildAutomationImageMedia(selectedProduct);
@@ -15051,29 +15642,46 @@ if (funcName === "whatsapp-connect") {
           const reason = error instanceof Error ? error.message : "Envio cancelado: falha ao anexar imagem.";
           failed += destinationGroups.length;
           errors.push(`${automationName}: ${reason}`);
-          for (const group of destinationGroups) {
+          for (let destinationIndex = 0; destinationIndex < destinationGroups.length; destinationIndex++) {
+            const group = destinationGroups[destinationIndex];
             const groupName = String(group.name || group.id || "Grupo");
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform: String(group.platform || ""),
               status: "warning",
               processingStatus: "blocked",
-              message,
+              blockReason: "missing_image_required",
+              errorStep: "automation_media_failed",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
-                platform: String(group.platform || ""),
                 reason: "missing_image_required",
                 mediaError: reason,
                 product: selectedProduct,
                 hasMedia: false,
               },
-              blockReason: "missing_image_required",
-              errorStep: "automation_media_failed",
-              messageType: "text",
             });
           }
+          await insertHistoryEntryWithTargets({
+            userId: ownerUserId,
+            type: "automation_run",
+            source: automationName,
+            destination: `${destinationGroups.length} destino(s)`,
+            direction: "outbound",
+            messageType: "text",
+            details: {
+              message,
+              automationId,
+              source,
+              reason: "missing_image_required",
+              mediaError: reason,
+              destinationCount: destinationGroups.length,
+            },
+            targets: automationTargets,
+          });
           continue;
         }
 
@@ -15093,21 +15701,23 @@ if (funcName === "whatsapp-connect") {
           if (!sessionId || !externalId) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: grupo sem sessão/external_id`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "error",
               processingStatus: "failed",
-              message,
+              blockReason: "invalid_destination",
+              errorStep: "destination_validate",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
                 platform,
                 reason: "invalid_destination",
+                message,
               },
-              blockReason: "invalid_destination",
-              errorStep: "destination_validate",
             });
             continue;
           }
@@ -15119,21 +15729,23 @@ if (funcName === "whatsapp-connect") {
               : false;
           if (!isOnline) {
             skipped += 1;
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "info",
               processingStatus: "blocked",
-              message,
+              blockReason: "destination_session_offline",
+              errorStep: "destination_precheck",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
                 platform,
                 reason: "destination_session_offline",
+                message,
               },
-              blockReason: "destination_session_offline",
-              errorStep: "destination_precheck",
             });
             continue;
           }
@@ -15148,13 +15760,16 @@ if (funcName === "whatsapp-connect") {
           if (mediaForDestination.kind !== "image") {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: imagem obrigatoria ausente`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "warning",
               processingStatus: "blocked",
-              message,
+              blockReason: "missing_image_required",
+              errorStep: "media_requirements",
+              messageType: "text",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
@@ -15162,10 +15777,8 @@ if (funcName === "whatsapp-connect") {
                 reason: "missing_image_required",
                 product: selectedProduct,
                 hasMedia: false,
+                message,
               },
-              blockReason: "missing_image_required",
-              errorStep: "media_requirements",
-              messageType: "text",
             });
             continue;
           }
@@ -15198,13 +15811,16 @@ if (funcName === "whatsapp-connect") {
           if (sendResult.error) {
             failed += 1;
             errors.push(`${automationName} -> ${groupName}: ${sendResult.error.message}`);
-            await insertAutomationHistoryEntry({
-              userId: ownerUserId,
-              automationName,
+            automationTargets.push({
               destination: groupName,
+              destinationGroupId: tryParseUuid(group.id),
+              platform,
               status: "error",
               processingStatus: "failed",
-              message,
+              blockReason: "destination_send_failed",
+              errorStep: "automation_send",
+              messageType: "image",
+              sendOrder: destinationIndex,
               details: {
                 automationId,
                 source,
@@ -15213,31 +15829,52 @@ if (funcName === "whatsapp-connect") {
                 error: sendResult.error.message,
                 product: selectedProduct,
                 hasMedia: true,
+                message,
               },
-              blockReason: "destination_send_failed",
-              errorStep: "automation_send",
-              messageType: "image",
             });
             continue;
           }
 
           sent += 1;
           sentNow += 1;
-          await insertAutomationHistoryEntry({
-            userId: ownerUserId,
-            automationName,
+          automationTargets.push({
             destination: groupName,
+            destinationGroupId: tryParseUuid(group.id),
+            platform,
             status: "success",
             processingStatus: "sent",
-            message,
+            blockReason: "",
+            errorStep: "",
+            messageType: "image",
+            sendOrder: destinationIndex,
             details: {
               automationId,
               source,
               platform,
               product: selectedProduct,
               hasMedia: true,
+              message,
             },
+          });
+        }
+
+        if (automationTargets.length > 0) {
+          await insertHistoryEntryWithTargets({
+            userId: ownerUserId,
+            type: "automation_run",
+            source: automationName,
+            destination: `${destinationGroups.length} destino(s)`,
+            direction: "outbound",
             messageType: "image",
+            details: {
+              message,
+              automationId,
+              source,
+              destinationCount: destinationGroups.length,
+              product: selectedProduct,
+              hasMedia: true,
+            },
+            targets: automationTargets,
           });
         }
 

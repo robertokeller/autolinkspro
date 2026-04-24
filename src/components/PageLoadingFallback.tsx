@@ -26,6 +26,7 @@ export function InlinePageLoading({ label = "Carregando..." }: { label?: string 
  * Hook para acessar o estado de loading da página.
  * Útil para mostrar loading indicators baseado no contexto global.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function usePageLoadingState() {
   return usePageLoadingContext();
 }

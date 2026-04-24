@@ -1,417 +1,509 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { endOfDay, startOfDay, subDays } from "date-fns";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { backend } from "@/integrations/backend/client";
-import { useAuth } from "@/contexts/AuthContext";
 import type { Tables } from "@/integrations/backend/types";
+import { useAuth } from "@/contexts/AuthContext";
 
-export interface HistoricoFilters {
-  timeRange: string;  // "today" | "yesterday" | "last_3_days" | "last_7_days" | "all"
-  status: string;     // "all" | "sent" | "failed" | "blocked"
-  mechanism: string;  // "all" | "automatic_routes" | "schedule" | "smart_automation"
+interface HistoricoFilters {
+  timeRange: "24h" | "7d" | "30d" | "all";
+  status: "all" | "success" | "warning" | "error";
+  mechanism: "all" | "route" | "schedule" | "automation";
+  page?: number;
+  pageSize?: number;
 }
 
-export interface HistoricoServerCounts {
+interface HistoricoTargetSummary {
+  total: number;
   sent: number;
   failed: number;
   blocked: number;
-  total: number;
+  processed: number;
+  skipped: number;
 }
 
 export interface SendHistoryEntry {
   id: string;
-  type: string;
-  typeLabel: string;
-  title: string;
-  source: string;
+  automationId: string;
+  automationName: string;
   destination: string;
   status: string;
-  details: string;
+  title: string;
   message: string;
-  errorMessage: string;
+  date: string;
+  timeAgo: string;
   processingStatus: string;
-  processingStatusLabel: string;
-  routeId: string;
-  routeName: string;
-  mechanism: string;
-  mechanismLabel: string;
-  connection: string;
-  connectionLabel: string;
-  capturedAt: string;
+  blockReason: string;
+  errorStep: string;
+  rawErrorMessage: string;
+  errorSummary: string;
+  type: string;
+  messageType: string;
+  details: Record<string, unknown>;
+  hasTargets: boolean;
+  targetSummary: HistoricoTargetSummary;
+}
+
+export interface SendHistoryTarget {
+  id: string;
+  historyEntryId: string;
+  destination: string;
+  destinationGroupId: string;
+  platform: string;
+  status: string;
+  processingStatus: string;
+  blockReason: string;
+  errorStep: string;
+  rawErrorMessage: string;
+  errorSummary: string;
+  messageType: string;
+  sendOrder: number;
   createdAt: string;
-  traceId: string;
-  traceStep: string;
+  title: string;
+  message: string;
+  details: Record<string, unknown>;
 }
 
-const ALL_TRACKED_TYPES = ["route_forward", "schedule_sent", "automation_run"];
+type HistoryEntryRow = Tables<"history_entries">;
+type HistoryEntryTargetRow = Tables<"history_entry_targets">;
 
-const MECHANISM_TO_TYPES: Record<string, string[]> = {
-  automatic_routes: ["route_forward"],
-  schedule:         ["schedule_sent"],
-  smart_automation: ["automation_run"],
-};
+const LIST_DEFAULT_PAGE_SIZE = 20;
+const HISTORY_SEND_TYPES = ["route_forward", "schedule_sent", "automation_run"] as const;
 
-// Block reasons that represent "no route found" or system noise — not relevant to the user
-const NOISE_BLOCK_REASONS = [
-  "source_group_not_found",
-  "no_routes_configured",
-  "no_active_routes",
-  "all_routes_inactive",
-  "from_me_ignored",
-  "unsupported_media_type",
-];
-
-const NOISE_BLOCK_REASON_SET = new Set(NOISE_BLOCK_REASONS.map((value) => String(value).trim().toLowerCase()));
-
-function normalizeReasonKey(value: unknown): string {
-  return String(value || "").trim().toLowerCase();
-}
-
-function normalizeErrorAliasKey(value: unknown): string {
-  return normalizeReasonKey(value).replace(/[\s-]+/g, "_");
-}
-
-function hasNoiseBlockReason(row: Tables<"history_entries">): boolean {
-  const rowReason = normalizeReasonKey(row.block_reason);
-  if (rowReason && NOISE_BLOCK_REASON_SET.has(rowReason)) return true;
-
-  const detailsObj = asObject(row.details);
-  const candidates = [
-    detailsObj.reason,
-    detailsObj.error,
-    detailsObj.blockReason,
-    detailsObj.block_reason,
-  ];
-
-  for (const candidate of candidates) {
-    const normalized = normalizeReasonKey(candidate);
-    if (normalized && NOISE_BLOCK_REASON_SET.has(normalized)) return true;
-  }
-
-  return false;
-}
-
-function getDateBounds(timeRange: string): { gte?: string; lte?: string } {
-  const now = new Date();
-  if (timeRange === "today")
-    return { gte: startOfDay(now).toISOString() };
-  if (timeRange === "yesterday") {
-    const d = subDays(now, 1);
-    return { gte: startOfDay(d).toISOString(), lte: endOfDay(d).toISOString() };
-  }
-  if (timeRange === "last_3_days")
-    return { gte: startOfDay(subDays(now, 2)).toISOString() };
-  if (timeRange === "last_7_days")
-    return { gte: startOfDay(subDays(now, 6)).toISOString() };
-  return {};
-}
-
-function asObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
-}
-
-function pickText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return "";
-}
-
-function firstText(...values: unknown[]): string {
-  for (const value of values) {
-    const text = pickText(value).trim();
-    if (text) return text;
-  }
-  return "";
-}
-
-function humanizeErrorMessage(value: string): string {
-  const key = String(value || "").trim();
-  if (!key) return "";
-  const aliasKey = normalizeErrorAliasKey(key);
-
-  const map: Record<string, string> = {
-    source_group_not_found: "Grupo de origem não encontrado no sistema",
-    no_active_routes: "Nenhuma rota ativa para esta origem",
-    no_routes_configured: "Grupo de origem sem nenhuma rota configurada",
-    all_routes_inactive: "Rota existe mas está inativa - ative a rota nas configurações",
-    negative_keyword: "Bloqueada por palavra-chave negativa",
-    positive_keyword_missing: "Bloqueada: ausência de palavra-chave obrigatória",
-    partner_link_required: "Bloqueada: mensagem sem link de afiliado obrigatório",
-    marketplace_not_enabled: "Bloqueada: marketplace não habilitado para esta rota",
-    from_me_ignored: "Bloqueada: mensagem de eco/origem própria foi ignorada para evitar loop",
-    no_destination_groups: "Rota sem grupos de destino configurados",
-    no_destination_groups_for_session: "Rota sem grupos de destino configurados para esta sessão",
-    destination_not_found: "Grupo de destino não encontrado",
-    destination_session_offline: "Sessão do grupo de destino está offline",
-    destination_send_failed: "Falha ao enviar a mensagem para o destino",
-    invalid_destination: "Grupo de destino inválido ou incompleto (sessão/identificador ausente)",
-    unsupported_media_type: "Bloqueada: mídia recebida não é suportada para roteamento",
-    missing_image_required: "Bloqueada: rota exige imagem obrigatória",
-    image_ingestion_failed: "Bloqueada: mídia recebida, mas não foi possível processar",
-    missing_text_required: "Bloqueada: rota exige texto obrigatório",
-    meli_session_missing: "Bloqueada: sessão do Mercado Livre não configurada",
-    missing_meli_session: "Bloqueada: sessão do Mercado Livre não configurada",
-    meli_conversion_failed: "Bloqueada: falha ao converter link Mercado Livre",
-    meli_service_unavailable: "Bloqueada: serviço Mercado Livre temporariamente indisponível",
-    shopee_conversion_failed: "Bloqueada: falha ao converter link Shopee",
-    shopee_service_unavailable: "Bloqueada: serviço Shopee temporariamente indisponível",
-    shopee_credentials_missing: "Bloqueada: credenciais do Shopee não configuradas",
-    missing_credentials: "Credenciais Shopee ausentes para executar a automação",
-    offer_lookup_failed: "Não foi possível buscar ofertas no Shopee. Revise as credenciais da integração e tente novamente",
-    no_eligible_offer: "Nenhuma oferta disponível agora dentro dos filtros configurados",
-    offer_duplicate_blocked: "Sem oferta nova agora: as opções encontradas já foram enviadas recentemente",
-    missing_affiliate_link: "Oferta encontrada sem link de afiliado válido",
-    amazon_conversion_failed: "Bloqueada: falha ao converter link Amazon",
-    conversion_required: "Bloqueada: não foi possível converter os links obrigatórios",
-    plan_expired: "Plano expirado — renove o plano para reativar o envio",
-    route_processing_error: "Erro interno ao processar a rota",
-    quiet_hours_queued: "Mensagem aguardando: período de silêncio ativo",
-    quiet_hours_queue_failed: "Falha ao enfileirar mensagem no período de silêncio",
-  };
-
-  if (map[key]) return map[key];
-  if (map[aliasKey]) return map[aliasKey];
-
-  const timeoutMatch = key.match(/^Microservice timeout\s*\((\d+)s\)$/i);
-  if (timeoutMatch) return `Tempo limite excedido ao comunicar com o serviço (${timeoutMatch[1]}s)`;
-
-  if (/^Invalid JSON from microservice$/i.test(key)) {
-    return "Resposta inválida recebida do serviço externo";
-  }
-
-  const microserviceStatusMatch = key.match(/^Microservice error\s*(\d{3})$/i);
-  if (microserviceStatusMatch) {
-    return `Serviço externo indisponível no momento (erro ${microserviceStatusMatch[1]})`;
-  }
-
-  if (/credenciais\s+shopee\s+inv[aá]lidas/i.test(key)) {
-    return "Credenciais Shopee inválidas (appId/secret). Revise as credenciais da integração";
-  }
-
-  if (/^[a-z0-9_:-]+$/.test(key)) return key.replace(/_/g, " ");
-  if (/^[a-z0-9_:-]+$/.test(aliasKey)) return aliasKey.replace(/_/g, " ");
-  return key;
-}
-
-function mapTypeLabel(type: string): string {
-  switch (type) {
-    case "session_event":   return "Captura";
-    case "message_sent":    return "Envio";
-    case "route_forward":   return "Roteamento";
-    case "schedule_sent":   return "Agendamento";
-    case "automation_run":  return "Automação";
-    case "automation_trace":return "Rastro automação";
-    default:                return type.replace(/_/g, " ");
-  }
-}
-
-function mapProcessingLabel(status: string, rowType: string, destination: string): string {
-  const isAutomationDiagnostic = rowType === "automation_run"
-    && String(destination || "").trim().toLowerCase() === "automation:diagnostic";
-
-  switch (status) {
-    case "received": return "Mensagem capturada";
-    case "sent":     return "Enviada ao destino";
-    case "failed":   return isAutomationDiagnostic ? "Falha na automação" : "Falha ao enviar";
-    case "error":    return isAutomationDiagnostic ? "Falha na automação" : "Falha ao enviar";
-    case "blocked":  return isAutomationDiagnostic ? "Bloqueada por regra da automação" : "Bloqueada por regra";
-    default:         return "Processada";
-  }
-}
-
-function normalizeMechanism(type: string, source: string): { key: string; label: string } {
-  if (type === "route_forward" || type === "route_dispatch") return { key: "automatic_routes", label: "Rotas automáticas" };
-  if (type === "schedule_sent" || source === "Agendamento")  return { key: "schedule", label: "Agendamento" };
-  if (type === "automation_run")   return { key: "smart_automation", label: "Automações criadas" };
-  if (type === "automation_trace") return { key: "smart_automation", label: "Automações criadas" };
-  return { key: "other", label: "Outro" };
-}
-
-function normalizeConnection(row: Tables<"history_entries">, detailsObj: Record<string, unknown>): { key: string; label: string } {
-  const detailPlatform = firstText(detailsObj.platform).toLowerCase();
-  const source = String(row.source || "").toLowerCase();
-  const destination = String(row.destination || "").toLowerCase();
-
-  if (detailPlatform === "whatsapp" || source.includes("whatsapp")) return { key: "whatsapp", label: "WhatsApp" };
-  if (detailPlatform === "telegram" || source.includes("telegram")) return { key: "telegram", label: "Telegram" };
-  if (destination.includes("whatsapp")) return { key: "whatsapp", label: "WhatsApp" };
-  if (destination.includes("telegram")) return { key: "telegram", label: "Telegram" };
-  return { key: "other", label: "Outro" };
-}
-
-function mapRow(row: Tables<"history_entries">): SendHistoryEntry {
-  const raw = row.details;
-  const detailsObj = asObject(raw);
-  const isAutomationDiagnostic = String(row.destination || "").trim().toLowerCase() === "automation:diagnostic";
-  const message = firstText(detailsObj.message, detailsObj.text, raw);
-  const routeId = firstText(detailsObj.routeId);
-  const routeName = firstText(detailsObj.routeName);
-  const capturedAt = firstText(detailsObj.capturedAt) || row.created_at;
-  const processingStatus = String(row.processing_status || "processed");
-  const rawErrorMessage = isAutomationDiagnostic
-    ? firstText(detailsObj.error, detailsObj.message, detailsObj.reason, row.block_reason)
-    : firstText(detailsObj.error, detailsObj.reason, row.block_reason);
-  let errorMessage = humanizeErrorMessage(rawErrorMessage);
-  if (!errorMessage && !isAutomationDiagnostic) {
-    errorMessage = humanizeErrorMessage(firstText(detailsObj.reason, row.block_reason));
-  }
-  if (rawErrorMessage === "all_routes_inactive") {
-    const names = detailsObj.inactiveRouteNames;
-    if (Array.isArray(names) && names.length > 0) {
-      const nameList = names.map((n: unknown) => String(n)).filter(Boolean).join(", ");
-      errorMessage = `${errorMessage}: ${nameList}`;
-    }
-  }
-  const mechanism = normalizeMechanism(row.type, row.source);
-  const connection = normalizeConnection(row, detailsObj);
-  const traceId = firstText(detailsObj.traceId);
-  const traceStep = firstText(detailsObj.step);
-  let details: string;
-  if (typeof raw === "string") {
-    details = raw;
-  } else if (raw && typeof raw === "object" && "message" in raw) {
-    details = String((raw as Record<string, unknown>).message);
-  } else {
-    details = raw == null ? "" : JSON.stringify(raw);
-  }
-
-  const processingStatusLabel = mapProcessingLabel(processingStatus, row.type, row.destination);
-  const title = errorMessage ? `${processingStatusLabel}: ${errorMessage}` : processingStatusLabel;
-
-  return {
-    id: row.id,
-    type: row.type,
-    typeLabel: mapTypeLabel(row.type),
-    title,
-    source: row.source,
-    destination: row.destination,
-    status: row.status,
-    details,
-    message,
-    errorMessage,
-    processingStatus,
-    processingStatusLabel,
-    routeId,
-    routeName,
-    mechanism: mechanism.key,
-    mechanismLabel: mechanism.label,
-    connection: connection.key,
-    connectionLabel: connection.label,
-    capturedAt,
-    createdAt: row.created_at,
-    traceId,
-    traceStep,
-  };
-}
-
-const PAGE_SIZE = 50;
-
-const DEFAULT_FILTERS: HistoricoFilters = {
+const DEFAULT_HISTORICO_FILTERS: Pick<HistoricoFilters, "timeRange" | "status" | "mechanism"> = {
   timeRange: "all",
   status: "all",
   mechanism: "all",
 };
 
-export function useHistorico(filters: HistoricoFilters = DEFAULT_FILTERS) {
+const NOISE_BLOCK_REASONS = new Set([
+  "source_group_not_found",
+  "no_routes_configured",
+  "no_active_routes",
+  "all_routes_inactive",
+  "missing_runtime_connection",
+  "route_session_offline",
+  "network_abort",
+]);
+
+const NOISE_MESSAGE_PATTERN = /(response ended prematurely|terminated unexpectedly|network.*abort|session.*offline)/i;
+
+function normalizeReasonKey(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const text = value.trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function toIsoString(value: unknown): string {
+  if (typeof value === "string") {
+    const ms = Date.parse(value);
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+  return new Date(0).toISOString();
+}
+
+function toUtcMs(value: string): number {
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function formatTimeAgo(dateIso: string): string {
+  const diffMs = Date.now() - toUtcMs(dateIso);
+  const diffMinutes = Math.floor(diffMs / 60000);
+  if (diffMinutes < 1) return "Agora";
+  if (diffMinutes < 60) return `${diffMinutes}m atrás`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}h atrás`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d atrás`;
+}
+
+function summarizeError(rawMessage: string, fallback = "Falha ao processar este envio."): string {
+  const normalized = rawMessage.trim();
+  if (!normalized) return fallback;
+
+  const lower = normalized.toLowerCase();
+  const normalizedKey = lower.replace(/[\s-]+/g, "_");
+  const mappedByKey: Record<string, string> = {
+    inbound_duplicate: "Mensagem duplicada recebida; bloqueamos para evitar reenvio repetido.",
+    marketplace_not_enabled: "Marketplace não habilitado para esta rota.",
+    partner_link_required: "A rota exige um link de afiliado válido na mensagem.",
+    positive_keyword_missing: "A mensagem não contém a palavra-chave obrigatória desta rota.",
+    negative_keyword: "A mensagem foi bloqueada por palavra-chave negativa da rota.",
+    destination_not_found: "Grupo de destino não encontrado para esta rota.",
+    destination_session_offline: "A sessão do grupo de destino está offline.",
+    destination_send_failed: "Falha ao enviar a mensagem para o destino.",
+    missing_text_required: "A rota exige texto e esta mensagem não possui conteúdo textual.",
+    missing_image_required: "A rota exige imagem e ela não foi encontrada na mensagem.",
+    unsupported_media_type: "Tipo de mídia não suportado para roteamento.",
+    plan_expired: "Seu plano expirou e o envio foi bloqueado.",
+    conversion_required: "Não foi possível converter os links obrigatórios desta rota.",
+    route_processing_error: "Erro interno ao processar a rota.",
+    quiet_hours_queued: "Mensagem enfileirada por horário de silêncio configurado.",
+    quiet_hours_queue_failed: "Falha ao enfileirar a mensagem no horário de silêncio.",
+  };
+
+  if (mappedByKey[normalizedKey]) {
+    return mappedByKey[normalizedKey];
+  }
+
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return "Tempo limite excedido ao falar com o serviço de envio.";
+  }
+  if (lower.includes("offline") || lower.includes("not connected") || lower.includes("desconect")) {
+    return "A sessão de envio está offline no momento.";
+  }
+  if (lower.includes("invalid_destination") || lower.includes("external_id") || lower.includes("destino")) {
+    return "Destino inválido ou incompleto para envio.";
+  }
+  if (lower.includes("missing_image") || lower.includes("imagem")) {
+    return "A imagem obrigatória não está disponível para este envio.";
+  }
+  if (lower.includes("affiliate") || lower.includes("convers")) {
+    return "Não foi possível preparar o link afiliado da oferta.";
+  }
+
+  const firstSentence = normalized.split(/(?<=[.!?])\s+/)[0] || normalized;
+  return firstSentence.slice(0, 160);
+}
+
+function mapProcessingTitle(status: string): string {
+  if (status === "sent") return "Enviado";
+  if (status === "blocked") return "Bloqueado";
+  if (status === "failed" || status === "error") return "Falhou";
+  return "Processado";
+}
+
+function normalizeTargetSummary(details: Record<string, unknown>): HistoricoTargetSummary {
+  const summaryObj = asObject(details.targetSummary);
+  return {
+    total: Math.max(0, Math.floor(toNumber(summaryObj.total, 0))),
+    sent: Math.max(0, Math.floor(toNumber(summaryObj.sent, 0))),
+    failed: Math.max(0, Math.floor(toNumber(summaryObj.failed, 0))),
+    blocked: Math.max(0, Math.floor(toNumber(summaryObj.blocked, 0))),
+    processed: Math.max(0, Math.floor(toNumber(summaryObj.processed, 0))),
+    skipped: Math.max(0, Math.floor(toNumber(summaryObj.skipped, 0))),
+  };
+}
+
+function mapHistoryEntry(row: HistoryEntryRow): SendHistoryEntry {
+  const details = asObject(row.details);
+  const createdAt = toIsoString(row.created_at);
+  const targetSummary = normalizeTargetSummary(details);
+
+  const rawErrorMessage = firstText(
+    details.error,
+    details.mediaError,
+    details.failure,
+    row.block_reason,
+  );
+
+  const message = firstText(
+    details.message,
+    details.text,
+    details.summary,
+  );
+
+  const destination = firstText(
+    row.destination,
+    details.destination,
+    details.target,
+    row.source,
+    "Destino",
+  );
+
+  const errorSummary = summarizeError(rawErrorMessage, "Falha ao processar este envio.");
+
+  return {
+    id: row.id,
+    automationId: firstText(details.automationId, details.automation_id),
+    automationName: firstText(row.source, details.automationName, details.automation_name),
+    destination,
+    status: row.processing_status || "processed",
+    title: mapProcessingTitle(row.processing_status || "processed"),
+    message,
+    date: createdAt,
+    timeAgo: formatTimeAgo(createdAt),
+    processingStatus: row.processing_status || "processed",
+    blockReason: row.block_reason || "",
+    errorStep: row.error_step || "",
+    rawErrorMessage,
+    errorSummary,
+    type: row.type || "",
+    messageType: row.message_type || "text",
+    details,
+    hasTargets: targetSummary.total > 0 || details.hasTargets === true,
+    targetSummary,
+  };
+}
+
+function mapHistoryEntryTarget(row: HistoryEntryTargetRow): SendHistoryTarget {
+  const details = asObject(row.details);
+  const createdAt = toIsoString(row.created_at);
+  const rawErrorMessage = firstText(details.error, details.mediaError, row.block_reason);
+  const message = firstText(details.message, details.text);
+
+  return {
+    id: row.id,
+    historyEntryId: row.history_entry_id,
+    destination: firstText(row.destination, details.destination, "Destino"),
+    destinationGroupId: row.destination_group_id || "",
+    platform: row.platform || "",
+    status: row.processing_status || "processed",
+    processingStatus: row.processing_status || "processed",
+    blockReason: row.block_reason || "",
+    errorStep: row.error_step || "",
+    rawErrorMessage,
+    errorSummary: summarizeError(rawErrorMessage),
+    messageType: row.message_type || "text",
+    sendOrder: Math.max(0, Math.floor(toNumber(row.send_order, 0))),
+    createdAt,
+    title: mapProcessingTitle(row.processing_status || "processed"),
+    message,
+    details,
+  };
+}
+
+type HistoryQueryChain = {
+  gte(column: string, value: string): HistoryQueryChain;
+  eq(column: string, value: string): HistoryQueryChain;
+  in(column: string, values: string[]): HistoryQueryChain;
+};
+
+function applyTimeRangeFilter<T extends HistoryQueryChain>(query: T, timeRange: HistoricoFilters["timeRange"]): T {
+  if (timeRange === "all") return query;
+  const now = Date.now();
+  const rangeMs = timeRange === "24h"
+    ? 24 * 60 * 60 * 1000
+    : timeRange === "7d"
+      ? 7 * 24 * 60 * 60 * 1000
+      : 30 * 24 * 60 * 60 * 1000;
+  return query.gte("created_at", new Date(now - rangeMs).toISOString()) as T;
+}
+
+function applyMechanismFilter<T extends HistoryQueryChain>(query: T, mechanism: HistoricoFilters["mechanism"]): T {
+  if (mechanism === "route") return query.eq("type", "route_forward") as T;
+  if (mechanism === "schedule") return query.eq("type", "schedule_sent") as T;
+  if (mechanism === "automation") return query.eq("type", "automation_run") as T;
+  return query.in("type", [...HISTORY_SEND_TYPES]) as T;
+}
+
+function applyStatusFilter<T extends HistoryQueryChain>(query: T, status: HistoricoFilters["status"]): T {
+  if (status === "success") return query.in("processing_status", ["sent"]) as T;
+  if (status === "warning") return query.in("processing_status", ["blocked"]) as T;
+  if (status === "error") return query.in("processing_status", ["failed", "error"]) as T;
+  return query.in("processing_status", ["sent", "blocked", "failed", "error", "processed", "skipped"]) as T;
+}
+
+function shouldKeepEntry(entry: SendHistoryEntry): boolean {
+  const details = asObject(entry.details);
+  const reasonCandidates = [
+    entry.blockReason,
+    entry.rawErrorMessage,
+    details.reason,
+    details.error,
+    details.failure,
+    details.blockReason,
+    details.block_reason,
+  ];
+
+  for (const candidate of reasonCandidates) {
+    const reason = normalizeReasonKey(candidate);
+    if (reason && NOISE_BLOCK_REASONS.has(reason)) return false;
+  }
+
+  const haystack = `${entry.rawErrorMessage} ${entry.message}`.toLowerCase();
+  return !NOISE_MESSAGE_PATTERN.test(haystack);
+}
+
+function isMissingRelationError(error: unknown, relationName: string): boolean {
+  if (!error || typeof error !== "object") return false;
+  const payload = error as { message?: unknown };
+  const message = typeof payload.message === "string" ? payload.message.toLowerCase() : "";
+  return message.includes(relationName.toLowerCase()) && message.includes("does not exist");
+}
+
+export function useHistorico(filters: Partial<HistoricoFilters> = {}) {
   const { user } = useAuth();
 
-  const types = MECHANISM_TO_TYPES[filters.mechanism] ?? ALL_TRACKED_TYPES;
-  const processingStatuses = filters.status !== "all"
-    ? [filters.status === "failed" ? "error" : filters.status]
-    : ["sent", "error", "blocked"];
-  const dateBounds = getDateBounds(filters.timeRange);
+  const resolvedFilters = {
+    ...DEFAULT_HISTORICO_FILTERS,
+    ...filters,
+  };
 
-  // Paginated list query
-  const {
-    data,
-    isLoading,
-    isFetching,
-    isFetchingNextPage,
-    hasNextPage,
-    fetchNextPage,
-    refetch,
-  } = useInfiniteQuery({
-    queryKey: ["history_entries", user?.id, filters.timeRange, filters.status, filters.mechanism],
-    queryFn: async ({ pageParam }) => {
-      const cursor = pageParam as { created_at: string; id: string } | undefined;
-      let q = backend
+  const timeRange = resolvedFilters.timeRange;
+  const status = resolvedFilters.status;
+  const mechanism = resolvedFilters.mechanism;
+  const pageSize = Math.min(200, Math.max(1, Math.floor(resolvedFilters.pageSize ?? LIST_DEFAULT_PAGE_SIZE)));
+  const page = Math.max(1, Math.floor(resolvedFilters.page ?? 1));
+
+  const listQuery = useQuery({
+    queryKey: ["history_entries_page", user?.id, timeRange, status, mechanism, page, pageSize],
+    enabled: Boolean(user),
+    refetchInterval: () => (document.visibilityState === "visible" ? 30000 : false),
+    queryFn: async () => {
+      const offset = (page - 1) * pageSize;
+      let query = backend
         .from("history_entries")
-        .select("id, type, source, destination, status, details, processing_status, block_reason, direction, created_at")
-        .in("type", types)
-        .in("processing_status", processingStatuses)
-        .nin("block_reason", NOISE_BLOCK_REASONS)
+        .select("id,type,source,destination,message_type,created_at,processing_status,block_reason,error_step,details")
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
-        .limit(PAGE_SIZE);
-      if (dateBounds.gte) q = q.gte("created_at", dateBounds.gte);
-      if (dateBounds.lte) q = q.lte("created_at", dateBounds.lte);
-      if (cursor) q = q.cursor(cursor);
+        .limit(pageSize)
+        .offset(offset);
 
-      const { data: rows, error, next_cursor } = await q;
+      query = applyTimeRangeFilter(query, timeRange);
+      query = applyMechanismFilter(query, mechanism);
+      query = applyStatusFilter(query, status);
+      query = query.nin("block_reason", Array.from(NOISE_BLOCK_REASONS));
+
+      const { data, error } = await query;
       if (error) throw error;
-      const safeRows = (rows || []).filter((row) => !hasNoiseBlockReason(row));
-      const hiddenNoiseCount = (rows || []).length - safeRows.length;
+
+      const rawRows = (data || []) as HistoryEntryRow[];
+      const rows = rawRows.map(mapHistoryEntry).filter(shouldKeepEntry);
+
       return {
-        rows: safeRows.map(mapRow),
-        next_cursor: next_cursor ?? null,
-        hadNoiseFiltered: hiddenNoiseCount > 0,
-        hiddenNoiseCount,
+        rows,
+        hadNoiseFiltered: rows.length !== rawRows.length,
       };
     },
-    initialPageParam: undefined as { created_at: string; id: string } | undefined,
-    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
-    enabled: !!user,
-    staleTime: 60_000,
-    refetchInterval: () => (document.visibilityState === "visible" ? 30_000 : false),
   });
 
-  // Period counts — NOT filtered by status so the pills always show the full breakdown.
-  // Uses only mechanism + timeRange + noise filter, same as the list query minus status.
-  const countBounds = dateBounds;
-  const countTypes = types;
+  const filteredCountQuery = useQuery({
+    queryKey: ["history_entries_filtered_total", user?.id, timeRange, status, mechanism],
+    enabled: Boolean(user),
+    refetchInterval: 30000,
+    queryFn: async () => {
+      let query = backend
+        .from("history_entries")
+        .select("id", { count: "exact", head: true })
+        .nin("block_reason", Array.from(NOISE_BLOCK_REASONS));
 
-  const { data: serverCounts, isLoading: isLoadingCounts } = useQuery({
-    queryKey: ["history_entries_count", user?.id, filters.timeRange, filters.mechanism],
-    queryFn: async (): Promise<HistoricoServerCounts> => {
-      const countFor = async (status: string): Promise<number> => {
-        let q = backend
-          .from("history_entries")
-          .select("", { head: true } as { head: true })
-          .in("type", countTypes)
-          .eq("processing_status", status)
-          .nin("block_reason", NOISE_BLOCK_REASONS);
-        if (countBounds.gte) q = q.gte("created_at", countBounds.gte);
-        if (countBounds.lte) q = q.lte("created_at", countBounds.lte);
-        const r = await q;
-        return (r as unknown as { count: number | null }).count ?? 0;
+      query = applyTimeRangeFilter(query, timeRange);
+      query = applyMechanismFilter(query, mechanism);
+      query = applyStatusFilter(query, status);
+
+      const { count, error } = await query;
+      if (error) throw error;
+      return Math.max(0, count || 0);
+    },
+  });
+
+  const countsQuery = useQuery({
+    queryKey: ["history_entries_counts", user?.id, timeRange, mechanism],
+    enabled: Boolean(user),
+    refetchInterval: 30000,
+    queryFn: async () => {
+      const statuses = [
+        { key: "success" as const, value: "sent" },
+        { key: "warning" as const, value: "blocked" },
+        { key: "error" as const, value: ["failed", "error"] as const },
+      ];
+
+      const results = await Promise.all(
+        statuses.map(async ({ key, value }) => {
+          let query = backend
+            .from("history_entries")
+            .select("id", { count: "exact", head: true })
+            .nin("block_reason", Array.from(NOISE_BLOCK_REASONS));
+
+          if (Array.isArray(value)) {
+            query = query.in("processing_status", [...value]);
+          } else {
+            query = query.eq("processing_status", value);
+          }
+
+          query = applyTimeRangeFilter(query, timeRange);
+          query = applyMechanismFilter(query, mechanism);
+
+          const { count, error } = await query;
+          if (error) throw error;
+
+          return [key, Math.max(0, count || 0)] as const;
+        }),
+      );
+
+      const summary = {
+        total: 0,
+        success: 0,
+        warning: 0,
+        error: 0,
       };
 
-      const [sent, failed, blocked] = await Promise.all([
-        countFor("sent"),
-        countFor("error"),
-        countFor("blocked"),
-      ]);
-      return { sent, failed, blocked, total: sent + failed + blocked };
+      for (const [key, value] of results) {
+        summary[key] = value;
+      }
+
+      summary.total = summary.success + summary.warning + summary.error;
+      return summary;
     },
-    enabled: !!user,
-    staleTime: 60_000,
   });
 
-  const entries = data?.pages.flatMap((p) => p.rows) ?? [];
-  const hasClientNoiseFiltered = data?.pages.some((p) => p.hadNoiseFiltered) ?? false;
-  const clientNoiseFilteredCount = data?.pages.reduce((total, page) => total + (page.hiddenNoiseCount ?? 0), 0) ?? 0;
+  const entries = listQuery.data?.rows || [];
+  const totalEntries = filteredCountQuery.data || 0;
+  const totalPages = Math.max(1, Math.ceil(totalEntries / pageSize));
+
+  const serverCounts = useMemo(() => countsQuery.data || {
+    total: 0,
+    success: 0,
+    warning: 0,
+    error: 0,
+  }, [countsQuery.data]);
+
+  const fetchEntryTargets = async (historyEntryId: string): Promise<SendHistoryTarget[]> => {
+    if (!historyEntryId.trim()) return [];
+
+    const { data, error } = await backend
+      .from("history_entry_targets")
+      .select("id,history_entry_id,destination,destination_group_id,platform,processing_status,block_reason,error_step,message_type,send_order,details,created_at")
+      .eq("history_entry_id", historyEntryId)
+      .order("send_order", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      if (isMissingRelationError(error, "history_entry_targets")) return [];
+      throw error;
+    }
+
+    return ((data || []) as HistoryEntryTargetRow[]).map(mapHistoryEntryTarget);
+  };
 
   return {
     entries,
-    isLoading,
-    isFetching,
-    isFetchingNextPage,
-    hasNextPage,
-    fetchNextPage,
-    refetch,
+    isLoading: listQuery.isLoading,
+    isFetching: listQuery.isFetching,
+    error: listQuery.error || countsQuery.error || filteredCountQuery.error,
+    refetch: listQuery.refetch,
+    totalEntries,
+    totalPages,
+    page,
+    pageSize,
     serverCounts,
-    isLoadingCounts,
-    hasClientNoiseFiltered,
-    clientNoiseFilteredCount,
+    hasClientNoiseFiltered: listQuery.data?.hadNoiseFiltered || false,
+    fetchEntryTargets,
   };
 }

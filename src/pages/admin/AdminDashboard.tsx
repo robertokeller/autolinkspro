@@ -800,7 +800,7 @@ export default function AdminDashboard() {
       window.clearTimeout(connectingTimeout);
       unsubscribeDb();
     };
-  }, [refreshAllHealth]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refreshAllHealth]);
 
   // When ops comes online, stop the connecting indicator
   useEffect(() => {

@@ -656,7 +656,7 @@ const USER_OWNED = new Set([
   "groups", "master_groups", "routes", "templates",
   "scheduled_posts", "link_hub_pages", "shopee_automations",
   "meli_sessions", "api_credentials", "whatsapp_sessions",
-  "telegram_sessions", "history_entries", "user_notifications",
+  "telegram_sessions", "history_entries", "history_entry_targets", "user_notifications",
   "amazon_affiliate_tags",
 ]);
 
@@ -966,6 +966,8 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
 
         const safeLimit = toPositiveInt(normalizedOptions.limit, 1, MAX_SELECT_LIMIT);
         if (safeLimit) sql += ` LIMIT ${safeLimit}`;
+        const safeOffset = toPositiveInt((normalizedOptions as { offset?: unknown }).offset, 0, 500_000);
+        if (safeOffset !== null) sql += ` OFFSET ${safeOffset}`;
       }
 
       // ── Cache layer: check in-memory cache for user-scoped SELECT queries ──

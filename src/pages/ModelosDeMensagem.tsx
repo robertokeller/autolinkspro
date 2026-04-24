@@ -474,13 +474,13 @@ function isStrictMercadoLivreProductUrl(rawUrl: string): boolean {
 
     const hasProductPathHint = (
       /\/(p|up|item)\//i.test(decodedPath)
-      || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath)
+      || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(decodedPath)
     );
     if (!hasProductPathHint) {
       return false;
     }
 
-    return /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decodedPath);
+    return /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(decodedPath);
   } catch {
     return false;
   }

@@ -453,7 +453,7 @@ export class MercadoLivreLinkConverter {
     const decoded = this.decodeMercadoLivrePathname(pathname);
     if (!decoded) return false;
     return (
-      /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(decoded)
+      /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(decoded)
       || /\/(p|up|item)\//i.test(decoded)
     );
   }
@@ -461,7 +461,7 @@ export class MercadoLivreLinkConverter {
   private extractMercadoLivreItemId(parsed: URL): string | null {
     const pathname = this.decodeMercadoLivrePathname(parsed.pathname);
 
-    const pathMatch = pathname.match(/(?:^|\/)(ML[A-Z]{1,4}-?\d+)(?:[\/_-]|$)/i);
+    const pathMatch = pathname.match(/(?:^|\/)(ML[A-Z]{1,4}-?\d+)(?:[/_-]|$)/i);
     if (pathMatch && pathMatch[1]) {
       return String(pathMatch[1]).toUpperCase();
     }
@@ -590,7 +590,7 @@ export class MercadoLivreLinkConverter {
     return (
       /produto\.mercadolivre\.com\.br/i.test(normalized)
       || /\/(p|up|item)\//i.test(normalized)
-      || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(normalized)
+      || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(normalized)
     );
   }
 
@@ -793,7 +793,7 @@ export class MercadoLivreLinkConverter {
         const hrefLooksLikeProduct = (href: string): boolean => (
           /produto\.mercadolivre\.com\.br/i.test(href)
           || /\/(p|up|item)\//i.test(href)
-          || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(href)
+          || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(href)
         );
 
         const anchors = Array.from(document.querySelectorAll("a[href]"));
@@ -852,7 +852,7 @@ export class MercadoLivreLinkConverter {
       const hrefLooksLikeProduct = (href: string): boolean => (
         /produto\.mercadolivre\.com\.br/i.test(href)
         || /\/(p|up|item)\//i.test(href)
-        || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[\/_-]|$)/i.test(href)
+        || /(?:^|\/)ML[A-Z]{1,4}-?\d+(?:[/_-]|$)/i.test(href)
       );
 
       const anchors = Array.from(document.querySelectorAll("a[href]"));
@@ -1469,8 +1469,8 @@ export class MercadoLivreLinkConverter {
 
       await tempPage.waitForTimeout(2000);
 
-      let currentUrl = tempPage.url();
-      let expanded = this.parseAllowedMercadoLivreHttpUrl(currentUrl);
+      const currentUrl = tempPage.url();
+      const expanded = this.parseAllowedMercadoLivreHttpUrl(currentUrl);
 
       if (!expanded) {
         logger.warn({ shortUrl: parsed.toString(), currentUrl }, "Short link resolved to non-HTTP URL after all retries; returning original");
