@@ -1430,14 +1430,24 @@ authRouter.post("/refresh", requireAuth, async (req, res) => {
 authRouter.post("/update-user", requireAuth, async (req, res) => {
   try {
     const body = readBodyObject(req);
+    // Optional fields must be processed only when explicitly provided.
+    const hasEmail = Object.prototype.hasOwnProperty.call(body, "email");
+    const hasPhone = Object.prototype.hasOwnProperty.call(body, "phone");
     const password = typeof body.password === "string" ? body.password : String(body.password ?? "");
     const current_password = typeof body.current_password === "string" ? body.current_password : String(body.current_password ?? "");
     const metadata = (body.data && typeof body.data === "object" && !Array.isArray(body.data))
       ? body.data as Record<string, unknown>
       : undefined;
-    const email = typeof body.email === "string" ? body.email : String(body.email ?? "");
-    const rawPhone = typeof body.phone === "string" ? body.phone : String(body.phone ?? "");
+    const email = hasEmail
+      ? (typeof body.email === "string" ? body.email : String(body.email ?? ""))
+      : "";
+    const rawPhone = hasPhone
+      ? (typeof body.phone === "string" ? body.phone : String(body.phone ?? ""))
+      : "";
     const userId = req.currentUser!.sub;
+    let passwordChanged = false;
+    let emailChanged = false;
+    let phoneChanged = false;
 
     if (password) {
       const passwordPolicyError = getPasswordPolicyError(password);
@@ -1451,86 +1461,94 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
       const hash = await bcrypt.hash(password, BCRYPT_COST);
       // Update password and immediately inválidate all existing tokens (including stolen ones)
       await execute("UPDATE users SET password_hash = $1, token_invalidated_before = NOW(), updated_at = NOW() WHERE id = $2", [hash, userId]);
+      passwordChanged = true;
     }
 
-    if (email !== undefined) {
+    if (hasEmail) {
       const normalizedEmail = String(email || "").toLowerCase().trim();
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!normalizedEmail || !emailRegex.test(normalizedEmail)) {
         res.json({ data: { user: null }, error: { message: "E-mail inválido" } }); return;
       }
 
-      // Security: require current password to prevent account takeover via stolen session cookie
-      if (!current_password) {
-        res.json({ data: { user: null }, error: { message: "Senha atual obrigatória para alterar o e-mail" } }); return;
-      }
       const userRowForEmail = await queryOne<{ password_hash: string; email: string; name: string }>(
         "SELECT password_hash, email, name FROM users WHERE id = $1",
         [userId],
       );
       if (!userRowForEmail) { res.json({ data: { user: null }, error: { message: "Usuário não encontrado" } }); return; }
-      const emailPasswordValid = await bcrypt.compare(current_password, userRowForEmail.password_hash);
-      if (!emailPasswordValid) {
-        res.json({ data: { user: null }, error: { message: "Senha atual incorreta" } }); return;
-      }
 
-      if (normalizedEmail === userRowForEmail.email.toLowerCase().trim()) {
-        res.json({ data: { user: null }, error: { message: "O novo e-mail deve ser diferente do atual" } }); return;
-      }
+      const currentEmail = userRowForEmail.email.toLowerCase().trim();
+      if (normalizedEmail !== currentEmail) {
+        // Security: require current password to prevent account takeover via stolen session cookie
+        if (!current_password) {
+          res.json({ data: { user: null }, error: { message: "Senha atual obrigatória para alterar o e-mail" } }); return;
+        }
+        const emailPasswordValid = await bcrypt.compare(current_password, userRowForEmail.password_hash);
+        if (!emailPasswordValid) {
+          res.json({ data: { user: null }, error: { message: "Senha atual incorreta" } }); return;
+        }
 
-      const duplicated = await queryOne<{ id: string }>(
-        "SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1",
-        [normalizedEmail, userId],
-      );
-      if (duplicated) {
-        res.json({ data: { user: null }, error: { message: "Este e-mail já está em uso" } }); return;
-      }
+        const duplicated = await queryOne<{ id: string }>(
+          "SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1",
+          [normalizedEmail, userId],
+        );
+        if (duplicated) {
+          res.json({ data: { user: null }, error: { message: "Este e-mail já está em uso" } }); return;
+        }
 
-      const previousEmail = userRowForEmail.email;
-      const userName = userRowForEmail.name;
+        const previousEmail = userRowForEmail.email;
+        const userName = userRowForEmail.name;
 
-      // Security: mark email unconfirmed, invalidate all existing sessions (including stolen tokens)
-      await execute(
-        "UPDATE users SET email = $1, email_confirmed_at = NULL, token_invalidated_before = NOW(), updated_at = NOW() WHERE id = $2",
-        [normalizedEmail, userId],
-      );
-      await execute(
-        "UPDATE profiles SET email = $1, updated_at = NOW() WHERE user_id = $2",
-        [normalizedEmail, userId],
-      );
+        // Security: mark email unconfirmed, invalidate all existing sessions (including stolen tokens)
+        await execute(
+          "UPDATE users SET email = $1, email_confirmed_at = NULL, token_invalidated_before = NOW(), updated_at = NOW() WHERE id = $2",
+          [normalizedEmail, userId],
+        );
+        await execute(
+          "UPDATE profiles SET email = $1, updated_at = NOW() WHERE user_id = $2",
+          [normalizedEmail, userId],
+        );
 
-      // Send verification email to the NEW address
-      try {
-        const fakeReq = req;
-        await dispatchVerificationEmail(fakeReq, { id: userId, email: normalizedEmail, name: userName });
-      } catch (emailErr) {
-        console.error("[auth] failed to send verification email after email change:", emailErr);
-      }
+        // Send verification email to the NEW address
+        try {
+          const fakeReq = req;
+          await dispatchVerificationEmail(fakeReq, { id: userId, email: normalizedEmail, name: userName });
+        } catch (emailErr) {
+          console.error("[auth] failed to send verification email after email change:", emailErr);
+        }
 
-      // Notify the OLD address about the change (security alert)
-      try {
-        const safeName = escapeHtml(userName);
-        await sendEmail({
-          to: previousEmail,
-          subject: "Seu e-mail foi alterado - Auto Links",
-          html: `<p>Olá, ${safeName}.</p><p>O e-mail da sua conta Auto Links foi alterado para <strong>${escapeHtml(normalizedEmail)}</strong>.</p><p>Se você não fez esta alteração, entre em contato conosco imediatamente.</p>`,
-          text: `Olá, ${userName}. O e-mail da sua conta Auto Links foi alterado para ${normalizedEmail}. Se você não fez esta alteração, entre em contato conosco imediatamente.`,
-        });
-      } catch (notifyErr) {
-        console.error("[auth] failed to send old-email notification after email change:", notifyErr);
+        // Notify the OLD address about the change (security alert)
+        try {
+          const safeName = escapeHtml(userName);
+          await sendEmail({
+            to: previousEmail,
+            subject: "Seu e-mail foi alterado - Auto Links",
+            html: `<p>Olá, ${safeName}.</p><p>O e-mail da sua conta Auto Links foi alterado para <strong>${escapeHtml(normalizedEmail)}</strong>.</p><p>Se você não fez esta alteração, entre em contato conosco imediatamente.</p>`,
+            text: `Olá, ${userName}. O e-mail da sua conta Auto Links foi alterado para ${normalizedEmail}. Se você não fez esta alteração, entre em contato conosco imediatamente.`,
+          });
+        } catch (notifyErr) {
+          console.error("[auth] failed to send old-email notification after email change:", notifyErr);
+        }
+
+        emailChanged = true;
       }
     }
 
-    if (rawPhone !== undefined) {
-      const phone = sanitizePhone(String(rawPhone || ""));
-      if (!phone) { res.json({ data: { user: null }, error: { message: "Telefone inválido. Use formato com DDD, ex: +5511912345678" } }); return; }
+    if (hasPhone) {
+      const trimmedPhone = String(rawPhone || "").trim();
+      const phone = trimmedPhone ? sanitizePhone(trimmedPhone) : "";
+      if (trimmedPhone && !phone) {
+        res.json({ data: { user: null }, error: { message: "Telefone inválido. Use formato com DDD, ex: +5511912345678" } }); return;
+      }
 
-      const duplicatePhone = await queryOne<{ user_id: string }>(
-        "SELECT user_id FROM profiles WHERE phone = $1 AND user_id <> $2 LIMIT 1",
-        [phone, userId],
-      );
-      if (duplicatePhone) {
-        res.status(409).json({ data: { user: null }, error: { message: SIGNUP_IDENTITY_EXISTS_MESSAGE } }); return;
+      if (phone) {
+        const duplicatePhone = await queryOne<{ user_id: string }>(
+          "SELECT user_id FROM profiles WHERE phone = $1 AND user_id <> $2 LIMIT 1",
+          [phone, userId],
+        );
+        if (duplicatePhone) {
+          res.status(409).json({ data: { user: null }, error: { message: SIGNUP_IDENTITY_EXISTS_MESSAGE } }); return;
+        }
       }
 
       try {
@@ -1538,6 +1556,7 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
           "UPDATE profiles SET phone = $1, updated_at = NOW() WHERE user_id = $2",
           [phone, userId],
         );
+        phoneChanged = true;
       } catch (phoneUpdateError) {
         if (isUniqueViolation(phoneUpdateError)) {
           res.status(409).json({ data: { user: null }, error: { message: SIGNUP_IDENTITY_EXISTS_MESSAGE } }); return;
@@ -1574,9 +1593,9 @@ authRouter.post("/update-user", requireAuth, async (req, res) => {
     // Audit log: user updated
     try {
       const changes: Record<string, unknown> = {};
-      if (password) changes.password_changed = true;
-      if (email !== undefined) changes.email_changed = true;
-      if (rawPhone !== undefined) changes.phone_changed = true;
+      if (passwordChanged) changes.password_changed = true;
+      if (emailChanged) changes.email_changed = true;
+      if (phoneChanged) changes.phone_changed = true;
       if (metadata && Object.keys(metadata).length > 0) changes.metadata_updated = true;
 
       await logAudit({

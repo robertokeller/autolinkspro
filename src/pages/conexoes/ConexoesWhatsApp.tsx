@@ -24,6 +24,7 @@ export default function ConexoesWhatsApp() {
     connectSession,
     disconnectSession,
     syncSessionGroups,
+    syncAllSessionGroups,
     renameSession,
     deleteSession,
     isCreating,
@@ -96,6 +97,7 @@ export default function ConexoesWhatsApp() {
           isLoading={isLoadingGroups}
           isSyncing={isSyncingGroups}
           onSyncSession={syncSessionGroups}
+          onSyncAll={syncAllSessionGroups}
           onRefresh={handleRefreshGroups}
         />
       }

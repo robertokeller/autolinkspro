@@ -9,6 +9,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { normalizeSessionStatus } from "@/lib/session-status";
 import { resolveEffectiveLimitsByPlanId } from "@/lib/access-control";
 import { normalizePlanId, PLAN_SYNC_ERROR_MESSAGE } from "@/lib/plan-id";
+import { syncAllWhatsAppGroups } from "@/integrations/analytics-client";
 
 type WhatsAppSessionRow = Tables<"whatsapp_sessions">;
 
@@ -320,10 +321,41 @@ export function useWhatsAppSessions() {
       qc.invalidateQueries({ queryKey: ["analytics-admin-groups"] });
 
       const blockedGroups = Number((data as Record<string, unknown> | undefined)?.blockedGroups || 0);
+      const syncedGroups = Number((data as Record<string, unknown> | undefined)?.count || 0);
       if (blockedGroups > 0) {
         toast.warning(`Sincronização parcial: ${blockedGroups} grupo(s) excederam o limite de WhatsApp do seu plano.`);
       } else {
-        toast.success("Sincronização de grupos solicitada");
+        toast.success(syncedGroups > 0
+          ? `Sincronização concluída: ${syncedGroups} grupo(s) atualizados.`
+          : "Sincronização concluída.");
+      }
+    },
+    onError: (err: unknown) => {
+      const msg = toFriendlyRuntimeError(err, "Erro ao sincronizar grupos");
+      toast.error(msg);
+    },
+  });
+
+  const syncAllGroupsMutation = useMutation({
+    mutationFn: async () => syncAllWhatsAppGroups(),
+    onSuccess: (result) => {
+      invalidateSessions();
+      qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["master_groups"] });
+      qc.invalidateQueries({ queryKey: ["analytics-admin-groups"] });
+      qc.invalidateQueries({ queryKey: ["routes"] });
+      qc.invalidateQueries({ queryKey: ["shopee_automations"] });
+      qc.invalidateQueries({ queryKey: ["marketplace_automations"] });
+
+      if (result.sessionsSynced > 0) {
+        toast.success(`Sincronização concluída: ${result.sessionsSynced} sessão(ões), ${result.totalGroups} grupos.`);
+      } else {
+        toast.warning("Nenhuma sessão online foi sincronizada. Grupos existentes foram carregados do banco.");
+      }
+
+      if (result.errors.length > 0) {
+        const preview = result.errors.slice(0, 2).join(" | ");
+        toast.warning(`Ocorreram ${result.errors.length} erro(s) na sincronização. ${preview}`);
       }
     },
     onError: (err: unknown) => {
@@ -382,12 +414,13 @@ export function useWhatsAppSessions() {
     connectSession: connectMutation.mutateAsync,
     disconnectSession: disconnectMutation.mutateAsync,
     syncSessionGroups: syncGroupsMutation.mutateAsync,
+    syncAllSessionGroups: syncAllGroupsMutation.mutateAsync,
     renameSession: renameSessionMutation.mutateAsync,
     deleteSession: deleteSessionMutation.mutateAsync,
     isCreating: createSessionMutation.isPending,
     isConnecting: connectMutation.isPending,
     isDisconnecting: disconnectMutation.isPending,
-    isSyncingGroups: syncGroupsMutation.isPending,
+    isSyncingGroups: syncGroupsMutation.isPending || syncAllGroupsMutation.isPending,
     isRenaming: renameSessionMutation.isPending,
     isDeleting: deleteSessionMutation.isPending,
     isRefreshing: refreshMutation.isPending || refreshSessionMutation.isPending,

@@ -98,7 +98,7 @@ const FAILURE_STREAK_WINDOW_MS = readPositiveIntEnv("MELI_COOLDOWN_FAILURE_WINDO
 const MAX_CONCURRENT_CONVERSIONS = readPositiveIntEnv("MELI_QUEUE_MAX_CONCURRENCY", 2);
 const QUEUE_BATCH_DELAY_MS = readPositiveIntEnv("MELI_QUEUE_BATCH_DELAY_MS", 15_000);
 const MAX_PENDING_PER_SCOPE = readPositiveIntEnv("MELI_QUEUE_MAX_PENDING_PER_USER", 12);
-const JOB_QUEUE_TIMEOUT_MS = readPositiveIntEnv("MELI_QUEUE_JOB_TIMEOUT_MS", 300_000);
+const JOB_QUEUE_TIMEOUT_MS = readPositiveIntEnv("MELI_QUEUE_JOB_TIMEOUT_MS", 600_000);
 
 export class MercadoLivreLinkConverter {
   private static instance: MercadoLivreLinkConverter;

@@ -26,6 +26,7 @@ interface Props {
   isLoading?: boolean;
   isSyncing?: boolean;
   onSyncSession: (sessionId: string) => Promise<unknown>;
+  onSyncAll?: () => Promise<unknown>;
   onRefresh: () => void;
 }
 
@@ -36,6 +37,7 @@ export function GruposPorPlataforma({
   isLoading,
   isSyncing,
   onSyncSession,
+  onSyncAll,
   onRefresh,
 }: Props) {
   const [search, setSearch] = useState("");
@@ -93,6 +95,19 @@ export function GruposPorPlataforma({
   };
 
   const handleSyncAllOnline = async () => {
+    if (onSyncAll) {
+      setSyncingAll(true);
+      try {
+        await onSyncAll();
+        onRefresh();
+      } catch {
+        toast.error(`Não foi possível sincronizar os grupos ${platformLabel}.`);
+      } finally {
+        setSyncingAll(false);
+      }
+      return;
+    }
+
     if (onlineSessions.length === 0) {
       toast.error(`Nenhuma conta ${platformLabel} online para sincronizar.`);
       return;
@@ -100,11 +115,17 @@ export function GruposPorPlataforma({
 
     setSyncingAll(true);
     try {
-      const results = await Promise.allSettled(
-        onlineSessions.map((session) => onSyncSession(session.id)),
-      );
+      const results: Array<"fulfilled" | "rejected"> = [];
+      for (const session of onlineSessions) {
+        try {
+          await onSyncSession(session.id);
+          results.push("fulfilled");
+        } catch {
+          results.push("rejected");
+        }
+      }
       onRefresh();
-      const failed = results.filter((r) => r.status === "rejected").length;
+      const failed = results.filter((status) => status === "rejected").length;
       if (failed === 0) {
         toast.success(`Grupos atualizados de ${onlineSessions.length} conta(s).`);
       } else {

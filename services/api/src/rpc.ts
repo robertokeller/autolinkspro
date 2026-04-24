@@ -101,6 +101,18 @@ const WHATSAPP_SYNC_GROUPS_TIMEOUT_MS = Math.max(
   15_000,
   Math.min(300_000, Number(process.env.WHATSAPP_SYNC_GROUPS_TIMEOUT_MS || "120000") || 120_000),
 );
+const ROUTE_DESTINATION_SEND_TIMEOUT_MS = Math.max(
+  15_000,
+  Math.min(120_000, Number(process.env.ROUTE_DESTINATION_SEND_TIMEOUT_MS || "30000") || 30_000),
+);
+const ROUTE_LINK_CONVERSION_TIMEOUT_MS = Math.max(
+  30_000,
+  Math.min(300_000, Number(process.env.ROUTE_LINK_CONVERSION_TIMEOUT_MS || "60000") || 60_000),
+);
+const MELI_CONVERSION_TIMEOUT_MS = Math.max(
+  60_000,
+  Math.min(600_000, Number(process.env.MELI_CONVERSION_TIMEOUT_MS || "180000") || 180_000),
+);
 
 const MAX_SHOPEE_CONVERT_BATCH = Math.max(1, Math.min(500, Number(process.env.MAX_SHOPEE_CONVERT_BATCH || "200") || 200));
 const MAX_SHOPEE_BATCH_QUERIES = Math.max(1, Math.min(100, Number(process.env.MAX_SHOPEE_BATCH_QUERIES || "25") || 25));
@@ -3794,7 +3806,7 @@ async function resolveOnlineDestinationSessionSets(input: {
       .filter(Boolean),
   )];
 
-  const [waSessionRows, tgSessionRows, waHealthRows, tgHealthRows] = await Promise.all([
+  const [waSessionRows, tgSessionRows, waHealthState, tgHealthState] = await Promise.all([
     waSessionIds.length > 0
       ? query<{ id: string; status: string }>(
           "SELECT id, status FROM whatsapp_sessions WHERE user_id = $1 AND id = ANY($2)",
@@ -3808,44 +3820,69 @@ async function resolveOnlineDestinationSessionSets(input: {
         )
       : Promise.resolve([]),
     waSessionIds.length > 0
-      ? loadOnlineSessionsFromConnectorHealth({
+      ? loadOnlineSessionsFromConnectorHealthWithMeta({
           platform: "whatsapp",
           requesterUserId: ownerUserId,
           canRunGlobal: false,
-        }).catch(() => [])
-      : Promise.resolve([]),
+        }).catch(() => ({
+          rows: [],
+          success: false,
+          hasDetailedSessions: false,
+        }))
+      : Promise.resolve({
+          rows: [],
+          success: false,
+          hasDetailedSessions: false,
+        }),
     tgSessionIds.length > 0
-      ? loadOnlineSessionsFromConnectorHealth({
+      ? loadOnlineSessionsFromConnectorHealthWithMeta({
           platform: "telegram",
           requesterUserId: ownerUserId,
           canRunGlobal: false,
-        }).catch(() => [])
-      : Promise.resolve([]),
+        }).catch(() => ({
+          rows: [],
+          success: false,
+          hasDetailedSessions: false,
+        }))
+      : Promise.resolve({
+          rows: [],
+          success: false,
+          hasDetailedSessions: false,
+        }),
   ]);
 
   const waSessionIdSet = new Set(waSessionIds);
   const tgSessionIdSet = new Set(tgSessionIds);
 
-  const onlineWaSessions = new Set(
+  const dbOnlineWaSessions = new Set(
     waSessionRows
       .filter((row) => isWhatsAppDeliveryCandidateStatus(row.status))
       .map((row) => String(row.id || "").trim())
       .filter(Boolean),
   );
-  const onlineTgSessions = new Set(
+  const dbOnlineTgSessions = new Set(
     tgSessionRows
       .filter((row) => isSessionOnlineStatus(row.status))
       .map((row) => String(row.id || "").trim())
       .filter(Boolean),
   );
 
-  for (const row of waHealthRows) {
+  // Prefer runtime health when detailed session data is available to avoid
+  // stale DB states (e.g. session marked online but missing in connector).
+  const onlineWaSessions = (waHealthState.success && waHealthState.hasDetailedSessions)
+    ? new Set<string>()
+    : new Set(dbOnlineWaSessions);
+  const onlineTgSessions = (tgHealthState.success && tgHealthState.hasDetailedSessions)
+    ? new Set<string>()
+    : new Set(dbOnlineTgSessions);
+
+  for (const row of waHealthState.rows) {
     const sessionId = String(row?.id || "").trim();
     if (!sessionId || !waSessionIdSet.has(sessionId)) continue;
     onlineWaSessions.add(sessionId);
   }
 
-  for (const row of tgHealthRows) {
+  for (const row of tgHealthState.rows) {
     const sessionId = String(row?.id || "").trim();
     if (!sessionId || !tgSessionIdSet.has(sessionId)) continue;
     onlineTgSessions.add(sessionId);
@@ -7611,6 +7648,7 @@ async function processRouteMessageForUser(input: {
       continue;
     }
 
+    const routeScopedHeaders = buildUserScopedHeaders(userId);
     let outboundText = message;
     let primaryLink = partnerLinks[0]?.resolved || partnerLinks[0]?.original || routeLinks[0] || "";
     let primaryProduct: Record<string, unknown> | null = null;
@@ -7656,6 +7694,8 @@ async function processRouteMessageForUser(input: {
               secret: shopeeCredentials.secret_key,
               region: shopeeCredentials.region,
             },
+            routeScopedHeaders,
+            ROUTE_LINK_CONVERSION_TIMEOUT_MS,
           );
           if (response.error) {
             conversion = { affiliateLink: "", resolvedUrl: conversionSource, ok: false, error: response.error.message };
@@ -7729,7 +7769,7 @@ async function processRouteMessageForUser(input: {
             userId,
             sessionId: meliSessionId,
             productUrl: conversionSource,
-            timeoutMs: 90_000,
+            timeoutMs: MELI_CONVERSION_TIMEOUT_MS,
           });
           if (response.errorMessage) {
             conversion = { affiliateLink: "", ok: false, error: response.errorMessage };
@@ -8150,14 +8190,14 @@ async function processRouteMessageForUser(input: {
           jid: destinationExternalId,
           content: outboundTextSafe,
           media: mediaForDestination ?? undefined,
-        }, scopedHeaders);
+        }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
       } else if (platform === "telegram" && TELEGRAM_URL) {
         result = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
           sessionId: destinationSessionId,
           chatId: destinationExternalId,
           message: outboundTextSafe,
           media: mediaForDestination ?? undefined,
-        }, scopedHeaders);
+        }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
       }
 
       await sleep(500);
@@ -8467,6 +8507,12 @@ type ChannelPollSessionRow = {
   user_id: string;
 };
 
+type ConnectorHealthSessionLoadResult = {
+  rows: ChannelPollSessionRow[];
+  success: boolean;
+  hasDetailedSessions: boolean;
+};
+
 function dedupeChannelPollSessions(rows: ChannelPollSessionRow[]): ChannelPollSessionRow[] {
   const seen = new Set<string>();
   const deduped: ChannelPollSessionRow[] = [];
@@ -8489,8 +8535,23 @@ async function loadOnlineSessionsFromConnectorHealth(input: {
   requesterUserId: string;
   canRunGlobal: boolean;
 }): Promise<ChannelPollSessionRow[]> {
+  const result = await loadOnlineSessionsFromConnectorHealthWithMeta(input);
+  return result.rows;
+}
+
+async function loadOnlineSessionsFromConnectorHealthWithMeta(input: {
+  platform: "whatsapp" | "telegram";
+  requesterUserId: string;
+  canRunGlobal: boolean;
+}): Promise<ConnectorHealthSessionLoadResult> {
   const baseUrl = input.platform === "whatsapp" ? WHATSAPP_URL : TELEGRAM_URL;
-  if (!baseUrl) return [];
+  if (!baseUrl) {
+    return {
+      rows: [],
+      success: false,
+      hasDetailedSessions: false,
+    };
+  }
   const requesterUserId = String(input.requesterUserId || "").trim().toLowerCase();
 
   const userHeaders = input.canRunGlobal ? {} : buildUserScopedHeaders(requesterUserId || input.requesterUserId);
@@ -8500,12 +8561,19 @@ async function loadOnlineSessionsFromConnectorHealth(input: {
   const healthHeaders: Record<string, string> = { ...userHeaders };
   if (WEBHOOK_SECRET) healthHeaders["x-webhook-secret"] = WEBHOOK_SECRET;
   const upstream = await proxyMicroservice(baseUrl, "/health", "GET", null, healthHeaders, 6_000);
-  if (upstream.error) return [];
+  if (upstream.error) {
+    return {
+      rows: [],
+      success: false,
+      hasDetailedSessions: false,
+    };
+  }
 
   const payload = (upstream.data && typeof upstream.data === "object")
     ? upstream.data as Record<string, unknown>
     : {};
-  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const hasDetailedSessions = Array.isArray(payload.sessions);
+  const sessions = hasDetailedSessions ? payload.sessions as unknown[] : [];
   const onlineRows: ChannelPollSessionRow[] = [];
 
   for (const raw of sessions) {
@@ -8524,7 +8592,11 @@ async function loadOnlineSessionsFromConnectorHealth(input: {
     onlineRows.push({ id: sessionId, user_id: userId });
   }
 
-  return dedupeChannelPollSessions(onlineRows);
+  return {
+    rows: dedupeChannelPollSessions(onlineRows),
+    success: true,
+    hasDetailedSessions,
+  };
 }
 
 async function filterSessionsByExecutionGate(rows: ChannelPollSessionRow[]): Promise<ChannelPollSessionRow[]> {
@@ -10103,29 +10175,25 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
 
-      const settled = await Promise.allSettled(
-        sessionsToSync.map((session) =>
-          syncWhatsAppSessionGroups({
-            userId,
-            sessionId: session.id,
-            includeEventPoll: true,
-            timeoutMs: 45_000,
-          }).then((r) => ({ session, result: r })),
-        ),
-      );
-
       let totalGroups = 0;
       let sessionsSynced = 0;
       const errors: string[] = [];
 
-      for (let index = 0; index < settled.length; index += 1) {
-        const outcome = settled[index];
-        const session = sessionsToSync[index];
-        if (outcome.status === "fulfilled") {
-          totalGroups += outcome.value.result.count;
+      // Process one session at a time to avoid connector overload and reduce
+      // partial failures when many sessions are synchronized at once.
+      for (const session of sessionsToSync) {
+        try {
+          const result = await syncWhatsAppSessionGroups({
+            userId,
+            sessionId: session.id,
+            includeEventPoll: true,
+            timeoutMs: WHATSAPP_SYNC_GROUPS_TIMEOUT_MS,
+          });
+          totalGroups += result.count;
           sessionsSynced += 1;
-        } else {
-          errors.push(`${session?.name || session?.id || "??"}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          errors.push(`${session?.name || session?.id || "??"}: ${message}`);
         }
       }
 
@@ -11649,14 +11717,14 @@ if (funcName === "whatsapp-connect") {
               jid: externalId,
               content: outboundMessage,
               media: mediaForDestination ?? undefined,
-            }, scopedHeaders);
+            }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
           } else if (platform === "telegram" && TELEGRAM_URL) {
             sentResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
               sessionId: session,
               chatId: externalId,
               message: outboundMessage,
               media: mediaForDestination ?? undefined,
-            }, scopedHeaders);
+            }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS);
           } else {
             sentResult = { data: null, error: { message: `Serviço ${platform || "desconhecido"} indisponível` } };
           }
@@ -12317,7 +12385,7 @@ if (funcName === "whatsapp-connect") {
           userId,
           sessionId,
           productUrl,
-          timeoutMs: 90_000,
+          timeoutMs: MELI_CONVERSION_TIMEOUT_MS,
           forceResolve,
         });
         if (converted.errorMessage) { fail(res, converted.errorMessage); return; }
@@ -13165,14 +13233,14 @@ if (funcName === "whatsapp-connect") {
                 jid: externalId,
                 content: outboundMessage,
                 media: mediaForDestination,
-              }, scopedHeaders)
+              }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
             : platform === "telegram" && TELEGRAM_URL
               ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
                   sessionId,
                   chatId: externalId,
                   message: outboundMessage,
                   media: mediaForDestination,
-                }, scopedHeaders)
+                }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
               : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
 
           if (sendResult.error) {
@@ -13538,7 +13606,7 @@ if (funcName === "whatsapp-connect") {
           userId: ownerUserId,
           sessionId: meliSessionId,
           productUrl: String(selectedProduct.productUrl || "").trim(),
-          timeoutMs: 60_000,
+          timeoutMs: MELI_CONVERSION_TIMEOUT_MS,
         });
         if (conversion.errorMessage) {
           failed += 1;
@@ -13798,14 +13866,14 @@ if (funcName === "whatsapp-connect") {
                 jid: externalId,
                 content: outboundMessage,
                 media: mediaForDestination,
-              }, scopedHeaders)
+              }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
             : platform === "telegram" && TELEGRAM_URL
               ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
                   sessionId,
                   chatId: externalId,
                   message: outboundMessage,
                   media: mediaForDestination,
-                }, scopedHeaders)
+                }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
               : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
 
           if (sendResult.error) {
@@ -14460,14 +14528,14 @@ if (funcName === "whatsapp-connect") {
                 jid: externalId,
                 content: outboundMessage,
                 media: mediaForDestination,
-              }, scopedHeaders)
+              }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
             : platform === "telegram" && TELEGRAM_URL
               ? await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
                   sessionId,
                   chatId: externalId,
                   message: outboundMessage,
                   media: mediaForDestination,
-                }, scopedHeaders)
+                }, scopedHeaders, ROUTE_DESTINATION_SEND_TIMEOUT_MS)
               : { data: null, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } };
 
           if (sendResult.error) {
@@ -15196,7 +15264,7 @@ if (funcName === "whatsapp-connect") {
         userId,
         sessionId,
         productUrl,
-        timeoutMs: 90_000,
+        timeoutMs: MELI_CONVERSION_TIMEOUT_MS,
         forceResolve,
       });
       if (converted.errorMessage) {
@@ -15236,7 +15304,7 @@ if (funcName === "whatsapp-connect") {
             userId,
             sessionId,
             productUrl,
-            timeoutMs: 90_000,
+            timeoutMs: MELI_CONVERSION_TIMEOUT_MS,
             forceResolve: true,
           });
 
