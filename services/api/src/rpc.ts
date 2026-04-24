@@ -684,6 +684,13 @@ function toStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function toUuidArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter((item) => isUuid(item));
+}
+
 function normalizeHostname(raw: unknown): string {
   return String(raw || "")
     .trim()
@@ -6535,6 +6542,49 @@ function normalizeGroupNameKey(name: unknown): string {
     .toLowerCase();
 }
 
+async function resolveRouteLinkedGroupIds(groupIds: string[], userId?: string): Promise<Set<string>> {
+  const safeGroupIds = Array.from(new Set(groupIds.map((id) => String(id || "").trim()).filter(isUuid)));
+  if (safeGroupIds.length === 0) return new Set<string>();
+
+  const rows = userId
+    ? await query<{ id: string }>(
+      `SELECT DISTINCT id
+         FROM (
+           SELECT r.source_group_id AS id
+             FROM routes r
+            WHERE r.user_id = $1
+              AND r.source_group_id = ANY($2::text[])
+
+           UNION
+
+           SELECT rd.group_id::text AS id
+             FROM route_destinations rd
+             JOIN routes r
+               ON r.id = rd.route_id
+            WHERE r.user_id = $1
+              AND rd.group_id = ANY($3::uuid[])
+         ) refs`,
+      [userId, safeGroupIds, safeGroupIds],
+    )
+    : await query<{ id: string }>(
+      `SELECT DISTINCT id
+         FROM (
+           SELECT source_group_id AS id
+             FROM routes
+            WHERE source_group_id = ANY($1::text[])
+
+           UNION
+
+           SELECT rd.group_id::text AS id
+             FROM route_destinations rd
+            WHERE rd.group_id = ANY($2::uuid[])
+         ) refs`,
+      [safeGroupIds, safeGroupIds],
+    );
+
+  return new Set(rows.map((row) => String(row.id || "").trim()).filter(Boolean));
+}
+
 async function reconcileWhatsAppSessionsFromHealth(userId: string) {
   if (!WHATSAPP_URL) return { reconciled: 0, online: false };
   const normalizedUserId = String(userId || "").trim().toLowerCase();
@@ -6764,6 +6814,27 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
 
   if (staleGroupIds.length === 0) return;
 
+  if (remoteGroups.length === 0 && existingRows.length > 0) {
+    console.warn(
+      `[sync-whatsapp-groups] skip stale cleanup: empty remote payload (user=${userId} session=${sessionId})`,
+    );
+    return;
+  }
+
+  let routeLinkedGroupIds: Set<string>;
+  try {
+    routeLinkedGroupIds = await resolveRouteLinkedGroupIds(staleGroupIds, userId);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[sync-whatsapp-groups] skip stale cleanup: failed route-link protection lookup (user=${userId} session=${sessionId}) reason=${reason}`,
+    );
+    return;
+  }
+
+  const removableStaleGroupIds = staleGroupIds.filter((groupId) => !routeLinkedGroupIds.has(groupId));
+  if (removableStaleGroupIds.length === 0) return;
+
   await transaction(async (client) => {
     await client.query(
       `UPDATE routes
@@ -6771,22 +6842,22 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
               status = CASE WHEN status = 'active' THEN 'inactive' ELSE status END,
               updated_at = NOW()
         WHERE source_group_id = ANY($1::text[])`,
-      [staleGroupIds],
+      [removableStaleGroupIds],
     );
 
     await client.query(
       "DELETE FROM route_destinations WHERE group_id = ANY($1::uuid[])",
-      [staleGroupIds],
+      [removableStaleGroupIds],
     );
 
     await client.query(
       "DELETE FROM master_group_links WHERE group_id = ANY($1::uuid[])",
-      [staleGroupIds],
+      [removableStaleGroupIds],
     );
 
     await client.query(
       "DELETE FROM scheduled_post_destinations WHERE group_id = ANY($1::uuid[])",
-      [staleGroupIds],
+      [removableStaleGroupIds],
     );
 
     await client.query(
@@ -6795,7 +6866,7 @@ async function syncWhatsAppGroupsWithReconciliation(userId: string, sessionId: s
           AND user_id = $2
           AND platform = 'whatsapp'
           AND session_id = $3`,
-      [staleGroupIds, userId, sessionId],
+      [removableStaleGroupIds, userId, sessionId],
     );
   });
 }
@@ -8301,10 +8372,10 @@ async function processRouteMessageForUser(input: {
       ? route.rules as Record<string, unknown>
       : {};
     const fromArray = Array.isArray(rules.masterGroupIds)
-      ? rules.masterGroupIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      ? toUuidArray(rules.masterGroupIds)
       : [];
-    const fromSingle = typeof rules.masterGroupId === "string" && rules.masterGroupId.trim().length > 0
-      ? [rules.masterGroupId.trim()]
+    const fromSingle = typeof rules.masterGroupId === "string"
+      ? toUuidArray([rules.masterGroupId])
       : [];
     const ids = [...new Set([...fromArray, ...fromSingle])];
     routeMasterGroupIds.set(route.id, ids);
@@ -8333,8 +8404,10 @@ async function processRouteMessageForUser(input: {
   const targetByRoute = new Map<string, string[]>();
   const allTargetGroupIds = new Set<string>();
   for (const route of matching) {
-    const direct = Array.isArray(route.dest_ids) ? route.dest_ids : [];
-    const fromMaster = (routeMasterGroupIds.get(route.id) ?? []).flatMap((masterId) => linkedByMaster.get(masterId) ?? []);
+    const direct = toUuidArray(route.dest_ids);
+    const fromMaster = toUuidArray(
+      (routeMasterGroupIds.get(route.id) ?? []).flatMap((masterId) => linkedByMaster.get(masterId) ?? []),
+    );
     const targetIds = [...new Set([...direct, ...fromMaster])]
       .filter((groupId) => !sourceCandidates.has(String(groupId)));
     targetByRoute.set(route.id, targetIds);
@@ -9891,6 +9964,17 @@ async function runChannelOrphanCleanup(input: {
 
   const remapPairs = [...remap.entries()].filter(([oldId, newId]) => oldId !== newId);
   const removeGroupIds = [...orphanGroupIds].filter(Boolean);
+  let routeLinkedGroupIds = new Set<string>();
+  if (removeGroupIds.length > 0) {
+    try {
+      routeLinkedGroupIds = await resolveRouteLinkedGroupIds(removeGroupIds);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[channel-orphan-cleanup] route-link protection lookup failed: ${reason}`);
+      routeLinkedGroupIds = new Set(removeGroupIds);
+    }
+  }
+  const removableGroupIds = removeGroupIds.filter((groupId) => !routeLinkedGroupIds.has(groupId));
 
   const dbStats = await transaction(async (client) => {
     let sourceRoutesRemapped = 0;
@@ -9947,38 +10031,38 @@ async function runChannelOrphanCleanup(input: {
     let scheduledDestinationsDeleted = 0;
     let groupsDeleted = 0;
 
-    if (removeGroupIds.length > 0) {
+    if (removableGroupIds.length > 0) {
       const sourceClear = await client.query(
         `UPDATE routes
             SET source_group_id = '',
                 status = CASE WHEN status = 'active' THEN 'inactive' ELSE status END,
                 updated_at = NOW()
           WHERE source_group_id = ANY($1::text[])`,
-        [removeGroupIds],
+        [removableGroupIds],
       );
       sourceRoutesCleared = sourceClear.rowCount ?? 0;
 
       const routeDestDelete = await client.query(
         "DELETE FROM route_destinations WHERE group_id = ANY($1::uuid[])",
-        [removeGroupIds],
+        [removableGroupIds],
       );
       routeDestinationsDeleted = routeDestDelete.rowCount ?? 0;
 
       const masterDelete = await client.query(
         "DELETE FROM master_group_links WHERE group_id = ANY($1::uuid[])",
-        [removeGroupIds],
+        [removableGroupIds],
       );
       masterGroupLinksDeleted = masterDelete.rowCount ?? 0;
 
       const scheduledDelete = await client.query(
         "DELETE FROM scheduled_post_destinations WHERE group_id = ANY($1::uuid[])",
-        [removeGroupIds],
+        [removableGroupIds],
       );
       scheduledDestinationsDeleted = scheduledDelete.rowCount ?? 0;
 
       const groupsDelete = await client.query(
         "DELETE FROM groups WHERE id = ANY($1::uuid[])",
-        [removeGroupIds],
+        [removableGroupIds],
       );
       groupsDeleted = groupsDelete.rowCount ?? 0;
     }
