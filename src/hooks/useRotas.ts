@@ -26,6 +26,7 @@ interface RulesJson {
   partnerMarketplaces?: string[];
   filterWords?: string[]; negativeKeywords?: string[]; positiveKeywords?: string[];
   templateId?: string | null; groupType?: string;
+  meliTemplateId?: string | null;
   amazonTemplateId?: string | null;
   sessionId?: string | null;
   messagesForwarded?: number;
@@ -80,6 +81,7 @@ function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
         : ["shopee", "mercadolivre", "amazon"],
       filterWords: rules.filterWords || [], negativeKeywords: rules.negativeKeywords || [],
       positiveKeywords: rules.positiveKeywords || [], templateId: rules.templateId || null,
+      meliTemplateId: rules.meliTemplateId || null,
       amazonTemplateId: rules.amazonTemplateId || null,
       groupType: "ofertas" as const,
       sessionId: rules.sessionId || null,

@@ -536,6 +536,30 @@ export function verifyToken(token: string): TokenPayload | null {
   }
 }
 
+function shouldAllowAuthBootstrapWithRevokedToken(req: Request): boolean {
+  const method = String(req.method || "GET").toUpperCase();
+  const path = String(req.path || "");
+
+  if (
+    method === "POST"
+    && (
+      path === "/auth/signin"
+      || path === "/auth/signup"
+      || path === "/auth/forgot-password"
+      || path === "/auth/reset-password"
+      || path === "/auth/resend-verification"
+    )
+  ) {
+    return true;
+  }
+
+  if (method === "GET" && path === "/auth/verify-email") {
+    return true;
+  }
+
+  return false;
+}
+
 // ─── Middleware: attach user from JWT ────────────────────────────────────────
 
 
@@ -554,6 +578,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
   }
   const token = (headerToken || cookieToken).trim();
   if (!token) { next(); return; }
+  const usingCookieTokenOnly = !headerToken && !!cookieToken;
 
   // Service token shortcut (used by scheduler) — timing-safe comparison
   if (SERVICE_TOKEN) {
@@ -577,6 +602,26 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       if (row?.token_invalidated_before) {
         const invalidatedMs = Date.parse(row.token_invalidated_before);
         if (Number.isFinite(invalidatedMs) && iatMs < invalidatedMs) {
+          if (shouldAllowAuthBootstrapWithRevokedToken(req)) {
+            // If a stale cookie blocks sign-in/recovery endpoints, users get stuck in a
+            // "sessao expirada" loop. Clear it and continue anonymously for bootstrap.
+            clearAuthCookie(res);
+            console.log(JSON.stringify({
+              ts: new Date().toISOString(),
+              svc: "api",
+              event: "token_revoked_ignored_for_auth_bootstrap",
+              userId: payload.sub,
+              path: req.path,
+              ip: req.ip ?? "-",
+              rid,
+            }));
+            next();
+            return;
+          }
+          if (usingCookieTokenOnly) {
+            // Keep browser clients from getting stuck retrying with a revoked cookie.
+            clearAuthCookie(res);
+          }
           // Token was revoked (user blocked or signed out) — reject explicitly with 401.
           console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "api", event: "token_revoked_detected", userId: payload.sub, ip: req.ip ?? "-", tokenIat: payload.iat, rid }));
           res.status(401).json({ data: null, error: { message: "Sessão expirada. Faça login novamente." } }); return;
@@ -592,6 +637,9 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
     req.currentUser = payload;
   } else if (payload) {
     req.currentUser = payload;
+  } else if (usingCookieTokenOnly) {
+    // Malformed/expired JWT in cookie: clear it so next requests are anonymous.
+    clearAuthCookie(res);
   }
   next();
 }

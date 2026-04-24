@@ -62,10 +62,34 @@ type PlaywrightStorageState = {
   }[];
 };
 
+type PageDestinationCandidate = {
+  href: string;
+  text: string;
+  className: string;
+  source: string;
+  index: number;
+};
+
+type PageDestinationSnapshot = {
+  currentUrl: string;
+  canonicalUrl: string;
+  ogUrl: string;
+  candidates: PageDestinationCandidate[];
+};
+
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 const LINKBUILDER_URL = "https://www.mercadolivre.com.br/afiliados/linkbuilder#hub";
-const MAX_FAILURES_BEFORE_COOLDOWN = 5;
-const COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+const BROWSER_LIKE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const REDIRECT_FETCH_HEADERS: Record<string, string> = {
+  "user-agent": BROWSER_LIKE_USER_AGENT,
+  accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+  "cache-control": "no-cache",
+  pragma: "no-cache",
+};
+const MAX_FAILURES_BEFORE_COOLDOWN = readPositiveIntEnv("MELI_COOLDOWN_MAX_FAILURES", 5);
+const COOLDOWN_MS = readPositiveIntEnv("MELI_COOLDOWN_MS", 10 * 60 * 1000);
+const FAILURE_STREAK_WINDOW_MS = readPositiveIntEnv("MELI_COOLDOWN_FAILURE_WINDOW_MS", 3 * 60 * 1000);
 const MAX_CONCURRENT_CONVERSIONS = readPositiveIntEnv("MELI_QUEUE_MAX_CONCURRENCY", 2);
 const QUEUE_BATCH_DELAY_MS = readPositiveIntEnv("MELI_QUEUE_BATCH_DELAY_MS", 15_000);
 const MAX_PENDING_PER_SCOPE = readPositiveIntEnv("MELI_QUEUE_MAX_PENDING_PER_USER", 12);
@@ -84,21 +108,26 @@ export class MercadoLivreLinkConverter {
   private pendingByScope = new Map<string, number>();
   private maxPendingPerScope: number;
   private queueTimeoutMs: number;
+  private failureStreakWindowMs: number;
   private consecutiveFailuresByScope = new Map<string, number>();
+  private lastFailureAtByScope = new Map<string, number>();
   private cooldownUntilByScope = new Map<string, number>();
   private sessionsDir: string;
   private legacySessionsDir: string;
   private workspaceSessionsDir: string;
+  private conversionTracePath: string;
 
   private constructor() {
     this.maxConcurrency = MAX_CONCURRENT_CONVERSIONS;
     this.batchDelayMs = QUEUE_BATCH_DELAY_MS;
     this.maxPendingPerScope = MAX_PENDING_PER_SCOPE;
     this.queueTimeoutMs = JOB_QUEUE_TIMEOUT_MS;
+    this.failureStreakWindowMs = FAILURE_STREAK_WINDOW_MS;
     // Keep session lookup stable across different launch contexts.
     this.sessionsDir = path.resolve(__dirname, "..", ".sessions");
     this.legacySessionsDir = path.join(process.cwd(), ".sessions");
     this.workspaceSessionsDir = path.resolve(__dirname, "..", "..", "..", ".sessions");
+    this.conversionTracePath = path.resolve(__dirname, "..", "..", "..", "logs", "meli-conversion-trace.log");
     this.startHeartbeat();
     logger.info(
       {
@@ -106,6 +135,9 @@ export class MercadoLivreLinkConverter {
         batchDelayMs: this.batchDelayMs,
         maxPendingPerScope: this.maxPendingPerScope,
         queueTimeoutMs: this.queueTimeoutMs,
+        cooldownMaxFailures: MAX_FAILURES_BEFORE_COOLDOWN,
+        cooldownMs: COOLDOWN_MS,
+        cooldownFailureWindowMs: this.failureStreakWindowMs,
       },
       "MercadoLivreLinkConverter initialized",
     );
@@ -141,6 +173,7 @@ export class MercadoLivreLinkConverter {
     if (Date.now() >= until) {
       this.cooldownUntilByScope.delete(scopeId);
       this.consecutiveFailuresByScope.delete(scopeId);
+      this.lastFailureAtByScope.delete(scopeId);
       logger.info({ scopeId }, "Cooldown expired; reset failure state for scope");
       return false;
     }
@@ -155,7 +188,69 @@ export class MercadoLivreLinkConverter {
 
   private registerScopeSuccess(scopeId: string): void {
     this.consecutiveFailuresByScope.delete(scopeId);
+    this.lastFailureAtByScope.delete(scopeId);
     this.cooldownUntilByScope.delete(scopeId);
+  }
+
+  private normalizeComparableMessage(raw: unknown): string {
+    return String(raw || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+  }
+
+  private shouldCountFailureForCooldown(errorMessage?: string): { count: boolean; category: string } {
+    const normalized = this.normalizeComparableMessage(errorMessage);
+    if (!normalized) return { count: true, category: "unknown-empty-error" };
+
+    const ignoredPatterns: Array<{ category: string; pattern: RegExp }> = [
+      {
+        category: "session-state",
+        pattern: /(reenvie os cookies|sessao.*(expirad|inval|nao encontrad)|session.*not found|storagestate_meli_)/,
+      },
+      {
+        category: "no-affiliate-access",
+        pattern: /(programa de afiliados|sem acesso ao programa de afiliados|no_affiliate|link afiliado nao encontrado)/,
+      },
+      {
+        category: "queue-overload",
+        pattern: /(fila cheia para esta conta|tempo limite na fila excedido|queue timeout|queue full)/,
+      },
+      {
+        category: "linkbuilder-selector",
+        pattern: /nao foi possivel encontrar o campo de url na pagina do linkbuilder/,
+      },
+    ];
+
+    for (const rule of ignoredPatterns) {
+      if (rule.pattern.test(normalized)) {
+        return { count: false, category: rule.category };
+      }
+    }
+
+    const cooldownPatterns: Array<{ category: string; pattern: RegExp }> = [
+      {
+        category: "upstream-rate-limit",
+        pattern: /(http 429|too many requests|rate limit|captcha|challenge|security check)/,
+      },
+      {
+        category: "upstream-instability",
+        pattern: /(service unavailable|http 50[0-9]|timeout|timed out|temporar|econnreset|socket hang up|net::)/,
+      },
+      {
+        category: "runtime-browser-error",
+        pattern: /(target closed|browser has been closed|execution context was destroyed|navigation failed)/,
+      },
+    ];
+
+    for (const rule of cooldownPatterns) {
+      if (rule.pattern.test(normalized)) {
+        return { count: true, category: rule.category };
+      }
+    }
+
+    return { count: true, category: "generic-error" };
   }
 
   resetScopeStateForSession(sessionId: string): void {
@@ -164,13 +259,52 @@ export class MercadoLivreLinkConverter {
     logger.info({ scopeId }, "Reset cooldown/failure state for scope");
   }
 
-  private registerScopeFailure(scopeId: string): void {
-    const failures = (this.consecutiveFailuresByScope.get(scopeId) || 0) + 1;
+  private registerScopeFailure(scopeId: string, errorMessage?: string): void {
+    const decision = this.shouldCountFailureForCooldown(errorMessage);
+    if (!decision.count) {
+      logger.info({ scopeId, category: decision.category, errorMessage }, "Failure ignored for cooldown streak");
+      return;
+    }
+
+    const now = Date.now();
+    const lastFailureAt = this.lastFailureAtByScope.get(scopeId) || 0;
+    const withinFailureWindow = lastFailureAt > 0 && (now - lastFailureAt) <= this.failureStreakWindowMs;
+    const previousFailures = withinFailureWindow ? (this.consecutiveFailuresByScope.get(scopeId) || 0) : 0;
+    const failures = previousFailures + 1;
+
+    this.lastFailureAtByScope.set(scopeId, now);
     this.consecutiveFailuresByScope.set(scopeId, failures);
 
     if (failures >= MAX_FAILURES_BEFORE_COOLDOWN) {
       this.cooldownUntilByScope.set(scopeId, Date.now() + COOLDOWN_MS);
-      logger.warn({ scopeId, consecutiveFailures: failures }, "Entering cooldown for scope");
+      logger.warn(
+        { scopeId, consecutiveFailures: failures, category: decision.category, errorMessage },
+        "Entering cooldown for scope",
+      );
+      return;
+    }
+
+    logger.info(
+      { scopeId, consecutiveFailures: failures, category: decision.category, withinFailureWindow },
+      "Registered cooldown-eligible failure",
+    );
+  }
+
+  private traceConversionStep(step: string, payload: Record<string, unknown>): void {
+    const entry = {
+      ts: new Date().toISOString(),
+      step,
+      ...payload,
+    };
+    try {
+      logger.info(entry, "Conversion trace step");
+      // Persist step-by-step execution so we can audit real runtime behavior
+      // even when the parent process stdio is not attached to local log files.
+      void fs.mkdir(path.dirname(this.conversionTracePath), { recursive: true })
+        .then(() => fs.appendFile(this.conversionTracePath, `${JSON.stringify(entry)}\n`, "utf8"))
+        .catch(() => undefined);
+    } catch {
+      // Tracing should never block conversion flow.
     }
   }
 
@@ -275,14 +409,796 @@ export class MercadoLivreLinkConverter {
     try {
       const u = new URL(url);
       return (
+        u.pathname.includes("/social/lapromotion") ||
         u.pathname.includes("/social/promozonevip") ||
         u.pathname.includes("/social/promo") ||
+        (u.pathname.includes("/social/") && (u.searchParams.has("ref") || u.searchParams.has("forceInApp"))) ||
         u.searchParams.has("matt_word") ||
         u.searchParams.has("matt_tool")
       );
     } catch {
       return false;
     }
+  }
+
+  private normalizeCandidateMercadoLivreUrl(rawUrl: string, baseUrl: string): string | null {
+    const raw = String(rawUrl || "").trim();
+    if (!raw) return null;
+    try {
+      const absolute = new URL(raw, baseUrl).toString();
+      const parsed = this.parseAllowedMercadoLivreHttpUrl(absolute);
+      if (!parsed) return null;
+      // Linkbuilder does not need recommendation fragments and they can vary per render.
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return null;
+    }
+  }
+
+  private isLikelyProductUrl(url: string): boolean {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
+    if (!parsed) return false;
+
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (host.startsWith("produto.")) return true;
+    if (/\/(ml[a-z]-|item\/|p\/)/i.test(path)) return true;
+    return false;
+  }
+
+  private normalizeTextForMatch(value: string): string {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+  }
+
+  private normalizeActionLabel(value: string): string {
+    return this.normalizeTextForMatch(value)
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  private isPolyActionLinkClass(className: string): boolean {
+    const normalized = String(className || "").toLowerCase();
+    return (
+      normalized.includes("poly-component__link--action-link")
+      || normalized.includes("poly-action-links__action")
+    );
+  }
+
+  private hrefLooksLikeMeliProductPath(href: string): boolean {
+    const normalized = String(href || "");
+    return (
+      /produto\.mercadolivre\.com\.br/i.test(normalized)
+      || /\/(ml[a-z]-|item\/|p\/)/i.test(normalized)
+    );
+  }
+
+  private isGoToProductActionLabel(value: string): boolean {
+    const label = this.normalizeActionLabel(value);
+    if (!label) return false;
+
+    const strongPatterns = [
+      /(^| )ir para (o )?produto( |$)/,
+      /(^| )ir ao produto( |$)/,
+      /(^| )ver (o )?produto( |$)/,
+      /(^| )abrir (o )?produto( |$)/,
+      /(^| )ir al producto( |$)/,
+      /(^| )ver producto( |$)/,
+      /(^| )go to product( |$)/,
+      /(^| )view product( |$)/,
+    ];
+    if (strongPatterns.some((pattern) => pattern.test(label))) return true;
+
+    const hasProductWord = /(^| )(produto|producto|product)( |$)/.test(label);
+    const hasActionVerb = /(^| )(ir|ver|abrir|acessar|comprar|go|view|open)( |$)/.test(label);
+
+    return (
+      hasProductWord
+      && hasActionVerb
+    );
+  }
+
+  private scoreDestinationCandidate(
+    candidateUrl: string,
+    candidate: Pick<PageDestinationCandidate, "text" | "className" | "source" | "index">,
+  ): number {
+    let score = 0;
+    const text = this.normalizeTextForMatch(candidate.text);
+    const className = String(candidate.className || "").toLowerCase();
+    const source = String(candidate.source || "").toLowerCase();
+
+    if (this.isLikelyProductUrl(candidateUrl)) score += 120;
+    if (candidateUrl.includes("produto.mercadolivre.com.br")) score += 50;
+    if (/\/social\//i.test(candidateUrl)) score -= 90;
+    if (/\/lists\//i.test(candidateUrl)) score -= 40;
+    if (/\/afiliados\//i.test(candidateUrl)) score -= 60;
+
+    if (source === "canonical") score += 35;
+    if (source === "og:url") score += 25;
+    if (source.includes("action")) score += 30;
+    if (source.includes("title")) score += 10;
+
+    if (className.includes("action-link")) score += 25;
+    if (this.isPolyActionLinkClass(className)) score += 15;
+    if (className.includes("poly-component__title")) score += 12;
+
+    if (this.isGoToProductActionLabel(candidate.text)) {
+      score += 45;
+    }
+
+    if (Number.isFinite(candidate.index) && candidate.index >= 0) {
+      score -= Math.min(15, candidate.index);
+    }
+
+    return score;
+  }
+
+  private async collectPageDestinationSnapshot(page: Page): Promise<PageDestinationSnapshot> {
+    return await page.evaluate(() => {
+      const selectors: Array<{ source: string; selector: string }> = [
+        { source: "action-link", selector: "div.poly-action-links__action a.poly-component__link--action-link" },
+        { source: "action-link", selector: "div.poly-action-links__action a" },
+        { source: "action-link", selector: "a.poly-component__link--action-link" },
+        { source: "title-link", selector: "a.poly-component__title" },
+        { source: "title-link", selector: "a[class*='poly-component__title']" },
+        { source: "product-link", selector: "a[href*='produto.mercadolivre.com.br']" },
+        { source: "product-link", selector: "a[href*='/MLA-'], a[href*='/MLB-'], a[href*='/MLC-'], a[href*='/MLM-'], a[href*='/MLU-'], a[href*='/p/']" },
+      ];
+
+      const candidates: PageDestinationCandidate[] = [];
+      const seen = new Set<string>();
+      let index = 0;
+
+      for (const { source, selector } of selectors) {
+        const anchors = Array.from(document.querySelectorAll(selector)).slice(0, 30);
+        for (const anchor of anchors) {
+          const href = String(anchor.getAttribute("href") || "").trim();
+          if (!href) continue;
+
+          const text = String(anchor.textContent || "").replace(/\s+/g, " ").trim();
+          const className = String(anchor.getAttribute("class") || "").trim();
+          const dedupeKey = `${href}::${text}::${className}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+
+          candidates.push({ href, text, className, source, index });
+          index += 1;
+        }
+      }
+
+      const canonicalUrl = String(document.querySelector("link[rel='canonical']")?.getAttribute("href") || "").trim();
+      const ogUrl = String(document.querySelector("meta[property='og:url'], meta[name='og:url']")?.getAttribute("content") || "").trim();
+
+      return {
+        currentUrl: location.href,
+        canonicalUrl,
+        ogUrl,
+        candidates,
+      };
+    });
+  }
+
+  private chooseBestDestinationUrl(snapshot: PageDestinationSnapshot, baseUrl: string): string | null {
+    const rawCandidates: Array<Pick<PageDestinationCandidate, "href" | "text" | "className" | "source" | "index">> = [
+      { href: snapshot.currentUrl, text: "", className: "", source: "current", index: -1 },
+      { href: snapshot.canonicalUrl, text: "", className: "", source: "canonical", index: -1 },
+      { href: snapshot.ogUrl, text: "", className: "", source: "og:url", index: -1 },
+      ...snapshot.candidates,
+    ];
+
+    let bestUrl: string | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    const seenUrls = new Set<string>();
+
+    for (const candidate of rawCandidates) {
+      const normalized = this.normalizeCandidateMercadoLivreUrl(candidate.href, baseUrl);
+      if (!normalized) continue;
+      if (seenUrls.has(normalized)) continue;
+      seenUrls.add(normalized);
+
+      const score = this.scoreDestinationCandidate(normalized, candidate);
+      if (score > bestScore) {
+        bestScore = score;
+        bestUrl = normalized;
+      }
+    }
+
+    if (!bestUrl) return null;
+    if (this.isLikelyProductUrl(bestUrl)) return bestUrl;
+    if (!this.isPromozoneUrl(bestUrl) && bestScore >= 45) return bestUrl;
+    return null;
+  }
+
+  private getDestinationHintSelectors(): string[] {
+    return [
+      "div.poly-action-links__action a",
+      "a.poly-component__link--action-link",
+      "a.poly-component__title",
+      "a[href*='produto.mercadolivre.com.br']",
+    ];
+  }
+
+  private getActionClickSelectors(): string[] {
+    return [
+      "div.poly-action-links__action a.poly-component__link--action-link",
+      "div.poly-action-links__action a",
+      "a.poly-component__link--action-link",
+      "a.poly-component__title",
+      "a[href*='produto.mercadolivre.com.br']",
+    ];
+  }
+
+  private async waitForGoToProductHref(page: Page, baseUrl: string): Promise<string | null> {
+    const deadlinesMs = [1200, 2400, 4000, 6000, 8500, 11000, 14000];
+    let elapsedPrevious = 0;
+
+    for (const elapsed of deadlinesMs) {
+      const waitMs = Math.max(0, elapsed - elapsedPrevious);
+      elapsedPrevious = elapsed;
+      if (waitMs > 0) await page.waitForTimeout(waitMs);
+
+      const href = await page.evaluate(() => {
+        const normalize = (value: string) => String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        const isGoToProductLabel = (value: string): boolean => {
+          if (!value) return false;
+          if (
+            /(^| )ir para (o )?produto( |$)/.test(value)
+            || /(^| )ir ao produto( |$)/.test(value)
+            || /(^| )ver (o )?produto( |$)/.test(value)
+            || /(^| )abrir (o )?produto( |$)/.test(value)
+            || /(^| )ir al producto( |$)/.test(value)
+            || /(^| )ver producto( |$)/.test(value)
+            || /(^| )go to product( |$)/.test(value)
+            || /(^| )view product( |$)/.test(value)
+          ) {
+            return true;
+          }
+          const hasProductWord = /(^| )(produto|producto|product)( |$)/.test(value);
+          const hasActionVerb = /(^| )(ir|ver|abrir|acessar|comprar|go|view|open)( |$)/.test(value);
+          return hasProductWord && hasActionVerb;
+        };
+
+        const hrefLooksLikeProduct = (href: string): boolean => (
+          /produto\.mercadolivre\.com\.br/i.test(href)
+          || /\/(ml[a-z]-|item\/|p\/)/i.test(href)
+        );
+
+        const anchors = Array.from(document.querySelectorAll("a[href]"));
+        for (const anchor of anchors) {
+          const href = String(anchor.getAttribute("href") || "").trim();
+          if (!href) continue;
+          const text = normalize(String(anchor.textContent || ""));
+          const className = String(anchor.getAttribute("class") || "").toLowerCase();
+          const isActionLink = className.includes("poly-component__link--action-link")
+            || className.includes("poly-action-links__action");
+          const isGoToProduct = isGoToProductLabel(text) || (isActionLink && hrefLooksLikeProduct(href));
+          if (!isGoToProduct) continue;
+          return href;
+        }
+        return "";
+      });
+
+      const normalized = this.normalizeCandidateMercadoLivreUrl(this.decodeHtmlEntities(href), baseUrl);
+      if (normalized && this.isLikelyProductUrl(normalized)) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private async resolveProductUrlByClickingGoToProduct(page: Page, baseUrl: string): Promise<string | null> {
+    const hasCandidate = await page.evaluate(() => {
+      const normalize = (value: string) => String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const isGoToProductLabel = (value: string): boolean => {
+        if (!value) return false;
+        if (
+          /(^| )ir para (o )?produto( |$)/.test(value)
+          || /(^| )ir ao produto( |$)/.test(value)
+          || /(^| )ver (o )?produto( |$)/.test(value)
+          || /(^| )abrir (o )?produto( |$)/.test(value)
+          || /(^| )ir al producto( |$)/.test(value)
+          || /(^| )ver producto( |$)/.test(value)
+          || /(^| )go to product( |$)/.test(value)
+          || /(^| )view product( |$)/.test(value)
+        ) {
+          return true;
+        }
+        const hasProductWord = /(^| )(produto|producto|product)( |$)/.test(value);
+        const hasActionVerb = /(^| )(ir|ver|abrir|acessar|comprar|go|view|open)( |$)/.test(value);
+        return hasProductWord && hasActionVerb;
+      };
+
+      const hrefLooksLikeProduct = (href: string): boolean => (
+        /produto\.mercadolivre\.com\.br/i.test(href)
+        || /\/(ml[a-z]-|item\/|p\/)/i.test(href)
+      );
+
+      const anchors = Array.from(document.querySelectorAll("a[href]"));
+      for (const anchor of anchors) {
+        anchor.removeAttribute("data-codex-go-to-product");
+      }
+
+      for (const anchor of anchors) {
+        const href = String(anchor.getAttribute("href") || "").trim();
+        if (!href) continue;
+
+        const text = normalize(String(anchor.textContent || ""));
+        const className = String(anchor.getAttribute("class") || "").toLowerCase();
+        const isActionLink = className.includes("poly-component__link--action-link")
+          || className.includes("poly-action-links__action");
+
+        if (isGoToProductLabel(text) || (isActionLink && hrefLooksLikeProduct(href))) {
+          anchor.setAttribute("data-codex-go-to-product", "1");
+          return true;
+        }
+      }
+
+      return false;
+    });
+    if (!hasCandidate) return null;
+
+    const goToProductLocator = page.locator("a[data-codex-go-to-product='1']").first();
+
+    const directHref = this.decodeHtmlEntities(String(await goToProductLocator.getAttribute("href").catch(() => "") || "").trim());
+    const normalizedHref = this.normalizeCandidateMercadoLivreUrl(directHref, baseUrl);
+    if (normalizedHref && this.isLikelyProductUrl(normalizedHref)) {
+      return normalizedHref;
+    }
+
+    const beforeClickUrl = this.normalizeCandidateMercadoLivreUrl(page.url(), baseUrl) || page.url();
+    const popupPromise = page.waitForEvent("popup", { timeout: 6500 }).catch(() => null);
+    const navPromise = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 6500 }).catch(() => null);
+
+    await goToProductLocator.scrollIntoViewIfNeeded().catch(() => undefined);
+    await goToProductLocator.click({ timeout: 3000, force: true }).catch(() => undefined);
+    await page.waitForTimeout(900);
+
+    const afterClickUrl = this.normalizeCandidateMercadoLivreUrl(page.url(), baseUrl);
+    if (afterClickUrl && afterClickUrl !== beforeClickUrl && this.isLikelyProductUrl(afterClickUrl)) {
+      return afterClickUrl;
+    }
+
+    const popup = await popupPromise;
+    if (popup) {
+      try {
+        await popup.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
+        const popupUrl = this.normalizeCandidateMercadoLivreUrl(popup.url(), baseUrl);
+        if (popupUrl && this.isLikelyProductUrl(popupUrl)) {
+          return popupUrl;
+        }
+      } finally {
+        await popup.close().catch(() => undefined);
+      }
+    }
+
+    await navPromise.catch(() => undefined);
+    return null;
+  }
+
+  private async resolveProductUrlFromPageContent(page: Page, baseUrl: string): Promise<string | null> {
+    const goToProductHref = await this.waitForGoToProductHref(page, baseUrl);
+    if (goToProductHref) {
+      return goToProductHref;
+    }
+
+    await page.waitForSelector(this.getDestinationHintSelectors().join(", "), { timeout: 8000 }).catch(() => undefined);
+
+    const snapshot = await this.collectPageDestinationSnapshot(page);
+    const snapshotBest = this.chooseBestDestinationUrl(snapshot, baseUrl);
+    if (snapshotBest && this.isLikelyProductUrl(snapshotBest)) {
+      return snapshotBest;
+    }
+
+    // Explicitly target anchors labeled "Ir para produto", independent of class changes.
+    const labeledHref = await page.evaluate(() => {
+      const normalize = (value: string) => value
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const isGoToProductLabel = (value: string): boolean => {
+        if (!value) return false;
+        if (
+          /(^| )ir para (o )?produto( |$)/.test(value)
+          || /(^| )ir ao produto( |$)/.test(value)
+          || /(^| )ver (o )?produto( |$)/.test(value)
+          || /(^| )abrir (o )?produto( |$)/.test(value)
+          || /(^| )ir al producto( |$)/.test(value)
+          || /(^| )ver producto( |$)/.test(value)
+          || /(^| )go to product( |$)/.test(value)
+          || /(^| )view product( |$)/.test(value)
+        ) {
+          return true;
+        }
+        const hasProductWord = /(^| )(produto|producto|product)( |$)/.test(value);
+        const hasActionVerb = /(^| )(ir|ver|abrir|acessar|comprar|go|view|open)( |$)/.test(value);
+        return hasProductWord && hasActionVerb;
+      };
+
+      const hrefLooksLikeProduct = (href: string): boolean => (
+        /produto\.mercadolivre\.com\.br/i.test(href)
+        || /\/(ml[a-z]-|item\/|p\/)/i.test(href)
+      );
+
+      const anchors = Array.from(document.querySelectorAll("a[href]"));
+      for (const anchor of anchors) {
+        const href = String(anchor.getAttribute("href") || "").trim();
+        if (!href) continue;
+
+        const text = normalize(String(anchor.textContent || ""));
+        const className = String(anchor.getAttribute("class") || "").toLowerCase();
+        const isActionLink = className.includes("poly-component__link--action-link")
+          || className.includes("poly-action-links__action");
+
+        if (isGoToProductLabel(text) || (isActionLink && hrefLooksLikeProduct(href))) {
+          return href;
+        }
+      }
+      return "";
+    });
+
+    const normalizedLabeledHref = this.normalizeCandidateMercadoLivreUrl(
+      this.decodeHtmlEntities(labeledHref),
+      baseUrl,
+    );
+    if (normalizedLabeledHref && this.isLikelyProductUrl(normalizedLabeledHref)) {
+      return normalizedLabeledHref;
+    }
+
+    return null;
+  }
+
+  private async resolveProductUrlByClickingAction(page: Page, baseUrl: string): Promise<string | null> {
+    const goToProductByLabel = await this.resolveProductUrlByClickingGoToProduct(page, baseUrl);
+    if (goToProductByLabel) {
+      return goToProductByLabel;
+    }
+
+    for (const selector of this.getActionClickSelectors()) {
+      try {
+        const link = await page.$(selector);
+        if (!link) continue;
+
+        const hrefAttr = this.decodeHtmlEntities(String(await link.getAttribute("href") || "").trim());
+        const hrefNormalized = this.normalizeCandidateMercadoLivreUrl(hrefAttr, baseUrl);
+        if (hrefNormalized && this.isLikelyProductUrl(hrefNormalized)) {
+          return hrefNormalized;
+        }
+
+        const beforeClickUrl = this.normalizeCandidateMercadoLivreUrl(page.url(), baseUrl) || page.url();
+        const popupPromise = page
+          .waitForEvent("popup", { timeout: 6000 })
+          .catch(() => null);
+        const navPromise = page
+          .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 6000 })
+          .catch(() => null);
+
+        await link.click({ timeout: 2500 }).catch(() => undefined);
+        await page.waitForTimeout(900);
+
+        const afterClickUrl = this.normalizeCandidateMercadoLivreUrl(page.url(), baseUrl);
+        if (
+          afterClickUrl
+          && afterClickUrl !== beforeClickUrl
+          && this.isLikelyProductUrl(afterClickUrl)
+        ) {
+          return afterClickUrl;
+        }
+
+        const popup = await popupPromise;
+        if (popup) {
+          try {
+            await popup.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
+            const popupUrl = this.normalizeCandidateMercadoLivreUrl(popup.url(), baseUrl);
+            if (popupUrl && this.isLikelyProductUrl(popupUrl)) {
+              return popupUrl;
+            }
+          } finally {
+            await popup.close().catch(() => undefined);
+          }
+        }
+
+        await navPromise.catch(() => undefined);
+      } catch {
+        // Keep trying fallback action selectors.
+      }
+    }
+
+    return null;
+  }
+
+  private prepareUrlForLinkbuilder(url: string): string {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
+    if (!parsed) return url;
+
+    // Always remove fragments from candidate URLs before sending to Linkbuilder.
+    parsed.hash = "";
+
+    return parsed.toString();
+  }
+
+  private normalizeUrlForComparison(url: string): string {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
+    if (!parsed) return String(url || "").trim();
+    parsed.hash = "";
+    return parsed.toString();
+  }
+
+  private isLikelyAffiliateOutputUrl(candidateUrl: string, originalUrl: string): boolean {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(candidateUrl);
+    if (!parsed) return false;
+
+    const normalizedCandidate = this.normalizeUrlForComparison(parsed.toString());
+    const normalizedOriginal = this.normalizeUrlForComparison(originalUrl);
+    if (!normalizedCandidate || normalizedCandidate === normalizedOriginal) {
+      return false;
+    }
+
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (this.isMercadoLivreShortHost(host)) return true;
+    if (host === "s.mercadolivre.com.br" || host === "s.mercadolibre.com") return true;
+
+    const path = parsed.pathname.toLowerCase();
+    if (path.startsWith("/sec/")) return true;
+    if (path.includes("/social/")) return true;
+
+    const search = parsed.searchParams;
+    if (
+      search.has("ref")
+      || search.has("matt_word")
+      || search.has("matt_tool")
+      || search.has("matt_event_ts")
+      || search.has("matt_tracing_id")
+      || search.has("tracking_id")
+      || search.has("c_id")
+      || search.has("c_uid")
+    ) {
+      return true;
+    }
+
+    // If it is still a Mercado Livre URL but no longer looks like a raw product URL,
+    // it is likely the generated tracking/deeplink output.
+    if (!this.isLikelyProductUrl(parsed.toString())) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private toCanonicalProductUrlForLinkbuilder(url: string): string {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
+    if (!parsed) return this.prepareUrlForLinkbuilder(url);
+
+    parsed.hash = "";
+
+    // Retry with canonical product path (without tracking query params). Some
+    // linkbuilder renders accept only the clean product URL on second attempt.
+    if (this.isLikelyProductUrl(parsed.toString())) {
+      parsed.search = "";
+    }
+
+    return parsed.toString();
+  }
+
+  private async fillLinkbuilderInput(page: Page, inputUrl: string): Promise<boolean> {
+    const inputSelectors = [
+      "#url-0",
+      'textarea[placeholder*="mercadolivre.com"]',
+      'textarea[placeholder*="link"]',
+      'textarea[placeholder*="url"]',
+      'input[placeholder*="link"]',
+      'input[placeholder*="url"]',
+      'textarea[name="link"]',
+      "#product-url",
+      "#link-input",
+      '[data-testid="link-input"]',
+    ];
+
+    for (const selector of inputSelectors) {
+      try {
+        const el = await page.$(selector);
+        if (!el) continue;
+        await el.fill("");
+        await el.fill(inputUrl);
+        logger.debug({ selector }, "Filled linkbuilder input");
+        return true;
+      } catch {
+        // Ignore selector lookup failure and try next selector.
+      }
+    }
+
+    // Fallback: any visible textarea/input.
+    try {
+      const textareas = await page.$$("textarea:visible");
+      if (textareas.length > 0) {
+        await textareas[0].fill("");
+        await textareas[0].fill(inputUrl);
+        return true;
+      }
+    } catch {
+      // Ignore fallback failure.
+    }
+
+    try {
+      const inputs = await page.$$("input:visible");
+      for (const input of inputs) {
+        await input.fill("");
+        await input.fill(inputUrl);
+        return true;
+      }
+    } catch {
+      // Ignore fallback failure.
+    }
+
+    return false;
+  }
+
+  private async triggerLinkbuilderGeneration(page: Page): Promise<void> {
+    await page.waitForFunction(
+      () => {
+        const btn =
+          document.querySelector("button.links-form__button")
+          || document.querySelector(".andes-button--loud");
+        return btn && !btn.hasAttribute("disabled");
+      },
+      { timeout: 6000 },
+    ).catch(() => {
+      // Non-fatal: proceed even if button stays disabled (might already be ready).
+    });
+
+    const buttonSelectors = [
+      "button.links-form__button:not([disabled])",
+      'button:has-text("Gerar")',
+      'button:has-text("Gerar link")',
+      'button[type="submit"]:not([disabled])',
+      'button:has-text("Converter")',
+      '[data-testid="generate-button"]',
+    ];
+
+    for (const sel of buttonSelectors) {
+      try {
+        await page.click(sel, { timeout: 3000 });
+        logger.debug({ selector: sel }, "Clicked generate button");
+        return;
+      } catch {
+        // Ignore click selector failure and try next selector.
+      }
+    }
+
+    // Last fallback.
+    await page.keyboard.press("Enter").catch(() => undefined);
+  }
+
+  /**
+   * Strip `forceInApp` from a URL before opening in headless browser.
+   * That parameter triggers a JS redirect to the meli:// native app deep link,
+   * which causes ERR_UNKNOWN_URL_SCHEME in Playwright and prevents the product
+   * content from rendering — even though the page works fine without it.
+   */
+  private stripForceInApp(url: string): string {
+    try {
+      const parsed = new URL(url);
+      if (parsed.searchParams.has("forceInApp")) {
+        parsed.searchParams.delete("forceInApp");
+        return parsed.toString();
+      }
+    } catch {
+      // ignore
+    }
+    return url;
+  }
+
+  private decodeHtmlEntities(value: string): string {
+    return String(value || "")
+      .replace(/&amp;/gi, "&")
+      .replace(/&#38;/gi, "&")
+      .replace(/&#x26;/gi, "&")
+      .replace(/&quot;/gi, "\"")
+      .replace(/&#34;/gi, "\"")
+      .replace(/&#x22;/gi, "\"")
+      .replace(/&#39;/gi, "'")
+      .replace(/&#x27;/gi, "'");
+  }
+
+  private extractLikelyProductUrlFromHtml(html: string, baseUrl: string): string | null {
+    const rawHtml = String(html || "");
+    if (!rawHtml) return null;
+
+    const absoluteMatches = rawHtml.match(/https?:\/\/produto\.mercadolivre\.com\.br\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/gi) || [];
+    for (const candidate of absoluteMatches) {
+      const normalized = this.normalizeCandidateMercadoLivreUrl(this.decodeHtmlEntities(candidate), baseUrl);
+      if (normalized && this.isLikelyProductUrl(normalized)) {
+        return normalized;
+      }
+    }
+
+    const hrefPattern = /href\s*=\s*["']([^"']+)["']/gi;
+    let match: RegExpExecArray | null = null;
+    let fallback: string | null = null;
+    let processed = 0;
+
+    while ((match = hrefPattern.exec(rawHtml)) !== null) {
+      processed += 1;
+      if (processed > 600) break;
+
+      const hrefRaw = this.decodeHtmlEntities(String(match[1] || "").trim());
+      if (!hrefRaw) continue;
+
+      const normalized = this.normalizeCandidateMercadoLivreUrl(hrefRaw, baseUrl);
+      if (!normalized || !this.isLikelyProductUrl(normalized)) continue;
+
+      const snippet = this.normalizeTextForMatch(rawHtml.slice(Math.max(0, match.index - 220), match.index + 220));
+      const snippetHasGoToProductLabel = (
+        /(?:^| )(?:ir para(?: o)?|ir ao|ver|abrir) (?:[a-z0-9]+ )?produto(?: |$)/.test(snippet)
+        || snippet.includes("ir al producto")
+        || snippet.includes("ver producto")
+        || snippet.includes("go to product")
+        || snippet.includes("view product")
+      );
+      if (
+        snippetHasGoToProductLabel
+        || snippet.includes("action-link")
+        || snippet.includes("poly-component__title")
+      ) {
+        return normalized;
+      }
+
+      if (!fallback) fallback = normalized;
+    }
+
+    return fallback;
+  }
+
+  private async resolveLandingUrlViaHttp(url: string): Promise<string | null> {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
+    if (!parsed) return null;
+
+    const cleanUrl = this.stripForceInApp(parsed.toString());
+    try {
+      const response = await fetch(cleanUrl, {
+        method: "GET",
+        redirect: "follow",
+        headers: REDIRECT_FETCH_HEADERS,
+        signal: AbortSignal.timeout(12000),
+      });
+
+      const finalUrl = this.normalizeCandidateMercadoLivreUrl(response.url || cleanUrl, cleanUrl) || cleanUrl;
+      if (this.isLikelyProductUrl(finalUrl)) {
+        return finalUrl;
+      }
+
+      const html = await response.text();
+      const extracted = this.extractLikelyProductUrlFromHtml(html, finalUrl);
+      if (extracted) {
+        return extracted;
+      }
+    } catch (error) {
+      logger.debug({ url: cleanUrl, error: String(error) }, "resolveLandingUrlViaHttp failed");
+    }
+
+    return null;
   }
 
   // Exact allowlist for outbound HEAD redirect-resolution.
@@ -350,14 +1266,16 @@ export class MercadoLivreLinkConverter {
         let response = await fetch(current.toString(), {
           method: "HEAD",
           redirect: "manual",
+          headers: REDIRECT_FETCH_HEADERS,
           signal: AbortSignal.timeout(8000),
         });
 
         // Some edge/CDN routes reject HEAD. Fallback to GET with the same redirect guards.
-        if (response.status === 405 || response.status === 501) {
+        if (response.status === 403 || response.status === 405 || response.status === 501) {
           response = await fetch(current.toString(), {
             method: "GET",
             redirect: "manual",
+            headers: REDIRECT_FETCH_HEADERS,
             signal: AbortSignal.timeout(8000),
           });
         }
@@ -384,9 +1302,103 @@ export class MercadoLivreLinkConverter {
   }
 
   /**
-   * When the incoming URL is a promozonevip/social promo link, open the page in the
-   * authenticated context, find the product title anchor and return its href.
-   * The real product URL is always in `a.poly-component__title` on the portal page.
+   * Fallback for short links that are blocked in raw HTTP redirect resolution
+   * or need client-side redirects to reach the final Mercado Livre URL.
+   *
+   * If the short link resolves to a promozone/lapromotion page, we also try to
+   * extract the real product URL from the page content here — avoiding a second
+   * full browser load in resolvePromozone.
+   */
+  private async resolveShortLinkInBrowser(url: string, context: BrowserContext): Promise<string> {
+    const parsed = this.parseAllowedMercadoLivreHttpUrl(url);
+    if (!parsed || !this.isMercadoLivreShortHost(parsed.hostname)) return url;
+
+    const tempPage = await context.newPage();
+    try {
+      await this.applyAntiBotPatches(tempPage);
+      await tempPage.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css,mp4,mp3,webm,avi}", (route) => route.abort());
+      await tempPage.route("**/analytics*", (route) => route.abort());
+      await tempPage.route("**/beacon*", (route) => route.abort());
+
+      // "commit" fires when the HTTP response is committed — after all server-side redirects
+      // but BEFORE any HTML is parsed or JS runs. tempPage.url() at this point is guaranteed
+      // to be the final HTTP URL, so we can safely strip forceInApp before JS has a chance to
+      // redirect to meli:// (ERR_UNKNOWN_URL_SCHEME in headless Chrome).
+      await tempPage.goto(parsed.toString(), { waitUntil: "commit", timeout: 30000 });
+
+      const urlAfterCommit = tempPage.url();
+      const urlAfterCommitParsed = this.parseAllowedMercadoLivreHttpUrl(urlAfterCommit);
+      if (urlAfterCommitParsed) {
+        const cleanUrl = this.stripForceInApp(urlAfterCommit);
+        if (cleanUrl !== urlAfterCommit) {
+          logger.debug({ shortUrl: parsed.toString(), original: urlAfterCommit, clean: cleanUrl }, "Short link resolved to forceInApp URL; reloading without it");
+          try {
+            await tempPage.goto(cleanUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+          } catch {
+            // Keep going.
+          }
+        } else {
+          await tempPage.waitForLoadState("domcontentloaded", { timeout: 25000 }).catch(() => {});
+        }
+      } else {
+        await tempPage.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+      }
+
+      await tempPage.waitForTimeout(2000);
+
+      let currentUrl = tempPage.url();
+      let expanded = this.parseAllowedMercadoLivreHttpUrl(currentUrl);
+
+      if (!expanded) {
+        logger.warn({ shortUrl: parsed.toString(), currentUrl }, "Short link resolved to non-HTTP URL after all retries; returning original");
+        return parsed.toString();
+      }
+
+      const expandedUrl = expanded.toString();
+
+      // If we landed on a promozone/lapromotion page, attempt to pull the real
+      // product URL directly from the page content while the page is still open.
+      // This saves a second full browser navigation in resolvePromozone.
+      if (this.isPromozoneUrl(expandedUrl)) {
+        try {
+          // Strict flow: click action first, then read href/content fallback.
+          const productUrlFromClick = await this.resolveProductUrlByClickingAction(tempPage, expandedUrl);
+          if (productUrlFromClick) {
+            logger.debug(
+              { shortUrl: parsed.toString(), expandedUrl, productUrl: productUrlFromClick },
+              "Resolved product URL from short-link action click",
+            );
+            return productUrlFromClick;
+          }
+
+          const productUrlFromContent = await this.resolveProductUrlFromPageContent(tempPage, expandedUrl);
+          if (productUrlFromContent) {
+            logger.debug(
+              { shortUrl: parsed.toString(), expandedUrl, productUrl: productUrlFromContent },
+              "Resolved product URL from short-link page content",
+            );
+            return productUrlFromContent;
+          }
+        } catch (snapshotErr) {
+          logger.debug({ error: String(snapshotErr) }, "Short-link promozone snapshot failed; falling back to promozone URL");
+        }
+      }
+
+      logger.debug({ shortUrl: parsed.toString(), expandedUrl }, "Resolved short link with browser fallback");
+      return expandedUrl;
+    } catch (error) {
+      logger.debug({ url: parsed.toString(), error: String(error) }, "Browser short-link resolution failed");
+      return parsed.toString();
+    } finally {
+      await tempPage.close().catch((closeError) => {
+        logger.debug({ error: String(closeError) }, "Failed to close temp short-link page");
+      });
+    }
+  }
+
+  /**
+    * Open landing pages that may hide the product URL and resolve destination dynamically
+    * based on rendered page content (CTA/title/canonical/meta).
    */
   private async resolvePromozone(url: string, context: BrowserContext): Promise<string> {
     const tempPage = await context.newPage();
@@ -395,32 +1407,71 @@ export class MercadoLivreLinkConverter {
       await tempPage.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css,mp4,mp3,webm,avi}", (route) => route.abort());
       await tempPage.route("**/analytics*", (route) => route.abort());
       await tempPage.route("**/beacon*", (route) => route.abort());
-      await tempPage.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await tempPage.waitForTimeout(1500);
 
-      // Try the known title anchor class, then any link containing the product path
-      const selectors = [
-        'a.poly-component__title',
-        'a[class*="poly-component__title"]',
-        'a[class*="title"][href*="mercadolivre.com.br"]',
-      ];
-
-      for (const sel of selectors) {
+      // "commit" fires after all server-side redirects, before any HTML parsing or JS execution.
+      // This is the earliest reliable point where tempPage.url() reflects the final HTTP URL,
+      // so we can strip forceInApp before JS has a chance to redirect to meli://.
+      let openUrl = url;
+      try {
+        await tempPage.goto(openUrl, { waitUntil: "commit", timeout: 30000 });
+      } catch (gotoErr) {
+        logger.debug({ url: openUrl, error: String(gotoErr) }, "resolvePromozone: initial goto failed, retrying");
         try {
-          const el = await tempPage.$(sel);
-          if (el) {
-            const href = await el.getAttribute("href");
-            if (href && href.includes("mercadolivre.com.br")) {
-              logger.debug({ promozoneUrl: url, realUrl: href }, "Resolved promozonevip → real product URL");
-              return href;
-            }
-          }
+          await tempPage.goto(openUrl, { waitUntil: "commit", timeout: 20000 });
         } catch {
-          // Ignore selector miss and continue fallback cascade.
+          // Will proceed with whatever state the page is in.
         }
       }
 
-      logger.warn({ url }, "Could not find product title link on promozonevip page — using original URL");
+      const urlAfterCommit = tempPage.url();
+      const cleanUrl = this.stripForceInApp(urlAfterCommit);
+      if (cleanUrl !== urlAfterCommit && this.parseAllowedMercadoLivreHttpUrl(cleanUrl)) {
+        openUrl = cleanUrl;
+        logger.debug({ original: urlAfterCommit, clean: cleanUrl }, "resolvePromozone: stripped forceInApp; reloading clean URL");
+        try {
+          await tempPage.goto(openUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+        } catch (retryErr) {
+          logger.debug({ url: openUrl, error: String(retryErr) }, "resolvePromozone: clean-URL goto failed");
+        }
+      } else {
+        await tempPage.waitForLoadState("domcontentloaded", { timeout: 25000 }).catch(() => {});
+      }
+
+      await tempPage.waitForTimeout(1800);
+
+      // Safety net: if the page still drifted to a non-HTTP URL (any remaining
+      // JS redirect we didn't catch), re-navigate to the last known clean URL.
+      const urlAfterWait = tempPage.url();
+      if (!this.parseAllowedMercadoLivreHttpUrl(urlAfterWait)) {
+        logger.debug({ urlAfterWait, openUrl }, "resolvePromozone: page left HTTP domain after wait, re-navigating");
+        try {
+          await tempPage.goto(openUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+          await tempPage.waitForTimeout(1500);
+        } catch {
+          // Keep going with whatever content is available.
+        }
+      }
+
+      // Strict flow: click action first, then read href/content fallback.
+      const clickedUrl = await this.resolveProductUrlByClickingAction(tempPage, tempPage.url());
+      if (clickedUrl) {
+        logger.debug(
+          { promozoneUrl: url, realUrl: clickedUrl },
+          "Resolved promozone/social via action click",
+        );
+        return clickedUrl;
+      }
+
+      const snapshotBest = await this.resolveProductUrlFromPageContent(tempPage, tempPage.url());
+      if (snapshotBest) {
+        logger.debug(
+          { promozoneUrl: url, realUrl: snapshotBest },
+          "Resolved destination URL from page-content snapshot",
+        );
+        return snapshotBest;
+      }
+
+      logger.warn({ url }, "Could not resolve destination URL from promozone/social page — using original URL");
       return url;
     } catch (e) {
       logger.warn({ url, error: String(e) }, "resolvePromozone failed — using original URL");
@@ -455,7 +1506,7 @@ export class MercadoLivreLinkConverter {
       const el = await page.$("#textfield-copyLink-1");
       if (el) {
         const val = await el.inputValue();
-        if (val && val.startsWith("https://")) return val;
+        if (val && this.isLikelyAffiliateOutputUrl(val, originalUrl)) return val;
       }
     } catch {
       // Ignore this strategy failure and continue extraction cascade.
@@ -466,7 +1517,7 @@ export class MercadoLivreLinkConverter {
       const el = await page.$('[aria-label*="Copie o link"], [aria-label*="Link gerado"], [aria-label*="affiliate"], [aria-label*="resultado"]');
       if (el) {
         const val = await el.inputValue();
-        if (val && val.startsWith("https://")) return val;
+        if (val && this.isLikelyAffiliateOutputUrl(val, originalUrl)) return val;
       }
     } catch {
       // Ignore this strategy failure and continue extraction cascade.
@@ -478,18 +1529,24 @@ export class MercadoLivreLinkConverter {
         const el = await page.$(`#${id}`);
         if (el) {
           const val = await el.inputValue().catch(() => el.textContent());
-          if (val && typeof val === "string" && val.startsWith("https://")) return val;
+          if (val && typeof val === "string" && this.isLikelyAffiliateOutputUrl(val, originalUrl)) return val;
         }
       }
     } catch {
       // Ignore this strategy failure and continue extraction cascade.
     }
 
-    // Strategy 3: regex from page content — meli.la short links and s.mercadolivre.com.br
+    // Strategy 3: scan URLs from page markup and validate probable affiliate outputs.
     try {
       const content = await page.content();
-      const match = content.match(/https:\/\/(meli\.la|s\.mercadolivre\.com\.br)\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]{5,}/);
-      if (match) return match[0];
+      const matches = content.match(/https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]{8,}/g) || [];
+      for (const rawMatch of matches.slice(0, 500)) {
+        const candidate = this.decodeHtmlEntities(String(rawMatch || "").trim());
+        if (!candidate) continue;
+        if (this.isLikelyAffiliateOutputUrl(candidate, originalUrl)) {
+          return candidate;
+        }
+      }
     } catch {
       // Ignore this strategy failure and continue extraction cascade.
     }
@@ -499,10 +1556,28 @@ export class MercadoLivreLinkConverter {
       const inputs = await page.$$("input[readonly], textarea[readonly]");
       for (const input of inputs) {
         const val = await input.inputValue();
-        if (val && val.startsWith("https://") && !val.includes(new URL(originalUrl).hostname === "www.mercadolivre.com.br" ? "mercadolivre.com.br" : "x")) return val;
+        if (val && this.isLikelyAffiliateOutputUrl(val, originalUrl)) return val;
       }
     } catch {
       // Ignore this strategy failure and continue extraction cascade.
+    }
+
+    return null;
+  }
+
+  private async waitForAffiliateLink(page: Page, originalUrl: string): Promise<string | null> {
+    const deadlinesMs = [2500, 4000, 5500, 7000, 8500, 10000, 12000, 14000, 17000, 20000];
+    let lastElapsed = 0;
+
+    for (const elapsed of deadlinesMs) {
+      const waitMs = Math.max(0, elapsed - lastElapsed);
+      if (waitMs > 0) {
+        await page.waitForTimeout(waitMs);
+      }
+      lastElapsed = elapsed;
+
+      const link = await this.extractAffiliateLink(page, originalUrl);
+      if (link) return link;
     }
 
     return null;
@@ -531,7 +1606,12 @@ export class MercadoLivreLinkConverter {
     }
 
     // Step 1a: Resolve /sec/ short redirect with a lightweight HTTP HEAD (no browser needed)
-    let resolvedUrl = await this.resolveRedirect(productUrl);
+    let resolvedDestinationUrl = await this.resolveRedirect(productUrl);
+    this.traceConversionStep("initial_redirect_resolution", {
+      productUrl,
+      resolvedDestinationUrl,
+      sessionId,
+    });
 
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
@@ -559,18 +1639,104 @@ export class MercadoLivreLinkConverter {
       context = await browser.newContext({
         storageState: decryptedState,
         viewport: { width: 800, height: 600 },
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        userAgent: BROWSER_LIKE_USER_AGENT,
         locale: "pt-BR",
       });
 
-      // Step 1b: Resolve promozonevip / social promo URLs → extract real product URL
-      // These are pre-converted affiliate deep-links; the browser needs session cookies to see
-      // the product title anchor that holds the real product URL.
-      if (this.isPromozoneUrl(resolvedUrl)) {
-        resolvedUrl = await this.resolvePromozone(resolvedUrl, context);
+      const originalInputParsed = this.parseAllowedMercadoLivreHttpUrl(productUrl);
+      const originalInputIsShortLink = Boolean(
+        originalInputParsed && this.isMercadoLivreShortHost(originalInputParsed.hostname),
+      );
+      if (originalInputIsShortLink) {
+        this.traceConversionStep("resolve_short_url_browser_start", { productUrl, sessionId });
+        // Strict flow for short links: always open the ORIGINAL short URL in browser,
+        // then click/resolve to product before any linkbuilder interaction.
+        resolvedDestinationUrl = await this.resolveShortLinkInBrowser(productUrl, context);
+        this.traceConversionStep("resolve_short_url_browser_done", {
+          productUrl,
+          resolvedDestinationUrl,
+          sessionId,
+        });
+      } else {
+        const shortParsed = this.parseAllowedMercadoLivreHttpUrl(resolvedDestinationUrl);
+        if (shortParsed && this.isMercadoLivreShortHost(shortParsed.hostname)) {
+          this.traceConversionStep("resolve_redirected_short_url_browser_start", {
+            sourceUrl: resolvedDestinationUrl,
+            sessionId,
+          });
+          resolvedDestinationUrl = await this.resolveShortLinkInBrowser(resolvedDestinationUrl, context);
+          this.traceConversionStep("resolve_redirected_short_url_browser_done", {
+            productUrl,
+            resolvedDestinationUrl,
+            sessionId,
+          });
+        }
       }
 
-      logger.debug({ originalUrl: productUrl, resolvedUrl, sessionId }, "Starting conversion");
+      // Step 1b: Dynamically resolve landing pages when input is not clearly a product URL.
+      if (this.isPromozoneUrl(resolvedDestinationUrl) || !this.isLikelyProductUrl(resolvedDestinationUrl)) {
+        this.traceConversionStep("resolve_landing_browser_start", {
+          productUrl,
+          currentUrl: resolvedDestinationUrl,
+          sessionId,
+        });
+        resolvedDestinationUrl = await this.resolvePromozone(resolvedDestinationUrl, context);
+        this.traceConversionStep("resolve_landing_browser_done", {
+          productUrl,
+          resolvedDestinationUrl,
+          sessionId,
+        });
+      }
+
+      // Step 1c: Last-resort HTTP parse of landing HTML. This catches short/social pages
+      // where browser automation did not expose the "Ir para produto" anchor in time.
+      if (!this.isLikelyProductUrl(resolvedDestinationUrl)) {
+        this.traceConversionStep("resolve_http_fallback_start", {
+          productUrl,
+          currentUrl: resolvedDestinationUrl,
+          sessionId,
+        });
+        const resolvedViaHttp = await this.resolveLandingUrlViaHttp(resolvedDestinationUrl);
+        if (resolvedViaHttp) {
+          resolvedDestinationUrl = resolvedViaHttp;
+          this.traceConversionStep("resolve_http_fallback_done", {
+            productUrl,
+            resolvedDestinationUrl,
+            sessionId,
+          });
+        }
+      }
+
+      if (!this.isLikelyProductUrl(resolvedDestinationUrl)) {
+        this.traceConversionStep("resolution_failed_non_product_url", {
+          productUrl,
+          resolvedDestinationUrl,
+          sessionId,
+        });
+        return {
+          success: false,
+          originalUrl: productUrl,
+          resolvedUrl: resolvedDestinationUrl,
+          error: "Nao foi possivel resolver o link informado para o link real do produto antes da conversao.",
+        };
+      }
+
+      resolvedDestinationUrl = this.normalizeCandidateMercadoLivreUrl(
+        resolvedDestinationUrl,
+        resolvedDestinationUrl,
+      ) || resolvedDestinationUrl;
+      const linkbuilderInputUrl = this.prepareUrlForLinkbuilder(resolvedDestinationUrl);
+      this.traceConversionStep("linkbuilder_start", {
+        productUrl,
+        resolvedDestinationUrl,
+        linkbuilderInputUrl,
+        sessionId,
+      });
+
+      logger.debug(
+        { originalUrl: productUrl, resolvedDestinationUrl, linkbuilderInputUrl, sessionId },
+        "Starting conversion",
+      );
 
       const page = await context.newPage();
 
@@ -615,42 +1781,7 @@ export class MercadoLivreLinkConverter {
       await page.waitForTimeout(300 + Math.floor(Math.random() * 500));
 
       // Find the URL input area — #url-0 is the known ID on the live ML linkbuilder page
-      const inputSelectors = [
-        "#url-0",
-        'textarea[placeholder*="mercadolivre.com"]',
-        'textarea[placeholder*="link"]',
-        'textarea[placeholder*="url"]',
-        'input[placeholder*="link"]',
-        'input[placeholder*="url"]',
-        'textarea[name="link"]',
-        "#product-url",
-        "#link-input",
-        '[data-testid="link-input"]',
-      ];
-
-      let inputFilled = false;
-      for (const selector of inputSelectors) {
-        try {
-          const el = await page.$(selector);
-          if (el) {
-            await el.fill(resolvedUrl);
-            inputFilled = true;
-            logger.debug({ selector }, "Filled input");
-            break;
-          }
-        } catch {
-          // Ignore selector lookup failure and try next selector.
-        }
-      }
-
-      if (!inputFilled) {
-        // Fallback: try any visible textarea
-        const textareas = await page.$$("textarea:visible");
-        if (textareas.length > 0) {
-          await textareas[0].fill(resolvedUrl);
-          inputFilled = true;
-        }
-      }
+      const inputFilled = await this.fillLinkbuilderInput(page, linkbuilderInputUrl);
 
       if (!inputFilled) {
         return {
@@ -661,70 +1792,78 @@ export class MercadoLivreLinkConverter {
       }
 
       await page.waitForTimeout(200 + Math.floor(Math.random() * 200));
+      await this.triggerLinkbuilderGeneration(page);
+      this.traceConversionStep("linkbuilder_generation_triggered", { linkbuilderInputUrl, sessionId });
 
-      // Wait for the Gerar button to become enabled — ML's JS enables it after input is filled
-      // The button starts as disabled="" and the class andes-button--disabled is removed by ML's JS
-      await page.waitForFunction(
-        () => {
-          const btn =
-            document.querySelector("button.links-form__button") ||
-            document.querySelector(".andes-button--loud");
-          return btn && !btn.hasAttribute("disabled");
-        },
-        { timeout: 6000 },
-      ).catch(() => {
-        // Non-fatal: proceed even if button stays disabled (might already be ready)
-      });
+      // Wait/poll for result to appear. Some ML pages take longer when the
+      // input URL comes from social/short-link flows and needs server-side resolve.
+      let affiliateLink = await this.waitForAffiliateLink(page, linkbuilderInputUrl);
 
-      // Click "Gerar" button — try the known class first, then fallbacks
-      const buttonSelectors = [
-        "button.links-form__button:not([disabled])",
-        'button:has-text("Gerar")',
-        'button:has-text("Gerar link")',
-        'button[type="submit"]:not([disabled])',
-        'button:has-text("Converter")',
-        '[data-testid="generate-button"]',
-      ];
+      // Retry with canonical product URL (without tracking query params) when the
+      // first generation did not expose any affiliate output.
+      const canonicalRetryInput = this.toCanonicalProductUrlForLinkbuilder(resolvedDestinationUrl);
+      if (!affiliateLink && canonicalRetryInput && canonicalRetryInput !== linkbuilderInputUrl) {
+        logger.debug(
+          { linkbuilderInputUrl, canonicalRetryInput },
+          "Affiliate link not found on first pass; retrying with canonical product URL",
+        );
 
-      let buttonClicked = false;
-      for (const sel of buttonSelectors) {
-        try {
-          await page.click(sel, { timeout: 3000 });
-          buttonClicked = true;
-          logger.debug({ selector: sel }, "Clicked generate button");
-          break;
-        } catch {
-          // Ignore click selector failure and try next selector.
+        const retryFilled = await this.fillLinkbuilderInput(page, canonicalRetryInput);
+        if (retryFilled) {
+          this.traceConversionStep("linkbuilder_canonical_retry_start", {
+            canonicalRetryInput,
+            sessionId,
+          });
+          await page.waitForTimeout(220 + Math.floor(Math.random() * 240));
+          await this.triggerLinkbuilderGeneration(page);
+          affiliateLink = await this.waitForAffiliateLink(page, canonicalRetryInput);
         }
       }
 
-      if (!buttonClicked) {
-        // Try pressing Enter on the input
-        await page.keyboard.press("Enter");
-        buttonClicked = true;
-      }
-
-      // Wait for result to appear (up to 15s)
-      await page.waitForTimeout(2000);
-
-      const affiliateLink = await this.extractAffiliateLink(page, resolvedUrl);
-
       if (!affiliateLink) {
+        this.traceConversionStep("affiliate_not_found_after_attempts", {
+          productUrl,
+          resolvedDestinationUrl,
+          linkbuilderInputUrl,
+          canonicalRetryInput,
+          pageUrl: page.url(),
+          sessionId,
+        });
         return {
           success: false,
           originalUrl: productUrl,
-          error: "Link afiliado não encontrado na resposta do linkbuilder. Verifique se sua conta tem acesso ao programa de afiliados.",
+          resolvedUrl: resolvedDestinationUrl,
+          error: "Link afiliado nao encontrado na resposta do linkbuilder. Verifique se sua conta tem acesso ao programa de afiliados.",
         };
       }
 
       const conversionTimeMs = Date.now() - startTime;
+      this.traceConversionStep("conversion_success", {
+        productUrl,
+        resolvedDestinationUrl,
+        affiliateLink,
+        conversionTimeMs,
+        sessionId,
+      });
       logger.info({ productUrl, affiliateLink, conversionTimeMs, sessionId }, "Conversion successful");
 
-      return { success: true, originalUrl: productUrl, resolvedUrl, affiliateLink, conversionTimeMs };
+      return {
+        success: true,
+        originalUrl: productUrl,
+        resolvedUrl: resolvedDestinationUrl,
+        affiliateLink,
+        conversionTimeMs,
+      };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
+      this.traceConversionStep("conversion_exception", {
+        productUrl,
+        resolvedDestinationUrl,
+        sessionId,
+        error: message,
+      });
       logger.error({ productUrl, sessionId, error: message }, "Conversion error");
-      return { success: false, originalUrl: productUrl, resolvedUrl, error: message };
+      return { success: false, originalUrl: productUrl, resolvedUrl: resolvedDestinationUrl, error: message };
     } finally {
       await context?.close().catch((closeError) => {
         logger.debug({ error: String(closeError) }, "Failed to close browser context");
@@ -785,7 +1924,7 @@ export class MercadoLivreLinkConverter {
         this.registerScopeSuccess(scopeId);
         this.cache.set(cacheKey, { affiliateLink: result.affiliateLink, timestamp: Date.now() });
       } else {
-        this.registerScopeFailure(scopeId);
+        this.registerScopeFailure(scopeId, result.error);
       }
       return result;
     });
@@ -859,6 +1998,10 @@ export class MercadoLivreLinkConverter {
         .map(([scopeId, until]) => [scopeId, Math.ceil((until - now) / 1000)]),
     );
     const consecutiveFailuresByScope = Object.fromEntries(this.consecutiveFailuresByScope.entries());
+    const lastFailureAgeSecondsByScope = Object.fromEntries(
+      [...this.lastFailureAtByScope.entries()]
+        .map(([scopeId, at]) => [scopeId, Math.max(0, Math.floor((now - at) / 1000))]),
+    );
     const cooldownActive = Object.keys(activeCooldownByScope).length > 0;
     const consecutiveFailures = Math.max(0, ...Object.values(consecutiveFailuresByScope).map((n) => Number(n || 0)));
 
@@ -870,6 +2013,9 @@ export class MercadoLivreLinkConverter {
       batchDelayMs: this.batchDelayMs,
       queueTimeoutMs: this.queueTimeoutMs,
       maxPendingPerScope: this.maxPendingPerScope,
+      cooldownMaxFailures: MAX_FAILURES_BEFORE_COOLDOWN,
+      cooldownMs: COOLDOWN_MS,
+      cooldownFailureWindowMs: this.failureStreakWindowMs,
       pendingTotal,
       pendingByScope,
       nextDispatchInMs: Math.max(0, this.nextDispatchAt - Date.now()),
@@ -877,6 +2023,7 @@ export class MercadoLivreLinkConverter {
       consecutiveFailures,
       activeCooldownByScope,
       consecutiveFailuresByScope,
+      lastFailureAgeSecondsByScope,
     };
   }
 }

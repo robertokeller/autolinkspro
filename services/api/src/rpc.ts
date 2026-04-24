@@ -649,6 +649,18 @@ function isMercadoLivreProductUrlLike(raw: string): boolean {
   return isMercadoLivreUrlHost(parsed.hostname);
 }
 
+function isMercadoLivreStrictProductUrlLike(raw: string): boolean {
+  const parsed = parseHttpUrl(raw);
+  if (!parsed) return false;
+  if (!isMercadoLivreUrlHost(parsed.hostname)) return false;
+
+  const host = parsed.hostname.toLowerCase();
+  const path = parsed.pathname.toLowerCase();
+  if (host.startsWith("produto.")) return true;
+  if (/\/(ml[a-z]-|item\/|p\/)/i.test(path)) return true;
+  return false;
+}
+
 function isAmazonProductUrlLike(raw: string): boolean {
   const parsed = parseHttpUrl(raw);
   if (!parsed) return false;
@@ -7804,9 +7816,13 @@ async function processRouteMessageForUser(input: {
     };
 
     const defaultTemplateId = readTemplateId(rules.templateId);
+    const meliTemplateId = readTemplateId(rules.meliTemplateId);
     const amazonTemplateId = readTemplateId(rules.amazonTemplateId);
+    const hasMeliTemplatePreference = Object.prototype.hasOwnProperty.call(rules, "meliTemplateId");
     const templateId = primaryConvertedMarketplace === "amazon"
       ? amazonTemplateId
+      : primaryConvertedMarketplace === "mercadolivre"
+        ? (hasMeliTemplatePreference ? meliTemplateId : (meliTemplateId || defaultTemplateId))
       : defaultTemplateId;
     if (templateId && isUuid(templateId)) {
       let templateData = routeTemplateCache.get(templateId);
@@ -15174,7 +15190,10 @@ if (funcName === "whatsapp-connect") {
       const productUrl = String(params.productUrl ?? params.url ?? "").trim();
       if (!productUrl) { fail(res, "URL do produto e obrigatoria"); return; }
       if (productUrl.length > MAX_URL_LENGTH) { fail(res, "URL do produto excede o tamanho maximo permitido"); return; }
-      if (!isMercadoLivreProductUrlLike(productUrl)) { fail(res, "URL informada não parece ser do Mercado Livre"); return; }
+      if (!isMercadoLivreStrictProductUrlLike(productUrl)) {
+        fail(res, "URL precisa estar resolvida para a pagina real do produto (produto.mercadolivre.../MLB-...).");
+        return;
+      }
 
       try {
         const snapshot = await getMeliProductSnapshot(productUrl);

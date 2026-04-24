@@ -51,7 +51,9 @@ import type { Template, TemplateCategory } from "@/lib/types";
 import { ROUTES } from "@/lib/routes";
 import { templateRequestsImageAttachment } from "@/lib/template-placeholders";
 import type { MeliTemplateProductInput } from "@/lib/meli-template-placeholders";
+import { validateStrictMeliProductSnapshot } from "@/lib/meli-product-snapshot-validation";
 import { MELI_TEMPLATE_MODULE } from "@/lib/marketplace-template-modules";
+import { convertMarketplaceLink } from "@/lib/marketplace-link-converter";
 import { formatMessageForPlatform, renderRichTextPreviewHtml, renderTemplatePreviewHtml } from "@/lib/rich-text";
 
 const DEFAULT_TEMPLATE_FORM = {
@@ -283,17 +285,14 @@ export default function TemplatesMeli() {
     setCopied(false);
     setGeneratedOffer(null);
     try {
-      const conversion = await invokeBackendRpc<{
-        affiliateLink?: string;
-        originalLink?: string;
-        resolvedLink?: string;
-        conversionTimeMs?: number;
-      }>("meli-convert-link", {
-        body: {
-          url: link,
-          source: "templatesmeli-converter",
-        },
+      const conversion = await convertMarketplaceLink({
+        url: link,
+        source: "templatesmeli-converter",
+        sessionId: activeSessions[0]?.id,
       });
+      if (conversion.marketplace !== "mercadolivre") {
+        throw new Error("Use um link válido do Mercado Livre.");
+      }
 
       const snapshotTargetUrl = firstNonEmptyString(
         conversion.resolvedLink,
@@ -301,7 +300,7 @@ export default function TemplatesMeli() {
         link,
       );
       const affiliateLink = firstNonEmptyString(conversion.affiliateLink, snapshotTargetUrl);
-      let productSnapshot: MeliProductSnapshotResponse | null = null;
+      let productSnapshot: MeliProductSnapshotResponse;
 
       try {
         productSnapshot = await invokeBackendRpc<MeliProductSnapshotResponse>("meli-product-snapshot", {
@@ -309,27 +308,32 @@ export default function TemplatesMeli() {
             productUrl: snapshotTargetUrl,
           },
         });
-      } catch {
-        toast.warning("Link convertido, mas alguns dados do produto não puderam ser carregados.");
+      } catch (error) {
+        const message = error instanceof Error ? String(error.message || "") : "";
+        throw new Error(message || "Nao foi possivel capturar os dados da pagina do produto Mercado Livre.");
       }
 
-      const originalLink = firstNonEmptyString(productSnapshot?.productUrl, snapshotTargetUrl);
+      const snapshotValidation = validateStrictMeliProductSnapshot(productSnapshot);
+      if (!snapshotValidation.ok || !snapshotValidation.normalized) {
+        const missing = [...new Set(snapshotValidation.missingFields)].join(", ");
+        throw new Error(
+          `Nao foi possivel gerar a mensagem porque faltam dados obrigatorios da pagina do produto: ${missing}.`,
+        );
+      }
 
-      const productTitle = firstNonEmptyString(
-        productSnapshot?.title,
-        "Oferta Mercado Livre",
-      );
+      const normalizedSnapshot = snapshotValidation.normalized;
+      const originalLink = firstNonEmptyString(normalizedSnapshot.productUrl, snapshotTargetUrl);
 
       const productInput: MeliTemplateProductInput = {
-        title: productTitle,
-        productUrl: firstNonEmptyString(productSnapshot?.productUrl, originalLink),
-        imageUrl: firstNonEmptyString(productSnapshot?.imageUrl),
-        price: Number.isFinite(Number(productSnapshot?.price)) ? Number(productSnapshot?.price) : null,
-        oldPrice: Number.isFinite(Number(productSnapshot?.oldPrice)) ? Number(productSnapshot?.oldPrice) : null,
-        installmentsText: firstNonEmptyString(productSnapshot?.installmentsText),
-        seller: firstNonEmptyString(productSnapshot?.seller),
-        rating: Number.isFinite(Number(productSnapshot?.rating)) ? Number(productSnapshot?.rating) : null,
-        reviewsCount: Number.isFinite(Number(productSnapshot?.reviewsCount)) ? Number(productSnapshot?.reviewsCount) : null,
+        title: normalizedSnapshot.title,
+        productUrl: firstNonEmptyString(normalizedSnapshot.productUrl, originalLink),
+        imageUrl: normalizedSnapshot.imageUrl,
+        price: normalizedSnapshot.price,
+        oldPrice: normalizedSnapshot.oldPrice,
+        installmentsText: firstNonEmptyString(normalizedSnapshot.installmentsText),
+        seller: firstNonEmptyString(normalizedSnapshot.seller),
+        rating: normalizedSnapshot.rating,
+        reviewsCount: normalizedSnapshot.reviewsCount,
       };
 
       const placeholderData = MELI_TEMPLATE_MODULE.buildPlaceholderData(productInput, affiliateLink);
@@ -347,7 +351,7 @@ export default function TemplatesMeli() {
           : null,
         requestsImageAttachment: templateRequestsImageAttachment(template.content),
         product: {
-          title: productTitle,
+          title: productInput.title,
           affiliateLink,
           productUrl: productInput.productUrl,
           imageUrl: productInput.imageUrl,

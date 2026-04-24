@@ -91,6 +91,9 @@ const STATUS_BADGE: Record<AccountStatus, { label: string; variant: "default" | 
   archived: { label: "Arquivado", variant: "outline" },
 };
 
+const AUTO_REFRESH_DEBOUNCE_MS = 250;
+const AUTO_REFRESH_MIN_INTERVAL_MS = 10_000;
+
 export default function AdminUsers() {
   const { state: controlPlane } = useAdminControlPlane();
   const { user: currentUser } = useAuth();
@@ -181,6 +184,11 @@ export default function AdminUsers() {
     tgSessionsTotal: 0,
     errors24h: 0,
   });
+  const initialLoadDoneRef = useRef(false);
+  const loadInFlightRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
+  const autoRefreshTimerRef = useRef<number | null>(null);
+  const lastAutoRefreshAtRef = useRef(0);
 
   const planCatalog = useMemo(() => {
     return controlPlane.plans;
@@ -208,13 +216,27 @@ export default function AdminUsers() {
     return controlPlane.accessLevels.find((level) => level.id === plan.accessLevelId)?.name || "Nível não achado";
   };
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (options?: { silent?: boolean; includeObservability?: boolean }) => {
+    const silent = options?.silent ?? false;
+    const includeObservability = options?.includeObservability ?? true;
+
+    if (loadInFlightRef.current) {
+      pendingRefreshRef.current = true;
+      return;
+    }
+
+    loadInFlightRef.current = true;
+    if (!silent && !initialLoadDoneRef.current) {
+      setLoading(true);
+    }
+
     try {
-      const [usersRes, observabilityRes] = await Promise.all([
-        invokeAdmin({ action: "list_users" }),
-        loadAdminSystemObservability(),
-      ]);
+      const usersPromise = invokeAdmin({ action: "list_users" });
+      const observabilityPromise = includeObservability
+        ? loadAdminSystemObservability().catch(() => null)
+        : Promise.resolve(null);
+
+      const usersRes = await usersPromise;
       const rows = (usersRes.users || []).map((row) => ({
         ...row,
         plan_sync_mode: row.plan_sync_mode === "manual_override" ? "manual_override" : "auto",
@@ -222,6 +244,17 @@ export default function AdminUsers() {
         plan_sync_updated_at: row.plan_sync_updated_at ?? null,
       }));
       setUserList(rows);
+
+      if (!initialLoadDoneRef.current) {
+        initialLoadDoneRef.current = true;
+        setLoading(false);
+      }
+
+      const observabilityRes = await observabilityPromise;
+      if (!observabilityRes) {
+        lastAutoRefreshAtRef.current = Date.now();
+        return;
+      }
 
       const usersObs = Array.isArray(observabilityRes?.users) ? observabilityRes.users : [];
       const usageByUserId: Record<string, UserObservabilityRow["usage"]> = {};
@@ -240,10 +273,20 @@ export default function AdminUsers() {
         tgSessionsTotal: Number(global?.tgSessionsTotal || 0),
         errors24h: Number(global?.errors24h || 0),
       });
+
+      lastAutoRefreshAtRef.current = Date.now();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Não deu pra carregar os dados");
     } finally {
-      setLoading(false);
+      if (!initialLoadDoneRef.current) {
+        initialLoadDoneRef.current = true;
+        setLoading(false);
+      }
+      loadInFlightRef.current = false;
+      if (pendingRefreshRef.current) {
+        pendingRefreshRef.current = false;
+        void loadData({ silent: true, includeObservability: false });
+      }
     }
   }, []);
 
@@ -252,18 +295,30 @@ export default function AdminUsers() {
   }, [loadData]);
 
   useEffect(() => {
-    const unsubscribe = subscribeLocalDbChanges(() => {
-      void loadData();
-    });
+    const scheduleAutoRefresh = () => {
+      if (autoRefreshTimerRef.current !== null) {
+        window.clearTimeout(autoRefreshTimerRef.current);
+      }
 
-    const handleFocus = () => {
-      void loadData();
+      autoRefreshTimerRef.current = window.setTimeout(() => {
+        const now = Date.now();
+        if (now - lastAutoRefreshAtRef.current < AUTO_REFRESH_MIN_INTERVAL_MS) {
+          return;
+        }
+        void loadData({ silent: true, includeObservability: false });
+      }, AUTO_REFRESH_DEBOUNCE_MS);
     };
 
-    window.addEventListener("focus", handleFocus);
+    const unsubscribe = subscribeLocalDbChanges(scheduleAutoRefresh);
+
+    window.addEventListener("focus", scheduleAutoRefresh);
     return () => {
       unsubscribe();
-      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("focus", scheduleAutoRefresh);
+      if (autoRefreshTimerRef.current !== null) {
+        window.clearTimeout(autoRefreshTimerRef.current);
+        autoRefreshTimerRef.current = null;
+      }
     };
   }, [loadData]);
 

@@ -210,6 +210,15 @@ export function computeRouteHealth(input: RouteHealthInput): {
     }
   }
 
+  if (route.rules.meliTemplateId) {
+    const meliTemplate = templatesById.get(route.rules.meliTemplateId);
+    if (!meliTemplate) {
+      steps.push({ label: "Template ML", status: "warn", detail: "Template não encontrado - usando mensagem original" });
+    } else {
+      steps.push({ label: "Template ML", status: "ok", detail: `"${meliTemplate.name}"` });
+    }
+  }
+
   if (route.rules.amazonTemplateId) {
     const amazonTemplate = templatesById.get(route.rules.amazonTemplateId);
     if (!amazonTemplate) {

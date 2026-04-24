@@ -82,6 +82,7 @@ export interface AppRoute {
     negativeKeywords: string[];
     positiveKeywords: string[];
     templateId: string | null;
+    meliTemplateId?: string | null;
     amazonTemplateId?: string | null;
     groupType: "ofertas";
     sessionId: string | null;

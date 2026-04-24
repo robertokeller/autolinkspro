@@ -215,9 +215,12 @@ export default function RoutesPage() {
       : nr.destinationGroupIds.length > 0
   );
   const canCreate = canGoStep2 && canGoStep3 && (!nr.autoConvertMercadoLivre || hasAvailableMeliSession);
-  const shouldShowMainMessageModelSelector = nr.autoConvertShopee || nr.autoConvertMercadoLivre;
+  const shouldShowMainMessageModelSelector = nr.autoConvertShopee;
   const selectedTemplateInMessageScope = nr.templateId
     ? messageTemplates.some((template) => template.id === nr.templateId)
+    : false;
+  const selectedMeliTemplateInMessageScope = nr.meliTemplateId
+    ? messageTemplates.some((template) => template.id === nr.meliTemplateId)
     : false;
   const selectedAmazonTemplateInMessageScope = nr.amazonTemplateId
     ? messageTemplates.some((template) => template.id === nr.amazonTemplateId)
@@ -425,6 +428,7 @@ export default function RoutesPage() {
       autoConvertMercadoLivre: route.rules.autoConvertMercadoLivre ?? false,
       autoConvertAmazon: route.rules.autoConvertAmazon ?? false,
       templateId: route.rules.templateId || "",
+      meliTemplateId: route.rules.meliTemplateId || (route.rules.autoConvertMercadoLivre ? (route.rules.templateId || "") : ""),
       amazonTemplateId: route.rules.amazonTemplateId || "",
       positiveKeywords: route.rules.positiveKeywords.join(", "),
       negativeKeywords: route.rules.negativeKeywords.join(", "),
@@ -940,7 +944,7 @@ export default function RoutesPage() {
                         setNr((prev) => ({
                           ...prev,
                           autoConvertShopee: checked,
-                          templateId: checked || prev.autoConvertMercadoLivre ? prev.templateId : "",
+                          templateId: checked ? prev.templateId : "",
                         }));
                       }}
                     />
@@ -949,9 +953,9 @@ export default function RoutesPage() {
                   {shouldShowMainMessageModelSelector && (
                     <div className="space-y-3">
                       <div className="space-y-2">
-                        <Label className="text-xs">Modelo de mensagem</Label>
+                        <Label className="text-xs">Modelo de mensagem Shopee</Label>
                         <p className="text-xs text-muted-foreground">
-                          Escolha como a mensagem vai ficar depois da conversão dos links.
+                          Escolha como a mensagem vai ficar depois da conversão dos links da Shopee.
                         </p>
                         <Select value={nr.templateId || "original"} onValueChange={(v) => setNr({ ...nr, templateId: v })}>
                           <SelectTrigger><SelectValue /></SelectTrigger>
@@ -976,7 +980,7 @@ export default function RoutesPage() {
                       <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
                         <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
                         <p className="text-xs text-muted-foreground">
-                          Se marcar "Manter mensagem original", só os links ativados vão ser convertidos pra afiliado.
+                          Se marcar "Manter mensagem original", só os links da Shopee vão ser convertidos pra afiliado.
                         </p>
                       </div>
                     </div>
@@ -996,7 +1000,7 @@ export default function RoutesPage() {
                         setNr((prev) => ({
                           ...prev,
                           autoConvertMercadoLivre: checked,
-                          templateId: checked || prev.autoConvertShopee ? prev.templateId : "",
+                          meliTemplateId: checked ? prev.meliTemplateId : "",
                         }));
                       }}
                     />
@@ -1006,6 +1010,40 @@ export default function RoutesPage() {
                     <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
                       Nenhuma sessão Mercado Livre no momento. Conecte uma sessão pra usar a conversão.
                     </p>
+                  )}
+
+                  {nr.autoConvertMercadoLivre && (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label className="text-xs">Modelo de mensagem Mercado Livre</Label>
+                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão do Mercado Livre.</p>
+                        <Select value={nr.meliTemplateId || "original"} onValueChange={(v) => setNr({ ...nr, meliTemplateId: v })}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="original">
+                              <span className="flex items-center gap-2">Manter mensagem original</span>
+                            </SelectItem>
+                            {!!nr.meliTemplateId && !selectedMeliTemplateInMessageScope && (
+                              <SelectItem value={nr.meliTemplateId}>
+                                <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
+                              </SelectItem>
+                            )}
+                            {messageTemplates.map((t) => (
+                              <SelectItem key={t.id} value={t.id}>
+                                <span className="flex items-center gap-2">Modelo {t.name}</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
+                        <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                        <p className="text-xs text-muted-foreground">
+                          Se marcar "Manter mensagem original", só o link do Mercado Livre vai ser convertido pra afiliado.
+                        </p>
+                      </div>
+                    </div>
                   )}
 
                   <div className="flex items-center justify-between rounded-lg border p-3">

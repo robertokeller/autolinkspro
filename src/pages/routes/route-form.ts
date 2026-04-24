@@ -10,6 +10,7 @@ export interface NewRouteForm {
   autoConvertMercadoLivre: boolean;
   autoConvertAmazon: boolean;
   templateId: string;
+  meliTemplateId: string;
   amazonTemplateId: string;
   positiveKeywords: string;
   negativeKeywords: string;
@@ -30,6 +31,7 @@ export const emptyNewRoute: NewRouteForm = {
   autoConvertMercadoLivre: false,
   autoConvertAmazon: false,
   templateId: "",
+  meliTemplateId: "",
   amazonTemplateId: "",
   positiveKeywords: "",
   negativeKeywords: "",
@@ -81,6 +83,9 @@ export function buildRoutePayload(form: NewRouteForm) {
       negativeKeywords: splitCsv(form.negativeKeywords),
       positiveKeywords: splitCsv(form.positiveKeywords),
       templateId: form.templateId === "none" || form.templateId === "original" || !form.templateId ? null : form.templateId,
+      meliTemplateId: form.meliTemplateId === "none" || form.meliTemplateId === "original" || !form.meliTemplateId
+        ? null
+        : form.meliTemplateId,
       amazonTemplateId: form.amazonTemplateId === "none" || form.amazonTemplateId === "original" || !form.amazonTemplateId
         ? null
         : form.amazonTemplateId,

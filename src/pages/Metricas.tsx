@@ -288,31 +288,37 @@ export default function Metricas() {
         };
       }
 
-      const scopeGroupIds = displayGroups.map((group) => group.id);
-      const settled = await Promise.allSettled(scopeGroupIds.map((groupId) => fetchGroupSummary(groupId, days)));
+      const settled = await Promise.allSettled(
+        displayGroups.map((group) => fetchGroupSummary(group.id, days)),
+      );
       const summaries = settled.flatMap((item) => (item.status === "fulfilled" ? [item.value] : []));
+      const totalMembers = settled.reduce((sum, item, index) => {
+        if (item.status === "fulfilled") {
+          const summaryMembersRaw = item.value.composition?.totalMembers;
+          if (Number.isFinite(Number(summaryMembersRaw))) {
+            return sum + Math.max(0, toSafeNumber(summaryMembersRaw));
+          }
+        }
+
+        const fallbackMembers = Math.max(0, toSafeNumber(displayGroups[index]?.memberCount));
+        return sum + fallbackMembers;
+      }, 0);
 
       if (summaries.length === 0) {
-        const fallbackMembers = displayGroups.reduce((sum, group) => sum + Math.max(0, toSafeNumber(group.memberCount)), 0);
-
         return {
-          totalMembers: fallbackMembers,
+          totalMembers,
           totalGroups: displayGroups.length,
           growthRate: 0,
           totalJoined: 0,
           totalLeft: 0,
           capacityPercent: displayGroups.length > 0
-            ? Number(((fallbackMembers / (displayGroups.length * WHATSAPP_GROUP_CAPACITY)) * 100).toFixed(1))
+            ? Number(((totalMembers / (displayGroups.length * WHATSAPP_GROUP_CAPACITY)) * 100).toFixed(1))
             : 0,
           geography: createEmptyGeography(),
           groupsWithData: 0,
         };
       }
 
-      const totalMembers = summaries.reduce(
-        (sum, summary) => sum + Math.max(0, toSafeNumber(summary.composition?.totalMembers)),
-        0,
-      );
       const totalJoined = summaries.reduce(
         (sum, summary) => sum + Math.max(0, toSafeNumber(summary.churn?.summary?.totalJoined)),
         0,
@@ -443,8 +449,8 @@ export default function Metricas() {
                 label: group.name,
                 meta: `${group.memberCount} membros`,
               }))}
-              placeholder="Todos os grupos admin"
-              selectedLabel={(count) => count === 0 ? "Todos os grupos admin" : `${count} selecionado(s)`}
+              placeholder="Todos os meus grupos"
+              selectedLabel={(count) => count === 0 ? "Todos os meus grupos" : `${count} selecionado(s)`}
               emptyMessage={groupFilterEmptyMessage}
               title="Filtrar por grupos"
             />

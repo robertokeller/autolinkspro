@@ -53,6 +53,7 @@ import { useShopeeLinkModule } from "@/contexts/ShopeeLinkModuleContext";
 import type { Template, TemplateCategory } from "@/lib/types";
 import type { MeliTemplateProductInput } from "@/lib/meli-template-placeholders";
 import type { AmazonTemplateProductInput } from "@/lib/amazon-template-placeholders";
+import { validateStrictMeliProductSnapshot } from "@/lib/meli-product-snapshot-validation";
 import { AMAZON_TEMPLATE_MODULE, MELI_TEMPLATE_MODULE } from "@/lib/marketplace-template-modules";
 import { convertMarketplaceLink } from "@/lib/marketplace-link-converter";
 import {
@@ -240,13 +241,6 @@ interface ConvertedAffiliateResult {
   originalLink: string;
   conversionTimeMs: number | null;
 }
-
-type MeliConvertLinkResponse = {
-  affiliateLink?: string;
-  originalLink?: string;
-  resolvedLink?: string;
-  conversionTimeMs?: number;
-};
 
 type MeliProductSnapshotResponse = {
   productUrl?: string;
@@ -605,6 +599,10 @@ export default function ModelosDeMensagem() {
   } = useMercadoLivreSessions({ enableAutoMonitor: false });
   const hasActiveMeliSession = useMemo(
     () => sessions.some((session) => session.status === "active"),
+    [sessions],
+  );
+  const activeMeliSessionId = useMemo(
+    () => firstNonEmptyString(sessions.find((session) => session.status === "active")?.id),
     [sessions],
   );
   const {
@@ -1175,12 +1173,14 @@ export default function ModelosDeMensagem() {
       }
 
       if (marketplace === "mercadolivre") {
-        const conversion = await invokeBackendRpc<MeliConvertLinkResponse>("meli-convert-link", {
-          body: {
-            url: link,
-            source: "modelos-converter-link-meli",
-          },
+        const conversion = await convertMarketplaceLink({
+          url: link,
+          source: "modelos-converter-link-meli",
+          sessionId: activeMeliSessionId || undefined,
         });
+        if (conversion.marketplace !== "mercadolivre") {
+          throw new Error("Use um link válido do Mercado Livre.");
+        }
 
         const affiliateLink = firstNonEmptyString(
           conversion.affiliateLink,
@@ -1305,12 +1305,14 @@ export default function ModelosDeMensagem() {
       }
 
       if (marketplace === "mercadolivre") {
-        const conversion = await invokeBackendRpc<MeliConvertLinkResponse>("meli-convert-link", {
-          body: {
-            url: link,
-            source: "modelos-converter-meli",
-          },
+        const conversion = await convertMarketplaceLink({
+          url: link,
+          source: "modelos-converter-meli",
+          sessionId: activeMeliSessionId || undefined,
         });
+        if (conversion.marketplace !== "mercadolivre") {
+          throw new Error("Use um link válido do Mercado Livre.");
+        }
 
         const snapshotTargetUrl = firstNonEmptyString(
           conversion.resolvedLink,
@@ -1319,27 +1321,38 @@ export default function ModelosDeMensagem() {
         );
         const affiliateLink = firstNonEmptyString(conversion.affiliateLink, snapshotTargetUrl);
 
-        let productSnapshot: MeliProductSnapshotResponse | null = null;
+        let productSnapshot: MeliProductSnapshotResponse;
         try {
           productSnapshot = await invokeBackendRpc<MeliProductSnapshotResponse>("meli-product-snapshot", {
             body: {
               productUrl: snapshotTargetUrl,
             },
           });
-        } catch {
-          toast.warning("Link convertido, mas alguns dados do produto nÃƒÂ£o puderam ser carregados.");
+        } catch (error) {
+          const message = error instanceof Error ? String(error.message || "") : "";
+          throw new Error(message || "Nao foi possivel capturar os dados da pagina do produto Mercado Livre.");
         }
 
+        const snapshotValidation = validateStrictMeliProductSnapshot(productSnapshot);
+        if (!snapshotValidation.ok || !snapshotValidation.normalized) {
+          const missing = [...new Set(snapshotValidation.missingFields)].join(", ");
+          throw new Error(
+            `Nao foi possivel gerar a mensagem porque faltam dados obrigatorios da pagina do produto: ${missing}.`,
+          );
+        }
+
+        const normalizedSnapshot = snapshotValidation.normalized;
+
         const product: MarketplaceOfferProduct = {
-          title: firstNonEmptyString(productSnapshot?.title, "Oferta Mercado Livre"),
-          productUrl: firstNonEmptyString(productSnapshot?.productUrl, snapshotTargetUrl),
-          imageUrl: firstNonEmptyString(productSnapshot?.imageUrl),
-          price: toFiniteNumber(productSnapshot?.price) ?? null,
-          oldPrice: toFiniteNumber(productSnapshot?.oldPrice) ?? null,
-          installmentsText: firstNonEmptyString(productSnapshot?.installmentsText),
-          seller: firstNonEmptyString(productSnapshot?.seller),
-          rating: toFiniteNumber(productSnapshot?.rating),
-          reviewsCount: toFiniteNumber(productSnapshot?.reviewsCount) ?? null,
+          title: normalizedSnapshot.title,
+          productUrl: firstNonEmptyString(normalizedSnapshot.productUrl, snapshotTargetUrl),
+          imageUrl: normalizedSnapshot.imageUrl,
+          price: normalizedSnapshot.price,
+          oldPrice: normalizedSnapshot.oldPrice,
+          installmentsText: firstNonEmptyString(normalizedSnapshot.installmentsText),
+          seller: firstNonEmptyString(normalizedSnapshot.seller),
+          rating: normalizedSnapshot.rating,
+          reviewsCount: normalizedSnapshot.reviewsCount,
         };
 
         const basePlaceholderData = mergeTemplatePlaceholderData("mercadolivre", product, affiliateLink);
