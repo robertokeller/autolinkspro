@@ -32,6 +32,33 @@ const regexBlocked = [
   /\.pfx$/i,
 ];
 
+const sensitiveEnvKeys = new Set([
+  "RESEND_API_KEY",
+  "HOSTINGER_API_TOKEN",
+  "CLOUDFLARE_API_TOKEN",
+  "COOLIFY_API_TOKEN",
+  "JWT_SECRET",
+  "SERVICE_TOKEN",
+  "WEBHOOK_SECRET",
+  "OPS_CONTROL_TOKEN",
+  "DATABASE_URL",
+  "CREDENTIAL_ENCRYPTION_KEY",
+  "CREDENTIAL_CIPHER_SALT",
+  "SESSION_ENCRYPTION_KEY",
+  "SESSION_CIPHER_SALT",
+  "BACKUP_ENCRYPTION_KEY",
+  "OPENROUTER_API_KEY",
+]);
+
+const highConfidenceSecretPatterns = [
+  { type: "coolify-api-token", regex: /\b2\|[A-Za-z0-9]{20,}\b/ },
+  { type: "cloudflare-api-token", regex: /\bcf(?:at|ut)_[A-Za-z0-9]{20,}\b/i },
+  { type: "resend-api-key", regex: /\bre_[A-Za-z0-9_]{20,}\b/ },
+  { type: "aws-access-key", regex: /\bAKIA[0-9A-Z]{16}\b/ },
+  { type: "postgres-url-with-password", regex: /postgres(?:ql)?:\/\/[^:\s]+:[^@\s]+@/i },
+  { type: "private-key-block", regex: /-----BEGIN (?:RSA|EC|OPENSSH|PRIVATE) PRIVATE KEY-----/ },
+];
+
 function isAllowedEnvExample(normalizedPath) {
   return /(^|\/)\.env(\.coolify)?\.example$/i.test(normalizedPath);
 }
@@ -63,6 +90,40 @@ function safeExecGit(args) {
   });
 }
 
+function parseStagedAddedLines() {
+  const patch = safeExecGit(["diff", "--cached", "--no-color", "--unified=0", "--", "."]);
+  const lines = patch.split(/\r?\n/);
+  const added = [];
+
+  let currentFile = "";
+  let currentLine = 0;
+
+  for (const line of lines) {
+    if (line.startsWith("+++ b/")) {
+      currentFile = line.slice("+++ b/".length);
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      const match = line.match(/\+(\d+)(?:,\d+)?/);
+      currentLine = match ? Number(match[1]) - 1 : currentLine;
+      continue;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      currentLine += 1;
+      added.push({ file: currentFile || "<unknown>", line: currentLine, text: line.slice(1) });
+      continue;
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      continue;
+    }
+    if (line.startsWith(" ")) {
+      currentLine += 1;
+    }
+  }
+
+  return added;
+}
+
 function getGitTrackedFiles() {
   const output = safeExecGit(["ls-files", "-z"]);
   return output
@@ -77,6 +138,80 @@ function getGitStagedFiles() {
     .split("\0")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function normalizeCandidateValue(rawValue) {
+  const value = String(rawValue || "")
+    .replace(/\s+#.*$/, "")
+    .trim();
+  if (!value) return "";
+  if (
+    (value.startsWith('"') && value.endsWith('"'))
+    || (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function isLikelyPlaceholder(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized.includes("troque-por")) return true;
+  if (normalized.includes("placeholder")) return true;
+  if (normalized.includes("changeme")) return true;
+  if (normalized.includes("example")) return true;
+  if (normalized.includes("${")) return true;
+  if (/^re_x+$/i.test(normalized)) return true;
+  if (/^cf(?:at|ut)_x+$/i.test(normalized)) return true;
+  if (/^[x*]{16,}$/i.test(normalized)) return true;
+  return false;
+}
+
+function findSensitiveContentInStagedDiff() {
+  const findings = [];
+  const seen = new Set();
+  const addedLines = parseStagedAddedLines();
+
+  for (const entry of addedLines) {
+    const text = String(entry.text || "").trim();
+    if (!text || text.startsWith("#")) continue;
+
+    for (const pattern of highConfidenceSecretPatterns) {
+      const match = text.match(pattern.regex);
+      if (!match) continue;
+      const candidate = normalizeCandidateValue(match[0]);
+      if (isLikelyPlaceholder(candidate)) continue;
+
+      const key = `${entry.file}:${entry.line}:${pattern.type}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push({
+        file: entry.file,
+        line: entry.line,
+        type: pattern.type,
+      });
+    }
+
+    const envAssignment = text.match(/^([A-Z0-9_]+)\s*=\s*(.+)$/);
+    if (!envAssignment) continue;
+    const envKey = envAssignment[1];
+    if (!sensitiveEnvKeys.has(envKey)) continue;
+
+    const candidateValue = normalizeCandidateValue(envAssignment[2]);
+    if (candidateValue.length < 16 || isLikelyPlaceholder(candidateValue)) continue;
+
+    const findingKey = `${entry.file}:${entry.line}:env:${envKey}`;
+    if (seen.has(findingKey)) continue;
+    seen.add(findingKey);
+    findings.push({
+      file: entry.file,
+      line: entry.line,
+      type: `sensitive-env-${envKey.toLowerCase()}`,
+    });
+  }
+
+  return findings;
 }
 
 function listLocalSensitiveCandidates(baseDir) {
@@ -129,13 +264,18 @@ function main() {
 
   const trackedFindings = getGitTrackedFiles().filter((filePath) => isBlocked(filePath));
   const stagedFindings = getGitStagedFiles().filter((filePath) => isBlocked(filePath));
+  const contentFindings = findSensitiveContentInStagedDiff();
 
-  if (trackedFindings.length === 0 && stagedFindings.length === 0) {
+  if (
+    trackedFindings.length === 0
+    && stagedFindings.length === 0
+    && contentFindings.length === 0
+  ) {
     console.log("[commit-safety] ok: nenhum arquivo sensivel rastreado ou staged.");
     process.exit(0);
   }
 
-  console.error("[commit-safety] bloqueado: arquivos sensiveis detectados no git.");
+  console.error("[commit-safety] bloqueado: risco de segredo detectado no git.");
   if (trackedFindings.length > 0) {
     console.error("Tracked:");
     for (const item of trackedFindings) {
@@ -147,6 +287,13 @@ function main() {
     console.error("Staged:");
     for (const item of stagedFindings) {
       console.error(`- ${item}`);
+    }
+  }
+
+  if (contentFindings.length > 0) {
+    console.error("Staged diff (possible secret values):");
+    for (const item of contentFindings) {
+      console.error(`- ${item.file}:${item.line} [${item.type}]`);
     }
   }
 
