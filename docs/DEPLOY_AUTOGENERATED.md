@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-25T19:21:36.070Z`
+> Atualizado em: `2026-04-25T21:41:08.562Z`
 
 ## Fluxo automático recomendado
 
@@ -29,13 +29,10 @@ npm run deploy:prepare
 | Variável | Serviços | Default no compose | Exemplo em .env.coolify.example |
 | --- | --- | --- | --- |
 | `ADMIN_EMAIL` | api | - | suporte@autolinks.pro |
-| `ADMIN_PASSWORD` | api | - | troque-por-uma-senha-forte |
 | `API_PUBLIC_URL` | api | - | https://api.autolinks.pro |
 | `APP_PUBLIC_URL` | api | - | https://autolinks.pro |
 | `BACKUP_ENCRYPTION_KEY` | sessions-backup | - | troque-por-chave-forte-de-backup |
-| `CORS_ORIGIN` | amazon, api, ops-control, shopee, telegram, whatsapp | - | https://autolinks.pro |
 | `CREDENTIAL_CIPHER_SALT` | api | - | troque-por-salt-hex-64-caracteres |
-| `CREDENTIAL_ENCRYPTION_KEY` | api | - | troque-por-chave-hex-64-caracteres |
 | `DATABASE_URL` | api | - | postgresql://postgres:[SUA-SENHA]@db.rwurwyuhxvlnykosfkdj.supabase.co:5432/postgres |
 | `JWT_SECRET` | api | - | troque-por-um-segredo-com-32-caracteres-ou-mais |
 | `LOG_HASH_SALT` | api | - | troque-por-salt-hex-64-caracteres-para-logs |
@@ -54,11 +51,14 @@ npm run deploy:prepare
 
 | Variável | Serviços | Default no compose | Exemplo em .env.coolify.example |
 | --- | --- | --- | --- |
+| `ADMIN_PASSWORD` | api | - | troque-por-uma-senha-forte |
 | `ALLOW_PUBLIC_RPC` | api | false | false |
 | `ALLOWED_EXTENSION_ORIGINS` | api | - | - |
 | `AUTH_COOKIE_DOMAIN` | api | - | .autolinks.pro |
 | `BURST_THRESHOLD_PER_BUCKET` | api | 500 | - |
 | `CHANNEL_EVENTS_INTERVAL_SECONDS` | scheduler | 15 | 15 |
+| `CORS_ORIGIN` | amazon, api, ops-control, shopee, telegram, whatsapp | https://autolinks.pro,https://www.autolinks.pro | https://autolinks.pro |
+| `CREDENTIAL_ENCRYPTION_KEY` | api | - | troque-por-chave-hex-64-caracteres |
 | `DB_POOL_MAX` | api | 10 | - |
 | `DB_SSL` | api | true | true |
 | `DB_SSL_REJECT_UNAUTHORIZED` | api | true | true |
