@@ -156,6 +156,9 @@ const MAX_SHOPEE_CONVERT_BATCH = Math.max(1, Math.min(500, Number(process.env.MA
 const MAX_SHOPEE_BATCH_QUERIES = Math.max(1, Math.min(100, Number(process.env.MAX_SHOPEE_BATCH_QUERIES || "25") || 25));
 const MAX_MELI_CONVERT_BATCH = Math.max(1, Math.min(500, Number(process.env.MAX_MELI_CONVERT_BATCH || "200") || 200));
 
+const SHOPEE_CREDENTIAL_DECRYPTION_FAILED_MESSAGE =
+  "Credenciais Shopee criptografadas nao puderam ser descriptografadas neste ambiente. Reconfigure CREDENTIAL_ENCRYPTION_KEY/CREDENTIAL_CIPHER_SALT ou salve as credenciais novamente.";
+
 const MAX_MELI_COOKIES_PER_SESSION = Math.max(1, Math.min(200, Number(process.env.MAX_MELI_COOKIES_PER_SESSION || "200") || 200));
 const MAX_MELI_COOKIE_NAME_LENGTH = Math.max(8, Math.min(256, Number(process.env.MAX_MELI_COOKIE_NAME_LENGTH || "120") || 120));
 const MAX_MELI_COOKIE_VALUE_LENGTH = Math.max(64, Math.min(8192, Number(process.env.MAX_MELI_COOKIE_VALUE_LENGTH || "8192") || 8192));
@@ -5931,9 +5934,7 @@ async function queueRouteForwardForQuietHours(input: {
     scheduledAtIso,
   } = input;
 
-  const uniqueDestinationGroupIds = Array.from(
-    new Set(destinationGroupIds.map((value) => String(value || "").trim()).filter(Boolean)),
-  );
+  const uniqueDestinationGroupIds = Array.from(new Set(toUuidArray(destinationGroupIds)));
   if (uniqueDestinationGroupIds.length === 0) {
     return { queued: false, error: "Nenhum destino elegivel para enfileirar" };
   }
@@ -8332,7 +8333,7 @@ async function processRouteMessageForUser(input: {
        r.name,
        r.source_group_id,
        COALESCE(sg.external_id, '') AS source_external_id,
-       COALESCE(sg.session_id, '') AS source_session_id,
+       COALESCE(sg.session_id::text, '') AS source_session_id,
        r.rules,
        COALESCE(json_agg(rd.group_id) FILTER (WHERE rd.group_id IS NOT NULL),'[]') AS dest_ids
      FROM routes r
@@ -13312,10 +13313,22 @@ if (funcName === "whatsapp-connect") {
     }
     if (funcName === "shopee-test-connection") {
       if (!SHOPEE_URL) { ok(res, { success: false, reason: "Shopee microservice não configurado.", region: "BR" }); return; }
-      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      const cred = await queryOne(
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
+        [userId],
+      );
       if (!cred) { ok(res, { success: false, reason: "Credenciais Shopee não configuradas.", region: "BR" }); return; }
-      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
       const fallbackRegion = String(cred.region || "BR").toUpperCase();
+      const appId = String(cred.app_id || "").trim();
+      const rawSecret = String(cred.secret_key || "").trim();
+      const decryptedSecret = rawSecret ? String(decryptCredential(rawSecret) || "").trim() : "";
+      if (!appId || !decryptedSecret) {
+        const reason = rawSecret.startsWith("enc:v1:")
+          ? SHOPEE_CREDENTIAL_DECRYPTION_FAILED_MESSAGE
+          : "Credenciais Shopee invalidas.";
+        ok(res, { success: false, reason, region: fallbackRegion });
+        return;
+      }
       const debugGraphqlEnabled = process.env.NODE_ENV !== "production" && params.debugGraphql === true;
       const debugQuery = debugGraphqlEnabled ? String(params.query || "").trim() : "";
       const debugVariables = debugGraphqlEnabled && params.variables && typeof params.variables === "object"
@@ -13327,8 +13340,8 @@ if (funcName === "whatsapp-connect") {
         "/api/shopee/test-connection",
         "POST",
         {
-          appId: cred.app_id,
-          secret: cred.secret_key,
+          appId,
+          secret: decryptedSecret,
           region: cred.region,
           ...(debugGraphqlEnabled
             ? {
@@ -13362,7 +13375,7 @@ if (funcName === "whatsapp-connect") {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice nao configurado.", 503); return; }
 
       const cred = await queryOne<{ app_id: string; secret_key: string; region: string }>(
-        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' LIMIT 1",
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
         [userId],
       );
       if (!cred) { fail(res, "Credenciais Shopee nao configuradas.", 404); return; }
@@ -13537,7 +13550,7 @@ if (funcName === "whatsapp-connect") {
       }
 
       const cred = await queryOne<{ app_id: string; secret_key: string; region: string }>(
-        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' LIMIT 1",
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
         [targetUser.id],
       );
       if (!cred) {
@@ -13715,9 +13728,21 @@ if (funcName === "whatsapp-connect") {
       }
 
       if (!SHOPEE_URL) { fail(res, "Shopee microservice nao configurado."); return; }
-      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      const cred = await queryOne(
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
+        [userId],
+      );
       if (!cred) { fail(res, "Credenciais Shopee nao configuradas."); return; }
-      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
+      const appId = String(cred.app_id || "").trim();
+      const rawSecret = String(cred.secret_key || "").trim();
+      const decryptedSecret = rawSecret ? String(decryptCredential(rawSecret) || "").trim() : "";
+      if (!appId || !decryptedSecret) {
+        const reason = rawSecret.startsWith("enc:v1:")
+          ? SHOPEE_CREDENTIAL_DECRYPTION_FAILED_MESSAGE
+          : "Credenciais Shopee invalidas.";
+        fail(res, reason, 400);
+        return;
+      }
 
       const shopeeUrl = isShopeeProductUrlLike(resolvedUrl) ? resolvedUrl : sourceUrl;
       if (!isShopeeProductUrlLike(shopeeUrl)) { fail(res, "URL informada nao parece ser da Shopee"); return; }
@@ -13725,8 +13750,8 @@ if (funcName === "whatsapp-connect") {
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
         url: shopeeUrl,
-        appId: cred.app_id,
-        secret: cred.secret_key,
+        appId,
+        secret: decryptedSecret,
         region: cred.region,
       }, shopeeHeaders, 30_000);
       if (r.error) { fail(res, r.error.message); return; }
@@ -13902,9 +13927,21 @@ if (funcName === "whatsapp-connect") {
 
     if (funcName === "shopee-convert-link") {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
-      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      const cred = await queryOne(
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
+        [userId],
+      );
       if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
-      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
+      const appId = String(cred.app_id || "").trim();
+      const rawSecret = String(cred.secret_key || "").trim();
+      const decryptedSecret = rawSecret ? String(decryptCredential(rawSecret) || "").trim() : "";
+      if (!appId || !decryptedSecret) {
+        const reason = rawSecret.startsWith("enc:v1:")
+          ? SHOPEE_CREDENTIAL_DECRYPTION_FAILED_MESSAGE
+          : "Credenciais Shopee invalidas.";
+        fail(res, reason, 400);
+        return;
+      }
       const sourceUrl = String(params.url ?? params.link ?? "").trim();
       if (!sourceUrl) { fail(res, "URL Shopee obrigatoria"); return; }
       if (sourceUrl.length > MAX_URL_LENGTH) { fail(res, "URL Shopee excede o tamanho maximo permitido"); return; }
@@ -13912,8 +13949,8 @@ if (funcName === "whatsapp-connect") {
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
         url: sourceUrl,
-        appId: cred.app_id,
-        secret: cred.secret_key,
+        appId,
+        secret: decryptedSecret,
         region: cred.region,
       }, shopeeHeaders, 30_000);
       if (r.error) { fail(res, r.error.message); return; }
@@ -13921,9 +13958,21 @@ if (funcName === "whatsapp-connect") {
     }
     if (funcName === "shopee-convert-links") {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
-      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      const cred = await queryOne(
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
+        [userId],
+      );
       if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
-      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
+      const appId = String(cred.app_id || "").trim();
+      const rawSecret = String(cred.secret_key || "").trim();
+      const decryptedSecret = rawSecret ? String(decryptCredential(rawSecret) || "").trim() : "";
+      if (!appId || !decryptedSecret) {
+        const reason = rawSecret.startsWith("enc:v1:")
+          ? SHOPEE_CREDENTIAL_DECRYPTION_FAILED_MESSAGE
+          : "Credenciais Shopee invalidas.";
+        fail(res, reason, 400);
+        return;
+      }
       const urlsRaw = Array.isArray(params.urls) ? params.urls : (Array.isArray(params.links) ? params.links : []);
       const urls = urlsRaw
         .filter((item): item is string => typeof item === "string")
@@ -13940,8 +13989,8 @@ if (funcName === "whatsapp-connect") {
       for (const originalLink of dedupedUrls) {
         const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
           url: originalLink,
-          appId: cred.app_id,
-          secret: cred.secret_key,
+          appId,
+          secret: decryptedSecret,
           region: cred.region,
         }, shopeeHeaders, 30_000);
         if (r.error) {
@@ -13969,9 +14018,21 @@ if (funcName === "whatsapp-connect") {
     }
     if (funcName === "shopee-batch") {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice não configurado."); return; }
-      const cred = await queryOne("SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee'", [userId]);
+      const cred = await queryOne(
+        "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id=$1 AND provider='shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
+        [userId],
+      );
       if (!cred) { fail(res, "Credenciais Shopee não configuradas."); return; }
-      if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
+      const appId = String(cred.app_id || "").trim();
+      const rawSecret = String(cred.secret_key || "").trim();
+      const decryptedSecret = rawSecret ? String(decryptCredential(rawSecret) || "").trim() : "";
+      if (!appId || !decryptedSecret) {
+        const reason = rawSecret.startsWith("enc:v1:")
+          ? SHOPEE_CREDENTIAL_DECRYPTION_FAILED_MESSAGE
+          : "Credenciais Shopee invalidas.";
+        fail(res, reason, 400);
+        return;
+      }
       const queries = Array.isArray(params.queries) ? params.queries : [];
       if (queries.length > MAX_SHOPEE_BATCH_QUERIES) {
         fail(res, `Limite de ${MAX_SHOPEE_BATCH_QUERIES} consultas por lote Shopee`);
@@ -13982,7 +14043,7 @@ if (funcName === "whatsapp-connect") {
         SHOPEE_URL,
         "/api/shopee/batch",
         "POST",
-        { ...params, appId: cred.app_id, secret: cred.secret_key, region: cred.region },
+        { ...params, appId, secret: decryptedSecret, region: cred.region },
         shopeeHeaders,
         120_000,
       );
@@ -14055,7 +14116,10 @@ if (funcName === "whatsapp-connect") {
       const uniqueUserIds = [...new Set(automations.map((row) => String(row.user_id || "").trim()).filter(Boolean))];
       const credRows = uniqueUserIds.length > 0
         ? await query<{ user_id: string; app_id: string; secret_key: string; region: string }>(
-            "SELECT user_id, app_id, secret_key, region FROM api_credentials WHERE provider='shopee' AND user_id = ANY($1)",
+            `SELECT DISTINCT ON (user_id) user_id, app_id, secret_key, region
+               FROM api_credentials
+              WHERE provider='shopee' AND user_id = ANY($1)
+              ORDER BY user_id, updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC`,
             [uniqueUserIds],
           )
         : [];

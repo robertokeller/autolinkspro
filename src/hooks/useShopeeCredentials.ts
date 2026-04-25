@@ -34,9 +34,11 @@ export function useShopeeCredentials() {
     queryFn: async () => {
       const { data, error } = await backend
         .from("api_credentials")
-        .select("id, app_id, provider, region, user_id")
+        .select("id, app_id, provider, region, user_id, updated_at")
         .eq("provider", "shopee")
         .eq("user_id", user!.id)
+        .order("updated_at", { ascending: false })
+        .limit(1)
         .maybeSingle();
       if (error) throw error;
       return data;
@@ -55,9 +57,11 @@ export function useShopeeCredentials() {
     const regionVal = input.region || "BR";
     const { data: existing } = await backend
       .from("api_credentials")
-      .select("id")
+      .select("id, updated_at")
       .eq("provider", "shopee")
       .eq("user_id", currentUser.id)
+      .order("updated_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
     if (existing) {
       const { error } = await backend
