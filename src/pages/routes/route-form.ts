@@ -7,6 +7,7 @@ export interface NewRouteForm {
   destinationGroupIds: string[];
   masterGroupIds: string[];
   autoConvertShopee: boolean;
+  shopeeSubId: string;
   autoConvertMercadoLivre: boolean;
   autoConvertAmazon: boolean;
   templateId: string;
@@ -28,6 +29,7 @@ export const emptyNewRoute: NewRouteForm = {
   destinationGroupIds: [],
   masterGroupIds: [],
   autoConvertShopee: true,
+  shopeeSubId: "",
   autoConvertMercadoLivre: false,
   autoConvertAmazon: false,
   templateId: "",
@@ -73,6 +75,7 @@ export function buildRoutePayload(form: NewRouteForm) {
     masterGroupId: selectedMasterGroupIds[0],
     rules: {
       autoConvertShopee: form.autoConvertShopee,
+      shopeeSubId: form.autoConvertShopee ? (form.shopeeSubId || null) : null,
       autoConvertMercadoLivre: form.autoConvertMercadoLivre,
       autoConvertAmazon: form.autoConvertAmazon,
       // Keep compatibility with the existing route pipeline while partner selectors are hidden in the UI.

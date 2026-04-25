@@ -68,7 +68,7 @@ export const ROUTES = {
 
 export const APP_ROUTE_TITLES: Record<string, string> = {
   [ROUTES.app.dashboard]: "Dashboard",
-  [ROUTES.app.connectionsWhatsApp]: "Configurações WhatsApp",
+  [ROUTES.app.connectionsWhatsApp]: "Configurações do WhatsApp",
   [ROUTES.app.telegramConfiguracoes]: "Telegram",
   [ROUTES.app.connectionsMasterGroups]: "Grupos mestres",
   [ROUTES.app.routes]: "Rotas automáticas",

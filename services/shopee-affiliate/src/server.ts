@@ -51,6 +51,8 @@ const RATE_LIMIT_REQUESTS = 300;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const MAX_SHOPEE_BATCH_QUERIES = 20;
 const MAX_URL_LENGTH = 2048;
+const MAX_SHOPEE_SUB_IDS_PER_LINK = 5;
+const MAX_SHOPEE_SUB_ID_LENGTH = 80;
 const REPORT_MAX_PAGES = Math.max(
   1,
   Math.min(50, Number.parseInt(String(process.env.SHOPEE_REPORT_MAX_PAGES || "5"), 10) || 5),
@@ -278,7 +280,6 @@ type ShopeeReportsResponse = {
 type ShopeeReportFilters = {
   shopId?: number;
   orderStatus?: string;
-  buyerType?: string;
   campaignType?: string;
   campaignPartnerName?: string;
 };
@@ -447,6 +448,28 @@ function normalizeCurrency(value: unknown): string {
   return raw;
 }
 
+function normalizeShopeeSubId(value: unknown): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (normalized.length > MAX_SHOPEE_SUB_ID_LENGTH) return "";
+  if (!/^[A-Za-z0-9]+$/.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeShopeeSubIds(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  const deduped = new Set<string>();
+
+  for (const item of values) {
+    const normalized = normalizeShopeeSubId(item);
+    if (!normalized || deduped.has(normalized)) continue;
+    deduped.add(normalized);
+    if (deduped.size >= MAX_SHOPEE_SUB_IDS_PER_LINK) break;
+  }
+
+  return [...deduped];
+}
+
 function parseDecimalLike(input: unknown): number {
   if (typeof input === "number") return Number.isFinite(input) ? input : Number.NaN;
 
@@ -500,7 +523,6 @@ function dateYmdDaysAgo(days: number): string {
 }
 
 const REPORT_ORDER_STATUS_VALUES = new Set(["UNPAID", "PENDING", "COMPLETED", "CANCELLED"]);
-const REPORT_BUYER_TYPE_VALUES = new Set(["NEW", "EXISTING"]);
 const REPORT_FILTER_TEXT_MAX_LENGTH = 120;
 
 function normalizeReportTextFilter(input: unknown): string | undefined {
@@ -535,7 +557,6 @@ function normalizeReportFilters(input: unknown): ShopeeReportFilters {
   return {
     shopId: normalizeReportNumericFilter(source.shopId),
     orderStatus: normalizeReportEnumFilter(source.orderStatus, REPORT_ORDER_STATUS_VALUES),
-    buyerType: normalizeReportEnumFilter(source.buyerType, REPORT_BUYER_TYPE_VALUES),
     campaignType,
     campaignPartnerName: normalizeReportTextFilter(source.campaignPartnerName),
   };
@@ -1155,7 +1176,6 @@ function includesNormalizedText(target: string, search: string): boolean {
 
 function matchesShopeeReportFilters(row: ShopeeReportRow, filters: ShopeeReportFilters): boolean {
   if (filters.orderStatus && row.orderStatus !== filters.orderStatus) return false;
-  if (filters.buyerType && row.buyerType !== filters.buyerType) return false;
   if (filters.shopId && toReportId(filters.shopId) !== row.shopId) return false;
   if (filters.campaignType && row.campaignType !== filters.campaignType) return false;
   if (filters.campaignPartnerName && !includesNormalizedText(row.campaignPartnerName, filters.campaignPartnerName)) return false;
@@ -2223,6 +2243,8 @@ app.post("/api/shopee/convert-link", async (req, res) => {
     return;
   }
 
+  const requestedSubIds = normalizeShopeeSubIds(req.body?.subIds ?? req.body?.subId);
+
   const { credentials } = parsed;
 
   try {
@@ -2236,8 +2258,13 @@ app.post("/api/shopee/convert-link", async (req, res) => {
       }
     `;
 
+    const shortLinkInput: Record<string, unknown> = { originUrl: targetUrl };
+    if (requestedSubIds.length > 0) {
+      shortLinkInput.subIds = requestedSubIds;
+    }
+
     const converted = await callShopeeGraphql(credentials, mutation, {
-      input: { originUrl: targetUrl },
+      input: shortLinkInput,
     });
 
     const linkNode = converted.generateShortLink as Record<string, unknown> | undefined;
@@ -2303,6 +2330,7 @@ app.post("/api/shopee/convert-link", async (req, res) => {
       affiliateLink,
       product,
       resolvedUrl: targetUrl,
+      subIds: requestedSubIds,
     });
   } catch (error) {
     res.status(400).json({ error: sanitizeError(error) });

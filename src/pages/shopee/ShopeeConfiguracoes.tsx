@@ -10,9 +10,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import {
   Loader2, CheckCircle, XCircle, ExternalLink,
   AlertTriangle, Wifi, WifiOff, Clock, Info, ChevronDown,
-  Key, Eye, EyeOff, RotateCw,
+  Key, Eye, EyeOff, RotateCw, Plus, Star, Trash2,
 } from "lucide-react";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
+import { useShopeeSubIds } from "@/hooks/useShopeeSubIds";
 import { useServiceHealth } from "@/hooks/useServiceHealth";
 import { toast } from "sonner";
 import { formatBRT } from "@/lib/timezone";
@@ -34,7 +35,7 @@ const TUTORIAL_STEPS = [
   },
   {
     step: 3,
-    title: "Solicite acesso a API via Central de Ajuda",
+    title: "Solicite acesso à API via Central de Ajuda",
     description: 'Na página Open API, clique em "Central de Ajuda" (canto superior direito). Role até o final e clique em "E-mail (Fale conosco por e-mail)". Preencha o formulário:',
     details: [
       { campo: "Já é Afiliado da Shopee?", valor: "Sim" },
@@ -68,14 +69,29 @@ const CONNECTION_CARD_BY_STATUS = {
   service_offline: { barClass: "bg-destructive", iconWrapClass: "bg-destructive/10 text-destructive", icon: WifiOff, title: "Serviço Shopee fora do ar" },
 } as const;
 
+const BUTTON_CENTERED_CLASS = "justify-center px-4 text-center";
+const BUTTON_MOBILE_FULL_CLASS = `w-full sm:w-auto ${BUTTON_CENTERED_CLASS}`;
+const SUB_ID_ADD_BUTTON_CLASS = "w-full justify-center px-5 text-center sm:w-auto sm:min-w-[132px] sm:px-6";
+
 export default function ShopeeConfiguracoes() {
-  const { appId, isConfigured, hasSecret, connectionInfo, save, testConnection } = useShopeeCredentials();
+  const { appId, isConfigured, connectionInfo, save, testConnection } = useShopeeCredentials();
+  const {
+    subIds,
+    isLoading: isSubIdsLoading,
+    isAdding: isAddingSubId,
+    isSettingDefault: isSettingDefaultSubId,
+    isRemoving: isRemovingSubId,
+    addSubId,
+    setDefaultSubId,
+    removeSubId,
+  } = useShopeeSubIds();
   const {
     health: serviceHealth,
     isRefreshing: isServiceHealthRefreshing,
     refresh: refreshServiceHealth,
   } = useServiceHealth("shopee");
   const [form, setForm] = useState({ appId: "", secret: "" });
+  const [subIdInput, setSubIdInput] = useState("");
   const [showSecret, setShowSecret] = useState(false);
   const [saving, setSaving] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
@@ -131,8 +147,37 @@ export default function ShopeeConfiguracoes() {
     }
   };
 
+  const handleAddSubId = async () => {
+    try {
+      await addSubId(subIdInput);
+      setSubIdInput("");
+      toast.success("Sub ID cadastrado com sucesso!");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível cadastrar o Sub ID.");
+    }
+  };
+
+  const handleSetDefaultSubId = async (subIdId: string) => {
+    try {
+      await setDefaultSubId(subIdId);
+      toast.success("Sub ID padrão atualizado.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível atualizar o Sub ID padrão.");
+    }
+  };
+
+  const handleRemoveSubId = async (subIdId: string) => {
+    try {
+      await removeSubId(subIdId);
+      toast.success("Sub ID removido.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível remover o Sub ID.");
+    }
+  };
+
   const isTesting = connectionInfo.status === "testing";
   const isBusy = saving || isTesting || isServiceHealthRefreshing;
+  const isSubIdsBusy = isAddingSubId || isSettingDefaultSubId || isRemovingSubId;
   const combinedStatus: CombinedStatus =
     isServiceHealthRefreshing || isTesting ? "testing" :
     (serviceHealth && !serviceHealth.online) ? "service_offline" :
@@ -173,7 +218,13 @@ export default function ShopeeConfiguracoes() {
                   )}
                 </div>
               </div>
-              <Button size="sm" variant="outline" onClick={() => void handleTestAll()} disabled={isBusy} className="mt-1 w-full shrink-0 sm:mt-0 sm:w-auto">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleTestAll()}
+                disabled={isBusy}
+                className={`mt-1 shrink-0 sm:mt-0 ${BUTTON_MOBILE_FULL_CLASS}`}
+              >
                 {combinedStatus === "testing" ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <RotateCw className="h-3.5 w-3.5 mr-1.5" />}
                 Testar conexão
               </Button>
@@ -214,7 +265,7 @@ export default function ShopeeConfiguracoes() {
                 <div className="relative">
                   <Input
                     type={showSecret ? "text" : "password"}
-                    placeholder={isConfigured ? "*** salvo com segurança ***" : "Cole seu Secret Key aqui"}
+                    placeholder={isConfigured ? "*** salvo com segurança ***" : "Cole sua Secret Key aqui"}
                     value={form.secret}
                     onChange={(e) => setForm({ ...form, secret: e.target.value })}
                     className="font-mono text-sm pr-10"
@@ -232,7 +283,7 @@ export default function ShopeeConfiguracoes() {
               </div>
             </div>
 
-            <Button onClick={handleSave} disabled={isBusy} className="mt-2 w-full sm:mt-3">
+            <Button onClick={handleSave} disabled={isBusy} className={`mt-2 sm:mt-3 ${BUTTON_CENTERED_CLASS} w-full`}>
               {saving ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
               ) : (
@@ -240,6 +291,106 @@ export default function ShopeeConfiguracoes() {
               )}
               {isConfigured ? "Atualizar credenciais" : "Salvar e conectar"}
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="glass">
+          <CardHeader className="pb-3 sm:pb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Star className="h-4 w-4" />
+              </div>
+              <div>
+                <CardTitle className="text-base">Sub IDs da conversão</CardTitle>
+                <CardDescription className="text-sm leading-relaxed">
+                  Cadastre vários Sub IDs e escolha um padrão para ser aplicado automaticamente na conversão Shopee.
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-2 sm:space-y-5">
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Novo Sub ID</Label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  placeholder="Ex.: campanha01"
+                  value={subIdInput}
+                  onChange={(e) => setSubIdInput(e.target.value)}
+                  className="font-mono text-sm"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void handleAddSubId()}
+                  disabled={isSubIdsBusy || !subIdInput.trim()}
+                  className={SUB_ID_ADD_BUTTON_CLASS}
+                >
+                  {isAddingSubId ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plus className="mr-2 h-4 w-4" />
+                  )}
+                  Adicionar
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Permitido: apenas letras e números (máximo 80 caracteres).
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              {isSubIdsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Carregando Sub IDs...
+                </div>
+              ) : subIds.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  Nenhum Sub ID cadastrado ainda. Ao criar o primeiro, ele vira padrão automaticamente.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {subIds.map((subId) => (
+                    <div key={subId.id} className="flex items-center gap-3 rounded-lg border p-3">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void handleSetDefaultSubId(subId.id)}
+                        disabled={isSubIdsBusy || subId.isDefault}
+                        className={`h-8 w-8 p-0 ${subId.isDefault ? "text-warning" : "text-muted-foreground"}`}
+                        title={subId.isDefault ? "Sub ID padrão" : "Definir como padrão"}
+                      >
+                        <Star className={`h-4 w-4 ${subId.isDefault ? "fill-current" : ""}`} />
+                      </Button>
+
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-mono text-sm">{subId.value}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {subId.isDefault ? "Padrão atual" : "Clique na estrela para definir como padrão"}
+                        </p>
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void handleRemoveSubId(subId.id)}
+                        disabled={isSubIdsBusy}
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                        title="Remover Sub ID"
+                      >
+                        {isRemovingSubId ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -292,7 +443,7 @@ export default function ShopeeConfiguracoes() {
                         )}
 
                         {step.link && (
-                          <Button variant="outline" size="sm" className="h-8 text-xs gap-1" asChild>
+                          <Button variant="outline" size="sm" className={`h-8 gap-1 text-xs ${BUTTON_CENTERED_CLASS}`} asChild>
                             <a href={step.link} target="_blank" rel="noopener noreferrer">
                               {step.linkLabel} <ExternalLink className="h-3 w-3" />
                             </a>

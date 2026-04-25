@@ -1,7 +1,7 @@
 # Deploy Autogerado (Coolify)
 
 > Arquivo gerado automaticamente por `scripts/generate-deploy-doc.mjs`.  
-> Atualizado em: `2026-04-25T15:45:24.297Z`
+> Atualizado em: `2026-04-25T19:21:36.070Z`
 
 ## Fluxo automático recomendado
 

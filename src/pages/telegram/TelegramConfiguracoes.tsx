@@ -59,7 +59,7 @@ export default function TelegramConfiguracoes() {
   return (
     <ConexoesCanalLayout
       title="Telegram"
-      description="Conecte e veja suas contas do Telegram"
+      description="Conecte e acompanhe suas contas do Telegram"
       headerActions={null}
       activeTab={subTab}
       onTabChange={setSubTab}

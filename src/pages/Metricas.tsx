@@ -180,6 +180,11 @@ function formatWeeklyGrowth(value: number): string {
   return `${safe > 0 ? "+" : ""}${safe.toFixed(1)}`;
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 export default function Metricas() {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -404,13 +409,15 @@ export default function Metricas() {
       toast.error(`Erro ao sincronizar grupos: ${syncError}`);
     } else if (syncResult) {
       if (syncResult.sessionsSynced > 0) {
-        toast.success(`Sincronização concluída: ${syncResult.sessionsSynced} sessão(s), ${syncResult.totalGroups} grupos.`);
+        toast.success(
+          `Sincronização concluída: ${ptCount(syncResult.sessionsSynced, "sessão", "sessões")}, ${ptCount(syncResult.totalGroups, "grupo", "grupos")}.`,
+        );
       } else {
         toast.warning("Nenhuma sessão online foi sincronizada. Grupos existentes carregados do banco.");
       }
       if (syncResult.errors.length > 0) {
         const preview = syncResult.errors.slice(0, 2).join(" | ");
-        toast.warning(`Ocorreram ${syncResult.errors.length} erro(s) na sincronização. ${preview}`);
+        toast.warning(`Ocorreram ${ptCount(syncResult.errors.length, "erro", "erros")} na sincronização. ${preview}`);
       }
     } else {
       toast.warning("Nenhuma sessão online foi sincronizada. Grupos existentes carregados do banco.");
@@ -426,7 +433,7 @@ export default function Metricas() {
     <div className="ds-page">
       <PageHeader
         title="Métricas de grupos"
-        description="Dashboard consolidado dos grupos em que você é admin nas sessões WhatsApp conectadas."
+        description="Painel consolidado dos grupos em que você é administrador nas sessões do WhatsApp conectadas."
       >
         <div className="z-30 flex w-full min-w-0 flex-wrap items-start gap-2.5 sm:justify-end">
           {selectedGroupIds.length > 0 && (
@@ -469,7 +476,7 @@ export default function Metricas() {
                   meta: `${group.memberCount} membros`,
                 }))}
                 placeholder="Todos os meus grupos"
-                selectedLabel={(count) => count === 0 ? "Todos os meus grupos" : `${count} selecionado(s)`}
+                selectedLabel={(count) => count === 0 ? "Todos os meus grupos" : ptCount(count, "selecionado", "selecionados")}
                 emptyMessage={groupFilterEmptyMessage}
                 title="Filtrar por grupos"
                 showSelectedBadges={false}
@@ -548,7 +555,7 @@ export default function Metricas() {
             {showNoAdminGroups && (
               <div className="space-y-3">
                 <p>
-                  Há sessões conectadas, mas ainda não encontramos grupos onde você é admin nessas sessões.
+                  Há sessões conectadas, mas ainda não encontramos grupos em que você seja administrador nessas sessões.
                   Clique em "Atualizar" para sincronizar permissões e carregar o conjunto correto.
                 </p>
                 <Button onClick={handleSyncAndRefresh} disabled={isSyncing} size="sm" variant="secondary" className="h-8 gap-2">
@@ -775,8 +782,8 @@ export default function Metricas() {
           {overview && overview.groupsWithData < overview.totalGroups && (
             <Card className="border-warning/40 bg-warning/5">
               <CardContent className="pt-4 text-sm text-muted-foreground">
-                {overview.groupsWithData} de {overview.totalGroups} grupo(s) retornaram dados completos no período.
-                {overview.groupsFailed > 0 && ` ${overview.groupsFailed} grupo(s) foram excluidos da soma por falha de coleta.`}
+                {overview.groupsWithData} de {overview.totalGroups} {overview.totalGroups === 1 ? "grupo retornou" : "grupos retornaram"} dados completos no período.
+                {overview.groupsFailed > 0 && ` ${ptCount(overview.groupsFailed, "grupo foi excluído", "grupos foram excluídos")} da soma por falha de coleta.`}
                 Clique em "Atualizar" para sincronizar novamente.
               </CardContent>
             </Card>

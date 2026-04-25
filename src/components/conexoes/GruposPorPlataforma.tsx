@@ -13,6 +13,11 @@ import { toast } from "sonner";
 import { ChannelPlatformIcon } from "@/components/icons/ChannelPlatformIcon";
 import { InlineLoadingState } from "@/components/InlineLoadingState";
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 interface PlatformSession {
   id: string;
   name: string;
@@ -86,9 +91,9 @@ export function GruposPorPlataforma({
     try {
       await onSyncSession(sessionId);
       onRefresh();
-      toast.success("Grupos atualizados");
+      toast.success("Grupos atualizados com sucesso.");
     } catch {
-      toast.error("Não foi possível sincronizar os grupos dessa sessão");
+      toast.error("Não foi possível sincronizar os grupos desta sessão.");
     } finally {
       setSyncingSessionId(null);
     }
@@ -127,9 +132,12 @@ export function GruposPorPlataforma({
       onRefresh();
       const failed = results.filter((status) => status === "rejected").length;
       if (failed === 0) {
-        toast.success(`Grupos atualizados de ${onlineSessions.length} conta(s).`);
+        toast.success(`Grupos atualizados em ${ptCount(onlineSessions.length, "conta", "contas")}.`);
       } else {
-        toast.warning(`Sincronização parcial: ${onlineSessions.length - failed} ok, ${failed} com erro.`);
+        const succeeded = onlineSessions.length - failed;
+        toast.warning(
+          `Sincronização parcial: ${ptCount(succeeded, "conta sincronizada", "contas sincronizadas")} e ${ptCount(failed, "conta com erro", "contas com erro")}.`,
+        );
       }
     } finally {
       setSyncingAll(false);
@@ -178,7 +186,7 @@ export function GruposPorPlataforma({
                       <StatusIndicator status={session.status} />
                       {groupCount > 0 && (
                         <Badge variant="outline" className="text-2xs tabular-nums">
-                          {groupCount} grupo(s)
+                          {ptCount(groupCount, "grupo", "grupos")}
                         </Badge>
                       )}
                     </div>
@@ -240,7 +248,7 @@ export function GruposPorPlataforma({
             <EmptyState
               icon={Users}
               title={`Nenhum grupo ${platformLabel}`}
-              description={`Clique em "Sincronizar grupos" para puxar os grupos das contas online.`}
+              description={`Clique em "Sincronizar grupos" para buscar os grupos das contas online.`}
               actionLabel="Sincronizar grupos"
               onAction={handleSyncAllOnline}
             />
@@ -278,7 +286,7 @@ export function GruposPorPlataforma({
                             )}
                           </div>
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            {group.memberCount} membro(s)
+                            {ptCount(group.memberCount, "membro", "membros")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 shrink-0">

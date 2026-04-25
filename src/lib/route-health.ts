@@ -89,6 +89,11 @@ function meliStatusLabel(status: string): string {
   return statusLabels[status] ?? status;
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 export function computeRouteHealth(input: RouteHealthInput): {
   level: RouteHealthLevel;
   steps: HealthStep[];
@@ -270,9 +275,17 @@ export function computeRouteHealth(input: RouteHealthInput): {
         if (notFound.length === masterGroupIds.length) {
           steps.push({ label: "Envio", status: "error", detail: "Grupos mestre de destino não encontrados" });
         } else if (notFound.length > 0) {
-          steps.push({ label: "Envio", status: "warn", detail: `${notFound.length} grupo(s) mestre não encontrado(s)` });
+          steps.push({
+            label: "Envio",
+            status: "warn",
+            detail: ptCount(notFound.length, "grupo mestre não encontrado", "grupos mestre não encontrados"),
+          });
         } else {
-          steps.push({ label: "Envio", status: "ok", detail: `${masterGroupIds.length} grupo(s) mestre via ${destSession.label}` });
+          steps.push({
+            label: "Envio",
+            status: "ok",
+            detail: `${ptCount(masterGroupIds.length, "grupo mestre", "grupos mestre")} via ${destSession.label}`,
+          });
         }
       } else {
         const found = route.destinationGroupIds.filter((id) => groupsById.has(id));
@@ -283,7 +296,11 @@ export function computeRouteHealth(input: RouteHealthInput): {
         } else if (found.length < route.destinationGroupIds.length) {
           steps.push({ label: "Envio", status: "warn", detail: `${found.length}/${route.destinationGroupIds.length} grupos ativos` });
         } else {
-          steps.push({ label: "Envio", status: "ok", detail: `${found.length} grupo(s) via ${destSession.label}` });
+          steps.push({
+            label: "Envio",
+            status: "ok",
+            detail: `${ptCount(found.length, "grupo", "grupos")} via ${destSession.label}`,
+          });
         }
       }
     }

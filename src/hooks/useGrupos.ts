@@ -20,6 +20,11 @@ function normalizeDistributionMode(raw: unknown): DistributionMode {
   return "balanced";
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 function resolveGroupInviteLink(row: GroupRow): string | null {
   const explicit = String(row.invite_link || "").trim();
   if (/^https?:\/\//i.test(explicit)) {
@@ -328,15 +333,17 @@ export function useGrupos() {
       qc.invalidateQueries({ queryKey: ["analytics-admin-groups"] });
 
       if (successCount > 0 && errorCount === 0) {
-        toast.success(`Sincronização iniciada para ${successCount} sessão(ões) online.`);
+        toast.success(`Sincronização iniciada para ${ptCount(successCount, "sessão online", "sessões online")}.`);
       } else if (successCount > 0 && errorCount > 0) {
-        toast.warning(`Sincronização parcial: ${successCount} sucesso(s), ${errorCount} falha(s).`);
+        toast.warning(
+          `Sincronização parcial: ${ptCount(successCount, "sessão sincronizada", "sessões sincronizadas")} e ${ptCount(errorCount, "sessão com falha", "sessões com falha")}.`,
+        );
       } else {
         toast.error("Falha ao sincronizar grupos em todas as sessões.");
       }
     } catch (err) {
       console.error("syncGroups error:", err);
-      toast.error("Erro ao sincronizar grupos");
+      toast.error("Não foi possível sincronizar os grupos.");
     } finally {
       setSyncing(false);
     }
@@ -345,7 +352,7 @@ export function useGrupos() {
   const createMasterGroup = useCallback(async (name: string, distribution: DistributionMode, memberLimit: number, _alertMargin: number) => {
     if (!user) return null;
     if (!name.trim()) {
-      toast.error("Informe o nome do grupo mestre");
+      toast.error("Informe o nome do grupo mestre.");
       return null;
     }
 
@@ -360,7 +367,7 @@ export function useGrupos() {
     }).select().single();
 
     if (error) {
-      toast.error("Erro ao criar grupo mestre");
+      toast.error("Não foi possível criar o grupo mestre.");
       return null;
     }
 
@@ -397,7 +404,7 @@ export function useGrupos() {
       .eq("id", id)
       .eq("user_id", user.id);
     if (error) {
-      toast.error("Erro ao atualizar grupo mestre");
+      toast.error("Não foi possível atualizar o grupo mestre.");
       return false;
     }
 
@@ -417,19 +424,19 @@ export function useGrupos() {
         .eq("user_id", user.id)
         .in("id", uniqueIds);
       if (groupsRes.error) {
-        toast.error("Erro ao validar grupos vinculados");
+        toast.error("Não foi possível validar os grupos vinculados.");
         return false;
       }
 
       activeGroups = (groupsRes.data || []).filter((row) => !row.deleted_at);
       if (activeGroups.length !== uniqueIds.length) {
-        toast.error("Um ou mais grupos não existem ou não estão ativos");
+        toast.error("Um ou mais grupos não existem ou não estão ativos.");
         return false;
       }
 
       const platformSet = new Set(activeGroups.map((row) => row.platform));
       if (platformSet.size > 1) {
-        toast.error("Grupo mestre só pode conter grupos da mesma rede");
+        toast.error("Um grupo mestre só pode conter grupos da mesma rede.");
         return false;
       }
     }
@@ -439,7 +446,7 @@ export function useGrupos() {
       .select("group_id")
       .eq("master_group_id", masterGroupId);
     if (currentLinksRes.error) {
-      toast.error("Erro ao carregar vínculos atuais");
+      toast.error("Não foi possível carregar os vínculos atuais.");
       return false;
     }
     const currentIds = (currentLinksRes.data || []).map((row) => row.group_id);
@@ -452,7 +459,7 @@ export function useGrupos() {
         .from("master_group_links")
         .insert(toAdd.map((groupId) => ({ master_group_id: masterGroupId, group_id: groupId, is_active: true })));
       if (insertError) {
-        toast.error(insertError.message || "Erro ao vincular grupos");
+        toast.error(insertError.message || "Não foi possível vincular os grupos.");
         return false;
       }
 
@@ -505,7 +512,7 @@ export function useGrupos() {
         .eq("master_group_id", masterGroupId)
         .in("group_id", toRemove);
       if (deleteError) {
-        toast.error("Erro ao desvincular grupos");
+        toast.error("Não foi possível desvincular os grupos.");
         return false;
       }
     }
@@ -522,7 +529,7 @@ export function useGrupos() {
     await backend.from("master_groups").delete().eq("id", id).eq("user_id", user.id);
 
     qc.invalidateQueries({ queryKey: ["master_groups"] });
-    toast.success("Grupo mestre removido");
+    toast.success("Grupo mestre removido com sucesso!");
 
     await logHistorico(user.id, "session_event", mg?.name || id, "Grupo Mestre", "warning", "Grupo mestre removido");
   }, [qc, user, masterGroups]);
@@ -532,7 +539,7 @@ export function useGrupos() {
     const nextGroupIds = [...new Set([...(current?.groupIds || []), group.id])];
     const success = await setMasterGroupGroups(masterGroupId, nextGroupIds);
     if (success) {
-      toast.success(`${group.name} vinculado!`);
+      toast.success(`Grupo "${group.name}" vinculado com sucesso!`);
     }
   }, [masterGroups, setMasterGroupGroups]);
 
@@ -541,7 +548,7 @@ export function useGrupos() {
     const nextGroupIds = (current?.groupIds || []).filter((id) => id !== groupId);
     const success = await setMasterGroupGroups(masterGroupId, nextGroupIds);
     if (success) {
-      toast.success("Grupo desvinculado");
+      toast.success("Grupo desvinculado com sucesso!");
     }
   }, [masterGroups, setMasterGroupGroups]);
 
@@ -558,13 +565,13 @@ export function useGrupos() {
       .eq("user_id", user.id);
 
     if (error) {
-      toast.error("Erro ao salvar link de convite do grupo");
+      toast.error("Não foi possível salvar o link de convite do grupo.");
       return false;
     }
 
     qc.invalidateQueries({ queryKey: ["groups"] });
     qc.invalidateQueries({ queryKey: ["master_groups"] });
-    toast.success("Link de convite atualizado");
+    toast.success("Link de convite atualizado com sucesso!");
     return true;
   }, [user, qc]);
 

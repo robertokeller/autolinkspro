@@ -37,6 +37,20 @@ function compactText(value: string): string {
   return String(value || "").replace(/[\r\n]+/g, " ").trim();
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
+function normalizeLegacyPluralText(value: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  return text
+    .replace(/(\d+)\s+destino\(s\)/gi, (_, raw) => ptCount(Number(raw), "destino", "destinos"))
+    .replace(/(\d+)\s+evento\(s\)/gi, (_, raw) => ptCount(Number(raw), "evento", "eventos"));
+}
+
 function buildPaginationItems(currentPage: number, totalPages: number): PaginationItem[] {
   if (totalPages <= 7) {
     return Array.from({ length: totalPages }, (_, index) => index + 1);
@@ -179,7 +193,7 @@ function groupLegacyRouteEntries(entries: HistoryEntry[]): {
     output.push({
       ...first,
       id: parentId,
-      destination: `${childTargets.length} destino(s)`,
+      destination: ptCount(childTargets.length, "destino", "destinos"),
       status: mergedProcessingStatus,
       title: statusText(mergedProcessingStatus),
       processingStatus: mergedProcessingStatus,
@@ -373,9 +387,9 @@ export default function HistoryPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todos</SelectItem>
-                <SelectItem value="success">Enviadas</SelectItem>
+                <SelectItem value="success">Enviados</SelectItem>
                 <SelectItem value="warning">Bloqueadas</SelectItem>
-                <SelectItem value="error">Com erro</SelectItem>
+                <SelectItem value="error">Com erros</SelectItem>
               </SelectContent>
             </Select>
 
@@ -421,7 +435,7 @@ export default function HistoryPage() {
             className={`rounded-lg border px-3 py-2 text-center transition-colors ${status === "success" ? "border-primary bg-primary/10" : "border-transparent bg-background hover:border-border"}`}
             onClick={() => setStatus("success")}
           >
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Enviadas</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Enviados</p>
             <p className="text-base font-semibold leading-none">{serverCounts.success}</p>
           </button>
           <button
@@ -429,7 +443,7 @@ export default function HistoryPage() {
             className={`rounded-lg border px-3 py-2 text-center transition-colors ${status === "error" ? "border-primary bg-primary/10" : "border-transparent bg-background hover:border-border"}`}
             onClick={() => setStatus("error")}
           >
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Com erro</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Com erros</p>
             <p className="text-base font-semibold leading-none">{serverCounts.error}</p>
           </button>
           <button
@@ -482,6 +496,7 @@ export default function HistoryPage() {
                 const isExpanded = Boolean(expandedEntries[entry.id]);
                 const isLoadingTargets = Boolean(loadingTargetsByEntryId[entry.id]);
                 const targets = targetsByEntryId[entry.id] || legacyTargetsByEntryId[entry.id] || [];
+                const destinationLabel = normalizeLegacyPluralText(entry.destination || "-") || "-";
 
                 return (
                   <Card key={entry.id} className="glass">
@@ -497,13 +512,13 @@ export default function HistoryPage() {
                             </Badge>
                             {entry.hasTargets && (
                               <Badge variant="outline" className="text-xs">
-                                {entry.targetSummary.total} destino(s)
+                                {ptCount(entry.targetSummary.total, "destino", "destinos")}
                               </Badge>
                             )}
                           </div>
 
                           <p className="text-sm font-semibold">{entry.automationName || "Evento"}</p>
-                          <p className="text-xs text-muted-foreground">Destino: {entry.destination || "-"}</p>
+                          <p className="text-xs text-muted-foreground">Destino: {destinationLabel}</p>
                           {entry.message && (
                             <p className="text-xs text-muted-foreground line-clamp-2">
                               Mensagem: {entry.message}
@@ -553,7 +568,7 @@ export default function HistoryPage() {
                                   Carregando destinos...
                                 </div>
                               ) : targets.length === 0 ? (
-                                <p className="text-xs text-muted-foreground">Sem destinos filhos registrados para este evento.</p>
+                                <p className="text-xs text-muted-foreground">Sem destinos registrados para este evento.</p>
                               ) : (
                                 targets.map((target) => (
                                   <div key={target.id} className="rounded-md border bg-background/80 px-2.5 py-2">
@@ -569,7 +584,7 @@ export default function HistoryPage() {
                                             </Badge>
                                           )}
                                         </div>
-                                        <p className="text-xs font-medium">{target.destination}</p>
+                                        <p className="text-xs font-medium">{normalizeLegacyPluralText(target.destination) || "-"}</p>
                                         {target.message && (
                                           <p className="text-xs text-muted-foreground line-clamp-1">
                                             Mensagem: {target.message}
@@ -649,7 +664,7 @@ export default function HistoryPage() {
                 )}
 
                 <p className="text-center text-xs text-muted-foreground">
-                  Página {currentPage} de {effectiveTotalPages} • {effectiveTotalEntries} evento(s) no período
+                  Página {currentPage} de {effectiveTotalPages} • {ptCount(effectiveTotalEntries, "evento", "eventos")} no período
                   {hasSearchQuery ? " • busca aplicada apenas na página atual" : ""}
                 </p>
               </div>

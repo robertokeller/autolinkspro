@@ -122,7 +122,7 @@ export function SessoesWhatsApp({
       const previous = previousStatusRef.current[session.id];
 
       if (previous === "online" && ["warning", "offline"].includes(session.status)) {
-        toast.warning(`Sessão ${session.name} desconectou. Confira se está tudo certo.`);
+        toast.warning(`A sessão ${session.name} foi desconectada. Verifique se está tudo certo.`);
       }
 
       previousStatusRef.current[session.id] = session.status;
@@ -222,7 +222,7 @@ export function SessoesWhatsApp({
 
     const nextName = editSessionName.trim();
     if (!nextName) {
-      toast.error("Coloque um nome válido");
+      toast.error("Informe um nome válido.");
       return;
     }
 
@@ -291,7 +291,7 @@ export function SessoesWhatsApp({
     }
 
     if (authSession.status === "warning") {
-      const warningMessage = authSession.errorMessage?.trim() || "O serviço WhatsApp parece estar fora do ar.";
+      const warningMessage = authSession.errorMessage?.trim() || "O serviço do WhatsApp parece estar fora do ar.";
       return (
         <div className="flex flex-col items-center gap-4 py-4">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-warning/15">
@@ -331,7 +331,7 @@ export function SessoesWhatsApp({
             <AlertTriangle className="h-8 w-8 text-warning" />
           </div>
           <p className="text-center text-sm text-muted-foreground">
-            O modo Pairing Code foi desativado. Desconecte e conecte novamente usando QR Code.
+            O modo de código de pareamento foi desativado. Desconecte e conecte novamente usando QR Code.
           </p>
         </div>
       );
@@ -343,7 +343,7 @@ export function SessoesWhatsApp({
           <Loader2 className="h-10 w-10 animate-spin text-primary" />
           <div className="text-center">
             <p className="font-semibold">
-              Conectando conta...
+              Conectando a conta...
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
               QR Code lido. Finalizando a conexão com o WhatsApp.
@@ -391,7 +391,7 @@ export function SessoesWhatsApp({
       {/* Header bar */}
       <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[70%]">
-          Conecte contas WhatsApp por QR Code. A conexão fica sendo monitorada o tempo todo.
+          Conecte contas do WhatsApp por QR Code. A conexão é monitorada continuamente.
         </p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={() => onRefresh()} disabled={isRefreshing}>
@@ -404,23 +404,23 @@ export function SessoesWhatsApp({
           </Button>
           <Button size="sm" className="h-9 gap-1.5" onClick={openCreateFlow}>
             <Plus className="h-3.5 w-3.5 mr-2" />
-            Nova Conexão
+            Nova conexão
           </Button>
         </div>
       </div>
 
       {/* Loading */}
       {isLoading && (
-        <InlineLoadingState label="Carregando contas WhatsApp..." />
+        <InlineLoadingState label="Carregando contas do WhatsApp..." />
       )}
 
       {/* Empty */}
       {!isLoading && sessions.length === 0 && (
         <EmptyState
           icon={QrCode}
-          title="Nenhuma Conta WhatsApp"
-          description="Crie uma conta e conecte por QR Code."
-          actionLabel="Nova Conta"
+          title="Nenhuma conta do WhatsApp"
+          description="Crie uma conta e conecte-a por QR Code."
+          actionLabel="Nova conta"
           onAction={openCreateFlow}
         />
       )}
@@ -548,7 +548,7 @@ export function SessoesWhatsApp({
                           variant="ghost"
                           className="h-8 w-8 text-destructive"
                           onClick={() => setDeleteSessionId(session.id)}
-                          title="Apagar sessão"
+                          title="Remover sessão"
                           disabled={isDeleting}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -575,9 +575,9 @@ export function SessoesWhatsApp({
           {sessionFlowStep === "form" ? (
             <>
               <DialogHeader>
-                <DialogTitle>Nova conta WhatsApp</DialogTitle>
+                <DialogTitle>Nova conta do WhatsApp</DialogTitle>
                 <DialogDescription>
-                  Dê um nome para a conta e conecte usando QR Code.
+                  Informe um nome para a conta e conecte-a usando QR Code.
                 </DialogDescription>
               </DialogHeader>
 
@@ -594,7 +594,7 @@ export function SessoesWhatsApp({
                     onKeyDown={(e) => e.key === "Enter" && canCreate && void handleCreateSession()}
                   />
                   <p className="text-xs text-muted-foreground">
-                    O número do celular aparece sozinho depois que você conectar pelo QR Code.
+                    O número do celular será preenchido automaticamente depois que você conectar pelo QR Code.
                   </p>
                 </div>
                 </div>
@@ -628,12 +628,12 @@ export function SessoesWhatsApp({
                   {authSession?.status === "online"
                     ? "Conta conectada!"
                     : hasShownQrCode && (authSession?.status === "connecting" || (authSession?.status === "qr_code" && !authSession?.qrCode))
-                      ? "Conectando conta..."
+                      ? "Conectando a conta..."
                       : "Leia o QR Code"}
                 </DialogTitle>
                 <DialogDescription>
                   {authSession?.status === "online"
-                    ? `${authSession.name} está pronta.`
+                    ? `${authSession.name} está pronta para uso.`
                     : hasShownQrCode && (authSession?.status === "connecting" || (authSession?.status === "qr_code" && !authSession?.qrCode))
                       ? "Leitura recebida. Estamos finalizando a conexão."
                       : "Use o WhatsApp no celular para ler o código."}
@@ -699,7 +699,7 @@ export function SessoesWhatsApp({
           <DialogHeader>
             <DialogTitle>Editar sessão</DialogTitle>
             <DialogDescription>
-              Só dá para mudar o nome. O resto fica do jeito que está para não perder a conexão.
+              Só é possível alterar o nome. As demais informações permanecem como estão para não perder a conexão.
             </DialogDescription>
           </DialogHeader>
 
@@ -741,7 +741,7 @@ export function SessoesWhatsApp({
       <AlertDialog open={!!deleteSession} onOpenChange={(open) => !open && setDeleteSessionId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
+            <AlertDialogTitle>Remover conta?</AlertDialogTitle>
             <AlertDialogDescription>
               A conta <strong>{deleteSession?.name}</strong> será removida junto com todo o histórico desta sessão
               (grupos, membros e dados sincronizados). Essa ação é permanente e não pode ser desfeita.
@@ -753,7 +753,7 @@ export function SessoesWhatsApp({
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90 w-full sm:w-auto"
                 onClick={() => void handleDeleteSession()}
             >
-              {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Apagar"}
+              {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Remover"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -73,6 +73,11 @@ function parsePeriodToMs(period: string): number | null {
   return null;
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -227,7 +232,7 @@ export default function SettingsPage() {
         phone: nextPhone,
       });
       if (authUpdate.error) {
-        toast.error(authUpdate.error.message || "Não deu pra atualizar os dados de autenticação");
+        toast.error(authUpdate.error.message || "Não foi possível atualizar os dados de autenticação.");
         return;
       }
 
@@ -243,13 +248,13 @@ export default function SettingsPage() {
           { onConflict: "user_id" },
         );
       if (profileSave.error) {
-        toast.error("Não deu pra salvar o perfil no banco");
+        toast.error("Não foi possível salvar o perfil no banco.");
         return;
       }
 
       await backend.auth.getUser();
       await fetchAll();
-      toast.success("Conta atualizada e sincronizada");
+      toast.success("Conta atualizada e sincronizada com sucesso!");
     } finally {
       setSavingProfile(false);
     }
@@ -257,11 +262,11 @@ export default function SettingsPage() {
 
   const updatePassword = async () => {
     if (!passwordForm.currentPassword) {
-      toast.error("Coloque sua senha atual");
+      toast.error("Informe sua senha atual.");
       return;
     }
     if (!passwordForm.newPassword || !passwordForm.confirmPassword) {
-      toast.error("Preencha a nova senha nos dois campos");
+      toast.error("Preencha a nova senha nos dois campos.");
       return;
     }
     const passwordPolicyError = getPasswordPolicyError(passwordForm.newPassword);
@@ -270,7 +275,7 @@ export default function SettingsPage() {
       return;
     }
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      toast.error("As senhas estão diferentes");
+      toast.error("As senhas não coincidem.");
       return;
     }
 
@@ -279,12 +284,12 @@ export default function SettingsPage() {
     setSavingPassword(false);
 
     if (error) {
-      toast.error(error.message ?? "Não deu pra trocar a senha");
+      toast.error(error.message ?? "Não foi possível trocar a senha.");
       return;
     }
 
     setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
-    toast.success("Senha trocada");
+    toast.success("Senha atualizada com sucesso!");
   };
 
   const resolveCheckoutPeriodForPlan = useCallback((
@@ -321,7 +326,7 @@ export default function SettingsPage() {
 
       const checkoutUrl = String(session?.checkout_url ?? "").trim();
       if (!checkoutUrl) {
-        if (!options?.silent) toast.error("Checkout indisponivel para este plano.");
+        if (!options?.silent) toast.error("Checkout indisponível para este plano.");
         return false;
       }
 
@@ -350,19 +355,19 @@ export default function SettingsPage() {
 
   const handleChoosePlan = async (targetPlanId: string) => {
     if (!user) {
-      toast.error("Usuário não autenticado");
+      toast.error("Usuário não autenticado.");
       return;
     }
 
     if (targetPlanId === planId) {
-      toast.info("Você já está nesse plano.");
+      toast.info("Você já está neste plano.");
       return;
     }
 
     const targetLimits = resolveEffectiveLimitsByPlanId(targetPlanId);
     const targetOperational = resolveEffectiveOperationalLimitsByPlanId(targetPlanId);
     if (!targetLimits || !targetOperational) {
-      toast.error("Não deu pra checar os limites desse plano.");
+      toast.error("Não foi possível verificar os limites deste plano.");
       return;
     }
 
@@ -380,7 +385,7 @@ export default function SettingsPage() {
       .map((item) => `${item.label} (${item.used}/${item.max})`);
 
     if (exceeded.length > 0) {
-      toast.error(`Não conseguimos alterar: você passa do limite em ${exceeded.join(", ")}.`);
+      toast.error(`Não foi possível alterar: seu uso excede o limite em ${exceeded.join(", ")}.`);
       return;
     }
 
@@ -391,11 +396,11 @@ export default function SettingsPage() {
           plan_id: targetPlanId,
         },
       });
-      toast.success("Plano atualizado!");
+      toast.success("Plano atualizado com sucesso!");
       setPlansModalOpen(false);
       await fetchAll();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Não deu pra trocar o plano");
+      toast.error(error instanceof Error ? error.message : "Não foi possível trocar o plano.");
     }
   };
 
@@ -416,6 +421,10 @@ export default function SettingsPage() {
   ];
 
   const nearLimitItems = usageItems.filter((item) => item.max !== -1 && item.max > 0 && (item.used / item.max) * 100 >= 80);
+  const nearLimitLabels = nearLimitItems.map((item) => item.label).join(", ");
+  const nearLimitMessage = nearLimitItems.length === 1
+    ? `${nearLimitLabels} já passou de 80% do limite.`
+    : `${nearLimitLabels} já passaram de 80% do limite.`;
 
   if (loading) {
     return (
@@ -434,7 +443,7 @@ export default function SettingsPage() {
       <div className="mx-auto w-full max-w-4xl space-y-6">
         <PageHeader
           title="Minha conta"
-          description="Seu perfil, segurança e configurações num lugar só"
+          description="Seu perfil, segurança e configurações em um só lugar"
         />
 
         <Tabs
@@ -482,7 +491,7 @@ export default function SettingsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="email">Email</Label>
+                    <Label htmlFor="email">E-mail</Label>
                     <Input
                       id="email"
                       type="email"
@@ -519,7 +528,7 @@ export default function SettingsPage() {
                   </div>
                   <div>
                     <CardTitle className="text-base">Segurança</CardTitle>
-                    <CardDescription>Troque sua senha aqui</CardDescription>
+                    <CardDescription>Atualize sua senha com segurança</CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -615,7 +624,7 @@ export default function SettingsPage() {
                       <CreditCard className="h-4 w-4" />
                     </div>
                     <div>
-                      <CardTitle className="text-base">{currentPlan.accountTitle || "Plano & Uso"}</CardTitle>
+                      <CardTitle className="text-base">{currentPlan.accountTitle || "Plano e uso"}</CardTitle>
                       <CardDescription>{currentPlan.accountDescription || "Acompanhe o consumo dos seus recursos"}</CardDescription>
                     </div>
                   </div>
@@ -630,8 +639,8 @@ export default function SettingsPage() {
                     <p className="text-sm font-semibold text-destructive">Seu plano venceu</p>
                     <p className="text-xs text-muted-foreground">
                       {planExpiryLabel
-                        ? `Venceu em ${planExpiryLabel}. Escolha um plano pra voltar a usar tudo.`
-                        : "Venceu. Escolha um plano pra voltar a usar tudo."}
+                        ? `Venceu em ${planExpiryLabel}. Escolha um plano para voltar a usar todos os recursos.`
+                        : "Venceu. Escolha um plano para voltar a usar todos os recursos."}
                     </p>
                     <Button
                       size="sm"
@@ -656,8 +665,8 @@ export default function SettingsPage() {
                     <p className="text-sm font-semibold text-warning">Seu plano vence logo</p>
                     <p className="text-xs text-muted-foreground">
                       {planExpiryLabel
-                        ? `Vence em ${planExpiryLabel}. Renove antes pra não ficar sem acesso.`
-                        : "Vence em breve. Renove antes pra não ficar sem acesso."}
+                        ? `Vence em ${planExpiryLabel}. Renove antes para não ficar sem acesso.`
+                        : "Vence em breve. Renove antes para não ficar sem acesso."}
                     </p>
                     <Button
                       size="sm"
@@ -707,7 +716,7 @@ export default function SettingsPage() {
                   <div className="rounded-lg border border-warning/30 bg-warning/5 p-3">
                     <p className="text-xs font-semibold text-warning">Atenção: quase no limite</p>
                     <p className="text-xs text-muted-foreground">
-                      {nearLimitItems.map((item) => item.label).join(", ")} já passou de 80% do limite.
+                      {nearLimitMessage}
                     </p>
                   </div>
                 )}
@@ -754,7 +763,7 @@ export default function SettingsPage() {
             <DialogHeader>
               <DialogTitle>Escolha seu plano</DialogTitle>
               <p className="text-sm text-muted-foreground">
-                Os valores e recursos abaixo são os que valem pra sua conta.
+                Os valores e recursos abaixo são os válidos para sua conta.
               </p>
             </DialogHeader>
 
@@ -916,7 +925,7 @@ export default function SettingsPage() {
                           onClick={() => {
                             void (async () => {
                               if (isCurrentPlan) {
-                                toast.info("Plano em uso");
+                                toast.info("Este é o plano em uso.");
                                 return;
                               }
 
@@ -951,7 +960,7 @@ export default function SettingsPage() {
                             })();
                           }}
                         >
-                          {isCurrentPlan ? "Plano em uso" : "Escolher plano"}
+                          {isCurrentPlan ? "Plano atual" : "Escolher plano"}
                         </Button>
                       </CardContent>
                     </Card>
@@ -978,7 +987,7 @@ export default function SettingsPage() {
                   <div className="rounded-md border bg-muted/40 p-3 space-y-1.5 text-xs">
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Dias restantes no plano atual</span>
-                      <span className="font-medium">{prorationDialog?.daysRemaining} dia(s)</span>
+                      <span className="font-medium">{ptCount(prorationDialog?.daysRemaining ?? 0, "dia", "dias")}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Crédito proporcional não utilizado</span>

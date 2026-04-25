@@ -41,11 +41,16 @@ function formatSigned(value: number): string {
   return `${safe > 0 ? "+" : ""}${safe.toLocaleString("pt-BR")}`;
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 /**
  * GruposDesempenho
  *
- * Evolucao de membros por periodo e escopo selecionados na pagina de metricas.
- * Fonte: snapshots diarios salvos no banco durante a sincronizacao de grupos.
+ * Evolução de membros por período e escopo selecionados na página de métricas.
+ * Fonte: snapshots diários salvos no banco durante a sincronização de grupos.
  */
 export function GruposDesempenho({ groups, selectedScope, days }: Props) {
   const { user } = useAuth();
@@ -81,13 +86,13 @@ export function GruposDesempenho({ groups, selectedScope, days }: Props) {
 
   const hasUsefulData = chartData.some((point) => point.members > 0 || point.groupsRepresented > 0);
   const title = selectedScope === "all"
-    ? "Evolucao de membros (escopo atual)"
+    ? "Evolução de membros (escopo atual)"
     : groups.length === 1
-      ? `Evolucao de membros - ${groups[0]?.name || "Grupo"}`
-      : `Evolucao de membros (${groups.length} grupos selecionados)`;
+      ? `Evolução de membros - ${groups[0]?.name || "Grupo"}`
+      : `Evolução de membros (${groups.length} grupos selecionados)`;
 
   const subtitle = summary
-    ? `${summary.startMembers.toLocaleString("pt-BR")} -> ${summary.endMembers.toLocaleString("pt-BR")} (${formatSigned(summary.delta)}). Cobertura ${summary.coveragePercent.toFixed(1)}% no periodo.`
+    ? `${summary.startMembers.toLocaleString("pt-BR")} -> ${summary.endMembers.toLocaleString("pt-BR")} (${formatSigned(summary.delta)}). Cobertura de ${summary.coveragePercent.toFixed(1)}% no período.`
     : undefined;
 
   return (
@@ -107,11 +112,11 @@ export function GruposDesempenho({ groups, selectedScope, days }: Props) {
           <Skeleton className="min-h-[240px] w-full flex-1" />
         ) : groups.length === 0 ? (
           <div className="flex min-h-[180px] items-center justify-center text-xs text-muted-foreground">
-            Nenhum grupo disponivel para o escopo selecionado.
+            Nenhum grupo disponível para o escopo selecionado.
           </div>
         ) : !data || chartData.length === 0 || !hasUsefulData ? (
           <div className="flex min-h-[180px] items-center justify-center text-xs text-muted-foreground text-center px-4">
-            Ainda nao ha historico suficiente para evolucao neste escopo. Conecte e sincronize os grupos para iniciar a coleta.
+            Ainda não há histórico suficiente para evolução neste escopo. Conecte e sincronize os grupos para iniciar a coleta.
           </div>
         ) : (
           <div className="flex flex-1 flex-col min-h-0">
@@ -138,7 +143,7 @@ export function GruposDesempenho({ groups, selectedScope, days }: Props) {
                     }}
                     formatter={(value: number, key: string, item) => {
                       if (key === "members") {
-                        return [Number(value || 0).toLocaleString("pt-BR"), "Total membros"];
+                        return [Number(value || 0).toLocaleString("pt-BR"), "Total de membros"];
                       }
                       const represented = Number((item?.payload as { groupsRepresented?: number })?.groupsRepresented || 0);
                       return [represented.toLocaleString("pt-BR"), "Grupos com snapshot"];
@@ -166,7 +171,7 @@ export function GruposDesempenho({ groups, selectedScope, days }: Props) {
                 {summary?.daysWithData ?? 0}/{data?.days ?? days} dias com dados
               </span>
               <span className="text-muted-foreground">
-                {summary?.groupsCount ?? 0} grupo(s)
+                {ptCount(summary?.groupsCount ?? 0, "grupo", "grupos")}
               </span>
             </div>
           </div>

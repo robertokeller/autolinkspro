@@ -657,8 +657,13 @@ const USER_OWNED = new Set([
   "scheduled_posts", "link_hub_pages", "shopee_automations",
   "meli_sessions", "api_credentials", "whatsapp_sessions",
   "telegram_sessions", "history_entries", "history_entry_targets", "user_notifications",
-  "amazon_affiliate_tags",
+  "amazon_affiliate_tags", "shopee_sub_ids",
 ]);
+
+const TABLE_ALIASES: Record<string, string> = {
+  // Backward compatibility for legacy singular table name.
+  shopee_sub_id: "shopee_sub_ids",
+};
 
 // Tables scoped via parent (no direct user_id)
 const PARENT_SCOPED: Record<string, string> = {
@@ -846,7 +851,8 @@ function buildWhere(filters: Filter[], params: unknown[], offset = 1): { sql: st
 
 // ─── POST /rest/:table — unified CRUD endpoint ────────────────────────────────
 restRouter.post("/:table", async (req: Request, res: Response) => {
-  const { table } = req.params;
+  const rawTable = String(req.params.table || "").trim();
+  const table = TABLE_ALIASES[rawTable] || rawTable;
   if (!ALL_ALLOWED.has(table)) { res.json({ data: null, count: null, error: { message: `Tabela não encontrada: ${table}` } }); return; }
 
   const userId = req.currentUser!.sub;

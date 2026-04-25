@@ -103,6 +103,11 @@ function toFriendlyRuntimeError(err: unknown, fallback: string): string {
   return msg || fallback;
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 export function useWhatsAppSessions() {
   const { user, isAdmin } = useAuth();
   const qc = useQueryClient();
@@ -241,12 +246,12 @@ export function useWhatsAppSessions() {
 
         const maxSessions = limits?.whatsappSessions ?? 0;
         if (maxSessions !== -1 && sessions.length >= maxSessions) {
-          throw new Error("Limite de sessões WhatsApp atingido para o seu nível de acesso.");
+          throw new Error("Limite de sessões do WhatsApp atingido para o seu nível de acesso.");
         }
       }
 
       const name = input.name.trim();
-      if (!name) throw new Error("Informe o nome da sessão");
+      if (!name) throw new Error("Informe o nome da sessão.");
 
       const authMethod: AuthMethod = "qr";
       const phoneValidation = { valid: true as const, normalized: "" };
@@ -270,16 +275,16 @@ export function useWhatsAppSessions() {
 
       if (insertError) throw insertError;
       if (!created || typeof created !== "object" || !("id" in created)) {
-        throw new Error("Falha ao criar sessão WhatsApp");
+        throw new Error("Falha ao criar a sessão do WhatsApp.");
       }
       return String(created.id);
     },
     onSuccess: () => {
       invalidateSessions();
-      toast.success("Sessão criada");
+      toast.success("Sessão criada com sucesso!");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao criar sessão");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível criar a sessão.");
       toast.error(msg);
     },
   });
@@ -291,11 +296,11 @@ export function useWhatsAppSessions() {
       if (data?.waiting_webhook) {
         toast.info("Conexão iniciada. Aguardando webhook do microserviço.");
       } else {
-        toast.success("Conexão iniciada");
+        toast.success("Conexão iniciada.");
       }
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao conectar sessão");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível conectar a sessão.");
       toast.error(msg);
     },
   });
@@ -304,10 +309,10 @@ export function useWhatsAppSessions() {
     mutationFn: (sessionId: string) => invokeWhatsappConnect(sessionId, "disconnect"),
     onSuccess: () => {
       invalidateSessions();
-      toast.success("Sessão desconectada");
+      toast.success("Sessão desconectada.");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao desconectar sessão");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível desconectar a sessão.");
       toast.error(msg);
     },
   });
@@ -323,15 +328,17 @@ export function useWhatsAppSessions() {
       const blockedGroups = Number((data as Record<string, unknown> | undefined)?.blockedGroups || 0);
       const syncedGroups = Number((data as Record<string, unknown> | undefined)?.count || 0);
       if (blockedGroups > 0) {
-        toast.warning(`Sincronização parcial: ${blockedGroups} grupo(s) excederam o limite de WhatsApp do seu plano.`);
+        toast.warning(
+          `Sincronização parcial: ${blockedGroups} ${blockedGroups === 1 ? "grupo excedeu" : "grupos excederam"} o limite do WhatsApp no seu plano.`,
+        );
       } else {
         toast.success(syncedGroups > 0
-          ? `Sincronização concluída: ${syncedGroups} grupo(s) atualizados.`
+          ? `Sincronização concluída: ${ptCount(syncedGroups, "grupo atualizado", "grupos atualizados")}.`
           : "Sincronização concluída.");
       }
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao sincronizar grupos");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível sincronizar os grupos.");
       toast.error(msg);
     },
   });
@@ -348,18 +355,20 @@ export function useWhatsAppSessions() {
       qc.invalidateQueries({ queryKey: ["marketplace_automations"] });
 
       if (result.sessionsSynced > 0) {
-        toast.success(`Sincronização concluída: ${result.sessionsSynced} sessão(ões), ${result.totalGroups} grupos.`);
+        toast.success(
+          `Sincronização concluída: ${ptCount(result.sessionsSynced, "sessão", "sessões")}, ${ptCount(result.totalGroups, "grupo", "grupos")}.`,
+        );
       } else {
         toast.warning("Nenhuma sessão online foi sincronizada. Grupos existentes foram carregados do banco.");
       }
 
       if (result.errors.length > 0) {
         const preview = result.errors.slice(0, 2).join(" | ");
-        toast.warning(`Ocorreram ${result.errors.length} erro(s) na sincronização. ${preview}`);
+        toast.warning(`Ocorreram ${ptCount(result.errors.length, "erro", "erros")} na sincronização. ${preview}`);
       }
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao sincronizar grupos");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível sincronizar os grupos.");
       toast.error(msg);
     },
   });
@@ -369,7 +378,7 @@ export function useWhatsAppSessions() {
       if (!user) throw new Error("Usuário não autenticado");
 
       const name = input.name.trim();
-      if (!name) throw new Error("Informe um nome válido para a sessão");
+      if (!name) throw new Error("Informe um nome válido para a sessão.");
 
       const { error: updateError } = await backend
         .from("whatsapp_sessions")
@@ -381,10 +390,10 @@ export function useWhatsAppSessions() {
     },
     onSuccess: () => {
       invalidateSessions();
-      toast.success("Nome da sessão atualizado");
+      toast.success("Nome da sessão atualizado com sucesso!");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao atualizar sessão");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível atualizar a sessão.");
       toast.error(msg);
     },
   });
@@ -398,10 +407,10 @@ export function useWhatsAppSessions() {
       invalidateSessions();
       qc.invalidateQueries({ queryKey: ["groups"] });
       qc.invalidateQueries({ queryKey: ["master_groups"] });
-      toast.success("Sessão removida");
+      toast.success("Sessão removida com sucesso!");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao remover sessão");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível remover a sessão.");
       toast.error(msg);
     },
   });

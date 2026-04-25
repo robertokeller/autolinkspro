@@ -40,7 +40,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
 
   const copyLink = () => {
     if (!product.affiliateLink) {
-      toast.error("Link nï¿½o disponï¿½vel");
+      toast.error("Link não disponível");
       return;
     }
     navigator.clipboard.writeText(product.affiliateLink);
@@ -160,7 +160,7 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
             onClick={copyLink}
           >
             <Copy className="mr-2 h-4 w-4" />
-            Copiar Link
+            Copiar link
           </Button>
 
           <div className="flex w-full items-center gap-2">
@@ -170,10 +170,10 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
                 variant="outline"
                 className="flex-1 text-xs font-medium px-2"
                 onClick={() => onSchedule(product)}
-                title="Criar Agendamento"
+                title="Criar agendamento"
               >
                 <CalendarDays className="mr-2 h-3.5 w-3.5" />
-                Agendar Envio
+                Agendar envio
               </Button>
             )}
             <Button
@@ -181,10 +181,10 @@ export function ProductCard({ product, onSchedule, priorityImage }: ProductCardP
               variant="outline"
               className="flex-1 text-xs font-medium px-2"
               onClick={openAffiliateLink}
-              title="Abrir Link"
+              title="Abrir link"
             >
               <ExternalLink className="mr-2 h-3.5 w-3.5" />
-              Abrir Link
+              Abrir link
             </Button>
           </div>
         </div>

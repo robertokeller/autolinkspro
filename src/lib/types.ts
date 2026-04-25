@@ -73,6 +73,7 @@ export interface AppRoute {
   status: RouteStatus;
   rules: {
     autoConvertShopee: boolean;
+    shopeeSubId?: string | null;
     autoConvertMercadoLivre?: boolean;
     autoConvertAmazon?: boolean;
     resolvePartnerLinks: boolean;

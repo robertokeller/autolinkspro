@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { rotaSchema } from "@/lib/validations";
 import { PageHeader } from "@/components/PageHeader";
@@ -27,6 +27,7 @@ import { useTemplates } from "@/hooks/useTemplates";
 import { useSessoes } from "@/hooks/useSessoes";
 import { useMercadoLivreSessions } from "@/hooks/useMercadoLivreSessions";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
+import { useShopeeSubIds } from "@/hooks/useShopeeSubIds";
 import { useServiceHealth } from "@/hooks/useServiceHealth";
 import { getAllChannelHealth } from "@/lib/channel-central";
 import { RouteHealthBadge } from "@/components/routes/RouteHealthBadge";
@@ -40,6 +41,7 @@ import { ChannelPlatformIcon } from "@/components/icons/ChannelPlatformIcon";
 import { SessionSelect } from "@/components/selectors/SessionSelect";
 import { GroupSelect } from "@/components/selectors/GroupSelect";
 import { MultiOptionDropdown } from "@/components/selectors/MultiOptionDropdown";
+import { pickDefaultShopeeSubId } from "@/lib/shopee-subid";
 
 type UnifiedSession = {
   id: string;
@@ -97,6 +99,11 @@ function getChannelOnline(
   return null;
 }
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 export default function RoutesPage() {
   const {
     routes,
@@ -116,6 +123,7 @@ export default function RoutesPage() {
   const { allSessions: rawAllSessions, refreshSessions } = useSessoes();
   const { sessions: rawMeliSessions } = useMercadoLivreSessions({ enableAutoMonitor: false });
   const { isConfigured: shopeeConfiguredRaw, isLoading: shopeeConfigLoading } = useShopeeCredentials();
+  const { subIds: shopeeSubIds, isLoading: isShopeeSubIdsLoading } = useShopeeSubIds();
   const { data: channelHealth, refetch: refetchChannelHealth } = useQuery({
     queryKey: ["channel-health", "routes-page"],
     queryFn: getAllChannelHealth,
@@ -180,6 +188,7 @@ export default function RoutesPage() {
   // Source session + groups
   const sourceSession = allSessions.find((s) => s.id === nr.sourceSessionId);
   const sourceSessionConnected = sourceSession?.status === "online";
+  const defaultShopeeSubId = useMemo(() => pickDefaultShopeeSubId(shopeeSubIds), [shopeeSubIds]);
   const sourceGroups = useMemo(() => {
     if (!nr.sourceSessionId) return [];
     return groups.filter((g) => g.sessionId === nr.sourceSessionId);
@@ -214,7 +223,10 @@ export default function RoutesPage() {
       ? nr.masterGroupIds.length > 0
       : nr.destinationGroupIds.length > 0
   );
-  const canCreate = canGoStep2 && canGoStep3 && (!nr.autoConvertMercadoLivre || hasAvailableMeliSession);
+  const canCreate = canGoStep2
+    && canGoStep3
+    && (!nr.autoConvertMercadoLivre || hasAvailableMeliSession)
+    && (!nr.autoConvertShopee || !!nr.shopeeSubId);
   const shouldShowMainMessageModelSelector = nr.autoConvertShopee;
   const selectedTemplateInMessageScope = nr.templateId
     ? messageTemplates.some((template) => template.id === nr.templateId)
@@ -225,6 +237,18 @@ export default function RoutesPage() {
   const selectedAmazonTemplateInMessageScope = nr.amazonTemplateId
     ? messageTemplates.some((template) => template.id === nr.amazonTemplateId)
     : false;
+
+  useEffect(() => {
+    if (!showNew) return;
+    if (!nr.autoConvertShopee) return;
+    if (nr.shopeeSubId) return;
+    if (!defaultShopeeSubId) return;
+
+    setNr((prev) => {
+      if (!prev.autoConvertShopee || prev.shopeeSubId) return prev;
+      return { ...prev, shopeeSubId: defaultShopeeSubId };
+    });
+  }, [defaultShopeeSubId, nr.autoConvertShopee, nr.shopeeSubId, showNew]);
 
   const handleFullSync = async () => {
     setIsSyncing(true);
@@ -350,7 +374,7 @@ export default function RoutesPage() {
         toast.warning(`Atualização concluída com alertas. ${parts.join(" | ")}`);
       }
     } catch {
-      toast.error("Não deu pra atualizar");
+      toast.error("Não foi possível atualizar.");
     } finally {
       setIsSyncing(false);
     }
@@ -375,13 +399,18 @@ export default function RoutesPage() {
 
     if (nr.destinationType === "groups" && normalizedDestinationGroupIds.length === 0) {
       setNr(normalizedNr);
-      toast.error("Escolha pelo menos um grupo de destino pra essa sessão.");
+      toast.error("Escolha pelo menos um grupo de destino para essa sessão.");
       return;
     }
 
     if (nr.destinationType === "master" && normalizedMasterGroupIds.length === 0) {
       setNr(normalizedNr);
-      toast.error("Escolha pelo menos um grupo mestre pra essa sessão.");
+      toast.error("Escolha pelo menos um grupo mestre para essa sessão.");
+      return;
+    }
+
+    if (normalizedNr.autoConvertShopee && !normalizedNr.shopeeSubId) {
+      toast.error("Escolha um Sub ID para a conversão Shopee.");
       return;
     }
 
@@ -425,6 +454,9 @@ export default function RoutesPage() {
       destinationGroupIds: [...route.destinationGroupIds],
       masterGroupIds: selectedMasterGroupIds,
       autoConvertShopee: route.rules.autoConvertShopee,
+      shopeeSubId: route.rules.autoConvertShopee
+        ? (route.rules.shopeeSubId || defaultShopeeSubId)
+        : "",
       autoConvertMercadoLivre: route.rules.autoConvertMercadoLivre ?? false,
       autoConvertAmazon: route.rules.autoConvertAmazon ?? false,
       templateId: route.rules.templateId || "",
@@ -486,7 +518,7 @@ export default function RoutesPage() {
               onClick={() => { void setAllRoutesStatus(allPaused ? "active" : "paused"); }}
             >
               {allPaused ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
-              {allPaused ? "Retomar Rotas" : "Pausar Rotas"}
+              {allPaused ? "Retomar rotas" : "Pausar rotas"}
             </Button>
             <Button size="sm" onClick={openNewRoute} className="gap-1.5 max-sm:h-10 max-sm:w-full">
               <Plus className="h-4 w-4" />
@@ -550,8 +582,8 @@ export default function RoutesPage() {
               const runtimeSummary = health.primaryIssue?.detail || "";
               const runtimeSummaryIsError = health.primaryIssue?.status === "error";
               const destinationCountLabel = masterTargets.length > 0
-                ? `${masterTargets.length} grupo(s) mestre`
-                : `${route.destinationGroupIds.length} grupo(s)`;
+                ? ptCount(masterTargets.length, "grupo mestre", "grupos mestre")
+                : ptCount(route.destinationGroupIds.length, "grupo", "grupos");
               
               const conversionBadges = [];
               if (hasShopeeConversion) conversionBadges.push("Shopee");
@@ -624,20 +656,20 @@ export default function RoutesPage() {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-[min(calc(100vw-1rem),18rem)]">
                             <DropdownMenuItem onClick={() => handleEditRoute(route)}>
-                              <Pencil className="mr-2 h-3.5 w-3.5" />Editar Rota
+                              <Pencil className="mr-2 h-3.5 w-3.5" />Editar rota
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => toggleRoute(route.id, route.status)}>
-                              {isActive ? <><Pause className="mr-2 h-3.5 w-3.5" />Pausar Rota</> : <><Play className="mr-2 h-3.5 w-3.5" />Ativar Rota</>}
+                              {isActive ? <><Pause className="mr-2 h-3.5 w-3.5" />Pausar rota</> : <><Play className="mr-2 h-3.5 w-3.5" />Ativar rota</>}
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => handleRefreshRoute(route.id, route.status)}>
-                              <RefreshCw className="mr-2 h-3.5 w-3.5" />Reiniciar Rota
+                              <RefreshCw className="mr-2 h-3.5 w-3.5" />Reiniciar rota
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => duplicateRoute(route.id)}>
-                              <Copy className="mr-2 h-3.5 w-3.5" />Duplicar Rota
+                              <Copy className="mr-2 h-3.5 w-3.5" />Duplicar rota
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleteId(route.id)}>
-                              <Trash2 className="mr-2 h-3.5 w-3.5" />Excluir Rota
+                              <Trash2 className="mr-2 h-3.5 w-3.5" />Excluir rota
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -701,7 +733,7 @@ export default function RoutesPage() {
             })}
           </div>
         ) : (
-          <EmptyState icon={Route} title="Nenhuma rota criada" description="Crie uma rota pra copiar ofertas de um grupo e enviar pros seus." actionLabel="Criar rota" onAction={openNewRoute} />
+          <EmptyState icon={Route} title="Nenhuma rota criada" description="Crie uma rota para copiar ofertas de um grupo e enviar para seus grupos." actionLabel="Criar rota" onAction={openNewRoute} />
         )}
       </div>
 
@@ -711,7 +743,7 @@ export default function RoutesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Excluir rota?</AlertDialogTitle>
             <AlertDialogDescription>
-              A rota <strong>{deleteRouteObj?.name}</strong> vai ser apagada de vez. Nenhuma mensagem vai mais ser encaminhada por ela.
+              A rota <strong>{deleteRouteObj?.name}</strong> será apagada permanentemente. Nenhuma mensagem será encaminhada por ela.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -729,7 +761,7 @@ export default function RoutesPage() {
           <div className="flex max-h-[94dvh] flex-col">
             <div className="space-y-4 border-b px-4 pt-4 pb-3 sm:px-6 sm:pt-6 sm:pb-5">
               <DialogHeader className="space-y-1.5">
-                <DialogTitle>{isEditing ? "Editar" : "Nova"} Rota - Passo {step} de {totalSteps}</DialogTitle>
+                <DialogTitle>{isEditing ? "Editar rota" : "Nova rota"} - Passo {step} de {totalSteps}</DialogTitle>
                 <DialogDescription>{stepDescriptions[step] || stepDescriptions[1]}</DialogDescription>
               </DialogHeader>
 
@@ -746,13 +778,13 @@ export default function RoutesPage() {
               {step === 1 && (
                 <div className="space-y-5">
               <div className="space-y-2">
-                <Label>Nome da Rota</Label>
+                <Label>Nome da rota</Label>
                 <Input placeholder="Ex: Ofertas Tech -> Grupos VIP" value={nr.name} onChange={(e) => setNr({ ...nr, name: e.target.value })} />
                 <p className="text-xs text-muted-foreground">Um nome para você identificar esta rota facilmente.</p>
               </div>
 
               <div className="space-y-2">
-                <Label>Sessão de Captura</Label>
+                <Label>Sessão de captura</Label>
                 {!isEditing && !hasAnySession ? (
                   <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/5 border border-destructive/20">
                     <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
@@ -776,7 +808,7 @@ export default function RoutesPage() {
 
               {nr.sourceSessionId && (
                 <div className="space-y-2">
-                  <Label>Grupo de Origem (monitorado)</Label>
+                  <Label>Grupo de origem (monitorado)</Label>
                   {!sourceSessionConnected && !isEditing && (
                     <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
                       Sessão offline — mostrando grupos do último estado. A rota não vai capturar mensagens enquanto a sessão estiver desconectada.
@@ -788,7 +820,7 @@ export default function RoutesPage() {
                     </p>
                   )}
                   {sourceGroups.length === 0 ? (
-                    <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">Nenhum grupo sincronizado pra essa sessão. Sincronize os grupos primeiro.</p>
+                    <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">Nenhum grupo sincronizado para essa sessão. Sincronize os grupos primeiro.</p>
                   ) : (
                     <>
                       <GroupSelect
@@ -801,7 +833,7 @@ export default function RoutesPage() {
                         }))}
                         placeholder="Escolha o grupo de origem..."
                       />
-                      <p className="text-xs text-muted-foreground">As mensagens que chegarem nesse grupo vão ser processadas pela rota.</p>
+                      <p className="text-xs text-muted-foreground">As mensagens que chegarem nesse grupo serão processadas pela rota.</p>
                     </>
                   )}
                 </div>
@@ -814,7 +846,7 @@ export default function RoutesPage() {
                 <div className="space-y-5">
               {/* Destination Session */}
               <div className="space-y-2">
-                <Label>Sessão de Envio</Label>
+                <Label>Sessão de envio</Label>
                 <SessionSelect
                   value={nr.destSessionId}
                   onValueChange={(v) => setNr({ ...nr, destSessionId: v, destinationGroupIds: [], masterGroupIds: [] })}
@@ -835,7 +867,7 @@ export default function RoutesPage() {
               {nr.destSessionId && (
                 <>
                   <div className="space-y-2">
-                    <Label>Tipo de Destino</Label>
+                    <Label>Tipo de destino</Label>
                     <div className="grid grid-cols-1 gap-3 min-[430px]:grid-cols-2">
                       <button
                         className={cn(
@@ -846,7 +878,7 @@ export default function RoutesPage() {
                       >
                         <Users className={cn("h-5 w-5", nr.destinationType === "groups" ? "text-primary" : "text-muted-foreground")} />
                         <div className="text-center">
-                          <p className="text-xs font-medium">Grupos Individuais</p>
+                          <p className="text-xs font-medium">Grupos individuais</p>
                           <p className="text-xs text-muted-foreground mt-0.5">Escolha um ou vários grupos</p>
                         </div>
                       </button>
@@ -859,7 +891,7 @@ export default function RoutesPage() {
                       >
                         <Layers className={cn("h-5 w-5", nr.destinationType === "master" ? "text-primary" : "text-muted-foreground")} />
                         <div className="text-center">
-                          <p className="text-xs font-medium">Grupo Mestre</p>
+                          <p className="text-xs font-medium">Grupo mestre</p>
                           <p className="text-xs text-muted-foreground mt-0.5">Envia para todos os sub-grupos</p>
                         </div>
                       </button>
@@ -868,7 +900,7 @@ export default function RoutesPage() {
 
                   {nr.destinationType === "master" ? (
                     <div className="space-y-2">
-                      <Label>Grupos Mestre</Label>
+                      <Label>Grupos mestre</Label>
                       {destMasterGroups.length === 0 ? (
                         <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">
                           Nenhum grupo mestre com grupos da plataforma {destSession?.platform === "whatsapp" ? "WhatsApp" : "Telegram"}. Crie um na aba de Grupos Mestres.
@@ -883,19 +915,19 @@ export default function RoutesPage() {
                             meta: `${m.linkedGroups.length} grupos`,
                           }))}
                           placeholder="Escolher grupos mestre"
-                          selectedLabel={(count) => `${count} grupo(s) mestre`}
+                          selectedLabel={(count) => ptCount(count, "grupo mestre", "grupos mestre")}
                           emptyMessage="Nenhum grupo mestre"
                           title="Grupos mestre"
                         />
                       )}
-                      <p className="text-xs text-muted-foreground">A mensagem vai ser enviada pros grupos dos grupos mestre que você escolher.</p>
+                      <p className="text-xs text-muted-foreground">A mensagem será enviada para os grupos dos grupos mestre que você escolher.</p>
                     </div>
                   ) : (
                     <div className="space-y-2">
                       <Label>Grupos de destino</Label>
                       {destGroups.length === 0 ? (
                         <p className="text-xs text-muted-foreground p-3 bg-muted rounded-lg">
-                          Nenhum grupo disponível pra sessão {destSession?.label}. Sincronize os grupos primeiro.
+                          Nenhum grupo disponível para a sessão {destSession?.label}. Sincronize os grupos primeiro.
                         </p>
                       ) : (
                         <MultiOptionDropdown
@@ -907,13 +939,13 @@ export default function RoutesPage() {
                             meta: `${g.memberCount}`,
                           }))}
                           placeholder="Escolher grupos"
-                          selectedLabel={(count) => `${count} grupo(s)`}
-                          emptyMessage="Nenhum grupo pra essa sessão"
+                          selectedLabel={(count) => ptCount(count, "grupo", "grupos")}
+                          emptyMessage="Nenhum grupo para essa sessão"
                           title="Grupos de destino"
                         />
                       )}
                       {nr.destinationGroupIds.length > 0 && (
-                        <p className="text-xs text-muted-foreground">{nr.destinationGroupIds.length} grupo(s) selecionado(s).</p>
+                        <p className="text-xs text-muted-foreground">{ptCount(nr.destinationGroupIds.length, "grupo selecionado", "grupos selecionados")}.</p>
                       )}
                     </div>
                   )}
@@ -924,272 +956,337 @@ export default function RoutesPage() {
 
               {/* STEP 3: Configuration */}
               {step === 3 && (
-                <div className="space-y-5">
-              {/* Marketplace conversion */}
-              <Card className="glass">
-                <CardContent className="p-4 space-y-4">
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <div className="flex items-center gap-2 pr-3">
-                      <LinkIcon className="h-4 w-4 text-primary" />
-                      <div>
-                        <Label className="text-sm">Conversão Shopee</Label>
-                        <p className="text-xs text-muted-foreground">Os links vão ser convertidos pro seu link de afiliado.</p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={nr.autoConvertShopee}
-                      onCheckedChange={(checked) => {
-                        setNr((prev) => ({
-                          ...prev,
-                          autoConvertShopee: checked,
-                          templateId: checked ? prev.templateId : "",
-                        }));
-                      }}
-                    />
-                  </div>
-
-                  {shouldShowMainMessageModelSelector && (
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        <Label className="text-xs">Modelo de mensagem Shopee</Label>
-                        <p className="text-xs text-muted-foreground">
-                          Escolha como a mensagem vai ficar depois da conversão dos links da Shopee.
-                        </p>
-                        <Select value={nr.templateId || "original"} onValueChange={(v) => setNr({ ...nr, templateId: v })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="original">
-                              <span className="flex items-center gap-2">Manter mensagem original</span>
-                            </SelectItem>
-                            {!!nr.templateId && !selectedTemplateInMessageScope && (
-                              <SelectItem value={nr.templateId}>
-                                <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
-                              </SelectItem>
-                            )}
-                            {messageTemplates.map((t) => (
-                              <SelectItem key={t.id} value={t.id}>
-                                <span className="flex items-center gap-2">Modelo {t.name}</span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
-                        <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                        <p className="text-xs text-muted-foreground">
-                          Se marcar "Manter mensagem original", só os links da Shopee vão ser convertidos pra afiliado.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <div className="flex items-center gap-2 pr-3">
-                      <LinkIcon className="h-4 w-4 text-primary" />
-                      <div>
-                        <Label className="text-sm">Conversão Mercado Livre</Label>
-                        <p className="text-xs text-muted-foreground">Os links do Mercado Livre vão ser convertidos pro seu link de afiliado.</p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={nr.autoConvertMercadoLivre}
-                      onCheckedChange={(checked) => {
-                        setNr((prev) => ({
-                          ...prev,
-                          autoConvertMercadoLivre: checked,
-                          meliTemplateId: checked ? prev.meliTemplateId : "",
-                        }));
-                      }}
-                    />
-                  </div>
-
-                  {nr.autoConvertMercadoLivre && !hasAvailableMeliSession && (
-                    <p className="text-xs text-warning p-2 rounded-lg bg-warning/10 border border-warning/20">
-                      Nenhuma sessão Mercado Livre no momento. Conecte uma sessão pra usar a conversão.
-                    </p>
-                  )}
-
-                  {nr.autoConvertMercadoLivre && (
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        <Label className="text-xs">Modelo de mensagem Mercado Livre</Label>
-                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão do Mercado Livre.</p>
-                        <Select value={nr.meliTemplateId || "original"} onValueChange={(v) => setNr({ ...nr, meliTemplateId: v })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="original">
-                              <span className="flex items-center gap-2">Manter mensagem original</span>
-                            </SelectItem>
-                            {!!nr.meliTemplateId && !selectedMeliTemplateInMessageScope && (
-                              <SelectItem value={nr.meliTemplateId}>
-                                <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
-                              </SelectItem>
-                            )}
-                            {messageTemplates.map((t) => (
-                              <SelectItem key={t.id} value={t.id}>
-                                <span className="flex items-center gap-2">Modelo {t.name}</span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
-                        <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                        <p className="text-xs text-muted-foreground">
-                          Se marcar "Manter mensagem original", só o link do Mercado Livre vai ser convertido pra afiliado.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <div className="flex items-center gap-2 pr-3">
-                      <LinkIcon className="h-4 w-4 text-primary" />
-                      <div>
-                        <Label className="text-sm">Conversão Amazon</Label>
-                        <p className="text-xs text-muted-foreground">Os links da Amazon vão ser convertidos pro seu link de afiliado.</p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={nr.autoConvertAmazon}
-                      onCheckedChange={(checked) => {
-                        setNr((prev) => ({
-                          ...prev,
-                          autoConvertAmazon: checked,
-                          amazonTemplateId: checked ? prev.amazonTemplateId : "",
-                        }));
-                      }}
-                    />
-                  </div>
-
-                  {nr.autoConvertAmazon && (
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        <Label className="text-xs">Modelo de mensagem Amazon</Label>
-                        <p className="text-xs text-muted-foreground">Escolha como a mensagem vai ficar depois da conversão da Amazon.</p>
-                        <Select value={nr.amazonTemplateId || "original"} onValueChange={(v) => setNr({ ...nr, amazonTemplateId: v })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="original">
-                              <span className="flex items-center gap-2">Manter mensagem original</span>
-                            </SelectItem>
-                            {!!nr.amazonTemplateId && !selectedAmazonTemplateInMessageScope && (
-                              <SelectItem value={nr.amazonTemplateId}>
-                                <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
-                              </SelectItem>
-                            )}
-                            {messageTemplates.map((t) => (
-                              <SelectItem key={t.id} value={t.id}>
-                                <span className="flex items-center gap-2">Modelo {t.name}</span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="flex items-start gap-2 p-2.5 rounded-lg bg-secondary/50">
-                        <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                        <p className="text-xs text-muted-foreground">
-                          Se marcar "Manter mensagem original", só o link da Amazon vai ser convertido pra afiliado.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                </CardContent>
-              </Card>
-
-              {/* Keywords */}
-              <Card className="glass">
-                <CardContent className="p-4 space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Filter className="h-4 w-4 text-primary" />
-                    <div>
-                      <Label className="text-sm">Filtros por Palavras-chave</Label>
-                      <p className="text-xs text-muted-foreground">Opcional: deixe em branco para enviar todas as ofertas</p>
-                    </div>
-                  </div>
-
+                <div className="space-y-6">
                   <div className="space-y-2">
-                    <Label className="text-xs flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-success inline-block" />
-                      Palavras Positivas
-                    </Label>
-                    <Textarea
-                      rows={2}
-                      placeholder="iPhone, Samsung, notebook"
-                      value={nr.positiveKeywords}
-                      onChange={(e) => setNr({ ...nr, positiveKeywords: e.target.value })}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                          Separe por vírgula. A mensagem só passa se tiver pelo menos uma palavra positiva. Se não tiver, ela é descartada.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label className="text-xs flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-destructive inline-block" />
-                      Palavras Negativas
-                    </Label>
-                    <Textarea
-                      rows={2}
-                      placeholder="spam, bug, teste"
-                      value={nr.negativeKeywords}
-                      onChange={(e) => setNr({ ...nr, negativeKeywords: e.target.value })}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                          Separe por vírgula. Se tiver qualquer palavra negativa, a mensagem é descartada.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card className="glass">
-                <CardContent className="p-4 space-y-4">
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <div className="pr-3">
-                      <Label className="text-sm">Editar horários de envio</Label>
-                      <p className="text-xs text-muted-foreground">Segura os disparos fora da janela permitida e envia no próximo horário liberado.</p>
+                    <div className="flex items-center gap-2">
+                      <LinkIcon className="h-4 w-4 text-primary" />
+                      <Label className="text-sm font-semibold">Conversão de links</Label>
                     </div>
-                    <Switch
-                      checked={nr.quietHoursEnabled}
-                      onCheckedChange={(checked) => {
-                        setNr((prev) => ({
-                          ...prev,
-                          quietHoursEnabled: checked,
-                        }));
-                      }}
-                    />
+                    <p className="text-xs text-muted-foreground">
+                      Ative os marketplaces que essa rota deve converter. Os detalhes aparecem somente para os canais ativos.
+                    </p>
                   </div>
 
-                  {nr.quietHoursEnabled && (
-                    <div className="space-y-3 rounded-lg border p-3">
-                      <p className="text-xs text-muted-foreground">Não disparar mensagens automáticas entre os horários abaixo.</p>
-                      <div className="grid gap-3 min-[430px]:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Início do bloqueio</Label>
-                          <Input
-                            type="time"
-                            value={nr.quietHoursStart}
-                            onChange={(e) => setNr((prev) => ({ ...prev, quietHoursStart: e.target.value || "22:00" }))}
+                  <div className="space-y-3">
+                    <Card className="glass border-border/60">
+                      <CardContent className="p-0">
+                        <div className="flex items-start justify-between gap-4 px-4 py-3">
+                          <div className="space-y-1 pr-3">
+                            <div className="flex items-center gap-2">
+                              <Label className="text-sm font-medium">Shopee</Label>
+                              <span
+                                className={cn(
+                                  "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                  nr.autoConvertShopee ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground",
+                                )}
+                              >
+                                {nr.autoConvertShopee ? "Ativo" : "Desativado"}
+                              </span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">Converte links da Shopee para seu afiliado.</p>
+                          </div>
+                          <Switch
+                            checked={nr.autoConvertShopee}
+                            onCheckedChange={(checked) => {
+                              setNr((prev) => ({
+                                ...prev,
+                                autoConvertShopee: checked,
+                                templateId: checked ? prev.templateId : "",
+                                shopeeSubId: checked ? (prev.shopeeSubId || defaultShopeeSubId) : "",
+                              }));
+                            }}
                           />
                         </div>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Fim do bloqueio</Label>
-                          <Input
-                            type="time"
-                            value={nr.quietHoursEnd}
-                            onChange={(e) => setNr((prev) => ({ ...prev, quietHoursEnd: e.target.value || "08:00" }))}
+
+                        {nr.autoConvertShopee && (
+                          <div className="space-y-4 border-t border-border/50 px-4 py-4">
+                            <div className="space-y-2">
+                              <Label className="text-xs">Sub ID Shopee (obrigatório)</Label>
+                              <Select
+                                value={nr.shopeeSubId}
+                                onValueChange={(value) => setNr((prev) => ({ ...prev, shopeeSubId: value }))}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder={isShopeeSubIdsLoading ? "Carregando Sub IDs..." : "Selecione o Sub ID"} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {!!nr.shopeeSubId && !shopeeSubIds.some((item) => item.value === nr.shopeeSubId) && (
+                                    <SelectItem value={nr.shopeeSubId}>
+                                      {nr.shopeeSubId} (indisponível)
+                                    </SelectItem>
+                                  )}
+                                  {shopeeSubIds.length === 0 ? (
+                                    <SelectItem value="_none" disabled>
+                                      Cadastre um Sub ID em Configurações Shopee
+                                    </SelectItem>
+                                  ) : (
+                                    shopeeSubIds.map((subId) => (
+                                      <SelectItem key={subId.id} value={subId.value}>
+                                        {subId.value}{subId.isDefault ? " (padrão)" : ""}
+                                      </SelectItem>
+                                    ))
+                                  )}
+                                </SelectContent>
+                              </Select>
+                              <p className="text-xs text-muted-foreground">O Sub ID padrão de Configurações é selecionado automaticamente.</p>
+                            </div>
+
+                            {shouldShowMainMessageModelSelector && (
+                              <div className="space-y-2.5">
+                                <Label className="text-xs">Modelo de mensagem Shopee</Label>
+                                <Select value={nr.templateId || "original"} onValueChange={(v) => setNr({ ...nr, templateId: v })}>
+                                  <SelectTrigger><SelectValue /></SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="original">
+                                      <span className="flex items-center gap-2">Manter mensagem original</span>
+                                    </SelectItem>
+                                    {!!nr.templateId && !selectedTemplateInMessageScope && (
+                                      <SelectItem value={nr.templateId}>
+                                        <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
+                                      </SelectItem>
+                                    )}
+                                    {messageTemplates.map((t) => (
+                                      <SelectItem key={t.id} value={t.id}>
+                                        <span className="flex items-center gap-2">Modelo {t.name}</span>
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <div className="flex items-start gap-2 rounded-md bg-muted/70 px-2.5 py-2">
+                                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  <p className="text-xs text-muted-foreground">
+                                    Com "Manter mensagem original", apenas os links da Shopee são convertidos.
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="glass border-border/60">
+                      <CardContent className="p-0">
+                        <div className="flex items-start justify-between gap-4 px-4 py-3">
+                          <div className="space-y-1 pr-3">
+                            <div className="flex items-center gap-2">
+                              <Label className="text-sm font-medium">Mercado Livre</Label>
+                              <span
+                                className={cn(
+                                  "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                  nr.autoConvertMercadoLivre ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground",
+                                )}
+                              >
+                                {nr.autoConvertMercadoLivre ? "Ativo" : "Desativado"}
+                              </span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">Converte links do Mercado Livre para seu afiliado.</p>
+                          </div>
+                          <Switch
+                            checked={nr.autoConvertMercadoLivre}
+                            onCheckedChange={(checked) => {
+                              setNr((prev) => ({
+                                ...prev,
+                                autoConvertMercadoLivre: checked,
+                                meliTemplateId: checked ? prev.meliTemplateId : "",
+                              }));
+                            }}
                           />
                         </div>
+
+                        {nr.autoConvertMercadoLivre && (
+                          <div className="space-y-3 border-t border-border/50 px-4 py-4">
+                            {!hasAvailableMeliSession && (
+                              <p className="rounded-lg border border-warning/20 bg-warning/10 p-2 text-xs text-warning">
+                                Nenhuma sessão Mercado Livre no momento. Conecte uma sessão para usar a conversão.
+                              </p>
+                            )}
+                            <div className="space-y-2.5">
+                              <Label className="text-xs">Modelo de mensagem Mercado Livre</Label>
+                              <Select value={nr.meliTemplateId || "original"} onValueChange={(v) => setNr({ ...nr, meliTemplateId: v })}>
+                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="original">
+                                    <span className="flex items-center gap-2">Manter mensagem original</span>
+                                  </SelectItem>
+                                  {!!nr.meliTemplateId && !selectedMeliTemplateInMessageScope && (
+                                    <SelectItem value={nr.meliTemplateId}>
+                                      <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
+                                    </SelectItem>
+                                  )}
+                                  {messageTemplates.map((t) => (
+                                    <SelectItem key={t.id} value={t.id}>
+                                      <span className="flex items-center gap-2">Modelo {t.name}</span>
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <div className="flex items-start gap-2 rounded-md bg-muted/70 px-2.5 py-2">
+                                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                <p className="text-xs text-muted-foreground">
+                                  Com "Manter mensagem original", somente links do Mercado Livre são convertidos.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="glass border-border/60">
+                      <CardContent className="p-0">
+                        <div className="flex items-start justify-between gap-4 px-4 py-3">
+                          <div className="space-y-1 pr-3">
+                            <div className="flex items-center gap-2">
+                              <Label className="text-sm font-medium">Amazon</Label>
+                              <span
+                                className={cn(
+                                  "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                  nr.autoConvertAmazon ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground",
+                                )}
+                              >
+                                {nr.autoConvertAmazon ? "Ativo" : "Desativado"}
+                              </span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">Converte links da Amazon para seu afiliado.</p>
+                          </div>
+                          <Switch
+                            checked={nr.autoConvertAmazon}
+                            onCheckedChange={(checked) => {
+                              setNr((prev) => ({
+                                ...prev,
+                                autoConvertAmazon: checked,
+                                amazonTemplateId: checked ? prev.amazonTemplateId : "",
+                              }));
+                            }}
+                          />
+                        </div>
+
+                        {nr.autoConvertAmazon && (
+                          <div className="space-y-2.5 border-t border-border/50 px-4 py-4">
+                            <Label className="text-xs">Modelo de mensagem Amazon</Label>
+                            <Select value={nr.amazonTemplateId || "original"} onValueChange={(v) => setNr({ ...nr, amazonTemplateId: v })}>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="original">
+                                  <span className="flex items-center gap-2">Manter mensagem original</span>
+                                </SelectItem>
+                                {!!nr.amazonTemplateId && !selectedAmazonTemplateInMessageScope && (
+                                  <SelectItem value={nr.amazonTemplateId}>
+                                    <span className="flex items-center gap-2">Modelo atual (indisponível)</span>
+                                  </SelectItem>
+                                )}
+                                {messageTemplates.map((t) => (
+                                  <SelectItem key={t.id} value={t.id}>
+                                    <span className="flex items-center gap-2">Modelo {t.name}</span>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <div className="flex items-start gap-2 rounded-md bg-muted/70 px-2.5 py-2">
+                              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <p className="text-xs text-muted-foreground">
+                                Com "Manter mensagem original", somente links da Amazon são convertidos.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <Card className="glass border-border/60">
+                    <CardContent className="space-y-4 p-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <Filter className="h-4 w-4 text-primary" />
+                          <Label className="text-sm font-semibold">Filtros de palavras-chave</Label>
+                        </div>
+                        <p className="text-xs text-muted-foreground">Opcional: deixe em branco para encaminhar todas as ofertas.</p>
                       </div>
-                      <p className="text-xs text-muted-foreground">Exemplo: 22:00 até 08:00 segura a fila durante a madrugada e retoma pela manhã.</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+
+                      <div className="grid gap-4 min-[560px]:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label className="flex items-center gap-1.5 text-xs">
+                            <span className="inline-block h-2 w-2 rounded-full bg-success" />
+                            Palavras positivas
+                          </Label>
+                          <Textarea
+                            rows={2}
+                            placeholder="iPhone, Samsung, notebook"
+                            value={nr.positiveKeywords}
+                            onChange={(e) => setNr({ ...nr, positiveKeywords: e.target.value })}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Separe por vírgula. Só passa se existir ao menos uma palavra positiva.
+                          </p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="flex items-center gap-1.5 text-xs">
+                            <span className="inline-block h-2 w-2 rounded-full bg-destructive" />
+                            Palavras negativas
+                          </Label>
+                          <Textarea
+                            rows={2}
+                            placeholder="spam, bug, teste"
+                            value={nr.negativeKeywords}
+                            onChange={(e) => setNr({ ...nr, negativeKeywords: e.target.value })}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Separe por vírgula. Se houver uma palavra negativa, a mensagem é descartada.
+                          </p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="glass border-border/60">
+                    <CardContent className="space-y-4 p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1 pr-3">
+                          <Label className="text-sm font-semibold">Janela de envio</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Segura disparos fora do horário permitido e retoma automaticamente no próximo horário liberado.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={nr.quietHoursEnabled}
+                          onCheckedChange={(checked) => {
+                            setNr((prev) => ({
+                              ...prev,
+                              quietHoursEnabled: checked,
+                            }));
+                          }}
+                        />
+                      </div>
+
+                      {nr.quietHoursEnabled && (
+                        <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+                          <p className="text-xs text-muted-foreground">Não enviar mensagens automáticas entre os horários abaixo.</p>
+                          <div className="grid gap-3 min-[430px]:grid-cols-2">
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Início do bloqueio</Label>
+                              <Input
+                                type="time"
+                                value={nr.quietHoursStart}
+                                onChange={(e) => setNr((prev) => ({ ...prev, quietHoursStart: e.target.value || "22:00" }))}
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Fim do bloqueio</Label>
+                              <Input
+                                type="time"
+                                value={nr.quietHoursEnd}
+                                onChange={(e) => setNr((prev) => ({ ...prev, quietHoursEnd: e.target.value || "08:00" }))}
+                              />
+                            </div>
+                          </div>
+                          <p className="text-xs text-muted-foreground">Exemplo: 22:00-08:00 pausa os envios durante a madrugada.</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
                 </div>
               )}
             </div>
@@ -1202,7 +1299,7 @@ export default function RoutesPage() {
                 </Button>
               ) : (
                 <Button className="max-sm:w-full" onClick={handleCreateRoute} disabled={!canCreate}>
-                  {isEditing ? "Salvar" : "Criar Rota"}
+                  {isEditing ? "Salvar" : "Criar rota"}
                 </Button>
               )}
               {step > 1 ? (

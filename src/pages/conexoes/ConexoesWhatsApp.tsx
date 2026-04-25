@@ -60,8 +60,8 @@ export default function ConexoesWhatsApp() {
 
   return (
     <ConexoesCanalLayout
-      title="Configurações WhatsApp"
-      description="Gerencie sessões, grupos e ajustes operacionais do WhatsApp"
+      title="Configurações do WhatsApp"
+      description="Gerencie sessões, grupos e ajustes operacionais do WhatsApp."
       centered
       headerActions={null}
       activeTab={subTab}

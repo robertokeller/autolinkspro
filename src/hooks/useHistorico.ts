@@ -342,9 +342,46 @@ function shouldKeepEntry(entry: SendHistoryEntry): boolean {
 
 function isMissingRelationError(error: unknown, relationName: string): boolean {
   if (!error || typeof error !== "object") return false;
-  const payload = error as { message?: unknown };
+  const payload = error as { code?: unknown; message?: unknown };
+  const code = String(payload.code || "").trim().toUpperCase();
+  if (code === "42P01") return true;
   const message = typeof payload.message === "string" ? payload.message.toLowerCase() : "";
   return message.includes(relationName.toLowerCase()) && message.includes("does not exist");
+}
+
+function isMissingColumnError(error: unknown, relationName: string): boolean {
+  if (!error || typeof error !== "object") return false;
+  const payload = error as { code?: unknown; message?: unknown };
+  const code = String(payload.code || "").trim().toUpperCase();
+  if (code === "42703") return true;
+  const message = typeof payload.message === "string" ? payload.message.toLowerCase() : "";
+  return (
+    message.includes(relationName.toLowerCase())
+    && message.includes("column")
+    && message.includes("does not exist")
+  );
+}
+
+function isInvalidUuidError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const payload = error as { code?: unknown; message?: unknown };
+  const code = String(payload.code || "").trim().toUpperCase();
+  if (code === "22P02") return true;
+  const message = typeof payload.message === "string" ? payload.message.toLowerCase() : "";
+  return message.includes("uuid") && message.includes("invalid input syntax");
+}
+
+function isUuid(value: string): boolean {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw);
+}
+
+function extractBackendErrorMessage(error: unknown, fallback: string): string {
+  if (!error || typeof error !== "object") return fallback;
+  const payload = error as { message?: unknown };
+  const message = typeof payload.message === "string" ? payload.message.trim() : "";
+  return message || fallback;
 }
 
 export function useHistorico(filters: Partial<HistoricoFilters> = {}) {
@@ -475,21 +512,43 @@ export function useHistorico(filters: Partial<HistoricoFilters> = {}) {
   }, [countsQuery.data]);
 
   const fetchEntryTargets = async (historyEntryId: string): Promise<SendHistoryTarget[]> => {
-    if (!historyEntryId.trim()) return [];
+    const normalizedEntryId = historyEntryId.trim();
+    if (!normalizedEntryId) return [];
+    if (!isUuid(normalizedEntryId)) return [];
 
-    const { data, error } = await backend
-      .from("history_entry_targets")
-      .select("id,history_entry_id,destination,destination_group_id,platform,processing_status,block_reason,error_step,message_type,send_order,details,created_at")
-      .eq("history_entry_id", historyEntryId)
-      .order("send_order", { ascending: true })
-      .order("created_at", { ascending: true });
+    const runTargetsQuery = async (withCreatedAtOrder: boolean) => {
+      let query = backend
+        .from("history_entry_targets")
+        .select("*")
+        .eq("history_entry_id", normalizedEntryId);
 
-    if (error) {
-      if (isMissingRelationError(error, "history_entry_targets")) return [];
-      throw error;
+      if (withCreatedAtOrder) {
+        query = query.order("created_at", { ascending: true });
+      }
+
+      return query;
+    };
+
+    let result = await runTargetsQuery(true);
+
+    if (result.error && isMissingColumnError(result.error, "history_entry_targets")) {
+      result = await runTargetsQuery(false);
     }
 
-    return ((data || []) as HistoryEntryTargetRow[]).map(mapHistoryEntryTarget);
+    if (result.error) {
+      if (isMissingRelationError(result.error, "history_entry_targets")) return [];
+      if (isInvalidUuidError(result.error)) return [];
+      throw new Error(extractBackendErrorMessage(result.error, "Falha ao carregar destinos do evento."));
+    }
+
+    const mappedTargets = ((result.data || []) as HistoryEntryTargetRow[]).map(mapHistoryEntryTarget);
+    mappedTargets.sort((left, right) => {
+      const orderDiff = left.sendOrder - right.sendOrder;
+      if (orderDiff !== 0) return orderDiff;
+      return toUtcMs(left.createdAt) - toUtcMs(right.createdAt);
+    });
+
+    return mappedTargets;
   };
 
   return {

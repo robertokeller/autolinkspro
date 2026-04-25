@@ -1247,6 +1247,70 @@ function extractValidShopeeAffiliateLink(product: Record<string, unknown>): stri
   return "";
 }
 
+function normalizeShopeeSubIdToken(value: unknown): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (!/^[A-Za-z0-9]{1,80}$/.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeShopeeSubIdTokenList(value: unknown, maxItems = 5): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  const deduped = new Set<string>();
+  for (const item of values) {
+    const normalized = normalizeShopeeSubIdToken(item);
+    if (!normalized || deduped.has(normalized)) continue;
+    deduped.add(normalized);
+    if (deduped.size >= maxItems) break;
+  }
+  return [...deduped];
+}
+
+function readShopeeSubIdsFromInput(primary: unknown, secondary?: unknown): string[] {
+  const values: unknown[] = [];
+
+  if (Array.isArray(primary)) {
+    values.push(...primary);
+  } else if (primary !== undefined && primary !== null) {
+    values.push(primary);
+  }
+
+  if (Array.isArray(secondary)) {
+    values.push(...secondary);
+  } else if (secondary !== undefined && secondary !== null) {
+    values.push(secondary);
+  }
+
+  return normalizeShopeeSubIdTokenList(values, 5);
+}
+
+function readRouteShopeeSubIds(rules: Record<string, unknown>): string[] {
+  return readShopeeSubIdsFromInput(
+    rules.shopeeSubIds ?? rules.subIds,
+    rules.shopeeSubId ?? rules.subId,
+  );
+}
+
+function readAutomationShopeeSubIds(config: Record<string, unknown>): string[] {
+  return readShopeeSubIdsFromInput(
+    config.shopeeSubIds ?? config.subIds,
+    config.shopeeSubId ?? config.subId,
+  );
+}
+
+function extractShopeeProductSourceLink(product: Record<string, unknown>): string {
+  const candidates = [
+    String(product.link || "").trim(),
+    String(product.productLink || "").trim(),
+    String(product.offerLink || "").trim(),
+    String(product.affiliateLink || "").trim(),
+  ];
+  for (const link of candidates) {
+    if (/^https?:\/\//i.test(link)) return link;
+  }
+  return "";
+}
+
 function normalizeOfferTitle(value: unknown): string {
   return String(value || "")
     .trim()
@@ -8271,7 +8335,7 @@ async function processRouteMessageForUser(input: {
   }
 
   const shopeeCredentials = await queryOne<{ app_id: string; secret_key: string; region: string }>(
-    "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id = $1 AND provider = 'shopee'",
+    "SELECT app_id, secret_key, region FROM api_credentials WHERE user_id = $1 AND provider = 'shopee' ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC LIMIT 1",
     [userId],
   );
   if (shopeeCredentials) shopeeCredentials.secret_key = decryptCredential(shopeeCredentials.secret_key);
@@ -8444,6 +8508,7 @@ async function processRouteMessageForUser(input: {
     const rules = route.rules && typeof route.rules === "object" && !Array.isArray(route.rules)
       ? route.rules as Record<string, unknown>
       : {};
+    const routeShopeeSubIds = readRouteShopeeSubIds(rules);
 
     const negativeKeywords = toRouteKeywordList(rules.negativeKeywords);
     if (routeTextMatchesAnyKeyword(message, negativeKeywords)) {
@@ -8598,7 +8663,9 @@ async function processRouteMessageForUser(input: {
             conversionSource = resolvedCandidate;
           }
         }
-        const cacheKey = conversionSource;
+        const cacheKey = routeShopeeSubIds.length > 0
+          ? `${conversionSource}::${routeShopeeSubIds.join(",")}`
+          : conversionSource;
         let conversion = shopeeConversionCache.get(cacheKey);
         if (!conversion) {
           const response = await proxyMicroservice(
@@ -8610,6 +8677,7 @@ async function processRouteMessageForUser(input: {
               appId: shopeeCredentials.app_id,
               secret: shopeeCredentials.secret_key,
               region: shopeeCredentials.region,
+              subIds: routeShopeeSubIds,
             },
             routeScopedHeaders,
             ROUTE_LINK_CONVERSION_TIMEOUT_MS,
@@ -10597,6 +10665,41 @@ function normalizeTargetFilter(raw) {
   return { planIds: arr(s.planIds), accessLevelIds: arr(s.accessLevelIds), roles: arr(s.roles), userIds: arr(s.userIds), matchMode: s.matchMode === "all" ? "all" : "any" };
 }
 
+function buildPlanAccessLevelMap(controlPlaneConfig: Record<string, unknown>): Map<string, string> {
+  const plans = Array.isArray(controlPlaneConfig.plans) ? controlPlaneConfig.plans : [];
+  const byPlanId = new Map<string, string>();
+  for (const rawPlan of plans) {
+    if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) continue;
+    const plan = rawPlan as Record<string, unknown>;
+    const planId = String(plan.id ?? "").trim();
+    const accessLevelId = String(plan.accessLevelId ?? "").trim();
+    if (!planId || !accessLevelId) continue;
+    byPlanId.set(planId, accessLevelId);
+  }
+  return byPlanId;
+}
+
+function userMatchesAnnouncementTarget(
+  user: { plan_id: string; role: string; user_id: string },
+  filter: ReturnType<typeof normalizeTargetFilter>,
+  planAccessLevelMap: Map<string, string>,
+): boolean {
+  const { planIds, accessLevelIds, roles: filterRoles, userIds, matchMode } = filter;
+  const hasAnyFilter = planIds.length > 0 || accessLevelIds.length > 0 || filterRoles.length > 0 || userIds.length > 0;
+  if (!hasAnyFilter) return true;
+
+  const accessLevelId = planAccessLevelMap.get(String(user.plan_id ?? "").trim()) ?? "";
+  const checks = [
+    planIds.length === 0 || planIds.includes(user.plan_id),
+    accessLevelIds.length === 0 || (accessLevelId ? accessLevelIds.includes(accessLevelId) : false),
+    filterRoles.length === 0 || filterRoles.includes(user.role),
+    userIds.length === 0 || userIds.includes(user.user_id),
+  ];
+
+  if (matchMode === "all") return checks.every(Boolean);
+  return checks.some(Boolean);
+}
+
 function isAnnouncementActiveNow(row) {
   if (row.is_active === false) return false;
   const now = Date.now();
@@ -10885,25 +10988,12 @@ function matchAdminLifecycleEvent(
 
 async function deliverAnnouncement(announcement) {
   const filter = normalizeTargetFilter(announcement.target_filter);
-  const users = await listUsersWithMeta();
+  const [users, controlPlane] = await Promise.all([listUsersWithMeta(), loadControlPlane()]);
+  const planAccessLevelMap = buildPlanAccessLevelMap(controlPlane);
   const toDeliver = [];
   for (const u of users) {
     if (["inactive","blocked","archived"].includes(u.account_status)) continue;
-    const { planIds, roles: filterRoles, userIds, matchMode } = filter;
-    let match = false;
-    if (planIds.length === 0 && filterRoles.length === 0 && userIds.length === 0) {
-      match = true;
-    } else if (matchMode === "all") {
-      const checks = [
-        planIds.length === 0 || planIds.includes(u.plan_id),
-        filterRoles.length === 0 || filterRoles.includes(u.role),
-        userIds.length === 0 || userIds.includes(u.user_id),
-      ];
-      match = checks.every(Boolean);
-    } else {
-      match = planIds.includes(u.plan_id) || filterRoles.includes(u.role) || userIds.includes(u.user_id);
-    }
-    if (match) toDeliver.push(u.user_id);
+    if (userMatchesAnnouncementTarget(u, filter, planAccessLevelMap)) toDeliver.push(u.user_id);
   }
   if (toDeliver.length > 0) {
     // Bulk-insert all notifications in a single query instead of N sequential INSERTs.
@@ -10912,7 +11002,12 @@ async function deliverAnnouncement(announcement) {
     await execute(
       `INSERT INTO user_notifications (id, user_id, announcement_id, status, delivered_at)
        SELECT UNNEST($1::uuid[]), UNNEST($2::uuid[]), $3, 'unread', NOW()
-       ON CONFLICT (user_id, announcement_id) DO NOTHING`,
+       ON CONFLICT (user_id, announcement_id) DO UPDATE
+       SET status='unread',
+           read_at=NULL,
+           dismissed_at=NULL,
+           delivered_at=NOW(),
+           updated_at=NOW()`,
       [ids, toDeliver, announcement.id]
     );
   }
@@ -13440,7 +13535,6 @@ if (funcName === "whatsapp-connect") {
       const filters = {
         shopId: normalizeNumberFilter(filtersRaw.shopId),
         orderStatus: normalizeEnumFilter(filtersRaw.orderStatus, ["UNPAID", "PENDING", "COMPLETED", "CANCELLED"]),
-        buyerType: normalizeEnumFilter(filtersRaw.buyerType, ["NEW", "EXISTING"]),
         campaignType: campaignTypeRaw && campaignTypeRaw !== "ALL" ? campaignTypeRaw : undefined,
         campaignPartnerName: normalizeTextFilter(filtersRaw.campaignPartnerName),
       };
@@ -13632,6 +13726,7 @@ if (funcName === "whatsapp-connect") {
       if (!sourceInput) { fail(res, "URL obrigatoria"); return; }
       if (sourceInput.length > MAX_URL_LENGTH) { fail(res, "URL excede o tamanho maximo permitido"); return; }
       const forceResolve = parseBooleanParam(params.forceResolve, false);
+      const requestedShopeeSubIds = readShopeeSubIdsFromInput(params.subIds, params.subId);
 
       const sourceUrl = normalizeHttpUrlInput(sourceInput);
       if (!parseHttpUrl(sourceUrl)) { fail(res, "URL invalida"); return; }
@@ -13753,6 +13848,7 @@ if (funcName === "whatsapp-connect") {
         appId,
         secret: decryptedSecret,
         region: cred.region,
+        subIds: requestedShopeeSubIds,
       }, shopeeHeaders, 30_000);
       if (r.error) { fail(res, r.error.message); return; }
 
@@ -13946,12 +14042,14 @@ if (funcName === "whatsapp-connect") {
       if (!sourceUrl) { fail(res, "URL Shopee obrigatoria"); return; }
       if (sourceUrl.length > MAX_URL_LENGTH) { fail(res, "URL Shopee excede o tamanho maximo permitido"); return; }
       if (!isShopeeProductUrlLike(sourceUrl)) { fail(res, "URL informada não parece ser da Shopee"); return; }
+      const requestedShopeeSubIds = readShopeeSubIdsFromInput(params.subIds, params.subId);
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(SHOPEE_URL, "/api/shopee/convert-link", "POST", {
         url: sourceUrl,
         appId,
         secret: decryptedSecret,
         region: cred.region,
+        subIds: requestedShopeeSubIds,
       }, shopeeHeaders, 30_000);
       if (r.error) { fail(res, r.error.message); return; }
       ok(res, r.data); return;
@@ -13983,6 +14081,7 @@ if (funcName === "whatsapp-connect") {
       if (dedupedUrls.length > MAX_SHOPEE_CONVERT_BATCH) { fail(res, `Limite de ${MAX_SHOPEE_CONVERT_BATCH} URLs por lote Shopee`); return; }
       if (dedupedUrls.some((item) => item.length > MAX_URL_LENGTH)) { fail(res, "Uma ou mais URLs excedem o tamanho maximo permitido"); return; }
       if (dedupedUrls.some((item) => !isShopeeProductUrlLike(item))) { fail(res, "Uma ou mais URLs não parecem ser da Shopee"); return; }
+      const requestedShopeeSubIds = readShopeeSubIdsFromInput(params.subIds, params.subId);
       const shopeeHeaders = buildUserScopedHeaders(userId);
 
       const conversions = [];
@@ -13992,6 +14091,7 @@ if (funcName === "whatsapp-connect") {
           appId,
           secret: decryptedSecret,
           region: cred.region,
+          subIds: requestedShopeeSubIds,
         }, shopeeHeaders, 30_000);
         if (r.error) {
           conversions.push({
@@ -14222,6 +14322,7 @@ if (funcName === "whatsapp-connect") {
         const automationConfig = claimed.config && typeof claimed.config === "object" && !Array.isArray(claimed.config)
           ? claimed.config as Record<string, unknown>
           : {};
+        const automationShopeeSubIds = readAutomationShopeeSubIds(automationConfig);
         const offerSourceMode = normalizeAutomationOfferSourceMode(automationConfig.offerSourceMode);
         const vitrineTabs = normalizeAutomationVitrineTabs(automationConfig.vitrineTabs);
 
@@ -14366,7 +14467,7 @@ if (funcName === "whatsapp-connect") {
           continue;
         }
 
-        const affiliateLink = extractValidShopeeAffiliateLink(selectedProduct);
+        let affiliateLink = extractValidShopeeAffiliateLink(selectedProduct);
         if (!affiliateLink) {
           skipped += 1;
           await insertAutomationHistoryEntry({
@@ -14381,6 +14482,34 @@ if (funcName === "whatsapp-connect") {
             errorStep: "offer_validate",
           });
           continue;
+        }
+
+        if (automationShopeeSubIds.length > 0) {
+          const sourceForSubId = extractShopeeProductSourceLink(selectedProduct) || affiliateLink;
+          const conversionWithSubId = await proxyMicroservice(
+            SHOPEE_URL,
+            "/api/shopee/convert-link",
+            "POST",
+            {
+              url: sourceForSubId,
+              appId: cred.app_id,
+              secret: cred.secret_key,
+              region: cred.region,
+              subIds: automationShopeeSubIds,
+            },
+            buildUserScopedHeaders(ownerUserId),
+            ROUTE_LINK_CONVERSION_TIMEOUT_MS,
+          );
+
+          if (!conversionWithSubId.error) {
+            const conversionPayload = (
+              conversionWithSubId.data && typeof conversionWithSubId.data === "object"
+            ) ? conversionWithSubId.data as Record<string, unknown> : {};
+            const convertedLink = String(conversionPayload.affiliateLink || "").trim();
+            if (convertedLink) {
+              affiliateLink = convertedLink;
+            }
+          }
         }
 
         const templateContent = template && typeof template.content === "string" ? template.content : "";
@@ -17995,7 +18124,7 @@ if (funcName === "whatsapp-connect") {
         const lim = Math.min(Number(params.limit ?? 50), 200);
         const statusSql = validStatus ? "AND un.status = $3" : "";
         const queryArgs = validStatus ? [userId, lim, validStatus] : [userId, lim];
-        const items = await query(`SELECT un.*, row_to_json(sa) AS system_announcements FROM user_notifications un LEFT JOIN system_announcements sa ON sa.id = un.announcement_id WHERE un.user_id=$1 ${statusSql} ORDER BY un.delivered_at DESC LIMIT $2`, queryArgs);
+        const items = await query(`SELECT un.*, row_to_json(sa) AS announcement, row_to_json(sa) AS system_announcements FROM user_notifications un LEFT JOIN system_announcements sa ON sa.id = un.announcement_id WHERE un.user_id=$1 ${statusSql} ORDER BY un.delivered_at DESC LIMIT $2`, queryArgs);
         const unreadRow = await queryOne("SELECT COUNT(*) AS c FROM user_notifications WHERE user_id=$1 AND status='unread'", [userId]);
         ok(res, { items, unread_count: Number(unreadRow?.c ?? 0) }); return;
       }
@@ -18015,15 +18144,15 @@ if (funcName === "whatsapp-connect") {
         ok(res, { success: true }); return;
       }
       if (action === "login_popup") {
-        const items = await query(`SELECT un.*, row_to_json(sa) AS system_announcements FROM user_notifications un LEFT JOIN system_announcements sa ON sa.id = un.announcement_id WHERE un.user_id=$1 AND un.status='unread' ORDER BY un.delivered_at DESC LIMIT 20`, [userId]);
+        const items = await query(`SELECT un.*, row_to_json(sa) AS announcement, row_to_json(sa) AS system_announcements FROM user_notifications un LEFT JOIN system_announcements sa ON sa.id = un.announcement_id WHERE un.user_id=$1 AND un.status='unread' ORDER BY un.delivered_at DESC LIMIT 20`, [userId]);
         const candidate = items.find((item) => {
-          const ann = item.system_announcements;
+          const ann = item.announcement ?? item.system_announcements;
           if (!ann) return false;
           if (!isAnnouncementActiveNow(ann)) return false;
           return ann.auto_popup_on_login === true && ann.severity === "critical" && (ann.channel === "modal" || ann.channel === "both");
         });
         if (!candidate) { ok(res, { item: null }); return; }
-        await execute("UPDATE user_notifications SET status='read', read_at=NOW(), updated_at=NOW() WHERE id=$1", [candidate.id]);
+        await execute("UPDATE user_notifications SET status='read', read_at=NOW(), updated_at=NOW() WHERE id=$1 AND user_id=$2", [candidate.id, userId]);
         ok(res, { item: candidate }); return;
       }
       fail(res, "Ação de notificação inválida"); return;
@@ -18114,8 +18243,15 @@ if (funcName === "whatsapp-connect") {
       }
       if (action === "preview_recipients") {
         const filter = normalizeTargetFilter(params.target_filter);
-        const users = (await listUsersWithMeta()).filter((u) => !["inactive","blocked","archived"].includes(u.account_status)).filter((u) => filter.planIds.length === 0 || filter.planIds.includes(u.plan_id)).slice(0, 200).map((u) => ({ user_id: u.user_id, email: u.email, name: u.name, plan_id: u.plan_id }));
-        ok(res, { count: users.length, users }); return;
+        const [allUsers, controlPlane] = await Promise.all([listUsersWithMeta(), loadControlPlane()]);
+        const planAccessLevelMap = buildPlanAccessLevelMap(controlPlane);
+        const matchedUsers = allUsers
+          .filter((u) => !["inactive", "blocked", "archived"].includes(u.account_status))
+          .filter((u) => userMatchesAnnouncementTarget(u, filter, planAccessLevelMap));
+        const users = matchedUsers
+          .slice(0, 200)
+          .map((u) => ({ user_id: u.user_id, email: u.email, name: u.name, plan_id: u.plan_id }));
+        ok(res, { count: matchedUsers.length, users }); return;
       }
       fail(res, "Ação de comunicados inválida"); return;
     }

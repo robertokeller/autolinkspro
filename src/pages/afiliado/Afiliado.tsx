@@ -29,10 +29,10 @@ export default function Afiliado() {
           Parceria oficial AutoLinks
         </div>
         <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-foreground leading-tight">
-          Transforme cada indicação em um pagamento <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-orange-400">que cai todos os meses.</span>
+          Transforme cada indicação em um pagamento <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-orange-400">que entra todos os meses.</span>
         </h1>
         <p className="text-lg md:text-xl text-muted-foreground leading-relaxed">
-          Vender produtos de comissão única é desgastante. Torne-se parceiro de um software que as empresas usam todos os dias para vender. Você indica uma vez e nós dividimos os lucros com você para sempre.
+          Vender produtos com comissão única é desgastante. Torne-se parceiro de um software que empresas usam todos os dias para vender. Você indica uma vez, e nós dividimos os lucros com você para sempre.
         </p>
         <div className="pt-4">
           <Button 
@@ -40,7 +40,7 @@ export default function Afiliado() {
             className="h-11 gap-2.5 rounded-full bg-primary px-7 text-sm text-primary-foreground shadow-lg transition-transform hover:-translate-y-0.5 hover:bg-primary/90 sm:text-base"
             onClick={handleClick}
           >
-            Liberar Meu Link de Parceiro
+            Liberar meu link de parceiro
             <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
@@ -54,7 +54,7 @@ export default function Afiliado() {
           </div>
           <h3 className="mb-3 text-xl font-bold">Ganhe em todos os planos</h3>
           <p className="text-muted-foreground leading-relaxed">
-            Nossos clientes podem assinar pacotes mensais, trimestrais ou até semestrais. Você recebe 40% de comissão independentemente do período escolhido. Em todas as renovações, por toda vida, você recebe comissão dos planos.
+            Nossos clientes podem assinar pacotes mensais, trimestrais ou até semestrais. Você recebe 40% de comissão, independentemente do período escolhido. Em todas as renovações, você recebe comissão sobre os planos, para sempre.
           </p>
         </div>
 
@@ -64,7 +64,7 @@ export default function Afiliado() {
           </div>
           <h3 className="mb-3 text-xl font-bold">Produto essencial (alta retenção)</h3>
           <p className="text-muted-foreground leading-relaxed">
-            Diferente de cursos que as pessoas desistem, o AutoLinks é infraestrutura. Quando uma empresa automatiza as vendas com a ferramenta, ela não cancela.
+            Diferentemente de cursos, que muitas pessoas abandonam, o AutoLinks é infraestrutura. Quando uma empresa automatiza as vendas com a ferramenta, ela não cancela.
           </p>
         </div>
 
@@ -74,7 +74,7 @@ export default function Afiliado() {
           </div>
           <h3 className="mb-3 text-xl font-bold">Venda indireta</h3>
           <p className="text-muted-foreground leading-relaxed">
-            Você não precisa convencer ninguém a comprar. Basta exibir como o AutoLinks está te ajudando a economizar tempo e as pessoas naturalmente pedirão o seu link de acesso.
+            Você não precisa convencer ninguém a comprar. Basta mostrar como o AutoLinks está ajudando você a economizar tempo, e as pessoas naturalmente pedirão seu link de acesso.
           </p>
         </div>
       </div>
@@ -91,10 +91,10 @@ export default function Afiliado() {
             </div>
             <h2 className="text-3xl font-bold text-foreground">Como o seu esforço se multiplica com o tempo</h2>
             <p className="text-muted-foreground text-lg leading-relaxed">
-              Vamos fazer uma simulação realista. Imagine que você comece a compartilhar seu link e faça apenas 1 venda por dia de uma assinatura (considerando um plano representativo com comissão líquida de ~R$ 38,80).
+              Vamos fazer uma simulação realista. Imagine que você comece a compartilhar seu link e faça apenas uma venda por dia de assinatura (considerando um plano representativo com comissão líquida de ~R$ 38,80).
             </p>
             <p className="text-muted-foreground text-lg leading-relaxed">
-              No final do mês, você não ganhou o dinheiro apenas daquele mês atual. No mês seguinte, você já começa com aquela mesma quantia <strong>garantida</strong> vindo dos clientes antigos, somando-se às novas vendas.
+              No final do mês, você não recebe apenas o valor daquele período. No mês seguinte, você já começa com essa mesma quantia <strong>garantida</strong>, vinda dos clientes antigos, somada às novas vendas.
             </p>
           </div>
 
@@ -107,7 +107,7 @@ export default function Afiliado() {
               <div className="flex items-center justify-between p-4 rounded-xl border border-border/50 bg-background/50">
                 <div className="space-y-1">
                   <p className="font-medium">Ao atingir 10 clientes</p>
-                  <p className="text-xs text-muted-foreground">O equivalente a uma ida à pizzaria paga</p>
+                  <p className="text-xs text-muted-foreground">Equivale ao custo de uma ida à pizzaria</p>
                 </div>
                 <div className="text-right">
                   <p className="font-bold text-lg">R$ 388,00</p>
@@ -118,7 +118,7 @@ export default function Afiliado() {
               <div className="flex items-center justify-between p-4 rounded-xl border border-border/50 bg-background/50">
                 <div className="space-y-1">
                   <p className="font-medium">Ao atingir 50 clientes</p>
-                  <p className="text-xs text-muted-foreground">Paga as contas básicas da casa</p>
+                  <p className="text-xs text-muted-foreground">Cobre as contas básicas da casa</p>
                 </div>
                 <div className="text-right">
                   <p className="font-bold text-lg">R$ 1.940,00</p>
@@ -135,7 +135,7 @@ export default function Afiliado() {
                 </div>
                 <div className="space-y-1">
                   <p className="font-bold text-primary">Ao atingir 100 clientes</p>
-                  <p className="text-xs text-primary/80 font-medium">Um salário base sólido construído</p>
+                  <p className="text-xs text-primary/80 font-medium">Representa um salário-base sólido</p>
                 </div>
                 <div className="text-right text-primary">
                   <p className="font-extrabold text-2xl">R$ 3.880,00+</p>
@@ -154,7 +154,7 @@ export default function Afiliado() {
       <div className="max-w-2xl mx-auto text-center space-y-8 pt-8">
         <h2 className="text-2xl font-bold">O mercado já está aderindo. Você quer ser o parceiro que recebe a comissão ou o espectador?</h2>
         <p className="text-muted-foreground">
-          O processo de afiliação é gratuito, não tem burocracia e leva menos de 1 minuto. Assim que aprovado pelo sistema da Kiwify, você já pode começar a distribuir o seu link e ver os resultados.
+          O processo de afiliação é gratuito, não tem burocracia e leva menos de um minuto. Assim que for aprovado pelo sistema da Kiwify, você já pode começar a distribuir seu link e ver os resultados.
         </p>
         
         <Button 
@@ -162,7 +162,7 @@ export default function Afiliado() {
           className="mx-auto flex h-11 gap-2.5 rounded-full bg-primary px-7 text-sm text-primary-foreground shadow-lg transition-transform hover:-translate-y-0.5 hover:bg-primary/90 sm:text-base"
           onClick={handleClick}
         >
-          Tornar-se Parceiro Agora
+          Tornar-se parceiro agora
           <ExternalLink className="h-4 w-4" />
         </Button>
       </div>

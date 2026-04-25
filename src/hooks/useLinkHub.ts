@@ -117,7 +117,7 @@ export function useLinkHub() {
       testimonials?: { name: string; text: string }[];
     };
   }) => {
-    if (!input.slug || !input.title) { toast.error("Preencha slug e titulo"); return null; }
+    if (!input.slug || !input.title) { toast.error("Preencha o slug e o título."); return null; }
     const { data, error } = await backend.from("link_hub_pages").insert({
       user_id: user!.id,
       slug: input.slug,
@@ -134,8 +134,8 @@ export function useLinkHub() {
       },
     }).select().single();
     if (error) {
-      if (error.code === "23505") toast.error("Este slug já está em uso");
-      else toast.error("Erro ao criar página");
+      if (error.code === "23505") toast.error("Este slug já está em uso.");
+      else toast.error("Não foi possível criar a página.");
       return null;
     }
     qc.invalidateQueries({ queryKey: ["link_hub_pages"] });
@@ -167,7 +167,7 @@ export function useLinkHub() {
         texts: input.texts,
       },
     }).eq("id", id).eq("user_id", user!.id);
-    if (error) { toast.error("Erro ao atualizar página"); return; }
+    if (error) { toast.error("Não foi possível atualizar a página."); return; }
     qc.invalidateQueries({ queryKey: ["link_hub_pages"] });
     toast.success("Página atualizada!");
   }, [qc, user]);
@@ -182,7 +182,7 @@ export function useLinkHub() {
     if (!user) return;
     await backend.from("link_hub_pages").delete().eq("id", id).eq("user_id", user!.id);
     qc.invalidateQueries({ queryKey: ["link_hub_pages"] });
-    toast.success("Página removida");
+    toast.success("Página removida com sucesso!");
   }, [qc, user]);
 
   const uploadLogo = useCallback(async (pageId: string, file: File): Promise<string | null> => {
@@ -197,7 +197,7 @@ export function useLinkHub() {
     const ext = MIME_TO_EXT[file.type] ?? "png";
     const path = `${user.id}/${pageId}.${ext}`;
     const { error } = await backend.storage.from("link-hub-logos").upload(path, file, { upsert: true });
-    if (error) { toast.error("Erro ao enviar logo"); return null; }
+    if (error) { toast.error("Não foi possível enviar a logo."); return null; }
     const { data } = backend.storage.from("link-hub-logos").getPublicUrl(path);
     return data.publicUrl;
   }, [user]);

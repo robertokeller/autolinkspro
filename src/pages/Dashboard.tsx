@@ -52,6 +52,11 @@ import {
 const DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"];
 const CHANNEL_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
 
+function ptCount(value: number, singular: string, plural: string): string {
+  if (!Number.isFinite(value)) return `0 ${plural}`;
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
 export default function Dashboard() {
   const viewport = useViewportProfile();
   const compactDashboard = viewport.isMobile || (viewport.isTablet && viewport.orientation === "portrait");
@@ -90,9 +95,10 @@ export default function Dashboard() {
     const weekStart = subDays(now, 6);
     const next24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
-    const realEntries = entries.filter((entry) => entry.isFinalOutcome || ["success", "error"].includes(entry.status));
-    const entries24h = realEntries.filter((entry) => new Date(entry.createdAt) >= last24h);
-    const entries7d = realEntries.filter((entry) => new Date(entry.createdAt) >= weekStart);
+    const finalProcessingStates = new Set(["sent", "blocked", "failed", "error", "processed", "skipped"]);
+    const realEntries = entries.filter((entry) => finalProcessingStates.has(String(entry.processingStatus || entry.status || "").toLowerCase()));
+    const entries24h = realEntries.filter((entry) => new Date(entry.date) >= last24h);
+    const entries7d = realEntries.filter((entry) => new Date(entry.date) >= weekStart);
 
     const operations24h = entries24h.length;
     const success24h = entries24h.filter((entry) => entry.status === "success" || entry.processingStatus === "sent").length;
@@ -105,7 +111,7 @@ export default function Dashboard() {
     const routePaused = routes.filter((route) => route.status === "paused").length;
     const routeError = routes.filter((route) => route.status === "error").length;
 
-    const pendingPosts = posts.filter((post) => post.status === "pending" || post.status === "scheduled");
+    const pendingPosts = posts.filter((post) => post.status === "pending");
     const overduePosts = pendingPosts.filter((post) => new Date(post.scheduledAt) < now).length;
     const dueNext24h = pendingPosts.filter((post) => {
       const scheduledAt = new Date(post.scheduledAt);
@@ -151,13 +157,13 @@ export default function Dashboard() {
       dayEnd.setDate(dayEnd.getDate() + 1);
 
       const dayEntries = sentEntries.filter((entry) => {
-        const createdAt = new Date(entry.createdAt);
+        const createdAt = new Date(entry.date);
         return createdAt >= dayStart && createdAt < dayEnd;
       });
 
-      const automacoes = dayEntries.filter((entry) => entry.mechanism === "smart_automation").length;
-      const rotas = dayEntries.filter((entry) => entry.mechanism === "automatic_routes").length;
-      const agendamentos = dayEntries.filter((entry) => entry.mechanism === "schedule").length;
+      const automacoes = dayEntries.filter((entry) => entry.type === "automation_run").length;
+      const rotas = dayEntries.filter((entry) => entry.type === "route_forward").length;
+      const agendamentos = dayEntries.filter((entry) => entry.type === "schedule_sent").length;
 
       return {
         day: DAY_LABELS[date.getDay()],
@@ -183,25 +189,70 @@ export default function Dashboard() {
   );
 
   const recentActivity = useMemo<RecentActivityItem[]>(() => {
-    return entries.slice(0, 6).map((entry) => {
-      const details = typeof entry.details === "string"
-        ? (() => {
-            try {
-              return JSON.parse(entry.details).message || entry.details;
-            } catch {
-              return entry.details;
-            }
-          })()
-        : "";
+    const firstText = (...values: unknown[]) => {
+      for (const value of values) {
+        if (typeof value !== "string") continue;
+        const normalized = value.trim();
+        if (normalized) return normalized;
+      }
+      return "";
+    };
 
-      const mins = Math.round((Date.now() - new Date(entry.createdAt).getTime()) / 60000);
-      const timeLabel = mins < 1
-        ? "agora"
-        : mins < 60
-          ? `${mins}min`
-          : mins < 1440
-            ? `${Math.round(mins / 60)}h`
-            : `${Math.round(mins / 1440)}d`;
+    const parseDateMs = (value: unknown) => {
+      if (typeof value !== "string") return Number.NaN;
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) || parsed <= 0 ? Number.NaN : parsed;
+    };
+
+    const normalizeTimeToken = (entry: typeof entries[number]) => {
+      const dateMs = parseDateMs((entry as { date?: unknown }).date) || parseDateMs((entry as { createdAt?: unknown }).createdAt);
+
+      if (Number.isFinite(dateMs)) {
+        const mins = Math.max(0, Math.round((Date.now() - dateMs) / 60000));
+        if (mins < 1) return "agora";
+        if (mins < 60) return `${mins}min`;
+        if (mins < 1440) return `${Math.round(mins / 60)}h`;
+        return `${Math.round(mins / 1440)}d`;
+      }
+
+      const rawTimeAgo = firstText((entry as { timeAgo?: unknown }).timeAgo).toLowerCase();
+      if (rawTimeAgo === "agora") return "agora";
+      const cleanedTimeAgo = rawTimeAgo.replace(/\s+atr[aá]s$/, "").trim();
+      return cleanedTimeAgo || "-";
+    };
+
+    return entries.slice(0, 6).map((entry) => {
+      const details = entry.details && typeof entry.details === "object" && !Array.isArray(entry.details)
+        ? entry.details
+        : {};
+
+      const detailsMessage = firstText(entry.message, details.message, details.text, details.summary);
+      const sourceLabel = firstText(
+        entry.automationName,
+        (entry as { source?: unknown }).source,
+        "Evento",
+      );
+      const destinationLabel = firstText(
+        entry.destination,
+        details.destination,
+        details.target,
+        typeof entry.targetSummary?.total === "number" && entry.targetSummary.total > 0
+          ? ptCount(entry.targetSummary.total, "destino", "destinos")
+          : "",
+        "-",
+      );
+
+      const normalizedStatus = entry.processingStatus === "failed" || entry.processingStatus === "error"
+        ? "error"
+        : entry.processingStatus === "sent"
+          ? "success"
+          : entry.processingStatus === "blocked"
+            ? "warning"
+            : entry.status === "error"
+              ? "error"
+              : entry.status === "success"
+                ? "success"
+                : "info";
 
       const typeIcon = entry.type === "link_converted"
         ? LinkIcon
@@ -211,8 +262,10 @@ export default function Dashboard() {
             ? Calendar
             : MessageSquare;
 
-      const typeColor = entry.status === "error"
+      const typeColor = normalizedStatus === "error"
         ? "text-destructive"
+        : normalizedStatus === "warning"
+          ? "text-warning"
         : entry.type === "link_converted"
           ? "text-primary"
           : entry.type === "route_forward"
@@ -222,9 +275,9 @@ export default function Dashboard() {
               : "text-success";
 
       return {
-        text: details || `${entry.source} -> ${entry.destination}`,
-        time: timeLabel,
-        status: entry.status,
+        text: detailsMessage || `${sourceLabel} -> ${destinationLabel}`,
+        time: normalizeTimeToken(entry),
+        status: normalizedStatus,
         Icon: typeIcon,
         color: typeColor,
       };
@@ -256,7 +309,7 @@ export default function Dashboard() {
     {
       label: "Envios processados (24h)",
       value: String(analytics.operations24h),
-      help: `${analytics.success24h} ok • ${analytics.errors24h} com erro`,
+      help: `${analytics.success24h} OK • ${ptCount(analytics.errors24h, "erro", "erros")}`,
       icon: MessageSquare,
       accent: "primary",
     },
@@ -270,21 +323,21 @@ export default function Dashboard() {
     {
       label: "Rotas ativas",
       value: String(analytics.routeActive),
-      help: `${analytics.routePaused} pausada(s) • ${analytics.routeError} com erro`,
+      help: `${ptCount(analytics.routePaused, "rota pausada", "rotas pausadas")} • ${ptCount(analytics.routeError, "rota com erro", "rotas com erro")}`,
       icon: Route,
       accent: analytics.routeError > 0 ? "warning" : "success",
     },
     {
       label: "Agendamentos pendentes",
       value: String(analytics.pendingSchedules),
-      help: `${analytics.dueNext24h} em 24h • ${analytics.overduePosts} atrasado(s)`,
+      help: `${ptCount(analytics.dueNext24h, "agendamento nas próximas 24h", "agendamentos nas próximas 24h")} • ${ptCount(analytics.overduePosts, "agendamento atrasado", "agendamentos atrasados")}`,
       icon: Calendar,
       accent: "warning",
     },
     {
       label: "Automações ativas",
       value: String(analytics.activeAutomations),
-      help: `${automationList.length} criada(s) no total`,
+      help: ptCount(automationList.length, "automação criada no total", "automações criadas no total"),
       icon: Bot,
       accent: analytics.activeAutomations > 0 ? "success" : "info",
     },
@@ -322,7 +375,7 @@ export default function Dashboard() {
       },
       {
         label: "Pesquisar ofertas",
-        desc: "Achar produtos para divulgar agora",
+        desc: "Encontre produtos para divulgar agora",
         icon: Search,
         href: ROUTES.app.shopeePesquisa,
         accent: "success",
@@ -330,8 +383,8 @@ export default function Dashboard() {
       buildFeatureAction(
         "linkHub",
         {
-          label: "Gerir Link Hub",
-          desc: `${analytics.activeLinkHubPages} página(s) ativa(s)`,
+          label: "Gerenciar Link Hub",
+          desc: ptCount(analytics.activeLinkHubPages, "página ativa", "páginas ativas"),
           icon: LinkIcon,
           href: ROUTES.app.linkHub,
           accent: "info",
@@ -342,7 +395,7 @@ export default function Dashboard() {
         "routes",
         {
           label: "Criar rota",
-          desc: `${analytics.routeActive} rota(s) ligada(s)`,
+          desc: ptCount(analytics.routeActive, "rota ativa", "rotas ativas"),
           icon: Route,
           href: ROUTES.app.routes,
           accent: "info",
@@ -353,7 +406,7 @@ export default function Dashboard() {
         "schedules",
         {
           label: "Agendar post",
-          desc: `${analytics.pendingSchedules} na fila`,
+          desc: ptCount(analytics.pendingSchedules, "agendamento na fila", "agendamentos na fila"),
           icon: Calendar,
           href: ROUTES.app.schedules,
           accent: "warning",
@@ -375,6 +428,8 @@ export default function Dashboard() {
         id: "plan-expired",
         title: "Plano expirado",
         description: "Alguns recursos ficam bloqueados até renovação.",
+        impact: "Automações, rotas e agendamentos estão bloqueados",
+        actionWindow: "agora",
         href: ROUTES.app.account,
         cta: "Renovar agora",
         accent: "destructive",
@@ -383,9 +438,24 @@ export default function Dashboard() {
       alerts.push({
         id: "plan-expiring",
         title: "Plano vencendo",
-        description: daysToExpiry <= 0 ? "Vence hoje." : `Vence em ${daysToExpiry} dia(s).`,
+        description: daysToExpiry <= 0 ? "Vence hoje." : `Vence em ${ptCount(daysToExpiry, "dia", "dias")}.`,
+        impact: daysToExpiry <= 0 ? "Renovação vence nas próximas horas" : ptCount(daysToExpiry, "dia restante no ciclo", "dias restantes no ciclo"),
+        actionWindow: daysToExpiry <= 1 ? "hoje" : "até 72h",
         href: ROUTES.app.account,
         cta: "Evitar bloqueio",
+        accent: "warning",
+      });
+    }
+
+    if (!shopeeConfigured) {
+      alerts.push({
+        id: "shopee-not-configured",
+        title: "Shopee sem credenciais",
+        description: "Conversões e automações podem falhar sem autenticação da API.",
+        impact: "Shopee sem integração ativa",
+        actionWindow: "antes do próximo envio",
+        href: ROUTES.app.shopeeConfiguracoes,
+        cta: "Configurar Shopee",
         accent: "warning",
       });
     }
@@ -395,6 +465,8 @@ export default function Dashboard() {
         id: "wa-offline",
         title: "Sessão crítica offline",
         description: "WhatsApp sem sessão online pode interromper sua operação.",
+        impact: `${waOnline}/${waSessions.length} ${waOnline === 1 ? "sessão online" : "sessões online"}`,
+        actionWindow: "agora",
         href: ROUTES.app.connectionsWhatsApp,
         cta: "Revisar sessões",
         accent: "destructive",
@@ -405,7 +477,9 @@ export default function Dashboard() {
       alerts.push({
         id: "overdue-posts",
         title: "Agendamentos atrasados",
-        description: `${analytics.overduePosts} item(ns) já passou(ram) da hora prevista de envio.`,
+        description: `${ptCount(analytics.overduePosts, "agendamento está atrasado", "agendamentos estão atrasados")} em relação ao horário previsto de envio.`,
+        impact: ptCount(analytics.overduePosts, "envio fora do horário", "envios fora do horário"),
+        actionWindow: analytics.overduePosts >= 5 ? "agora" : "hoje",
         href: ROUTES.app.schedules,
         cta: "Corrigir agenda",
         accent: "warning",
@@ -417,14 +491,16 @@ export default function Dashboard() {
       alerts.push({
         id: "meli-disconnected",
         title: "Sessões ML com falha",
-        description: `${analytics.meliDisconnected}/${meliSessions.length} sessão(ões) desconectada(s) ou com erro.`,
+        description: `${analytics.meliDisconnected}/${meliSessions.length} ${analytics.meliDisconnected === 1 ? "sessão desconectada ou com erro" : "sessões desconectadas ou com erro"}.`,
+        impact: ptCount(analytics.meliDisconnected, "sessão com falha ativa", "sessões com falha ativa"),
+        actionWindow: allDisconnected ? "agora" : "hoje",
         href: ROUTES.app.mercadolivreConfiguracoes,
         cta: "Revisar Mercado Livre",
         accent: allDisconnected ? "destructive" : "warning",
       });
     }
 
-    const usageSignals = [
+    const usageSignals = ([
       {
         id: "routes-limit",
         label: "rotas",
@@ -458,7 +534,7 @@ export default function Dashboard() {
           ratio,
         };
       })
-      .filter((item): item is { id: string; label: string; used: number; limit: number; href: string; ratio: number } => Boolean(item))
+      .filter(Boolean) as Array<{ id: string; label: string; used: number; limit: number; href: string; ratio: number }> )
       .sort((a, b) => b.ratio - a.ratio)
       .slice(0, 2);
 
@@ -467,6 +543,8 @@ export default function Dashboard() {
         id: signal.id,
         title: `Limite quase no teto: ${signal.label}`,
         description: `${signal.used}/${signal.limit} (${Math.round(signal.ratio)}%) em uso.`,
+        impact: `${signal.used}/${signal.limit} capacidade utilizada`,
+        actionWindow: signal.ratio >= 95 ? "agora" : "monitorar hoje",
         href: signal.href,
         cta: "Ajustar agora",
         accent: "warning",
@@ -474,7 +552,7 @@ export default function Dashboard() {
     }
 
     return alerts.slice(0, 4);
-  }, [analytics.activeAutomations, analytics.meliDisconnected, analytics.overduePosts, analytics.pendingSchedules, analytics.routeActive, effectiveOperationalLimits?.automations, effectiveOperationalLimits?.routes, effectiveOperationalLimits?.schedules, isPlanExpired, meliSessions.length, planExpiresAt, waOnline, waServiceOnline, waSessions.length]);
+  }, [analytics.activeAutomations, analytics.meliDisconnected, analytics.overduePosts, analytics.pendingSchedules, analytics.routeActive, effectiveOperationalLimits?.automations, effectiveOperationalLimits?.routes, effectiveOperationalLimits?.schedules, isPlanExpired, meliSessions.length, planExpiresAt, shopeeConfigured, waOnline, waServiceOnline, waSessions.length]);
 
   function usageCountsOrNull(value: number) {
     return Number.isFinite(value) && value >= 0 ? value : 0;

@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Bot, Plus, Pause, Trash2, Clock, Pencil, Copy, Play, RefreshCw, Filter } from "lucide-react";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { useShopeeAutomacoes, type CreateAutomationInput, type ShopeeAutomationRow } from "@/hooks/useShopeeAutomacoes";
+import { useShopeeSubIds } from "@/hooks/useShopeeSubIds";
 import { useGrupos } from "@/hooks/useGrupos";
 import { useTemplates } from "@/hooks/useTemplates";
 import { useSessoes } from "@/hooks/useSessoes";
@@ -38,6 +39,8 @@ import {
   readAutomationOfferSourceConfig,
   splitKeywordCsv,
 } from "@/lib/automation-keywords";
+import { readAutomationShopeeSubId } from "@/lib/automation-shopee-subid";
+import { pickDefaultShopeeSubId } from "@/lib/shopee-subid";
 
 type FormState = {
   name: string;
@@ -57,6 +60,7 @@ type FormState = {
   negativeKeywords: string;
   offerSourceMode: "search" | "vitrine";
   vitrineTabs: string[];
+  shopeeSubId: string;
 };
 
 const EMPTY_FORM: FormState = {
@@ -77,6 +81,7 @@ const EMPTY_FORM: FormState = {
   negativeKeywords: "",
   offerSourceMode: "search",
   vitrineTabs: ["sales"],
+  shopeeSubId: "",
 };
 
 function maskScheduleTimeInput(rawValue: string): string {
@@ -106,6 +111,7 @@ function automationToForm(a: ShopeeAutomationRow): FormState {
     negativeKeywords: keywordsToCsv(keywordFilters.negativeKeywords),
     offerSourceMode: sourceConfig.offerSourceMode,
     vitrineTabs: sourceConfig.vitrineTabs,
+    shopeeSubId: readAutomationShopeeSubId(a.config),
   };
 }
 
@@ -128,6 +134,7 @@ export default function ShopeeAutomacoes() {
     isResumingAll,
     isRefreshingAll,
   } = useShopeeAutomacoes();
+  const { subIds, isLoading: isSubIdsLoading } = useShopeeSubIds();
   const { syncedGroups, masterGroups } = useGrupos();
   const { templates, defaultTemplate } = useTemplates("message");
   const { allSessions } = useSessoes();
@@ -142,6 +149,7 @@ export default function ShopeeAutomacoes() {
   const [isSyncingSingleRoutes, setIsSyncingSingleRoutes] = useState(false);
 
   const connectedSessions = allSessions.filter((s) => s.status === "online");
+  const defaultShopeeSubId = useMemo(() => pickDefaultShopeeSubId(subIds), [subIds]);
   const shouldPauseAll = automations.some((a) => a.is_active);
   const isBulkTogglePending = isPausingAll || isResumingAll;
   const isHeaderActionPending = isBulkTogglePending || isRefreshingAll || isSyncingRoutes;
@@ -177,15 +185,33 @@ export default function ShopeeAutomacoes() {
 
   const openCreate = () => {
     setEditingId(null);
-    setForm({ ...EMPTY_FORM, templateId: defaultTemplate?.id || "" });
+    setForm({
+      ...EMPTY_FORM,
+      templateId: defaultTemplate?.id || "",
+      shopeeSubId: defaultShopeeSubId,
+    });
     setShowModal(true);
   };
 
   const openEdit = (auto: ShopeeAutomationRow) => {
     setEditingId(auto.id);
-    setForm(automationToForm(auto));
+    const nextForm = automationToForm(auto);
+    if (!nextForm.shopeeSubId) {
+      nextForm.shopeeSubId = defaultShopeeSubId;
+    }
+    setForm(nextForm);
     setShowModal(true);
   };
+
+  useEffect(() => {
+    if (!showModal) return;
+    if (!defaultShopeeSubId) return;
+
+    setForm((prev) => {
+      if (prev.shopeeSubId) return prev;
+      return { ...prev, shopeeSubId: defaultShopeeSubId };
+    });
+  }, [defaultShopeeSubId, showModal]);
 
   // Reset groups when session changes
   const handleSessionChange = (sessionId: string) => {
@@ -196,6 +222,7 @@ export default function ShopeeAutomacoes() {
     if (!form.name.trim()) { toast.error("Dê um nome para a automação"); return; }
     if (!form.sessionId) { toast.error("Escolha a sessão de envio"); return; }
     if (!form.templateId) { toast.error("Escolha um modelo de mensagem"); return; }
+    if (!form.shopeeSubId) { toast.error("Escolha um Sub ID para rastrear os links"); return; }
     if (form.destinationGroupIds.length === 0 && form.masterGroupIds.length === 0) {
       toast.error("Escolha pelo menos um grupo de destino"); return;
     }
@@ -227,6 +254,7 @@ export default function ShopeeAutomacoes() {
         negativeKeywords: splitKeywordCsv(form.negativeKeywords),
         offerSourceMode: form.offerSourceMode,
         vitrineTabs: form.vitrineTabs,
+        shopeeSubId: form.shopeeSubId,
       };
 
       if (editingId) {
@@ -329,6 +357,7 @@ export default function ShopeeAutomacoes() {
             const keywordFilters = readAutomationKeywordFilters(auto.config);
             const sourceConfig = readAutomationOfferSourceConfig(auto.config);
             const vitrineTabsSet = new Set(sourceConfig.vitrineTabs);
+            const shopeeSubId = readAutomationShopeeSubId(auto.config);
 
             return (
               <Card key={auto.id} className="glass">
@@ -391,6 +420,7 @@ export default function ShopeeAutomacoes() {
                         );
                       })}
                     {sessionLabel && <Badge variant="secondary" className="text-xs">Sessão: {sessionLabel}</Badge>}
+                    {shopeeSubId && <Badge variant="secondary" className="text-xs">Sub ID: {shopeeSubId}</Badge>}
                     {templateLabel && <Badge variant="secondary" className="text-xs">Modelo: {templateLabel}</Badge>}
                     {groupCount > 0 && <Badge variant="secondary" className="text-xs">Grupos: {groupCount} grupo(s)</Badge>}
                     {keywordFilters.positiveKeywords.length > 0 && (
@@ -587,6 +617,40 @@ export default function ShopeeAutomacoes() {
                 />
               </div>
             )}
+
+            {/* 7. Palavras-chave opcionais */}
+            <div className="space-y-2">
+              <Label>Sub ID da conversão Shopee *</Label>
+              <Select
+                value={form.shopeeSubId}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, shopeeSubId: value }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={isSubIdsLoading ? "Carregando Sub IDs..." : "Selecione o Sub ID"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {!!form.shopeeSubId && !subIds.some((item) => item.value === form.shopeeSubId) && (
+                    <SelectItem value={form.shopeeSubId}>
+                      {form.shopeeSubId} (indisponível)
+                    </SelectItem>
+                  )}
+                  {subIds.length === 0 ? (
+                    <SelectItem value="_none" disabled>
+                      Cadastre um Sub ID em Configurações Shopee
+                    </SelectItem>
+                  ) : (
+                    subIds.map((subId) => (
+                      <SelectItem key={subId.id} value={subId.value}>
+                        {subId.value}{subId.isDefault ? " (padrão)" : ""}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                O padrão da tela de Configurações Shopee vem selecionado automaticamente.
+              </p>
+            </div>
 
             {/* 7. Palavras-chave opcionais */}
             <div className="space-y-2">

@@ -74,6 +74,8 @@ export interface RiskAlertItem {
   id: string;
   title: string;
   description: string;
+  impact: string;
+  actionWindow: string;
   href: string;
   cta: string;
   accent: Accent;
@@ -101,6 +103,11 @@ const statusByTone: Record<HealthBadgeTone, string> = {
   destructive: "text-destructive border-destructive/20",
   muted: "text-muted-foreground border-border",
 };
+
+function ptCount(value: number, singular: string, plural: string): string {
+  if (!Number.isFinite(value)) return `0 ${plural}`;
+  return `${value} ${value === 1 ? singular : plural}`;
+}
 
 export function DashboardMetricCards({
   compactDashboard,
@@ -199,7 +206,7 @@ export function DashboardUsageCard({
         </CardTitle>
         {!isLoading && (
           <p className="text-xs text-muted-foreground">
-            {usage7d.totalEnvios} envio(s) • {usage7d.automacoes} automação(ões) • {usage7d.rotas} rota(s) • {usage7d.agendamentos} agendamento(s)
+            {ptCount(usage7d.totalEnvios, "envio", "envios")} • {ptCount(usage7d.automacoes, "automação", "automações")} • {ptCount(usage7d.rotas, "rota", "rotas")} • {ptCount(usage7d.agendamentos, "agendamento", "agendamentos")}
           </p>
         )}
       </CardHeader>
@@ -250,7 +257,7 @@ export function DashboardUsageCard({
             </div>
             {compactDashboard ? (
               <div className="mt-3 text-center text-xs text-muted-foreground">
-                Foco em envios totais no mobile.
+                Foco em envios totais no celular.
               </div>
             ) : (
               <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs">
@@ -386,6 +393,31 @@ export function DashboardRiskAlerts({
   isLoading: boolean;
   alerts: RiskAlertItem[];
 }) {
+  const sortedAlerts = [...alerts].sort((a, b) => {
+    const score = (accent: Accent) => {
+      if (accent === "destructive") return 3;
+      if (accent === "warning") return 2;
+      return 1;
+    };
+    return score(b.accent) - score(a.accent);
+  });
+
+  const primaryAlert = sortedAlerts[0] || null;
+  const secondaryAlerts = sortedAlerts.slice(1);
+  const criticalCount = sortedAlerts.filter((alert) => alert.accent === "destructive").length;
+
+  const alertTone = (accent: Accent): "destructive" | "warning" | "muted" => {
+    if (accent === "destructive") return "destructive";
+    if (accent === "warning") return "warning";
+    return "muted";
+  };
+
+  const alertLabel = (accent: Accent) => {
+    if (accent === "destructive") return "Crítico";
+    if (accent === "warning") return "Atenção";
+    return "Monitorar";
+  };
+
   return (
     <Card className="glass lg:col-span-2">
       <CardHeader className="pb-2">
@@ -393,33 +425,91 @@ export function DashboardRiskAlerts({
           <ShieldAlert className="h-4 w-4 text-muted-foreground" />
           Alertas de risco
         </CardTitle>
+        {!isLoading && (
+          <p className="text-xs text-muted-foreground">
+            {sortedAlerts.length > 0
+              ? `${ptCount(sortedAlerts.length, "alerta ativo", "alertas ativos")}${criticalCount > 0 ? ` • ${ptCount(criticalCount, "crítico", "críticos")}` : ""}`
+              : "Operação sem riscos ativos"}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="space-y-2.5">
         {isLoading ? (
-          <Skeleton className="h-28 w-full" />
+          <div className="space-y-2.5">
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-14 w-full" />
+          </div>
         ) : alerts.length === 0 ? (
           <div className="rounded-xl border border-success/30 bg-success/5 p-3">
             <p className="text-xs font-semibold text-success">Operação estável</p>
             <p className="mt-1 text-xs text-muted-foreground">Sem alertas críticos no momento.</p>
           </div>
         ) : (
-          alerts.map((alert) => (
-            <div key={alert.id} className="rounded-xl border border-border/40 bg-secondary/35 p-3">
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-xs font-semibold">{alert.title}</p>
-                <Badge variant="outline" className={cn("text-xs", statusByTone[alert.accent === "destructive" ? "destructive" : alert.accent === "warning" ? "warning" : "muted"])}>
-                  atenção
-                </Badge>
+          <>
+            {primaryAlert && (
+              <div
+                className={cn(
+                  "rounded-xl border p-3.5",
+                  primaryAlert.accent === "destructive"
+                    ? "border-destructive/35 bg-destructive/5"
+                    : primaryAlert.accent === "warning"
+                      ? "border-warning/35 bg-warning/5"
+                      : "border-border/40 bg-secondary/35",
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Prioridade máxima</p>
+                    <p className="mt-1 text-sm font-semibold leading-tight">{primaryAlert.title}</p>
+                  </div>
+                  <Badge variant="outline" className={cn("text-xs", statusByTone[alertTone(primaryAlert.accent)])}>
+                    {alertLabel(primaryAlert.accent)}
+                  </Badge>
+                </div>
+
+                <p className="mt-2 text-xs text-muted-foreground">{primaryAlert.description}</p>
+
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <Badge variant="secondary" className="text-[11px]">
+                    Impacto: {primaryAlert.impact}
+                  </Badge>
+                  <Badge variant="outline" className="text-[11px]">
+                    Ação: {primaryAlert.actionWindow}
+                  </Badge>
+                </div>
+
+                <Button variant="ghost" size="sm" className="mt-2 h-7 px-2 text-xs" asChild>
+                  <Link to={primaryAlert.href}>
+                    {primaryAlert.cta}
+                    <ArrowRight className="ml-1 h-3 w-3" />
+                  </Link>
+                </Button>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">{alert.description}</p>
-              <Button variant="ghost" size="sm" className="mt-2 h-7 px-2 text-xs" asChild>
-                <Link to={alert.href}>
-                  {alert.cta}
-                  <ArrowRight className="ml-1 h-3 w-3" />
-                </Link>
-              </Button>
-            </div>
-          ))
+            )}
+
+            {secondaryAlerts.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Em acompanhamento</p>
+                {secondaryAlerts.map((alert) => (
+                  <div key={alert.id} className="rounded-xl border border-border/40 bg-secondary/35 p-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs font-semibold leading-tight">{alert.title}</p>
+                      <Badge variant="outline" className={cn("text-[10px]", statusByTone[alertTone(alert.accent)])}>
+                        {alertLabel(alert.accent)}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{alert.impact} • {alert.actionWindow}</p>
+                    <Button variant="ghost" size="sm" className="mt-1.5 h-6 px-1.5 text-xs" asChild>
+                      <Link to={alert.href}>
+                        {alert.cta}
+                        <ArrowRight className="ml-1 h-3 w-3" />
+                      </Link>
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </CardContent>
     </Card>
@@ -468,9 +558,11 @@ export function DashboardRecentActivity({
                 <div className="flex-1 min-w-0">
                   <p className="line-clamp-2 text-[13px] font-medium leading-tight sm:line-clamp-1">{item.text}</p>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[11px] text-muted-foreground/80 font-medium">{item.time} atrás</span>
-                    {item.status === "success" && <Badge variant="outline" className="text-[10px] h-4 px-1.5 py-0 font-bold bg-success/5 text-success border-success/20">ok</Badge>}
-                    {item.status === "error" && <Badge variant="outline" className="text-[10px] h-4 px-1.5 py-0 font-bold bg-destructive/5 text-destructive border-destructive/20">erro</Badge>}
+                    <span className="text-[11px] text-muted-foreground/80 font-medium">
+                      {item.time === "agora" || item.time === "-" ? item.time : `${item.time} atrás`}
+                    </span>
+                    {item.status === "success" && <Badge variant="outline" className="text-[10px] h-4 px-1.5 py-0 font-bold bg-success/5 text-success border-success/20">OK</Badge>}
+                    {item.status === "error" && <Badge variant="outline" className="text-[10px] h-4 px-1.5 py-0 font-bold bg-destructive/5 text-destructive border-destructive/20">Erro</Badge>}
                   </div>
                 </div>
               </div>
@@ -479,7 +571,7 @@ export function DashboardRecentActivity({
         )}
 
         <div className="flex flex-col gap-1.5 pt-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-          <span>{dueNext24h} agendamento(s) saem nas próximas 24h</span>
+          <span>{ptCount(dueNext24h, "agendamento sai nas próximas 24h", "agendamentos saem nas próximas 24h")}</span>
           <Link to={ROUTES.app.schedules} className="inline-flex items-center hover:text-foreground transition-colors">
             Abrir agenda
             <ArrowRight className="h-3 w-3 ml-1" />

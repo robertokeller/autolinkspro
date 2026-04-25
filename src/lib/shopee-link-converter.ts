@@ -1,5 +1,6 @@
 import type { ShopeeProduct } from "@/components/shopee/ProductCard";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
+import { normalizeShopeeSubIdList } from "@/lib/shopee-subid";
 
 export interface ShopeeLinkConversion {
   originalLink: string;
@@ -18,8 +19,22 @@ export interface ShopeeLinkBatchConversion {
   error: string | null;
 }
 
+export interface ShopeeSubIdTrackingInput {
+  subId?: string;
+  subIds?: string[];
+}
+
 function normalizeLinkInput(input: string) {
   return String(input || "").trim();
+}
+
+function normalizeShopeeSubIdsInput(input?: ShopeeSubIdTrackingInput): string[] {
+  if (!input) return [];
+
+  const values = Array.isArray(input.subIds)
+    ? input.subIds
+    : (input.subId ? [input.subId] : []);
+  return normalizeShopeeSubIdList(values, 5);
 }
 
 function stripShopeeLpAffParam(link: string) {
@@ -58,6 +73,7 @@ function stripShopeeLpAffParam(link: string) {
 export async function convertShopeeLink(
   link: string,
   source = "frontend",
+  tracking?: ShopeeSubIdTrackingInput,
 ): Promise<ShopeeLinkConversion> {
   const originalLink = normalizeLinkInput(link);
   if (!originalLink) {
@@ -73,6 +89,7 @@ export async function convertShopeeLink(
     body: {
       url: originalLink,
       source,
+      subIds: normalizeShopeeSubIdsInput(tracking),
     },
   });
 
@@ -88,6 +105,7 @@ export async function convertShopeeLink(
 export async function convertShopeeLinks(
   links: string[],
   source = "frontend",
+  tracking?: ShopeeSubIdTrackingInput,
 ): Promise<ShopeeLinkBatchConversion[]> {
   const normalized = links
     .map((item) => normalizeLinkInput(item))
@@ -110,6 +128,7 @@ export async function convertShopeeLinks(
     body: {
       urls: normalized,
       source,
+      subIds: normalizeShopeeSubIdsInput(tracking),
     },
   });
 

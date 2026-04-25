@@ -114,7 +114,7 @@ export default function Ajuda() {
             <Input
               type="text"
               aria-label="Buscar na Central de Ajuda"
-              placeholder="Buscar dúvidas e tutoriais... (ex: automação, conexão, shopee)"
+              placeholder="Buscar dúvidas e tutoriais... (ex.: automação, conexão, Shopee)"
               className="h-12 rounded-xl border-border/60 bg-muted/40 pl-11 pr-10 text-base shadow-none transition-colors focus-visible:bg-background"
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}

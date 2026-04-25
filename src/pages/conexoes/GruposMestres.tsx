@@ -30,6 +30,11 @@ const EMPTY_FORM: MasterFormState = {
   groupIds: [],
 };
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe.toLocaleString("pt-BR")} ${safe === 1 ? singular : plural}`;
+}
+
 function normalizeDistribution(value: DistributionMode): DistributionMode {
   return value === "random" ? "random" : "balanced";
 }
@@ -73,7 +78,7 @@ export default function GruposMestresPage() {
   const selectedDistribution = normalizeDistribution(form.distribution);
   const distributionHelpText = selectedDistribution === "random"
     ? "Aleatório: sorteia um grupo filho válido a cada entrada."
-    : "Equilibrado: prioriza grupos com menos membros para dividir melhor.";
+    : "Equilibrado: prioriza grupos com menos membros para uma distribuição melhor.";
 
   const openNewDialog = () => {
     setForm(EMPTY_FORM);
@@ -104,21 +109,21 @@ export default function GruposMestresPage() {
 
   const handleSave = async () => {
     if (!form.name.trim()) {
-      toast.error("Informe o nome do grupo mestre");
+      toast.error("Informe o nome do grupo mestre.");
       return;
     }
     if (form.groupIds.length === 0) {
-      toast.error("Escolha pelo menos um grupo filho");
+      toast.error("Escolha pelo menos um grupo filho.");
       return;
     }
 
     const selectedGroups = form.groupIds.map((groupId) => groupsById.get(groupId)).filter((group): group is Group => Boolean(group));
     if (selectedGroups.length !== form.groupIds.length) {
-      toast.error("Um ou mais grupos selecionados não foram encontrados");
+      toast.error("Um ou mais grupos selecionados não foram encontrados.");
       return;
     }
     if (selectedGroups.some((group) => group.platform !== form.platform)) {
-      toast.error("Grupo mestre só pode ter grupos da mesma rede");
+      toast.error("Um grupo mestre só pode conter grupos da mesma rede.");
       return;
     }
 
@@ -144,7 +149,7 @@ export default function GruposMestresPage() {
       const linked = await setMasterGroupGroups(masterGroupId, form.groupIds);
       if (!linked) return;
 
-      toast.success(form.id ? "Grupo mestre atualizado" : "Grupo mestre criado");
+      toast.success(form.id ? "Grupo mestre atualizado com sucesso!" : "Grupo mestre criado com sucesso!");
       closeDialog();
     } finally {
       setSaving(false);
@@ -155,16 +160,16 @@ export default function GruposMestresPage() {
     const link = `${window.location.origin}/mg/${masterGroupId}`;
     try {
       await navigator.clipboard.writeText(link);
-      toast.success("Link do grupo mestre copiado");
+      toast.success("Link do grupo mestre copiado!");
     } catch {
-      toast.error("Não foi possível copiar o link agora");
+      toast.error("Não foi possível copiar o link agora.");
     }
   };
 
   return (
     <div className="ds-page">
       <PageHeader
-        title="Grupos Mestres"
+        title="Grupos mestres"
         description="Crie concentradores de grupos filhos para envio em massa e distribuição por link."
       >
         <div className="flex items-center gap-2">
@@ -215,11 +220,11 @@ export default function GruposMestresPage() {
                   <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                     <span className="inline-flex h-8 items-center gap-1 rounded-md border border-border/70 bg-muted/20 px-2.5 text-muted-foreground">
                       <Users className="h-3.5 w-3.5" />
-                      {linkedGroups.length} grupo(s)
+                      {ptCount(linkedGroups.length, "grupo", "grupos")}
                     </span>
                     <span className="inline-flex h-8 items-center gap-1 rounded-md border border-border/70 bg-muted/20 px-2.5 text-muted-foreground">
                       <Layers className="h-3.5 w-3.5" />
-                      {totalMembers.toLocaleString("pt-BR")} membros
+                      {ptCount(totalMembers, "membro", "membros")}
                     </span>
                   </div>
                 </CardHeader>
@@ -255,7 +260,7 @@ export default function GruposMestresPage() {
           <DialogHeader>
             <DialogTitle>{form.id ? "Editar grupo mestre" : "Novo grupo mestre"}</DialogTitle>
             <DialogDescription>
-              Um grupo mestre aceita grupos de apenas uma rede. O link público vai distribuir entradas com base no modo escolhido.
+              Um grupo mestre aceita grupos de apenas uma rede. O link público distribui entradas com base no modo escolhido.
             </DialogDescription>
           </DialogHeader>
 
@@ -327,7 +332,7 @@ export default function GruposMestresPage() {
                   meta: `${group.memberCount}`,
                 }))}
                 placeholder="Escolher grupos filhos"
-                selectedLabel={(count) => `${count} grupo(s) selecionado(s)`}
+                selectedLabel={(count) => ptCount(count, "grupo selecionado", "grupos selecionados")}
                 emptyMessage={`Nenhum grupo ${form.platform === "whatsapp" ? "WhatsApp" : "Telegram"} disponível`}
                 title="Grupos filhos"
                 maxHeightClassName="max-h-64"

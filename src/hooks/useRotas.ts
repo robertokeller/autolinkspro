@@ -19,6 +19,7 @@ interface RulesJson {
   masterGroupId?: string | null;
   masterGroupIds?: string[];
   autoConvertShopee?: boolean;
+  shopeeSubId?: string | null;
   autoConvertMercadoLivre?: boolean;
   autoConvertAmazon?: boolean;
   resolvePartnerLinks?: boolean;
@@ -72,6 +73,9 @@ function mapRow(row: RouteRow, destinations: RouteDestRow[]): AppRoute {
     status: row.status as RouteStatus,
     rules: {
       autoConvertShopee: rules.autoConvertShopee ?? false,
+      shopeeSubId: typeof rules.shopeeSubId === "string" && rules.shopeeSubId.trim()
+        ? rules.shopeeSubId.trim()
+        : null,
       autoConvertMercadoLivre: rules.autoConvertMercadoLivre ?? false,
       autoConvertAmazon: rules.autoConvertAmazon ?? false,
       resolvePartnerLinks: rules.resolvePartnerLinks ?? true,

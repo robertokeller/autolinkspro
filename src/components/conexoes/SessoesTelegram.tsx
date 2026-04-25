@@ -143,7 +143,7 @@ export function SessoesTelegram({
     for (const session of sessions) {
       const previous = previousStatusRef.current[session.id];
       if (previous === "online" && ["warning", "offline"].includes(session.status)) {
-        toast.warning(`Sessão ${session.name} desconectou. Confira se está tudo certo.`);
+        toast.warning(`A sessão ${session.name} foi desconectada. Verifique se está tudo certo.`);
       }
       previousStatusRef.current[session.id] = session.status;
     }
@@ -262,7 +262,7 @@ export function SessoesTelegram({
     if (!editSession) return;
     const nextName = editSessionName.trim();
     if (!nextName) {
-      toast.error("Coloque um nome válido");
+      toast.error("Informe um nome válido.");
       return;
     }
     if (nextName === editSession.name) {
@@ -332,7 +332,7 @@ export function SessoesTelegram({
     }
 
     if (authSession.status === "warning") {
-      const warningMessage = authSession.errorMessage?.trim() || "Confira se o número está certo e tente de novo.";
+      const warningMessage = authSession.errorMessage?.trim() || "Verifique se o número está correto e tente novamente.";
       return (
         <div className="flex flex-col items-center gap-4 py-4">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-warning/15">
@@ -387,9 +387,9 @@ export function SessoesTelegram({
           </div>
           <div className="w-full space-y-3">
             <div className="text-center">
-              <p className="font-semibold">Código enviado por SMS / Telegram</p>
+              <p className="font-semibold">Código enviado por SMS ou Telegram</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Olhe suas mensagens e cole o código aqui.
+                Confira suas mensagens e cole o código aqui.
               </p>
             </div>
             <div className="space-y-2">
@@ -420,7 +420,7 @@ export function SessoesTelegram({
             <div className="text-center">
               <p className="font-semibold">Verificação em duas etapas</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Sua conta tem 2FA. Coloque a senha para concluir.
+                Sua conta usa 2FA. Informe a senha para concluir.
               </p>
             </div>
             <div className="space-y-2">
@@ -461,7 +461,7 @@ export function SessoesTelegram({
       {/* Header bar */}
       <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[70%]">
-          Conecte contas Telegram por SMS/código. Se tiver 2FA, o campo de senha aparece na hora.
+          Conecte contas do Telegram por SMS ou código. Se houver 2FA, o campo de senha aparecerá automaticamente.
         </p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={() => onRefresh()} disabled={isRefreshing}>
@@ -474,7 +474,7 @@ export function SessoesTelegram({
           </Button>
           <Button size="sm" className="h-9 gap-1.5" onClick={openCreateFlow}>
             <Plus className="h-3.5 w-3.5 mr-2" />
-            Nova Conexão
+            Nova conexão
           </Button>
         </div>
       </div>
@@ -488,9 +488,9 @@ export function SessoesTelegram({
       {!isLoading && sessions.length === 0 && (
         <EmptyState
           icon={MessageSquareText}
-          title="Nenhuma Conta Telegram"
-          description="Crie uma conta e conecte por código SMS."
-          actionLabel="Nova Conta"
+          title="Nenhuma conta do Telegram"
+          description="Crie uma conta e conecte-a por código SMS."
+          actionLabel="Nova conta"
           onAction={openCreateFlow}
         />
       )}
@@ -645,9 +645,9 @@ export function SessoesTelegram({
           {sessionFlowStep === "form" ? (
             <>
               <DialogHeader>
-                <DialogTitle>Nova conta Telegram</DialogTitle>
+                <DialogTitle>Nova conta do Telegram</DialogTitle>
                 <DialogDescription>
-                  Coloque o nome e o número de telefone. Um código vai chegar por SMS.
+                  Informe o nome e o número de telefone. Você receberá um código por SMS.
                 </DialogDescription>
               </DialogHeader>
 
@@ -695,7 +695,7 @@ export function SessoesTelegram({
                   {isCreating || isSendingCode ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    "Enviar código SMS"
+                    "Enviar código por SMS"
                   )}
                 </Button>
               </DialogFooter>
@@ -714,8 +714,8 @@ export function SessoesTelegram({
                   {authSession?.status === "online"
                     ? `${authSession.name} está pronta.`
                     : authSession?.status === "awaiting_password"
-                      ? "Coloque a senha do 2FA para concluir."
-                      : "Cole o código que chegou por SMS ou pelo app do Telegram."}
+                      ? "Informe a senha de 2FA para concluir."
+                      : "Cole o código recebido por SMS ou no aplicativo do Telegram."}
                 </DialogDescription>
               </DialogHeader>
 
@@ -845,7 +845,7 @@ export function SessoesTelegram({
           <DialogHeader>
             <DialogTitle>Editar sessão</DialogTitle>
             <DialogDescription>
-              Só dá para mudar o nome. O resto fica do jeito que está para não perder a conexão.
+              Só é possível alterar o nome. As demais informações permanecem como estão para não perder a conexão.
             </DialogDescription>
           </DialogHeader>
 
@@ -888,9 +888,9 @@ export function SessoesTelegram({
       <AlertDialog open={!!deleteSession} onOpenChange={(open) => !open && setDeleteSessionId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apagar conta?</AlertDialogTitle>
+            <AlertDialogTitle>Remover conta?</AlertDialogTitle>
             <AlertDialogDescription>
-              A conta <strong>{deleteSession?.name}</strong> e os grupos dela vão ser removidos. Não tem como desfazer.
+              A conta <strong>{deleteSession?.name}</strong> e os grupos vinculados a ela serão removidos. Essa ação não pode ser desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
@@ -899,7 +899,7 @@ export function SessoesTelegram({
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90 w-full sm:w-auto"
                 onClick={() => void handleDeleteSession()}
             >
-              {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Apagar"}
+              {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Remover"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

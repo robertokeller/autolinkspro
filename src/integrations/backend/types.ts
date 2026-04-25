@@ -338,6 +338,14 @@ type TableMap = {
     is_active: boolean;
     config: Json;
   }>;
+  shopee_sub_ids: TableDef<{
+    id: string;
+    created_at: string;
+    updated_at: string;
+    user_id: string;
+    value: string;
+    is_default: boolean;
+  }>;
   telegram_sessions: TableDef<{
     id: string;
     created_at: string;

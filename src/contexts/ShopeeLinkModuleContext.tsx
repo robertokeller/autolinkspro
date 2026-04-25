@@ -7,6 +7,7 @@ import {
   convertShopeeLinks,
   type ShopeeLinkBatchConversion,
   type ShopeeLinkConversion,
+  type ShopeeSubIdTrackingInput,
 } from "@/lib/shopee-link-converter";
 import { extractMarketplaceLinks } from "@/lib/marketplace-utils";
 
@@ -25,6 +26,8 @@ interface ShopeeLinkBatchConversionResult extends ShopeeLinkBatchConversion {
 interface ShopeeConvertOptions {
   source?: string;
   verifyConnection?: boolean;
+  subId?: string;
+  subIds?: string[];
 }
 
 type ShopeeConvertContentOptions = ShopeeConvertOptions;
@@ -68,6 +71,17 @@ function normalizeSource(source: string | undefined, fallback: string) {
   return value || fallback;
 }
 
+function toTrackingInput(options?: ShopeeConvertOptions): ShopeeSubIdTrackingInput | undefined {
+  if (!options) return undefined;
+  if (!options.subId && (!Array.isArray(options.subIds) || options.subIds.length === 0)) {
+    return undefined;
+  }
+  return {
+    subId: options.subId,
+    subIds: options.subIds,
+  };
+}
+
 export function ShopeeLinkModuleProvider({ children }: PropsWithChildren) {
   const {
     isConfigured,
@@ -106,7 +120,7 @@ export function ShopeeLinkModuleProvider({ children }: PropsWithChildren) {
       throw new Error("Credenciais Shopee não configuradas.");
     }
 
-    const conversion = await convertShopeeLink(link, source);
+    const conversion = await convertShopeeLink(link, source, toTrackingInput(options));
     const hasData = hasProductData(conversion.product);
 
     return {
@@ -126,7 +140,7 @@ export function ShopeeLinkModuleProvider({ children }: PropsWithChildren) {
       throw new Error("Credenciais Shopee não configuradas.");
     }
 
-    const conversions = await convertShopeeLinks(links, source);
+    const conversions = await convertShopeeLinks(links, source, toTrackingInput(options));
 
     return conversions.map((conversion) => {
       const hasData = hasProductData(conversion.product);

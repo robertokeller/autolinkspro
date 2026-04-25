@@ -91,6 +91,11 @@ const MAX_SCHEDULE_IMAGE_BYTES = 8 * 1024 * 1024;
 // Must match the `accept` attribute on the file input — SVG excluded (can embed scripts).
 const ALLOWED_SCHEDULE_IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -266,7 +271,7 @@ export default function Schedules() {
         contentToSend = conversionResult.convertedContent;
         links = extractMarketplaceLinks(contentToSend);
       } catch {
-        toast.warning("Não deu pra converter os links Shopee desse agendamento. Os links originais foram mantidos.");
+        toast.warning("Não foi possível converter os links Shopee deste agendamento. Os links originais foram mantidos.");
       }
     }
 
@@ -328,7 +333,7 @@ export default function Schedules() {
       }));
       toast.success("Imagem adicionada");
     } catch {
-      toast.error("Não deu pra processar a imagem");
+      toast.error("Não foi possível processar a imagem");
     } finally {
       setUploadingImage(false);
     }
@@ -464,7 +469,7 @@ export default function Schedules() {
             ))}
             {post.detectedLinks.length > 0 && (
               <Badge variant="outline" className="text-2xs px-1.5 py-0 gap-0.5">
-                <Link2 className="h-2.5 w-2.5" />{post.detectedLinks.length} links
+                <Link2 className="h-2.5 w-2.5" />{ptCount(post.detectedLinks.length, "link", "links")}
               </Badge>
             )}
           </div>
@@ -487,7 +492,7 @@ export default function Schedules() {
       <PageHeader title="Agendamentos" description="Agende mensagens para enviar na hora certa">
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <Button size="sm" variant="outline" onClick={() => setShowOfferGeneratorModal(true)}>
-            <ShoppingBag className="h-4 w-4 mr-1.5" />Nova Oferta
+            <ShoppingBag className="h-4 w-4 mr-1.5" />Nova oferta
           </Button>
           <Button size="sm" onClick={() => openNew()}><Plus className="h-4 w-4 mr-1.5" />Nova mensagem</Button>
         </div>
@@ -502,7 +507,7 @@ export default function Schedules() {
           <EmptyState
             icon={CalendarDays}
             title="Fila de envios vazia"
-            description="Quando um envio for concluído ele sai daqui e fica disponível no histórico."
+            description="Quando um envio for concluído, ele sai daqui e fica disponível no histórico."
             actionLabel="Nova mensagem"
             onAction={openNew}
           />
@@ -547,7 +552,7 @@ export default function Schedules() {
                 <div className="space-y-2">
                   <Label>Nome *</Label>
                   <Input
-                    placeholder="Ex: Oferta iPhone pra grupos VIP"
+                    placeholder="Ex: Oferta iPhone para grupos VIP"
                     value={draft.name}
                     onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                   />
@@ -587,7 +592,7 @@ export default function Schedules() {
                   {hasLinks && (
                     <div className="flex flex-wrap gap-1.5">
                       {detectedLinks.map((l, i) => (<Badge key={i} variant="outline" className="text-xs gap-1"><Link2 className="h-3 w-3" />{getMarketplaceLabel(l.marketplace)}</Badge>))}
-                      <span className="text-xs text-muted-foreground ml-1">Os links vão ser convertidos na hora do envio</span>
+                      <span className="text-xs text-muted-foreground ml-1">Os links serão convertidos na hora do envio</span>
                     </div>
                   )}
                 </div>
@@ -664,7 +669,7 @@ export default function Schedules() {
 
                 <Card className="border-border/60 shadow-sm">
                   <CardContent className="space-y-4 p-4">
-                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Pra onde enviar</Label>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Para onde enviar</Label>
                 <div className="space-y-2">
                   <Label>Sessão *</Label>
                   <SessionSelect
@@ -676,7 +681,7 @@ export default function Schedules() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Enviar pra</Label>
+                  <Label>Enviar para</Label>
                   <Select
                     value={destinationMode}
                     onValueChange={(value: DestinationMode) => {
@@ -713,7 +718,7 @@ export default function Schedules() {
                           meta: `${group.memberCount}`,
                         }))}
                         placeholder="Escolha os grupos"
-                        selectedLabel={(count) => `${count} grupo(s)`}
+                        selectedLabel={(count) => ptCount(count, "grupo", "grupos")}
                         emptyMessage="Nenhum grupo nessa sessão"
                         title="Grupos"
                       />
@@ -736,7 +741,7 @@ export default function Schedules() {
                           meta: `${masterGroup.groupIds.filter((groupId) => filteredGroupIds.has(groupId)).length} grupos`,
                         }))}
                         placeholder="Escolha os grupos mestres"
-                        selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                        selectedLabel={(count) => ptCount(count, "grupo mestre", "grupos mestres")}
                         emptyMessage="Nenhum grupo mestre nessa sessão"
                         title="Grupos mestres"
                       />
@@ -749,7 +754,7 @@ export default function Schedules() {
                 </Card>
 
                 {totalDestinations > 0 && (
-                  <div className="text-xs text-muted-foreground flex items-center justify-center gap-1 p-2 rounded-lg bg-muted/30 text-center"><Send className="h-3 w-3" /> {totalDestinations} grupo(s) vão receber a mensagem</div>
+                  <div className="text-xs text-muted-foreground flex items-center justify-center gap-1 p-2 rounded-lg bg-muted/30 text-center"><Send className="h-3 w-3" /> {ptCount(totalDestinations, "grupo", "grupos")} {totalDestinations === 1 ? "vai" : "vão"} receber a mensagem</div>
                 )}
               </div>
             </div>

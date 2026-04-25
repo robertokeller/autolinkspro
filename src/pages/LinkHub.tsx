@@ -51,6 +51,11 @@ const emptyForm: FormState = {
   texts: { benefitsTitle: "Por que entrar?", testimonialsTitle: "O que estão falando", testimonials: [] },
 };
 
+function ptCount(value: number, singular: string, plural: string): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe} ${safe === 1 ? singular : plural}`;
+}
+
 export default function LinkHub() {
   const { pages, isLoading, createPage, updatePage, toggleActive, deletePage, uploadLogo } = useLinkHub();
   const { syncedGroups: groups, masterGroups } = useGrupos();
@@ -80,10 +85,10 @@ export default function LinkHub() {
 
   const handleSave = async () => {
     if (form.destinationMode === "group" && form.groupIds.length === 0) {
-      toast.error("Escolha pelo menos um grupo"); return;
+      toast.error("Escolha pelo menos um grupo."); return;
     }
     if (form.destinationMode === "master" && form.masterGroupIds.length === 0) {
-      toast.error("Escolha pelo menos um grupo mestre"); return;
+      toast.error("Escolha pelo menos um grupo mestre."); return;
     }
 
     const selectedGroupIds = form.destinationMode === "group" ? form.groupIds : [];
@@ -105,7 +110,7 @@ export default function LinkHub() {
 
   const handleLogoUpload = async (file: File) => {
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { toast.error("A logo pode ter no máximo 2MB"); return; }
+    if (file.size > 2 * 1024 * 1024) { toast.error("A logo pode ter no máximo 2 MB."); return; }
     setUploading(true);
     const tempId = editingId || "new-" + Date.now();
     const url = await uploadLogo(tempId, file);
@@ -224,7 +229,7 @@ export default function LinkHub() {
           </button>
         </div>
       ) : (
-        <EmptyState icon={LinkIcon} title="Nenhuma página ainda" description="Crie uma página com links dos seus grupos pra compartilhar com todo mundo." actionLabel="Criar página" onAction={openNew} />
+        <EmptyState icon={LinkIcon} title="Nenhuma página ainda" description="Crie uma página com links dos seus grupos para compartilhar com todos." actionLabel="Criar página" onAction={openNew} />
       )}
 
       {/* Dialog Editor */}
@@ -232,7 +237,7 @@ export default function LinkHub() {
         <DialogContent className="w-[min(96vw,1040px)] max-w-4xl max-h-[92dvh] flex flex-col p-0 gap-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b">
             <DialogTitle>{editingId ? "Editar página" : "Nova página"}</DialogTitle>
-            <DialogDescription>Monte sua página com os grupos que você quer mostrar.</DialogDescription>
+            <DialogDescription>Monte sua página com os grupos que você deseja mostrar.</DialogDescription>
           </DialogHeader>
 
           <ScrollArea className="flex-1 px-6 overflow-y-auto">
@@ -357,7 +362,7 @@ export default function LinkHub() {
                           meta: `${masterGroup.linkedGroups.length} grupos`,
                         }))}
                         placeholder="Escolher grupos mestres"
-                        selectedLabel={(count) => `${count} grupo(s) mestre(s)`}
+                        selectedLabel={(count) => ptCount(count, "grupo mestre", "grupos mestres")}
                         emptyMessage="Nenhum grupo mestre criado"
                         title="Grupos mestre"
                         maxHeightClassName="max-h-56"
@@ -375,7 +380,7 @@ export default function LinkHub() {
                           meta: `${group.memberCount}`,
                         }))}
                         placeholder="Escolher grupos"
-                        selectedLabel={(count) => `${count} grupo(s)`}
+                        selectedLabel={(count) => ptCount(count, "grupo", "grupos")}
                         emptyMessage="Nenhum grupo sincronizado"
                         title="Grupos"
                         maxHeightClassName="max-h-56"
@@ -383,9 +388,7 @@ export default function LinkHub() {
                     </div>
                   )}
 
-                  <p className="text-2xs text-muted-foreground">
-                    {previewGroupCount} grupo{previewGroupCount !== 1 ? "s" : ""} selecionado{previewGroupCount !== 1 ? "s" : ""} para a página.
-                  </p>
+                  <p className="text-2xs text-muted-foreground">{ptCount(previewGroupCount, "grupo selecionado", "grupos selecionados")} para a página.</p>
                 </div>
 
                 <div className="rounded-xl border">
@@ -412,7 +415,7 @@ export default function LinkHub() {
                               {includedViaMaster && <span className="text-2xs text-muted-foreground shrink-0">mestre</span>}
                             </div>
                             <Input
-                              placeholder="Nome na página (se quiser mudar)"
+                              placeholder="Nome na página (se quiser alterar)"
                               value={form.groupLabels[g.id] || ""}
                               onChange={(e) => setForm((prev) => ({
                                 ...prev,
@@ -432,32 +435,32 @@ export default function LinkHub() {
 
               <div className="space-y-5 lg:col-span-12 pt-6 border-t mt-6">
                 <div className="rounded-xl border p-4 space-y-5">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Textos da Página & Depoimentos</p>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Textos da página e depoimentos</p>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-medium">Título das Vantagens</Label>
+                      <Label className="text-xs font-medium">Título das vantagens</Label>
                       <Input className="h-10 text-sm" placeholder="Por que entrar?" value={form.texts.benefitsTitle} onChange={(e) => setForm({ ...form, texts: { ...form.texts, benefitsTitle: e.target.value } })} />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-medium">Título dos Depoimentos</Label>
+                      <Label className="text-xs font-medium">Título dos depoimentos</Label>
                       <Input className="h-10 text-sm" placeholder="O que estão falando" value={form.texts.testimonialsTitle} onChange={(e) => setForm({ ...form, texts: { ...form.texts, testimonialsTitle: e.target.value } })} />
                     </div>
                   </div>
 
                   <div className="space-y-3 pt-2">
                     <div className="flex items-center justify-between">
-                      <Label className="text-xs font-medium">Depoimentos (Máximo 3)</Label>
+                      <Label className="text-xs font-medium">Depoimentos (máximo 3)</Label>
                       <Button type="button" variant="outline" size="sm" className="h-7 text-2xs gap-1" onClick={() => {
                         if (form.texts.testimonials.length < 3) {
                           setForm(p => ({ ...p, texts: { ...p.texts, testimonials: [...p.texts.testimonials, { name: "", text: "" }] } }));
                         }
                       }} disabled={form.texts.testimonials.length >= 3}>
-                        <Plus className="h-3 w-3 mr-1" /> Adicionar
+                        <Plus className="h-3 w-3 mr-1" />Adicionar
                       </Button>
                     </div>
                     {form.texts.testimonials.length === 0 ? (
-                      <p className="text-xs text-muted-foreground italic">Nenhum depoimento personalizado. (Os padrões serão exibidos)</p>
+                      <p className="text-xs text-muted-foreground italic">Nenhum depoimento personalizado. Os textos padrão serão exibidos.</p>
                     ) : (
                       <div className="grid gap-3 min-[600px]:grid-cols-3">
                         {form.texts.testimonials.map((t, idx) => (

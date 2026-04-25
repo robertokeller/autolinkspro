@@ -7,6 +7,7 @@ import { ScheduleProductModal } from "@/components/shopee/ScheduleProductModal";
 import type { ShopeeProduct } from "@/components/shopee/ProductCard";
 import { useMercadoLivreSessions } from "@/hooks/useMercadoLivreSessions";
 import { useAmazonAffiliateTag } from "@/hooks/useAmazonAffiliateTag";
+import { useShopeeSubIds } from "@/hooks/useShopeeSubIds";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -65,6 +66,7 @@ import {
   templateRequestsRandomCta,
 } from "@/lib/template-placeholders";
 import { renderRichTextPreviewHtml, renderTemplatePreviewHtml, formatMessageForPlatform } from "@/lib/rich-text";
+import { pickDefaultShopeeSubId } from "@/lib/shopee-subid";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -78,23 +80,23 @@ const DEFAULT_TEMPLATE_CONTENT = "**{titulo}**\nDe R$ {preco_original} por R$ {p
 
 const PLACEHOLDER_LEGEND: Array<{ key: string; description: string }> = [
   { key: "{titulo}", description: "Nome do produto" },
-  { key: "{preco}", description: "PreÃƒÂ§o com desconto" },
-  { key: "{preco_original}", description: "PreÃƒÂ§o cheio (sem desconto)" },
+  { key: "{preco}", description: "Preço com desconto" },
+  { key: "{preco_original}", description: "Preço cheio (sem desconto)" },
   { key: "{desconto}", description: "Desconto percentual da oferta" },
   { key: "{link}", description: "Seu link de afiliado" },
-  { key: "{cta_aleatoria}", description: "CTA automÃƒÂ¡tica com variaÃƒÂ§ÃƒÂ£o anti-repetiÃƒÂ§ÃƒÂ£o" },
-  { key: "{cta_personalizada}", description: "CTA personalizada aleatÃƒÂ³ria das suas frases ativas" },
+  { key: "{cta_aleatoria}", description: "CTA automática com variação anti-repetição" },
+  { key: "{cta_personalizada}", description: "CTA personalizada aleatória das suas frases ativas" },
   { key: "{cta_gerada_por_ia}", description: "CTA gerada por IA com tom configurado por modelo" },
   { key: "{imagem}", description: "Imagem do produto (vai como anexo)" },
   { key: "{avaliacao}", description: "Nota dos compradores" },
 ];
 
 const PLACEHOLDER_DESCRIPTION_OVERRIDES: Readonly<Partial<Record<string, string>>> = {
-  "{preco}": "Preco com desconto",
-  "{preco_original}": "Preco cheio (sem desconto)",
-  "{desconto}": "Percentual da oferta (preco original - preco atual)",
-  "{cta_aleatoria}": "CTA automatica com variacao anti-repeticao",
-  "{cta_personalizada}": "CTA personalizada aleatoria das suas frases ativas",
+  "{preco}": "Preço com desconto",
+  "{preco_original}": "Preço cheio (sem desconto)",
+  "{desconto}": "Percentual da oferta (preço original - preço atual)",
+  "{cta_aleatoria}": "CTA automática com variação anti-repetição",
+  "{cta_personalizada}": "CTA personalizada aleatória das suas frases ativas",
 };
 
 const PLACEHOLDER_FIELDS: ReadonlyArray<{ key: string; description: string }> = PLACEHOLDER_LEGEND.map((item) => ({
@@ -115,8 +117,8 @@ const AI_CTA_TONE_SELECTOR_OPTIONS: ReadonlyArray<AiCtaToneSelectorOption> = [
   {
     toneToken: "cta_urgencia",
     toneKey: "urgencia",
-    label: "Urgencia",
-    description: "Acao imediata com senso de agora.",
+    label: "Urgência",
+    description: "Ação imediata com senso de agora.",
   },
   {
     toneToken: "cta_escassez",
@@ -133,20 +135,20 @@ const AI_CTA_TONE_SELECTOR_OPTIONS: ReadonlyArray<AiCtaToneSelectorOption> = [
   {
     toneToken: "cta_beneficio",
     toneKey: "beneficio",
-    label: "Beneficio",
+    label: "Benefício",
     description: "Utilidade e valor percebido.",
   },
   {
     toneToken: "cta_curiosidade",
     toneKey: "curiosidade",
     label: "Curiosidade",
-    description: "Intriga clara para clique rapido.",
+    description: "Intriga clara para clique rápido.",
   },
   {
     toneToken: "cta_preco_forte",
     toneKey: "preco_forte",
-    label: "Preco forte",
-    description: "Sensacao de preco muito bom.",
+    label: "Preço forte",
+    description: "Sensação de preço muito bom.",
   },
   {
     toneToken: "cta_achadinho",
@@ -158,7 +160,7 @@ const AI_CTA_TONE_SELECTOR_OPTIONS: ReadonlyArray<AiCtaToneSelectorOption> = [
     toneToken: "cta_prova_social",
     toneKey: "prova_social",
     label: "Prova social",
-    description: "Validacao social com naturalidade.",
+    description: "Validação social com naturalidade.",
   },
   {
     toneToken: "cta_desejo",
@@ -170,7 +172,7 @@ const AI_CTA_TONE_SELECTOR_OPTIONS: ReadonlyArray<AiCtaToneSelectorOption> = [
     toneToken: "cta_dica_amiga",
     toneKey: "dica_amiga",
     label: "Dica amiga",
-    description: "Recomendacao rapida com tom proximo.",
+    description: "Recomendação rápida com tom próximo.",
   },
   {
     toneToken: "cta_rotativo",
@@ -653,6 +655,7 @@ export default function ModelosDeMensagem() {
     isLoading: shopeeLoading,
     convertLink,
   } = useShopeeLinkModule();
+  const { subIds: shopeeSubIds } = useShopeeSubIds();
   const {
     sessions,
     isLoading: meliSessionsLoading,
@@ -670,18 +673,18 @@ export default function ModelosDeMensagem() {
     isLoading: amazonTagLoading,
   } = useAmazonAffiliateTag();
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ modal create/edit Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // Modal create/edit
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Template | null>(null);
   const [form, setForm] = useState(DEFAULT_TEMPLATE_FORM);
   const [saving, setSaving] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ delete dialog Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // Delete dialog
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const deleteTarget = templates.find((t) => t.id === deleteId);
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ converter tool Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // Converter
   const [converterLink, setConverterLink] = useState("");
   const [converterTemplateId, setConverterTemplateId] = useState("");
   const [showConverterTemplateSelector, setShowConverterTemplateSelector] = useState(false);
@@ -731,6 +734,7 @@ export default function ModelosDeMensagem() {
     [selectedConverterTemplateId, templates],
   );
   const selectedConverterTemplateLabel = selectedConverterTemplate?.name || "Selecionar modelo de mensagem";
+  const defaultShopeeSubId = useMemo(() => pickDefaultShopeeSubId(shopeeSubIds), [shopeeSubIds]);
   const canRunLinkActions = !converting && !!trimmedConverterLink;
   const canGenerateFromTemplate = canRunLinkActions && templates.length > 0;
 
@@ -763,7 +767,7 @@ export default function ModelosDeMensagem() {
     void handleConvert();
   };
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // Helpers
   const openNew = () => {
     setForm(DEFAULT_TEMPLATE_FORM);
     setEditing(null);
@@ -873,7 +877,7 @@ export default function ModelosDeMensagem() {
       const items = Array.isArray(response?.items) ? response.items : [];
       setPersonalizedCtas(items);
     } catch {
-      toast.error("Nao foi possivel carregar as CTAs personalizadas.");
+      toast.error("Não foi possível carregar as CTAs personalizadas.");
     } finally {
       setPersonalizedCtasLoading(false);
     }
@@ -905,7 +909,7 @@ export default function ModelosDeMensagem() {
       toast.success("CTA personalizada adicionada.");
     } catch (error) {
       const message = error instanceof Error ? String(error.message || "") : "";
-      toast.error(message || "Nao foi possivel salvar a CTA personalizada.");
+      toast.error(message || "Não foi possível salvar a CTA personalizada.");
     } finally {
       setPersonalizedCtasSaving(false);
     }
@@ -924,7 +928,7 @@ export default function ModelosDeMensagem() {
   const handleSaveEditedPersonalizedCta = async (item: PersonalizedCtaItem) => {
     const phrase = normalizePersonalizedCtaPhrase(editingPersonalizedCtaPhrase);
     if (!phrase) {
-      toast.error("A CTA personalizada nao pode ficar vazia.");
+      toast.error("A CTA personalizada não pode ficar vazia.");
       return;
     }
 
@@ -943,7 +947,7 @@ export default function ModelosDeMensagem() {
       toast.success("CTA personalizada atualizada.");
     } catch (error) {
       const message = error instanceof Error ? String(error.message || "") : "";
-      toast.error(message || "Nao foi possivel atualizar a CTA personalizada.");
+      toast.error(message || "Não foi possível atualizar a CTA personalizada.");
     } finally {
       setPersonalizedCtasSaving(false);
     }
@@ -962,7 +966,7 @@ export default function ModelosDeMensagem() {
       await loadPersonalizedCtas();
     } catch (error) {
       const message = error instanceof Error ? String(error.message || "") : "";
-      toast.error(message || "Nao foi possivel atualizar o status da CTA personalizada.");
+      toast.error(message || "Não foi possível atualizar o status da CTA personalizada.");
     } finally {
       setPersonalizedCtasSaving(false);
     }
@@ -984,7 +988,7 @@ export default function ModelosDeMensagem() {
       toast.success("CTA personalizada removida.");
     } catch (error) {
       const message = error instanceof Error ? String(error.message || "") : "";
-      toast.error(message || "Nao foi possivel excluir a CTA personalizada.");
+      toast.error(message || "Não foi possível excluir a CTA personalizada.");
     } finally {
       setPersonalizedCtasSaving(false);
     }
@@ -1065,7 +1069,7 @@ export default function ModelosDeMensagem() {
       }
     } catch (error) {
       const message = error instanceof Error ? String(error.message || "") : "";
-      toast.error(message || "Nao foi possivel carregar configuracoes de CTA IA.");
+      toast.error(message || "Não foi possível carregar configurações de CTA IA.");
     } finally {
       setAiCtaLoading(false);
     }
@@ -1100,7 +1104,7 @@ export default function ModelosDeMensagem() {
       return true;
     } catch (error) {
       const message = error instanceof Error ? String(error.message || "") : "";
-      toast.error(message || "Nao foi possivel salvar a configuracao de CTA IA.");
+      toast.error(message || "Não foi possível salvar a configuração de CTA IA.");
       return false;
     }
   };
@@ -1169,7 +1173,7 @@ export default function ModelosDeMensagem() {
 
     const marketplace = detectMarketplaceFromUrl(link);
     if (!marketplace) {
-      toast.error("Use um link vÃƒÂ¡lido da Shopee, Mercado Livre ou Amazon");
+      toast.error("Use um link válido da Shopee, Mercado Livre ou Amazon");
       return null;
     }
 
@@ -1180,18 +1184,18 @@ export default function ModelosDeMensagem() {
 
     if (marketplace === "mercadolivre") {
       if (meliSessionsLoading) {
-        toast.error("Aguarde o carregamento das sessÃƒÂµes do Mercado Livre");
+        toast.error("Aguarde o carregamento das sessões do Mercado Livre");
         return null;
       }
       if (!hasActiveMeliSession) {
-        toast.error("Conecte uma sessÃƒÂ£o Mercado Livre ativa para converter");
+        toast.error("Conecte uma sessão Mercado Livre ativa para converter");
         return null;
       }
     }
 
     if (marketplace === "amazon") {
       if (amazonTagLoading) {
-        toast.error("Aguarde o carregamento da configuraÃƒÂ§ÃƒÂ£o Amazon");
+        toast.error("Aguarde o carregamento da configuração Amazon");
         return null;
       }
       if (!hasAmazonTagConfigured) {
@@ -1217,7 +1221,10 @@ export default function ModelosDeMensagem() {
 
     try {
       if (marketplace === "shopee") {
-        const conversion = await convertLink(link, { source: "modelos-converter-link-shopee" });
+        const conversion = await convertLink(link, {
+          source: "modelos-converter-link-shopee",
+          subId: defaultShopeeSubId || undefined,
+        });
         const affiliateLink = firstNonEmptyString(conversion.affiliateLink, link);
 
         setConvertedAffiliateResult({
@@ -1267,7 +1274,7 @@ export default function ModelosDeMensagem() {
         source: "modelos-converter-link-amazon",
       });
       if (conversion.marketplace !== "amazon") {
-        throw new Error("Use um link vÃƒÂ¡lido da Amazon.");
+        throw new Error("Use um link válido da Amazon.");
       }
 
       const affiliateLink = firstNonEmptyString(
@@ -1294,9 +1301,9 @@ export default function ModelosDeMensagem() {
         .toLowerCase();
 
       if (normalized.includes("cache da vitrine") || normalized.includes("atualize a vitrine")) {
-        toast.error("ServiÃƒÂ§o Amazon desatualizado em execuÃƒÂ§ÃƒÂ£o. Reinicie o runtime para usar extraÃƒÂ§ÃƒÂ£o direta da pÃƒÂ¡gina do produto.");
+        toast.error("Serviço Amazon desatualizado em execução. Reinicie o runtime para usar extração direta da página do produto.");
       } else {
-        toast.error(message || "NÃƒÂ£o deu pra converter o link");
+        toast.error(message || "Não foi possível converter o link.");
       }
     } finally {
       setConverting(false);
@@ -1325,11 +1332,14 @@ export default function ModelosDeMensagem() {
       const personalizedCtaPhrase = await resolvePersonalizedCtaPreviewPhrase(template.content);
 
       if (templateRequestsPersonalizedCta(template.content) && !personalizedCtaPhrase) {
-        toast.warning("Seu modelo usa {cta_personalizada}, mas voce ainda nao tem CTA personalizada ativa.");
+        toast.warning("Seu modelo usa {cta_personalizada}, mas você ainda não tem CTA personalizada ativa.");
       }
 
       if (marketplace === "shopee") {
-        const conversion = await convertLink(link, { source: "modelos-converter-shopee" });
+        const conversion = await convertLink(link, {
+          source: "modelos-converter-shopee",
+          subId: defaultShopeeSubId || undefined,
+        });
         const affiliateLink = conversion.affiliateLink || link;
         const product = (conversion.product || null) as MarketplaceOfferProduct | null;
         const basePlaceholderData = mergeTemplatePlaceholderData("shopee", product, affiliateLink);
@@ -1408,7 +1418,7 @@ export default function ModelosDeMensagem() {
         }
 
         if (!isStrictMercadoLivreProductUrl(snapshotTargetUrl)) {
-          throw new Error("URL precisa estar resolvida para uma pagina real de produto do Mercado Livre (ex.: .../MLB..., .../p/MLB..., .../up/MLBU...).");
+          throw new Error("URL precisa estar resolvida para uma página real de produto do Mercado Livre (ex.: .../MLB..., .../p/MLB..., .../up/MLBU...).");
         }
         const affiliateLink = firstNonEmptyString(
           resolvedForSnapshot.affiliateLink,
@@ -1427,14 +1437,14 @@ export default function ModelosDeMensagem() {
           });
         } catch (error) {
           const message = error instanceof Error ? String(error.message || "") : "";
-          throw new Error(message || "Nao foi possivel capturar os dados da pagina do produto Mercado Livre.");
+          throw new Error(message || "Não foi possível capturar os dados da página do produto do Mercado Livre.");
         }
 
         const snapshotValidation = validateStrictMeliProductSnapshot(productSnapshot);
         if (!snapshotValidation.ok || !snapshotValidation.normalized) {
           const missing = [...new Set(snapshotValidation.missingFields)].join(", ");
           throw new Error(
-            `Nao foi possivel gerar a mensagem porque faltam dados obrigatorios da pagina do produto: ${missing}.`,
+            `Não foi possível gerar a mensagem porque faltam dados obrigatórios da página do produto: ${missing}.`,
           );
         }
 
@@ -1489,7 +1499,7 @@ export default function ModelosDeMensagem() {
         source: "modelos-converter-amazon",
       });
       if (conversion.marketplace !== "amazon") {
-        throw new Error("Use um link vÃƒÂ¡lido da Amazon.");
+        throw new Error("Use um link válido da Amazon.");
       }
 
       const snapshotTargetUrl = firstNonEmptyString(conversion.resolvedLink, conversion.originalLink, link);
@@ -1507,7 +1517,7 @@ export default function ModelosDeMensagem() {
         || Boolean(firstNonEmptyString(productSnapshot?.imageUrl))
       );
       if (!hasSnapshotCoreFields) {
-        throw new Error("NÃƒÂ£o foi possÃƒÂ­vel extrair os dados do produto Amazon. Tente novamente em alguns instantes.");
+        throw new Error("Não foi possível extrair os dados do produto Amazon. Tente novamente em alguns instantes.");
       }
 
       const originalLink = firstNonEmptyString(productSnapshot?.productUrl, snapshotTargetUrl);
@@ -1563,9 +1573,9 @@ export default function ModelosDeMensagem() {
         .toLowerCase();
 
       if (normalized.includes("cache da vitrine") || normalized.includes("atualize a vitrine")) {
-        toast.error("ServiÃƒÂ§o Amazon desatualizado em execuÃƒÂ§ÃƒÂ£o. Reinicie o runtime para usar extraÃƒÂ§ÃƒÂ£o direta da pÃƒÂ¡gina do produto.");
+        toast.error("Serviço Amazon desatualizado em execução. Reinicie o runtime para usar extração direta da página do produto.");
       } else {
-        toast.error(message || "NÃƒÂ£o deu pra converter o link");
+        toast.error(message || "Não foi possível converter o link.");
       }
     } finally {
       setConverting(false);
@@ -1627,8 +1637,8 @@ export default function ModelosDeMensagem() {
   return (
     <div className="ds-page">
       <PageHeader
-        title="Modelos de Mensagem"
-        description="Crie modelos de mensagem e gere previas completas para Shopee, Mercado Livre e Amazon."
+        title="Modelos de mensagem"
+        description="Crie modelos de mensagem e gere prévias completas para Shopee, Mercado Livre e Amazon."
       >
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <Button size="sm" onClick={openNew}>
@@ -1747,7 +1757,7 @@ export default function ModelosDeMensagem() {
                       </Select>
                     ) : (
                       <div className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                        Nenhum modelo disponivel. Crie um modelo para gerar mensagem.
+                        Nenhum modelo disponível. Crie um modelo para gerar mensagem.
                       </div>
                     )}
                   </div>
@@ -1767,7 +1777,7 @@ export default function ModelosDeMensagem() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <CardTitle className="flex items-center gap-2 text-base sm:text-lg">
                   <Eye className="h-4 w-4 text-primary" />
-                  Preview da mensagem
+                  Prévia da mensagem
                 </CardTitle>
                 {generatedOffer?.conversionTimeMs ? (
                   <Badge variant="outline" className="text-[11px]">{generatedOffer.conversionTimeMs}ms</Badge>
@@ -1776,7 +1786,7 @@ export default function ModelosDeMensagem() {
                 ) : null}
               </div>
               <p className="text-xs text-muted-foreground sm:text-sm">
-                Resultado da conversao ou da mensagem completa aparece aqui.
+                Resultado da conversão ou da mensagem completa aparece aqui.
               </p>
             </CardHeader>
 
@@ -1813,19 +1823,19 @@ export default function ModelosDeMensagem() {
                     <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
                       <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                         <ImageIcon className="h-3.5 w-3.5" />
-                        Previa de midia do placeholder {"{imagem}"}
+                        Prévia de mídia do placeholder {"{imagem}"}
                       </div>
                       {generatedOffer.imageUrl && !imagePreviewFailed ? (
                         <img
                           src={generatedOffer.imageUrl}
-                          alt="Previa da imagem da oferta"
+                          alt="Prévia da imagem da oferta"
                           className="h-40 w-full rounded-md border bg-muted object-cover"
                           loading="lazy"
                           onError={() => setImagePreviewFailed(true)}
                         />
                       ) : (
                         <div className="flex h-20 items-center justify-center rounded-md border border-dashed px-3 text-center text-xs text-muted-foreground">
-                          Este modelo usa {"{imagem}"}, mas esse produto nao retornou uma imagem valida.
+                          Este modelo usa {"{imagem}"}, mas esse produto não retornou uma imagem válida.
                         </div>
                       )}
                     </div>
@@ -1913,7 +1923,7 @@ export default function ModelosDeMensagem() {
                             variant="ghost"
                             className={cn("h-8 w-8", template.isDefault ? "text-primary" : "text-muted-foreground")}
                             onClick={() => setDefaultTemplate(template.id)}
-                            title={template.isDefault ? "Remover padrao" : "Definir como padrao"}
+                            title={template.isDefault ? "Remover padrão" : "Definir como padrão"}
                           >
                             <Star className={cn("h-3.5 w-3.5", template.isDefault && "fill-primary")} />
                           </Button>
@@ -1954,7 +1964,7 @@ export default function ModelosDeMensagem() {
               <EmptyState
                 icon={FileText}
                 title="Nenhum modelo ainda"
-                description="Crie modelos com campos como {titulo}, {preco} e {link} para gerar mensagens automaticas."
+                description="Crie modelos com campos como {titulo}, {preco} e {link} para gerar mensagens automáticas."
                 actionLabel="Criar modelo"
                 onAction={openNew}
               />
@@ -1963,7 +1973,7 @@ export default function ModelosDeMensagem() {
         </Card>
       </div>
 
-      {/* Ã¢â€â‚¬Ã¢â€â‚¬ Modal criar / editar Ã¢â€â‚¬Ã¢â€â‚¬ */}
+      {/* Modal criar / editar */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className={MODEL_EDITOR_MODAL_FRAME_CLASS}>
           <div className="grid h-full max-h-[94dvh] grid-rows-[auto_minmax(0,1fr)_auto]">
@@ -1973,7 +1983,7 @@ export default function ModelosDeMensagem() {
                   {editing ? "Editar modelo de mensagem" : "Novo modelo de mensagem"}
                 </DialogTitle>
                 <Badge variant="secondary" className="text-[11px]">
-                  {editing ? "Edicao" : "Novo"}
+                  {editing ? "Edição" : "Novo"}
                 </Badge>
               </div>
               <p className="mx-auto max-w-2xl text-sm leading-relaxed text-muted-foreground">
@@ -1986,7 +1996,7 @@ export default function ModelosDeMensagem() {
                 <section className={MODEL_MODAL_SECTION_CLASS}>
                   <Label className="text-sm font-medium">Nome</Label>
                   <Input
-                    placeholder="Ex: Oferta Padrao"
+                    placeholder="Ex: Oferta padrão"
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
                     className="h-11"
@@ -1995,7 +2005,7 @@ export default function ModelosDeMensagem() {
 
                 <section className={MODEL_MODAL_SECTION_CLASS}>
                   <div className="space-y-2">
-                    <Label className="text-sm font-medium">Conteudo</Label>
+                    <Label className="text-sm font-medium">Conteúdo</Label>
                     <div className="flex flex-wrap items-center justify-center gap-2 rounded-lg border bg-muted/20 px-2 py-2">
                       <button
                         type="button"
@@ -2007,8 +2017,8 @@ export default function ModelosDeMensagem() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => wrapSelection("__", "__", "italico")}
-                        title="Italico"
+                        onClick={() => wrapSelection("__", "__", "itálico")}
+                        title="Itálico"
                         className="flex h-8 w-8 items-center justify-center rounded border bg-background text-sm italic transition-colors hover:bg-secondary/60"
                       >
                         I
@@ -2039,7 +2049,7 @@ export default function ModelosDeMensagem() {
 
                 <section className={MODEL_MODAL_SECTION_CLASS}>
                   <div className="space-y-0.5 text-center">
-                    <Label className="text-sm font-medium">Campos disponiveis</Label>
+                    <Label className="text-sm font-medium">Campos disponíveis</Label>
                     <p className="text-xs text-muted-foreground">Clique em um campo para inserir no cursor.</p>
                   </div>
 
@@ -2051,7 +2061,7 @@ export default function ModelosDeMensagem() {
                       className="h-8 justify-center text-xs"
                       onClick={openAiCtaModal}
                     >
-                      CTA por IA ({selectedAiCtaTone?.label || "Beneficio"})
+                      CTA por IA ({selectedAiCtaTone?.label || "Benefício"})
                     </Button>
                     <Button
                       type="button"
@@ -2105,7 +2115,7 @@ export default function ModelosDeMensagem() {
                       Preview em tempo real
                     </Label>
                     <p className="text-xs leading-relaxed text-muted-foreground sm:text-sm">
-                      Visualizacao com dados de exemplo.
+                      Visualização com dados de exemplo.
                     </p>
                   </div>
                   <pre
@@ -2127,7 +2137,7 @@ export default function ModelosDeMensagem() {
               </Button>
               <Button className="w-full sm:w-auto sm:min-w-[190px]" onClick={handleSave} disabled={saving}>
                 {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-                {editing ? "Salvar alteracoes" : "Criar modelo"}
+                {editing ? "Salvar alterações" : "Criar modelo"}
               </Button>
             </DialogFooter>
           </div>
@@ -2329,7 +2339,7 @@ export default function ModelosDeMensagem() {
               {aiCtaLoading ? (
                 <div className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Carregando configuracoes de CTA IA...
+                  Carregando configurações de CTA IA...
                 </div>
               ) : (
                 <div className="mx-auto w-full max-w-md space-y-2">
@@ -2379,7 +2389,7 @@ export default function ModelosDeMensagem() {
         product={scheduleProduct || undefined}
       />
 
-      {/* Ã¢â€â‚¬Ã¢â€â‚¬ ConfirmaÃƒÂ§ÃƒÂ£o de exclusÃƒÂ£o Ã¢â€â‚¬Ã¢â€â‚¬ */}
+      {/* Confirmação de exclusão */}
       <AlertDialog
         open={!!deleteId}
         onOpenChange={(open) => {

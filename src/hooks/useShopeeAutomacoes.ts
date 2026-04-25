@@ -14,6 +14,7 @@ import {
   readAutomationKeywordFilters,
 } from "@/lib/automation-keywords";
 import { mergeAutomationSessionConfig, readAutomationSessionId } from "@/lib/automation-session";
+import { mergeAutomationShopeeSubIdConfig, readAutomationShopeeSubId } from "@/lib/automation-shopee-subid";
 
 export type ShopeeAutomationRow = Tables<"shopee_automations">;
 
@@ -41,6 +42,7 @@ export interface CreateAutomationInput {
   negativeKeywords?: string[];
   offerSourceMode?: "search" | "vitrine";
   vitrineTabs?: string[];
+  shopeeSubId?: string;
 }
 
 function isShopeeAutomationRow(row: ShopeeAutomationRow): boolean {
@@ -149,6 +151,7 @@ export function useShopeeAutomacoes() {
         vitrineTabs: input.vitrineTabs,
       });
       config = mergeAutomationSessionConfig(config, input.sessionId);
+      config = mergeAutomationShopeeSubIdConfig(config, input.shopeeSubId);
       const { error } = await backend.from("shopee_automations").insert({
         name: input.name,
         interval_minutes: input.intervalMinutes,
@@ -231,9 +234,11 @@ export function useShopeeAutomacoes() {
         || input.negativeKeywords !== undefined
         || input.offerSourceMode !== undefined
         || input.vitrineTabs !== undefined
+        || input.shopeeSubId !== undefined
       ) {
         const currentFilters = readAutomationKeywordFilters(currentAutomation?.config);
         const currentSource = readAutomationOfferSourceConfig(currentAutomation?.config);
+        const currentShopeeSubId = readAutomationShopeeSubId(currentAutomation?.config);
         const positiveKeywords = input.positiveKeywords !== undefined
           ? normalizeKeywordList(input.positiveKeywords)
           : currentFilters.positiveKeywords;
@@ -246,12 +251,16 @@ export function useShopeeAutomacoes() {
         const vitrineTabs = input.vitrineTabs !== undefined
           ? input.vitrineTabs
           : currentSource.vitrineTabs;
+        const shopeeSubId = input.shopeeSubId !== undefined
+          ? input.shopeeSubId
+          : currentShopeeSubId;
         const effectiveSessionId = input.sessionId !== undefined
           ? input.sessionId
           : readAutomationSessionId(currentAutomation?.config, currentAutomation?.session_id);
         let config = mergeAutomationKeywordFilters(currentAutomation?.config, { positiveKeywords, negativeKeywords });
         config = mergeAutomationOfferSourceConfig(config, { offerSourceMode, vitrineTabs });
         config = mergeAutomationSessionConfig(config, effectiveSessionId);
+        config = mergeAutomationShopeeSubIdConfig(config, shopeeSubId);
         updates.config = config;
       }
 
@@ -326,6 +335,7 @@ export function useShopeeAutomacoes() {
       negativeKeywords: filters.negativeKeywords,
       offerSourceMode: sourceConfig.offerSourceMode,
       vitrineTabs: sourceConfig.vitrineTabs,
+      shopeeSubId: readAutomationShopeeSubId(auto.config) || undefined,
     });
   };
 

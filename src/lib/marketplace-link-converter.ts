@@ -22,12 +22,19 @@ type ShopeeFallbackResult = {
   conversionTimeMs?: number;
 };
 
+type ShopeeTrackingOptions = {
+  subId?: string;
+  subIds?: string[];
+};
+
 type ConvertMarketplaceLinkInput = {
   url: string;
   source?: string;
   sessionId?: string;
   forceResolve?: boolean;
-  shopeeFallback?: (url: string, source: string) => Promise<ShopeeFallbackResult>;
+  subId?: string;
+  subIds?: string[];
+  shopeeFallback?: (url: string, source: string, tracking?: ShopeeTrackingOptions) => Promise<ShopeeFallbackResult>;
 };
 
 function normalizeUrlInput(rawUrl: string): string {
@@ -153,7 +160,14 @@ async function fallbackConvertMarketplaceLink(input: ConvertMarketplaceLinkInput
   }
 
   if (input.shopeeFallback) {
-    const custom = await input.shopeeFallback(sourceUrl, input.source || "global-conversor-fallback");
+    const custom = await input.shopeeFallback(
+      sourceUrl,
+      input.source || "global-conversor-fallback",
+      {
+        subId: input.subId,
+        subIds: input.subIds,
+      },
+    );
     return {
       marketplace: "shopee",
       originalLink: sourceUrl,
@@ -165,7 +179,10 @@ async function fallbackConvertMarketplaceLink(input: ConvertMarketplaceLinkInput
     };
   }
 
-  const shopee = await convertShopeeLink(sourceUrl, input.source || "global-conversor-fallback");
+  const shopee = await convertShopeeLink(sourceUrl, input.source || "global-conversor-fallback", {
+    subId: input.subId,
+    subIds: input.subIds,
+  });
   return {
     marketplace: "shopee",
     originalLink: shopee.originalLink,
@@ -187,6 +204,8 @@ export async function convertMarketplaceLink(input: ConvertMarketplaceLinkInput)
         source: input.source || "global-conversor",
         sessionId: input.sessionId,
         forceResolve: input.forceResolve === true,
+        subId: input.subId,
+        subIds: input.subIds,
       },
     });
     return {

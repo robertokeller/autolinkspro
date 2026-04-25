@@ -163,16 +163,16 @@ export function useTelegramSessions() {
 
         const maxSessions = limits?.telegramSessions ?? 0;
         if (maxSessions !== -1 && sessions.length >= maxSessions) {
-          throw new Error("Limite de sessões Telegram atingido para o seu nível de acesso.");
+          throw new Error("Limite de sessões do Telegram atingido para o seu nível de acesso.");
         }
       }
 
       const name = input.name.trim();
-      if (!name) throw new Error("Informe o nome da sessão");
+      if (!name) throw new Error("Informe o nome da sessão.");
 
       const phoneValidation = validatePhone(input.phone);
       if (!phoneValidation.valid) {
-        throw new Error(phoneValidation.error || "Telefone inválido");
+        throw new Error(phoneValidation.error || "Telefone inválido.");
       }
 
       const { data: created, error: insertError } = await backend
@@ -191,16 +191,16 @@ export function useTelegramSessions() {
 
       if (insertError) throw insertError;
       if (!created || typeof created !== "object" || !("id" in created)) {
-        throw new Error("Falha ao criar sessão Telegram");
+        throw new Error("Falha ao criar a sessão do Telegram.");
       }
       return String(created.id);
     },
     onSuccess: () => {
       invalidateSessions();
-      toast.success("Sessão Telegram criada");
+      toast.success("Sessão do Telegram criada com sucesso!");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao criar sessão Telegram");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível criar a sessão do Telegram.");
       toast.error(msg);
     },
   });
@@ -212,12 +212,12 @@ export function useTelegramSessions() {
       if (data?.status === "awaiting_code") {
         toast.info("Código enviado. Informe o código recebido no Telegram.");
       } else {
-        toast.success("Conexão Telegram iniciada");
+        toast.success("Conexão do Telegram iniciada.");
       }
     },
     onError: (err: unknown) => {
       invalidateSessions();
-      const msg = toFriendlyRuntimeError(err, "Erro ao iniciar conexão Telegram");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível iniciar a conexão do Telegram.");
       toast.error(msg);
     },
   });
@@ -230,14 +230,14 @@ export function useTelegramSessions() {
       if (data?.status === "awaiting_password") {
         toast.info("Conta com 2FA. Informe a senha para concluir.");
       } else if (data?.status === "online") {
-        toast.success("Telegram conectado");
+        toast.success("Telegram conectado com sucesso!");
       } else {
-        toast.success("Código enviado para verificação");
+        toast.success("Código enviado para verificação.");
       }
     },
     onError: (err: unknown) => {
       invalidateSessions();
-      const msg = toFriendlyRuntimeError(err, "Erro ao verificar codigo");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível verificar o código.");
       toast.error(msg);
     },
   });
@@ -248,14 +248,14 @@ export function useTelegramSessions() {
     onSuccess: (data) => {
       invalidateSessions();
       if (data?.status === "online") {
-        toast.success("Telegram conectado");
+        toast.success("Telegram conectado com sucesso!");
       } else {
-        toast.success("Senha enviada para verificação");
+        toast.success("Senha enviada para verificação.");
       }
     },
     onError: (err: unknown) => {
       invalidateSessions();
-      const msg = toFriendlyRuntimeError(err, "Erro ao verificar senha 2FA");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível verificar a senha de 2FA.");
       toast.error(msg);
     },
   });
@@ -264,10 +264,10 @@ export function useTelegramSessions() {
     mutationFn: (sessionId: string) => invokeTelegramConnect(sessionId, "disconnect"),
     onSuccess: () => {
       invalidateSessions();
-      toast.success("Sessão Telegram desconectada");
+      toast.success("Sessão do Telegram desconectada.");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao desconectar sessão Telegram");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível desconectar a sessão do Telegram.");
       toast.error(msg);
     },
   });
@@ -281,13 +281,15 @@ export function useTelegramSessions() {
 
       const blockedGroups = Number((data as Record<string, unknown> | undefined)?.blockedGroups || 0);
       if (blockedGroups > 0) {
-        toast.warning(`Sincronização parcial: ${blockedGroups} grupo(s) excederam o limite de Telegram do seu plano.`);
+        toast.warning(
+          `Sincronização parcial: ${blockedGroups} ${blockedGroups === 1 ? "grupo excedeu" : "grupos excederam"} o limite do Telegram no seu plano.`,
+        );
       } else {
-        toast.success("Sincronização de grupos Telegram solicitada");
+        toast.success("Sincronização de grupos do Telegram solicitada.");
       }
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao sincronizar grupos Telegram");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível sincronizar os grupos do Telegram.");
       toast.error(msg);
     },
   });
@@ -297,7 +299,7 @@ export function useTelegramSessions() {
       if (!user) throw new Error("Usuário não autenticado");
 
       const name = input.name.trim();
-      if (!name) throw new Error("Informe um nome válido para a sessão");
+      if (!name) throw new Error("Informe um nome válido para a sessão.");
 
       const { error: updateError } = await backend
         .from("telegram_sessions")
@@ -309,10 +311,10 @@ export function useTelegramSessions() {
     },
     onSuccess: () => {
       invalidateSessions();
-      toast.success("Nome da sessão atualizado");
+      toast.success("Nome da sessão atualizado com sucesso!");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao atualizar sessão");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível atualizar a sessão.");
       toast.error(msg);
     },
   });
@@ -347,10 +349,10 @@ export function useTelegramSessions() {
     onSuccess: () => {
       invalidateSessions();
       qc.invalidateQueries({ queryKey: ["groups"] });
-      toast.success("Sessão Telegram removida");
+      toast.success("Sessão do Telegram removida com sucesso!");
     },
     onError: (err: unknown) => {
-      const msg = toFriendlyRuntimeError(err, "Erro ao remover sessão Telegram");
+      const msg = toFriendlyRuntimeError(err, "Não foi possível remover a sessão do Telegram.");
       toast.error(msg);
     },
   });
