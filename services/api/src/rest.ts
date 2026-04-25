@@ -1545,9 +1545,12 @@ restRouter.post("/:table", async (req: Request, res: Response) => {
         "23502": "Campo obrigatório não preenchido.",
         "23514": "Valor fora dos valores permitidos.",
         "42501": "Permissão negada.",
+        "42P01": "Tabela não encontrada.",
       };
       const safeMsg = (e.code && pgSafeMessages[e.code]) ?? "Erro ao executar operação.";
-      res.json({ data: null, count: null, error: { message: safeMsg } });
+      // Expose the PG code for recognized errors so clients can branch on it without schema disclosure
+      const safeCode = e.code && pgSafeMessages[e.code] ? e.code : undefined;
+      res.json({ data: null, count: null, error: { message: safeMsg, ...(safeCode ? { code: safeCode } : {}) } });
     } else {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[rest] error:", msg);
