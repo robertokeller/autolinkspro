@@ -19,6 +19,7 @@ const SERVICE_RPC_NAMES: Record<string, RuntimeService> = {
   "shopee-convert-link": "shopee",
   "shopee-convert-links": "shopee",
   "shopee-batch": "shopee",
+  "shopee-reports": "shopee",
   "shopee-automation-run": "shopee",
   "meli-service-health": "meli",
   "amazon-service-health": "amazon",

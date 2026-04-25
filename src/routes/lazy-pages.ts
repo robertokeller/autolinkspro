@@ -123,6 +123,7 @@ export const Pages = {
   ShopeePesquisa: lazyPage("ShopeePesquisa", "/src/pages/shopee/ShopeePesquisa.tsx", () => import("@/pages/shopee/ShopeePesquisa")),
   ShopeeConversor: lazyPage("ShopeeConversor", "/src/pages/shopee/ShopeeConversor.tsx", () => import("@/pages/shopee/ShopeeConversor")),
   ShopeeAutomacoes: lazyPage("ShopeeAutomacoes", "/src/pages/shopee/ShopeeAutomacoes.tsx", () => import("@/pages/shopee/ShopeeAutomacoes")),
+  ShopeeReports: lazyPage("ShopeeReports", "/src/pages/shopee/ShopeeReports.tsx", () => import("@/pages/shopee/ShopeeReports")),
   ShopeeConfiguracoes: lazyPage("ShopeeConfiguracoes", "/src/pages/shopee/ShopeeConfiguracoes.tsx", () => import("@/pages/shopee/ShopeeConfiguracoes")),
   MercadoLivreVitrine: lazyPage("MercadoLivreVitrine", "/src/pages/mercadolivre/MercadoLivreVitrine.tsx", () => import("@/pages/mercadolivre/MercadoLivreVitrine")),
   MercadoLivreAutomacoes: lazyPage("MercadoLivreAutomacoes", "/src/pages/mercadolivre/MercadoLivreAutomacoes.tsx", () => import("@/pages/mercadolivre/MercadoLivreAutomacoes")),

@@ -500,6 +500,16 @@ const RPC_RATE_BY_FUNCTION: Record<string, RpcRatePolicy> = {
     windowMs: 60_000,
     message: "Limite de consultas de relatórios Shopee atingido. Aguarde 1 minuto.",
   },
+  "shopee_reports": {
+    max: 12,
+    windowMs: 60_000,
+    message: "Limite de consultas de relatórios Shopee atingido. Aguarde 1 minuto.",
+  },
+  "shopee reports": {
+    max: 12,
+    windowMs: 60_000,
+    message: "Limite de consultas de relatórios Shopee atingido. Aguarde 1 minuto.",
+  },
   "shopee-automation-run": {
     max: 6,
     windowMs: 60_000,
@@ -13306,12 +13316,28 @@ if (funcName === "whatsapp-connect") {
       if (!cred) { ok(res, { success: false, reason: "Credenciais Shopee não configuradas.", region: "BR" }); return; }
       if (cred.secret_key) cred.secret_key = decryptCredential(cred.secret_key);
       const fallbackRegion = String(cred.region || "BR").toUpperCase();
+      const debugGraphqlEnabled = process.env.NODE_ENV !== "production" && params.debugGraphql === true;
+      const debugQuery = debugGraphqlEnabled ? String(params.query || "").trim() : "";
+      const debugVariables = debugGraphqlEnabled && params.variables && typeof params.variables === "object"
+        ? (params.variables as Record<string, unknown>)
+        : undefined;
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const r = await proxyMicroservice(
         SHOPEE_URL,
         "/api/shopee/test-connection",
         "POST",
-        { appId: cred.app_id, secret: cred.secret_key, region: cred.region },
+        {
+          appId: cred.app_id,
+          secret: cred.secret_key,
+          region: cred.region,
+          ...(debugGraphqlEnabled
+            ? {
+                debugGraphql: true,
+                query: debugQuery,
+                variables: debugVariables,
+              }
+            : {}),
+        },
         shopeeHeaders,
         30_000,
       );
@@ -13325,10 +13351,14 @@ if (funcName === "whatsapp-connect") {
       const success = payload.success === true || payload.connected === true;
       const region = String(payload.region || fallbackRegion || "BR").toUpperCase();
       const reason = String(payload.reason || payload.error || payload.message || "Falha na conexão");
+      if (success && debugGraphqlEnabled) {
+        ok(res, { success: true, region, data: payload.data ?? null });
+        return;
+      }
       ok(res, success ? { success: true, region } : { success: false, reason, region });
       return;
     }
-    if (funcName === "shopee-reports") {
+    if (funcName === "shopee-reports" || funcName === "shopee_reports" || funcName === "shopee reports") {
       if (!SHOPEE_URL) { fail(res, "Shopee microservice nao configurado.", 503); return; }
 
       const cred = await queryOne<{ app_id: string; secret_key: string; region: string }>(
@@ -13374,6 +13404,34 @@ if (funcName === "whatsapp-connect") {
         return;
       }
 
+      const normalizeTextFilter = (input: unknown): string | undefined => {
+        const value = String(input ?? "").trim();
+        if (!value) return undefined;
+        return value.length > 120 ? value.slice(0, 120) : value;
+      };
+      const normalizeNumberFilter = (input: unknown): number | undefined => {
+        const value = Number.parseInt(String(input ?? "").trim(), 10);
+        if (!Number.isFinite(value) || value <= 0) return undefined;
+        return value;
+      };
+      const normalizeEnumFilter = (input: unknown, allowed: string[]): string | undefined => {
+        const value = String(input ?? "").trim().toUpperCase();
+        if (!value || value === "ALL") return undefined;
+        return allowed.includes(value) ? value : undefined;
+      };
+
+      const filtersRaw = (params.filters && typeof params.filters === "object")
+        ? (params.filters as Record<string, unknown>)
+        : {};
+      const campaignTypeRaw = String(filtersRaw.campaignType ?? "").trim().toUpperCase();
+      const filters = {
+        shopId: normalizeNumberFilter(filtersRaw.shopId),
+        orderStatus: normalizeEnumFilter(filtersRaw.orderStatus, ["UNPAID", "PENDING", "COMPLETED", "CANCELLED"]),
+        buyerType: normalizeEnumFilter(filtersRaw.buyerType, ["NEW", "EXISTING"]),
+        campaignType: campaignTypeRaw && campaignTypeRaw !== "ALL" ? campaignTypeRaw : undefined,
+        campaignPartnerName: normalizeTextFilter(filtersRaw.campaignPartnerName),
+      };
+
       const shopeeHeaders = buildUserScopedHeaders(userId);
       const reportResult = await proxyMicroservice(
         SHOPEE_URL,
@@ -13385,6 +13443,7 @@ if (funcName === "whatsapp-connect") {
           region: cred.region,
           startDate,
           endDate,
+          filters,
         },
         shopeeHeaders,
         120_000,

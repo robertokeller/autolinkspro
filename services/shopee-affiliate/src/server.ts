@@ -80,15 +80,30 @@ const REPORT_VALUE_FIELDS = String(
   .split(",")
   .map((field) => field.trim())
   .filter(Boolean);
-const REPORT_TOTAL_FIELDS = [
-  "total_commission",
-  "commission_total",
-  "totalCommission",
-  "estimated_commission",
-  "settled_commission",
-  "valid_commission",
-  ...REPORT_VALUE_FIELDS,
-];
+const REPORT_TOTAL_FIELDS = String(
+  process.env.SHOPEE_REPORT_TOTAL_FIELDS
+    || "total_commission,commission_total,totalCommission,estimated_commission,settled_commission,valid_commission,total_valid_commission,total_estimated_commission,total_settled_commission,overall_commission,sum_commission",
+)
+  .split(",")
+  .map((field) => field.trim())
+  .filter(Boolean);
+
+function normalizeFieldKey(input: unknown): string {
+  return String(input || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+const REPORT_VALUE_FIELD_KEYS = new Set(REPORT_VALUE_FIELDS.map((field) => normalizeFieldKey(field)));
+const REPORT_ROW_HINT_KEYS = new Set([
+  ...REPORT_VALUE_FIELD_KEYS,
+  "orderid",
+  "conversionid",
+  "itemid",
+  "productid",
+  "shopid",
+  "orderno",
+  "itemname",
+  "productname",
+]);
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -260,6 +275,14 @@ type ShopeeReportsResponse = {
   validated: ShopeeReportBlock;
 };
 
+type ShopeeReportFilters = {
+  shopId?: number;
+  orderStatus?: string;
+  buyerType?: string;
+  campaignType?: string;
+  campaignPartnerName?: string;
+};
+
 type BatchQuery = {
   id?: string;
   params?: Record<string, unknown>;
@@ -382,11 +405,30 @@ function buildBaseUrl(region: string): string {
   return `${host}/graphql`;
 }
 
-function signAuthorization(appId: string, secret: string, payload: string): string {
+type ShopeeAuthHeaderMode = "spaced" | "compact" | "signatureFirst";
+
+const SHOPEE_AUTH_HEADER_FALLBACK_MODES: ShopeeAuthHeaderMode[] = [
+  "spaced",
+  "compact",
+  "signatureFirst",
+];
+
+function signAuthorization(
+  appId: string,
+  secret: string,
+  payload: string,
+  mode: ShopeeAuthHeaderMode = "spaced",
+): string {
   const timestamp = Math.floor(Date.now() / 1000);
   const factor = `${appId}${timestamp}${payload}${secret}`;
   const signature = crypto.createHash("sha256").update(factor).digest("hex");
-  return `SHA256 Credential=${appId},Timestamp=${timestamp},Signature=${signature}`;
+  if (mode === "compact") {
+    return `SHA256 Credential=${appId},Timestamp=${timestamp},Signature=${signature}`;
+  }
+  if (mode === "signatureFirst") {
+    return `SHA256 Credential=${appId}, Signature=${signature}, Timestamp=${timestamp}`;
+  }
+  return `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}`;
 }
 
 function wait(ms: number): Promise<void> {
@@ -457,6 +499,48 @@ function dateYmdDaysAgo(days: number): string {
   return now.toISOString().slice(0, 10);
 }
 
+const REPORT_ORDER_STATUS_VALUES = new Set(["UNPAID", "PENDING", "COMPLETED", "CANCELLED"]);
+const REPORT_BUYER_TYPE_VALUES = new Set(["NEW", "EXISTING"]);
+const REPORT_FILTER_TEXT_MAX_LENGTH = 120;
+
+function normalizeReportTextFilter(input: unknown): string | undefined {
+  const value = String(input || "").trim();
+  if (!value) return undefined;
+  if (value.length > REPORT_FILTER_TEXT_MAX_LENGTH) return value.slice(0, REPORT_FILTER_TEXT_MAX_LENGTH);
+  return value;
+}
+
+function normalizeReportEnumFilter(
+  input: unknown,
+  allowed: Set<string>,
+): string | undefined {
+  const value = String(input || "").trim().toUpperCase();
+  if (!value || value === "ALL") return undefined;
+  return allowed.has(value) ? value : undefined;
+}
+
+function normalizeReportNumericFilter(input: unknown): number | undefined {
+  const value = Number.parseInt(String(input || "").trim(), 10);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return value;
+}
+
+function normalizeReportFilters(input: unknown): ShopeeReportFilters {
+  const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const campaignTypeRaw = String(source.campaignType || "").trim();
+  const campaignType = campaignTypeRaw && campaignTypeRaw.toUpperCase() !== "ALL"
+    ? campaignTypeRaw.toUpperCase()
+    : undefined;
+
+  return {
+    shopId: normalizeReportNumericFilter(source.shopId),
+    orderStatus: normalizeReportEnumFilter(source.orderStatus, REPORT_ORDER_STATUS_VALUES),
+    buyerType: normalizeReportEnumFilter(source.buyerType, REPORT_BUYER_TYPE_VALUES),
+    campaignType,
+    campaignPartnerName: normalizeReportTextFilter(source.campaignPartnerName),
+  };
+}
+
 function resolveReportPath(type: CommissionReportType): string {
   return type === "validation_report" ? REPORT_VALIDATION_PATH : REPORT_CONVERSION_PATH;
 }
@@ -513,7 +597,10 @@ function findFirstObjectArray(value: unknown, depth = 0): Record<string, unknown
   if (Array.isArray(value)) {
     const objectRows = value
       .filter((row): row is Record<string, unknown> => !!row && typeof row === "object" && !Array.isArray(row));
-    if (objectRows.length > 0) return objectRows;
+    if (objectRows.length > 0) {
+      const likelyRows = objectRows.filter((row) => isLikelyCommissionReportRow(row));
+      if (likelyRows.length > 0) return likelyRows;
+    }
     for (const row of value) {
       const nested = findFirstObjectArray(row, depth + 1);
       if (nested.length > 0) return nested;
@@ -539,23 +626,42 @@ function findFirstObjectArray(value: unknown, depth = 0): Record<string, unknown
   return [];
 }
 
+function isLikelyCommissionReportRow(row: Record<string, unknown>): boolean {
+  const keys = Object.keys(row);
+  if (keys.length === 0) return false;
+
+  for (const key of keys) {
+    const normalized = normalizeFieldKey(key);
+    if (REPORT_ROW_HINT_KEYS.has(normalized)) return true;
+    if (normalized.includes("commission") && !normalized.includes("rate")) return true;
+  }
+
+  return false;
+}
+
 function findNumberByKeys(value: unknown, keys: string[], depth = 0): number | null {
   if (depth > 5 || value == null) return null;
   const record = asRecord(value);
   if (!record) return null;
 
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
-    const parsed = parseDecimalLike(record[key]);
-    if (Number.isFinite(parsed)) return Math.max(0, parsed);
+  const normalizedLookup = new Set(keys.map((key) => normalizeFieldKey(key)));
+  let best: number | null = null;
+
+  for (const [rawKey, rawValue] of Object.entries(record)) {
+    if (!normalizedLookup.has(normalizeFieldKey(rawKey))) continue;
+    const parsed = parseDecimalLike(rawValue);
+    if (!Number.isFinite(parsed)) continue;
+    const safeValue = Math.max(0, parsed);
+    best = best === null ? safeValue : Math.max(best, safeValue);
   }
 
   for (const nestedValue of Object.values(record)) {
     const nested = findNumberByKeys(nestedValue, keys, depth + 1);
-    if (nested !== null) return nested;
+    if (nested === null) continue;
+    best = best === null ? nested : Math.max(best, nested);
   }
 
-  return null;
+  return best;
 }
 
 function findCurrency(value: unknown, depth = 0): string {
@@ -576,13 +682,39 @@ function findCurrency(value: unknown, depth = 0): string {
   return "";
 }
 
-function extractRowCommissionValue(row: Record<string, unknown>): number {
-  for (const field of REPORT_VALUE_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(row, field)) continue;
-    const parsed = parseDecimalLike(row[field]);
-    if (Number.isFinite(parsed)) return Math.max(0, parsed);
+function extractRowCommissionValue(row: Record<string, unknown>, depth = 0): number {
+  if (depth > 5) return 0;
+
+  let directCommission = 0;
+  for (const [rawKey, rawValue] of Object.entries(row)) {
+    const normalizedKey = normalizeFieldKey(rawKey);
+    const isValueField = REPORT_VALUE_FIELD_KEYS.has(normalizedKey)
+      || (normalizedKey.includes("commission") && !normalizedKey.includes("rate"));
+    if (!isValueField) continue;
+
+    const parsed = parseDecimalLike(rawValue);
+    if (!Number.isFinite(parsed)) continue;
+    directCommission = Math.max(directCommission, Math.max(0, parsed));
   }
-  return 0;
+  if (directCommission > 0) return directCommission;
+
+  let nestedCommission = 0;
+  for (const nestedValue of Object.values(row)) {
+    if (Array.isArray(nestedValue)) {
+      for (const item of nestedValue) {
+        const itemRecord = asRecord(item);
+        if (!itemRecord) continue;
+        nestedCommission += extractRowCommissionValue(itemRecord, depth + 1);
+      }
+      continue;
+    }
+
+    const nestedRecord = asRecord(nestedValue);
+    if (!nestedRecord) continue;
+    nestedCommission += extractRowCommissionValue(nestedRecord, depth + 1);
+  }
+
+  return nestedCommission;
 }
 
 function hasNextReportPage(
@@ -617,33 +749,92 @@ async function callShopeeSignedGet(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          Authorization: signAuthorization(credentials.appId, credentials.secret, signaturePayload),
-        },
-      });
-
-      const text = await response.text().catch(() => "");
-      if (/buyer\/login/i.test(response.url || "") || /buyer\/login/i.test(text)) {
-        throw new Error("Shopee report endpoint returned login page. Configure valid report path and access.");
-      }
-
-      let parsed: Record<string, unknown> = {};
-      if (text) {
+      let lastAuthError: unknown = null;
+      for (let authModeIndex = 0; authModeIndex < SHOPEE_AUTH_HEADER_FALLBACK_MODES.length; authModeIndex += 1) {
+        const authMode = SHOPEE_AUTH_HEADER_FALLBACK_MODES[authModeIndex];
         try {
-          parsed = JSON.parse(text) as Record<string, unknown>;
-        } catch {
-          throw new Error("Shopee report endpoint returned non-JSON response.");
+          const response = await fetch(url, {
+            method: "GET",
+            headers: {
+              Accept: "application/json",
+              Authorization: signAuthorization(credentials.appId, credentials.secret, signaturePayload, authMode),
+            },
+          });
+
+          const text = await response.text().catch(() => "");
+          if (/buyer\/login/i.test(response.url || "") || /buyer\/login/i.test(text)) {
+            throw new Error("Shopee report endpoint returned login page. Configure valid report path and access.");
+          }
+
+          let parsed: Record<string, unknown> = {};
+          if (text) {
+            try {
+              parsed = JSON.parse(text) as Record<string, unknown>;
+            } catch {
+              const compactSnippet = text
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 180);
+              throw new Error(`Shopee report endpoint returned non-JSON response: ${compactSnippet}`);
+            }
+          }
+
+          if (!response.ok) {
+            const errText = parsed.error || parsed.message || parsed.msg
+              || (parsed.code != null ? `error [${parsed.code}]` : null)
+              || `Shopee report HTTP ${response.status}`;
+            throw new Error(String(errText));
+          }
+
+          const rawCode = parsed.code ?? parsed.error_code ?? parsed.errcode;
+          if (rawCode !== undefined && rawCode !== null && String(rawCode).trim() !== "") {
+            const code = Number.parseInt(String(rawCode), 10);
+            const hasNumericCode = Number.isFinite(code);
+            const isSuccessCode = !hasNumericCode || code === 0 || code === 200;
+            if (!isSuccessCode) {
+              const businessMessage = String(
+                parsed.message
+                || parsed.msg
+                || parsed.error
+                || parsed.reason
+                || `Shopee report error code ${code}`,
+              ).trim();
+              throw new Error(businessMessage || `Shopee report error code ${code}`);
+            }
+          }
+
+          if (parsed.success === false) {
+            const businessMessage = String(
+              parsed.message
+              || parsed.msg
+              || parsed.error
+              || parsed.reason
+              || "Shopee report request failed",
+            ).trim();
+            throw new Error(businessMessage || "Shopee report request failed");
+          }
+
+          return parsed;
+        } catch (error) {
+          const shouldTryNextAuthHeader = (
+            looksLikeShopeeAuthSignatureError(error)
+            && authModeIndex < (SHOPEE_AUTH_HEADER_FALLBACK_MODES.length - 1)
+          );
+          if (!shouldTryNextAuthHeader) {
+            throw error;
+          }
+          lastAuthError = error;
+          logger.warn({
+            authMode,
+            nextAuthMode: SHOPEE_AUTH_HEADER_FALLBACK_MODES[authModeIndex + 1],
+            error: sanitizeError(error),
+          }, "retrying shopee signed GET with alternate auth header");
         }
       }
 
-      if (!response.ok) {
-        throw new Error(String(parsed.error || parsed.message || `Shopee report HTTP ${response.status}`));
+      if (lastAuthError) {
+        throw lastAuthError;
       }
-
-      return parsed;
     } catch (error) {
       const canRetry = attempt < maxAttempts && isRetryableShopeeError(error);
       if (!canRetry) throw error;
@@ -695,7 +886,9 @@ async function fetchCommissionReport(
     const topLevelTotal = findNumberByKeys(innerPayload, REPORT_TOTAL_FIELDS)
       ?? findNumberByKeys(payload, REPORT_TOTAL_FIELDS);
     if (topLevelTotal !== null) {
-      directTotalCommission = topLevelTotal;
+      directTotalCommission = directTotalCommission === null
+        ? topLevelTotal
+        : Math.max(directTotalCommission, topLevelTotal);
     }
 
     const rows = findFirstObjectArray(innerPayload);
@@ -715,7 +908,7 @@ async function fetchCommissionReport(
     page += 1;
   }
 
-  const totalCommission = Number(Math.max(0, directTotalCommission ?? rowsTotalCommission).toFixed(2));
+  const totalCommission = Number(Math.max(0, directTotalCommission ?? 0, rowsTotalCommission).toFixed(2));
 
   return {
     success: true,
@@ -744,21 +937,24 @@ const REGION_DEFAULT_CURRENCY: Record<string, string> = {
 
 const CONVERSION_REPORT_GRAPHQL_QUERY = `
   query ConversionReport(
-    $purchaseTimeStart: Int
-    $purchaseTimeEnd: Int
+    $purchaseTimeStart: Int64
+    $purchaseTimeEnd: Int64
+    $shopId: Int64
+    $campaignPartnerName: String
     $limit: Int
-    $scrollId: String
   ) {
     conversionReport(
       purchaseTimeStart: $purchaseTimeStart
       purchaseTimeEnd: $purchaseTimeEnd
+      shopId: $shopId
+      campaignPartnerName: $campaignPartnerName
       limit: $limit
-      scrollId: $scrollId
     ) {
       nodes {
         purchaseTime
         clickTime
         conversionId
+        conversionStatus
         buyerType
         device
         referrer
@@ -767,7 +963,6 @@ const CONVERSION_REPORT_GRAPHQL_QUERY = `
         shopeeCommissionCapped
         netCommission
         utmContent
-        campaignType
         orders {
           orderId
           orderStatus
@@ -782,8 +977,69 @@ const CONVERSION_REPORT_GRAPHQL_QUERY = `
             itemTotalCommission
             itemSellerCommission
             itemShopeeCommissionCapped
-            campaignType
             campaignPartnerName
+            campaignType
+            fraudStatus
+            displayItemStatus
+            itemNotes
+          }
+        }
+      }
+      pageInfo {
+        limit
+        hasNextPage
+        scrollId
+      }
+    }
+  }
+`;
+
+const CONVERSION_REPORT_GRAPHQL_QUERY_PAGED = `
+  query ConversionReportPaged(
+    $purchaseTimeStart: Int64
+    $purchaseTimeEnd: Int64
+    $shopId: Int64
+    $campaignPartnerName: String
+    $limit: Int
+    $scrollId: String
+  ) {
+    conversionReport(
+      purchaseTimeStart: $purchaseTimeStart
+      purchaseTimeEnd: $purchaseTimeEnd
+      shopId: $shopId
+      campaignPartnerName: $campaignPartnerName
+      limit: $limit
+      scrollId: $scrollId
+    ) {
+      nodes {
+        purchaseTime
+        clickTime
+        conversionId
+        conversionStatus
+        buyerType
+        device
+        referrer
+        totalCommission
+        sellerCommission
+        shopeeCommissionCapped
+        netCommission
+        utmContent
+        orders {
+          orderId
+          orderStatus
+          items {
+            shopId
+            shopName
+            itemId
+            itemName
+            qty
+            itemPrice
+            actualAmount
+            itemTotalCommission
+            itemSellerCommission
+            itemShopeeCommissionCapped
+            campaignPartnerName
+            campaignType
             fraudStatus
             displayItemStatus
             itemNotes
@@ -810,17 +1066,8 @@ const VALIDATED_REPORT_GRAPHQL_QUERY = `
     ) {
       nodes {
         purchaseTime
-        clickTime
         conversionId
-        buyerType
-        device
-        referrer
         totalCommission
-        sellerCommission
-        shopeeCommissionCapped
-        netCommission
-        utmContent
-        campaignType
         orders {
           orderId
           orderStatus
@@ -833,13 +1080,8 @@ const VALIDATED_REPORT_GRAPHQL_QUERY = `
             itemPrice
             actualAmount
             itemTotalCommission
-            itemSellerCommission
-            itemShopeeCommissionCapped
-            campaignType
-            campaignPartnerName
             fraudStatus
             displayItemStatus
-            itemNotes
           }
         }
       }
@@ -904,10 +1146,27 @@ function normalizeOrderStatus(status: unknown): string {
   return value || "UNKNOWN";
 }
 
+function includesNormalizedText(target: string, search: string): boolean {
+  const normalizedTarget = String(target || "").trim().toLowerCase();
+  const normalizedSearch = String(search || "").trim().toLowerCase();
+  if (!normalizedSearch) return true;
+  return normalizedTarget.includes(normalizedSearch);
+}
+
+function matchesShopeeReportFilters(row: ShopeeReportRow, filters: ShopeeReportFilters): boolean {
+  if (filters.orderStatus && row.orderStatus !== filters.orderStatus) return false;
+  if (filters.buyerType && row.buyerType !== filters.buyerType) return false;
+  if (filters.shopId && toReportId(filters.shopId) !== row.shopId) return false;
+  if (filters.campaignType && row.campaignType !== filters.campaignType) return false;
+  if (filters.campaignPartnerName && !includesNormalizedText(row.campaignPartnerName, filters.campaignPartnerName)) return false;
+  return true;
+}
+
 async function fetchGraphqlReportNodes(
   credentials: ShopeeCredentials,
   source: ShopeeReportSource,
   period: { startTimestamp: number; endTimestamp: number },
+  filters: ShopeeReportFilters,
 ): Promise<{ nodes: Record<string, unknown>[]; pagesScanned: number }> {
   let scrollId: string | null = null;
   let pagesScanned = 0;
@@ -916,18 +1175,21 @@ async function fetchGraphqlReportNodes(
   while (pagesScanned < REPORT_MAX_PAGES) {
     const variables: Record<string, unknown> = {
       limit: REPORT_PAGE_LIMIT,
-      scrollId: scrollId || null,
     };
+    if (scrollId) {
+      variables.scrollId = scrollId;
+    }
     if (source === "conversion") {
-      variables.purchaseTimeStart = period.startTimestamp;
-      variables.purchaseTimeEnd = period.endTimestamp;
+      variables.purchaseTimeStart = String(period.startTimestamp);
+      variables.purchaseTimeEnd = String(period.endTimestamp);
+      if (filters.shopId) variables.shopId = String(filters.shopId);
+      if (filters.campaignPartnerName) variables.campaignPartnerName = filters.campaignPartnerName;
     }
 
-    const data = await callShopeeGraphql(
-      credentials,
-      source === "conversion" ? CONVERSION_REPORT_GRAPHQL_QUERY : VALIDATED_REPORT_GRAPHQL_QUERY,
-      variables,
-    );
+    const query = source === "conversion"
+      ? (scrollId ? CONVERSION_REPORT_GRAPHQL_QUERY_PAGED : CONVERSION_REPORT_GRAPHQL_QUERY)
+      : VALIDATED_REPORT_GRAPHQL_QUERY;
+    const data = await callShopeeGraphql(credentials, query, variables);
 
     const reportConnection = asRecord(source === "conversion" ? data.conversionReport : data.validatedReport);
     const nodeListRaw = Array.isArray(reportConnection?.nodes) ? reportConnection?.nodes : [];
@@ -964,11 +1226,11 @@ function buildShopeeReportBlock(
   nodes: Record<string, unknown>[],
   pagesScanned: number,
   period: { startTimestamp: number; endTimestamp: number },
+  filters: ShopeeReportFilters,
 ): ShopeeReportBlock {
   const rows: ShopeeReportRow[] = [];
   const uniqueConversions = new Set<string>();
   const uniqueOrders = new Set<string>();
-  const statusByOrder = new Map<string, string>();
   const statusBreakdownMap = new Map<string, number>();
   const shopMap = new Map<string, {
     shopId: string;
@@ -1001,41 +1263,91 @@ function buildShopeeReportBlock(
     const clickTime = toReportTimestamp(node.clickTime);
     const conversionId = toReportId(node.conversionId) || `fallback-${source}-${purchaseTime}-${rows.length}`;
     const conversionKey = `${source}:${conversionId}`;
+    const conversionStatus = normalizeOrderStatus(node.conversionStatus || node.orderStatus);
+    const conversionTotalCommission = toCurrencyAmount(node.totalCommission);
+    const conversionSellerCommission = toCurrencyAmount(node.sellerCommission);
+    const conversionShopeeCommission = toCurrencyAmount(node.shopeeCommissionCapped);
+    const conversionNetCommission = toCurrencyAmount(node.netCommission);
     const buyerType = String(node.buyerType || "").trim().toUpperCase();
     const device = String(node.device || "").trim().toUpperCase();
     const referrer = String(node.referrer || "").trim();
-    const campaignType = String(node.campaignType || "").trim();
+    const campaignType = String(node.campaignType || "").trim().toUpperCase();
     const utmContent = String(node.utmContent || "").trim();
-    const conversionNetCommission = toCurrencyAmount(node.netCommission || node.totalCommission);
     const conversionDateKey = toReportDateKey(purchaseTime);
-
-    if (!uniqueConversions.has(conversionKey)) {
-      uniqueConversions.add(conversionKey);
-      totalNetCommission += conversionNetCommission;
-      const daily = dailyMap.get(conversionDateKey) || {
-        sales: 0,
-        totalCommission: 0,
-        netCommission: 0,
-        items: 0,
-        orderIds: new Set<string>(),
-      };
-      daily.netCommission += conversionNetCommission;
-      dailyMap.set(conversionDateKey, daily);
-    }
+    let conversionHasIncludedRows = false;
 
     const ordersRaw = Array.isArray(node.orders) ? node.orders : [];
     const orders = ordersRaw
       .filter((order): order is Record<string, unknown> => !!order && typeof order === "object" && !Array.isArray(order));
 
+    if (orders.length === 0) {
+      const syntheticOrderId = "";
+      const syntheticOrderStatus = conversionStatus;
+      const syntheticRow: ShopeeReportRow = {
+        source,
+        purchaseTime,
+        clickTime,
+        conversionId,
+        orderId: syntheticOrderId,
+        orderStatus: syntheticOrderStatus,
+        buyerType,
+        device,
+        referrer,
+        campaignType,
+        campaignPartnerName: String(node.campaignPartnerName || "").trim(),
+        utmContent,
+        shopId: "",
+        shopName: "",
+        itemId: "",
+        itemName: `Conversao ${conversionId}`,
+        qty: 1,
+        actualAmount: 0,
+        itemPrice: 0,
+        totalCommission: conversionTotalCommission,
+        sellerCommission: conversionSellerCommission,
+        shopeeCommission: conversionShopeeCommission,
+        netCommission: conversionNetCommission > 0 ? conversionNetCommission : conversionTotalCommission,
+        fraudStatus: "",
+        displayItemStatus: syntheticOrderStatus,
+        itemNotes: "Resumo de conversao (sem itens detalhados na resposta da Shopee)",
+      };
+
+      if (matchesShopeeReportFilters(syntheticRow, filters)) {
+        conversionHasIncludedRows = true;
+
+        totalCommission += syntheticRow.totalCommission;
+        totalNetCommission += syntheticRow.netCommission;
+        totalSellerCommission += syntheticRow.sellerCommission;
+        totalShopeeCommission += syntheticRow.shopeeCommission;
+        totalItems += 1;
+        rows.push(syntheticRow);
+
+        const syntheticOrderKey = `${source}:${conversionId}:summary`;
+        if (!uniqueOrders.has(syntheticOrderKey)) {
+          uniqueOrders.add(syntheticOrderKey);
+          statusBreakdownMap.set(syntheticOrderStatus, (statusBreakdownMap.get(syntheticOrderStatus) || 0) + 1);
+        }
+
+        const daily = dailyMap.get(conversionDateKey) || {
+          sales: 0,
+          totalCommission: 0,
+          netCommission: 0,
+          items: 0,
+          orderIds: new Set<string>(),
+        };
+        daily.totalCommission += syntheticRow.totalCommission;
+        daily.netCommission += syntheticRow.netCommission;
+        daily.items += 1;
+        daily.orderIds.add(syntheticOrderKey);
+        dailyMap.set(conversionDateKey, daily);
+      }
+    }
+
     for (const order of orders) {
       const orderId = toReportId(order.orderId);
       const orderStatus = normalizeOrderStatus(order.orderStatus);
       const orderUniqueKey = `${source}:${conversionId}:${orderId || "unknown"}`;
-      if (orderId && !uniqueOrders.has(orderUniqueKey)) {
-        uniqueOrders.add(orderUniqueKey);
-        statusByOrder.set(orderUniqueKey, orderStatus);
-        statusBreakdownMap.set(orderStatus, (statusBreakdownMap.get(orderStatus) || 0) + 1);
-      }
+      let orderHasIncludedItems = false;
 
       const itemsRaw = Array.isArray(order.items) ? order.items : [];
       const items = itemsRaw
@@ -1055,13 +1367,7 @@ function buildShopeeReportBlock(
         const campaignPartnerName = String(item.campaignPartnerName || "").trim();
         const displayItemStatus = String(item.displayItemStatus || "").trim();
         const itemNotes = String(item.itemNotes || "").trim();
-
-        totalSales += actualAmount;
-        totalCommission += rowTotalCommission;
-        totalSellerCommission += rowSellerCommission;
-        totalShopeeCommission += rowShopeeCommission;
-        totalItems += 1;
-        if (fraudStatus === "FRAUD") fraudItems += 1;
+        const resolvedCampaignType = String(item.campaignType || campaignType || "").trim().toUpperCase();
 
         const row: ShopeeReportRow = {
           source,
@@ -1073,7 +1379,7 @@ function buildShopeeReportBlock(
           buyerType,
           device,
           referrer,
-          campaignType: String(item.campaignType || campaignType || "").trim(),
+          campaignType: resolvedCampaignType,
           campaignPartnerName,
           utmContent,
           shopId,
@@ -1091,6 +1397,19 @@ function buildShopeeReportBlock(
           displayItemStatus,
           itemNotes,
         };
+
+        if (!matchesShopeeReportFilters(row, filters)) continue;
+
+        orderHasIncludedItems = true;
+        conversionHasIncludedRows = true;
+
+        totalSales += actualAmount;
+        totalCommission += rowTotalCommission;
+        totalNetCommission += rowNetCommission;
+        totalSellerCommission += rowSellerCommission;
+        totalShopeeCommission += rowShopeeCommission;
+        totalItems += 1;
+        if (fraudStatus === "FRAUD") fraudItems += 1;
         rows.push(row);
 
         const shopKey = `${shopId || "unknown"}:${shopName.toLowerCase()}`;
@@ -1117,10 +1436,20 @@ function buildShopeeReportBlock(
         };
         daily.sales += actualAmount;
         daily.totalCommission += rowTotalCommission;
+        daily.netCommission += rowNetCommission;
         daily.items += 1;
         if (orderId) daily.orderIds.add(orderUniqueKey);
         dailyMap.set(conversionDateKey, daily);
       }
+
+      if (orderHasIncludedItems && orderId && !uniqueOrders.has(orderUniqueKey)) {
+        uniqueOrders.add(orderUniqueKey);
+        statusBreakdownMap.set(orderStatus, (statusBreakdownMap.get(orderStatus) || 0) + 1);
+      }
+    }
+
+    if (conversionHasIncludedRows) {
+      uniqueConversions.add(conversionKey);
     }
   }
 
@@ -1196,27 +1525,106 @@ function buildShopeeReportBlock(
   };
 }
 
-async function fetchShopeeReports(
+function buildLegacyReportBlock(summary: CommissionReportSummary): ShopeeReportBlock {
+  const conversions = Math.max(0, toInt(summary.recordsCount, 0));
+  const totalCommission = round2(summary.totalCommission);
+
+  return {
+    summary: {
+      conversions,
+      orders: conversions,
+      items: conversions,
+      totalSales: 0,
+      totalCommission,
+      netCommission: totalCommission,
+      sellerCommission: 0,
+      shopeeCommission: 0,
+      averageTicket: 0,
+      cancelledOrders: 0,
+      pendingOrders: 0,
+      completedOrders: 0,
+      unpaidOrders: 0,
+      fraudItems: 0,
+    },
+    rows: [],
+    daily: [],
+    statusBreakdown: [],
+    topShops: [],
+    pagesScanned: Math.max(0, toInt(summary.pagesScanned, 0)),
+    rawConversions: conversions,
+  };
+}
+
+async function fetchShopeeReportsLegacy(
   credentials: ShopeeCredentials,
   input: { startDate: string; endDate: string },
+  period: { startTimestamp: number; endTimestamp: number },
+): Promise<ShopeeReportsResponse> {
+  const [conversionLegacy, validatedLegacy] = await Promise.all([
+    fetchCommissionReport(credentials, {
+      type: "conversion_report",
+      startDate: input.startDate,
+      endDate: input.endDate,
+    }),
+    fetchCommissionReport(credentials, {
+      type: "validation_report",
+      startDate: input.startDate,
+      endDate: input.endDate,
+    }),
+  ]);
+
+  return {
+    success: true,
+    currency: conversionLegacy.currency || validatedLegacy.currency || defaultCurrencyForRegion(credentials.region),
+    period: {
+      startDate: input.startDate,
+      endDate: input.endDate,
+      startTimestamp: period.startTimestamp,
+      endTimestamp: period.endTimestamp,
+    },
+    conversion: buildLegacyReportBlock(conversionLegacy),
+    validated: buildLegacyReportBlock(validatedLegacy),
+  };
+}
+
+async function fetchShopeeReports(
+  credentials: ShopeeCredentials,
+  input: { startDate: string; endDate: string; filters?: ShopeeReportFilters },
 ): Promise<ShopeeReportsResponse> {
   const period = toUnixDayRange(input.startDate, input.endDate);
-  const [conversionRaw, validatedRaw] = await Promise.all([
-    fetchGraphqlReportNodes(credentials, "conversion", period),
-    fetchGraphqlReportNodes(credentials, "validated", period),
-  ]);
+  const filters = normalizeReportFilters(input.filters);
+  let conversionRaw: { nodes: Record<string, unknown>[]; pagesScanned: number };
+  try {
+    conversionRaw = await fetchGraphqlReportNodes(credentials, "conversion", period, filters);
+  } catch (error) {
+    if (!shouldFallbackGraphqlReports(error)) {
+      throw error;
+    }
+    logger.warn({ error: sanitizeError(error) }, "conversionReport GraphQL incompatible; using legacy signed reports fallback");
+    return await fetchShopeeReportsLegacy(credentials, input, period);
+  }
 
   const conversion = buildShopeeReportBlock(
     "conversion",
     conversionRaw.nodes,
     conversionRaw.pagesScanned,
     period,
+    filters,
   );
+
+  // Shopee now requires validationId for validatedReport, which is not provided by
+  // conversionReport query args. Build a "validated" view from completed conversion
+  // rows by default, while preserving user filters when explicitly set.
+  const validatedFilters: ShopeeReportFilters = {
+    ...filters,
+    orderStatus: filters.orderStatus || "COMPLETED",
+  };
   const validated = buildShopeeReportBlock(
     "validated",
-    validatedRaw.nodes,
-    validatedRaw.pagesScanned,
+    conversionRaw.nodes,
+    conversionRaw.pagesScanned,
     period,
+    validatedFilters,
   );
 
   return {
@@ -1245,22 +1653,80 @@ function isRetryableShopeeError(error: unknown): boolean {
   );
 }
 
-async function callShopeeGraphql(
-  credentials: ShopeeCredentials,
+function shouldFallbackGraphqlReports(error: unknown): boolean {
+  const message = sanitizeError(error)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return (
+    message.includes("wrong type")
+    || message.includes("got null for non-null")
+    || message.includes("cannot query field")
+    || message.includes("validationid")
+  );
+}
+
+function shouldFallbackValidatedReport(error: unknown): boolean {
+  const message = sanitizeError(error)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return (
+    message.includes("validatedreport")
+    && message.includes("validationid")
+    && message.includes("required")
+  );
+}
+
+function looksLikeShopeeAuthSignatureError(error: unknown): boolean {
+  const message = sanitizeError(error).toLowerCase();
+  return (
+    message.includes("invalid signature")
+    || message.includes("invalid authorization header")
+    || message.includes("invalid credential")
+    || message.includes("request expired")
+    || message.includes("invalid timestamp")
+    || message.includes("10020")
+  );
+}
+
+function compactGraphqlQuery(query: string): string {
+  return query
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function buildGraphqlPayload(
   query: string,
   variables: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const maxAttempts = 3;
+  mode: "legacy" | "canonical",
+): string {
+  if (mode === "legacy") {
+    return JSON.stringify({ query, variables }).replace(/\n/g, "");
+  }
+  return JSON.stringify({
+    query: compactGraphqlQuery(query),
+    operationName: null,
+    variables,
+  });
+}
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+async function callShopeeGraphqlWithPayload(
+  credentials: ShopeeCredentials,
+  payload: string,
+  variables: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  let lastAuthError: unknown = null;
+  for (let authModeIndex = 0; authModeIndex < SHOPEE_AUTH_HEADER_FALLBACK_MODES.length; authModeIndex += 1) {
+    const authMode = SHOPEE_AUTH_HEADER_FALLBACK_MODES[authModeIndex];
     try {
-      const payloadObj = { query, variables };
-      const payload = JSON.stringify(payloadObj).replace(/\n/g, "");
       const response = await fetch(buildBaseUrl(credentials.region), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: signAuthorization(credentials.appId, credentials.secret, payload),
+          Authorization: signAuthorization(credentials.appId, credentials.secret, payload, authMode),
         },
         body: payload,
       });
@@ -1276,13 +1742,16 @@ async function callShopeeGraphql(
       }
 
       if (!response.ok) {
-        throw new Error(String(parsed.error || parsed.message || `Shopee API HTTP ${response.status}`));
+        const errText = parsed.error || parsed.message || parsed.msg
+          || (parsed.code != null ? `error [${parsed.code}]` : null)
+          || `Shopee API HTTP ${response.status}`;
+        throw new Error(String(errText));
       }
 
       const errors = Array.isArray(parsed.errors) ? parsed.errors : [];
       if (errors.length > 0) {
         const first = errors[0] as Record<string, unknown>;
-        const errMsg = String(first.message || "Erro GraphQL da Shopee");
+        const errMsg = String(first.message || first.msg || "Erro GraphQL da Shopee");
         logger.error({
           graphqlErrors: errors,
           variables,
@@ -1297,6 +1766,50 @@ async function callShopeeGraphql(
       }
 
       return data as Record<string, unknown>;
+    } catch (error) {
+      const shouldTryNextAuthHeader = (
+        looksLikeShopeeAuthSignatureError(error)
+        && authModeIndex < (SHOPEE_AUTH_HEADER_FALLBACK_MODES.length - 1)
+      );
+      if (!shouldTryNextAuthHeader) {
+        throw error;
+      }
+      lastAuthError = error;
+      logger.warn({
+        authMode,
+        nextAuthMode: SHOPEE_AUTH_HEADER_FALLBACK_MODES[authModeIndex + 1],
+        error: sanitizeError(error),
+      }, "retrying shopee graphql with alternate auth header");
+    }
+  }
+
+  if (lastAuthError) {
+    throw lastAuthError;
+  }
+  throw new Error("Falha ao autenticar chamada GraphQL Shopee");
+}
+
+async function callShopeeGraphql(
+  credentials: ShopeeCredentials,
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const legacyPayload = buildGraphqlPayload(query, variables, "legacy");
+      try {
+        return await callShopeeGraphqlWithPayload(credentials, legacyPayload, variables);
+      } catch (error) {
+        if (!looksLikeShopeeAuthSignatureError(error)) throw error;
+        logger.warn({
+          error: sanitizeError(error),
+          attempt,
+        }, "retrying shopee graphql with canonical payload");
+        const canonicalPayload = buildGraphqlPayload(query, variables, "canonical");
+        return await callShopeeGraphqlWithPayload(credentials, canonicalPayload, variables);
+      }
     } catch (error) {
       const canRetry = attempt < maxAttempts && isRetryableShopeeError(error);
       if (!canRetry) throw error;
@@ -1657,6 +2170,7 @@ app.post("/api/shopee/reports", async (req, res) => {
 
   const startDate = normalizedStart || dateYmdDaysAgo(29);
   const endDate = normalizedEnd || dateYmdDaysAgo(0);
+  const filters = normalizeReportFilters(req.body?.filters);
   if (startDate > endDate) {
     res.status(400).json({ error: "Periodo invalido: startDate deve ser menor ou igual a endDate." });
     return;
@@ -1675,6 +2189,7 @@ app.post("/api/shopee/reports", async (req, res) => {
     const report = await fetchShopeeReports(parsed.credentials, {
       startDate,
       endDate,
+      filters,
     });
     res.json(report);
   } catch (error) {
@@ -1682,6 +2197,7 @@ app.post("/api/shopee/reports", async (req, res) => {
       error: sanitizeError(error),
       startDate,
       endDate,
+      filters,
     });
   }
 });

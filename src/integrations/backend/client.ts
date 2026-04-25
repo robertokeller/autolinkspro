@@ -581,6 +581,8 @@ const functions = {
             ? 180_000
             : name === "analytics-admin-groups"
               ? 20_000
+          : (name === "shopee-reports" || name === "shopee_reports")
+            ? 120_000
               : 15_000;
     try {
       const res = await apiFetch("/functions/v1/rpc", { method: "POST", body }, timeoutMs);

@@ -52,6 +52,7 @@ export function ProtectedAppRoutes() {
         <Route path={ROUTES.app.shopeeVitrine} element={<Pages.ShopeeVitrine />} />
         <Route path={ROUTES.app.shopeePesquisa} element={<Pages.ShopeePesquisa />} />
         <Route path={ROUTES.app.shopeeConversor} element={<Pages.ShopeeConversor />} />
+        <Route path={ROUTES.app.shopeeReports} element={<Pages.ShopeeReports />} />
         <Route
           path={ROUTES.app.shopeeAutomacoes}
           element={(
