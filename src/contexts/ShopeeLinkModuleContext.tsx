@@ -11,7 +11,7 @@ import {
 } from "@/lib/shopee-link-converter";
 import { extractMarketplaceLinks } from "@/lib/marketplace-utils";
 
-export type ShopeeConversionStatus = "real" | "partial" | "fallback";
+type ShopeeConversionStatus = "real" | "partial" | "fallback";
 
 interface ShopeeLinkConversionResult extends ShopeeLinkConversion {
   status: ShopeeConversionStatus;

@@ -60,6 +60,11 @@ export interface SendHistoryTarget {
   createdAt: string;
   title: string;
   message: string;
+  providerMessageId: string;
+  deliveryStatus: string;
+  deliveryUpdatedAt: string;
+  deliveryError: string;
+  deliveryConfirmed: boolean;
   details: Record<string, unknown>;
 }
 
@@ -165,6 +170,8 @@ function summarizeError(rawMessage: string, fallback = "Falha ao processar este 
     route_processing_error: "Erro interno ao processar a rota.",
     quiet_hours_queued: "Mensagem enfileirada por horário de silêncio configurado.",
     quiet_hours_queue_failed: "Falha ao enfileirar a mensagem no horário de silêncio.",
+    activity_budget_queued: "Envio pesado: destinos restantes foram colocados em fila dinâmica para reduzir pico.",
+    activity_budget_exceeded: "Tempo máximo seguro da atividade foi excedido antes de concluir todos os destinos.",
   };
 
   if (mappedByKey[normalizedKey]) {
@@ -264,7 +271,13 @@ function mapHistoryEntry(row: HistoryEntryRow): SendHistoryEntry {
 function mapHistoryEntryTarget(row: HistoryEntryTargetRow): SendHistoryTarget {
   const details = asObject(row.details);
   const createdAt = toIsoString(row.created_at);
-  const rawErrorMessage = firstText(details.error, details.mediaError, row.block_reason);
+  const providerMessageId = firstText(row.provider_message_id, details.providerMessageId, details.messageId);
+  const deliveryStatus = firstText(row.delivery_status, details.deliveryStatus).toLowerCase();
+  const deliveryUpdatedAt = firstText(row.delivery_updated_at, details.deliveryUpdatedAt, createdAt);
+  const deliveryError = firstText(row.delivery_error, details.deliveryError);
+  const deliveryConfirmed = deliveryStatus === "delivered" || deliveryStatus === "read" || deliveryStatus === "played";
+
+  const rawErrorMessage = firstText(details.error, details.mediaError, row.block_reason, deliveryError);
   const message = firstText(details.message, details.text);
 
   return {
@@ -284,6 +297,11 @@ function mapHistoryEntryTarget(row: HistoryEntryTargetRow): SendHistoryTarget {
     createdAt,
     title: mapProcessingTitle(row.processing_status || "processed"),
     message,
+    providerMessageId,
+    deliveryStatus,
+    deliveryUpdatedAt,
+    deliveryError,
+    deliveryConfirmed,
     details,
   };
 }

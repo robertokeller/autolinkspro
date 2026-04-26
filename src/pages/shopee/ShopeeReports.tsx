@@ -1,15 +1,29 @@
 import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  addMonths,
+  eachDayOfInterval,
+  endOfMonth,
+  endOfWeek,
+  format,
+  isBefore,
+  isSameDay,
+  isSameMonth,
+  isValid,
+  parseISO,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+} from "date-fns";
+import { ptBR } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { DatePicker } from "@/components/ui/date-picker";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { PageWrapper } from "@/components/PageWrapper";
-import { Separator } from "@/components/ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ShopeeCredentialsBanner } from "@/components/ShopeeCredentialsBanner";
@@ -17,15 +31,14 @@ import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { backend } from "@/integrations/backend/client";
 import { invokeBackendRpc } from "@/integrations/backend/rpc";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, BarChart3, CalendarDays, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Clock3, Layers3, MousePointerClick, Package, RefreshCw, Search, ShoppingCart, Sparkles, TrendingUp, Wallet } from "lucide-react";
+import { AlertTriangle, BarChart3, CalendarDays, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Layers3, Package, RefreshCw, Search, ShoppingCart, Sparkles, TrendingUp, Wallet } from "lucide-react";
 import { toast } from "sonner";
 
-type ShopeeReportPreset = "today" | "yesterday" | "7d" | "30d" | "60d" | "90d" | "thisMonth" | "lastMonth" | "custom";
+type ShopeeReportPreset = "yesterday" | "7d" | "15d" | "30d" | "thisWeek" | "thisMonth" | "custom";
 type ShopeeReportSource = "conversion" | "validated";
-type ReportInnerView = "dashboard" | "clicks" | "sales" | "history";
+type ReportInnerView = "dashboard" | "sales" | "history";
 
 type ShopeeReportRow = {
-  source: "conversion" | "validated";
   purchaseTime: number;
   clickTime: number;
   conversionId: string;
@@ -44,20 +57,6 @@ type ShopeeReportRow = {
   displayItemStatus: string;
 };
 
-type ShopeeReportStatusPoint = {
-  status: string;
-  count: number;
-};
-
-type ShopeeReportShopPoint = {
-  shopId: string;
-  shopName: string;
-  sales: number;
-  totalCommission: number;
-  items: number;
-  orders: number;
-};
-
 type ShopeeReportDailyPoint = {
   date: string;
   sales: number;
@@ -74,24 +73,17 @@ type ShopeeReportSummary = {
   totalSales: number;
   totalCommission: number;
   netCommission: number;
-  sellerCommission?: number;
-  shopeeCommission?: number;
   averageTicket: number;
   cancelledOrders: number;
   pendingOrders: number;
   completedOrders: number;
   unpaidOrders: number;
-  fraudItems: number;
 };
 
 type ShopeeReportBlock = {
   summary: ShopeeReportSummary;
   rows: ShopeeReportRow[];
   daily: ShopeeReportDailyPoint[];
-  statusBreakdown: ShopeeReportStatusPoint[];
-  topShops: ShopeeReportShopPoint[];
-  pagesScanned: number;
-  rawConversions: number;
 };
 
 type ShopeeReportsResponse = {
@@ -112,25 +104,52 @@ type DateRange = {
   endDate: string;
 };
 
-type ShopeeReportFilters = {
-  orderStatus: "ALL" | "UNPAID" | "PENDING" | "COMPLETED" | "CANCELLED";
-};
+type CustomRangeSelectionStep = "start" | "end";
 
 type ShopeeQuickPreset = Exclude<ShopeeReportPreset, "custom">;
 
-const DEFAULT_REPORT_FILTERS: ShopeeReportFilters = {
+const REPORT_RPC_FILTERS = {
   orderStatus: "ALL",
-};
+} as const;
 
 const DEFAULT_PRESET: ShopeeReportPreset = "30d";
-const DEFAULT_ROLLING_DAYS = 14;
 const MIN_ROLLING_DAYS = 1;
 const MAX_ROLLING_DAYS = 365;
+const INNER_TAB_TRIGGER_CLASS = "h-full min-h-[72px] w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-3 py-2.5 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm";
+const SOURCE_TAB_TRIGGER_CLASS = "h-full min-h-[78px] w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-4 py-3 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm";
+
+const REPORT_INNER_TAB_ITEMS: Array<{
+  value: ReportInnerView;
+  label: string;
+  description: string;
+  icon: ComponentType<{ className?: string }>;
+}> = [
+  {
+    value: "dashboard",
+    label: "Painel",
+    description: "Visão executiva da operação",
+    icon: BarChart3,
+  },
+  {
+    value: "sales",
+    label: "Vendas",
+    description: "Produtos, canais e evolução diária",
+    icon: ShoppingCart,
+  },
+  {
+    value: "history",
+    label: "Histórico",
+    description: "Eventos detalhados por pedido e item",
+    icon: Search,
+  },
+];
 
 const PERIOD_INTERACTIVE_CHIPS: Array<{ value: ShopeeReportPreset; label: string }> = [
-  { value: "today", label: "Hoje" },
+  { value: "yesterday", label: "Ontem" },
   { value: "7d", label: "7 dias" },
+  { value: "15d", label: "15 dias" },
   { value: "30d", label: "30 dias" },
+  { value: "thisWeek", label: "Essa semana" },
   { value: "thisMonth", label: "Este mês" },
   { value: "custom", label: "Personalizado" },
 ];
@@ -139,14 +158,19 @@ function toYmd(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+function utcTodayStart(): Date {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  return today;
+}
+
 function clampRollingDays(value: number): number {
-  if (!Number.isFinite(value)) return DEFAULT_ROLLING_DAYS;
+  if (!Number.isFinite(value)) return 30;
   return Math.min(MAX_ROLLING_DAYS, Math.max(MIN_ROLLING_DAYS, Math.trunc(value)));
 }
 
 function buildRollingRange(days: number): DateRange {
-  const end = new Date();
-  end.setUTCHours(0, 0, 0, 0);
+  const end = utcTodayStart();
   const start = new Date(end);
   const safeDays = clampRollingDays(days);
   start.setUTCDate(start.getUTCDate() - (safeDays - 1));
@@ -154,13 +178,7 @@ function buildRollingRange(days: number): DateRange {
 }
 
 function buildPresetRange(preset: ShopeeQuickPreset): DateRange {
-  const end = new Date();
-  end.setUTCHours(0, 0, 0, 0);
-
-  if (preset === "today") {
-    const ymd = toYmd(end);
-    return { startDate: ymd, endDate: ymd };
-  }
+  const end = utcTodayStart();
 
   if (preset === "yesterday") {
     const yesterday = new Date(end);
@@ -169,22 +187,33 @@ function buildPresetRange(preset: ShopeeQuickPreset): DateRange {
     return { startDate: ymd, endDate: ymd };
   }
 
+  if (preset === "thisWeek") {
+    const start = new Date(end);
+    start.setUTCDate(start.getUTCDate() - end.getUTCDay());
+    return { startDate: toYmd(start), endDate: toYmd(end) };
+  }
+
   if (preset === "thisMonth") {
     const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1));
     return { startDate: toYmd(start), endDate: toYmd(end) };
   }
 
-  if (preset === "lastMonth") {
-    const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 1, 1));
-    const monthEnd = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 0));
-    return { startDate: toYmd(start), endDate: toYmd(monthEnd) };
+  if (preset === "7d" || preset === "15d" || preset === "30d") {
+    return buildRollingRange(Number.parseInt(preset, 10));
   }
 
-  return buildRollingRange(preset === "7d" ? 7 : preset === "30d" ? 30 : preset === "60d" ? 60 : 90);
+  return buildRollingRange(30);
 }
 
 function isValidYmd(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function parseYmdDate(value: string): Date | null {
+  const raw = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const parsed = parseISO(raw);
+  return isValid(parsed) ? parsed : null;
 }
 
 function isFunctionNotImplementedError(message: string): boolean {
@@ -193,12 +222,6 @@ function isFunctionNotImplementedError(message: string): boolean {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
   return normalized.includes("funcao nao implementada");
-}
-
-function toRpcFilters(filters: ShopeeReportFilters): Record<string, string> {
-  return {
-    orderStatus: filters.orderStatus,
-  };
 }
 
 function formatMoney(value: number, currency: string): string {
@@ -214,8 +237,9 @@ function formatNumber(value: number): string {
 }
 
 function formatDateTime(timestampSec: number): string {
-  if (!Number.isFinite(timestampSec) || timestampSec <= 0) return "-";
-  const date = new Date(timestampSec * 1000);
+  const normalizedTimestamp = toUnixSeconds(timestampSec);
+  if (normalizedTimestamp <= 0) return "-";
+  const date = new Date(normalizedTimestamp * 1000);
   return date.toLocaleString("pt-BR", {
     day: "2-digit",
     month: "2-digit",
@@ -224,18 +248,24 @@ function formatDateTime(timestampSec: number): string {
   });
 }
 
+function toUnixSeconds(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+
+  let normalized = Math.trunc(parsed);
+  while (normalized > 9_999_999_999) {
+    normalized = Math.trunc(normalized / 1000);
+  }
+
+  return normalized > 0 ? normalized : 0;
+}
+
 function formatYmdShort(value: string): string {
   if (!isValidYmd(value)) return value;
   const [year, month, day] = value.split("-").map((part) => Number(part));
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return value;
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-}
-
-function formatRangeSummary(range: DateRange): string {
-  if (!isValidYmd(range.startDate) || !isValidYmd(range.endDate)) return "Período inválido";
-  if (range.startDate === range.endDate) return formatYmdShort(range.startDate);
-  return `${formatYmdShort(range.startDate)} - ${formatYmdShort(range.endDate)}`;
 }
 
 function formatCountLabel(value: number, singular: string, plural: string): string {
@@ -261,21 +291,6 @@ function orderStatusLabel(status: string): string {
   return "Desconhecido";
 }
 
-type ClickAggregatePoint = {
-  key: string;
-  label: string;
-  clicks: number;
-  share: number;
-};
-
-type ReportClickInsights = {
-  totalClicks: number;
-  peakHour: { label: string; clicks: number } | null;
-  byHour: ClickAggregatePoint[];
-  byChannel: ClickAggregatePoint[];
-  bySubId: ClickAggregatePoint[];
-};
-
 type ReportProductPoint = {
   key: string;
   itemName: string;
@@ -291,107 +306,16 @@ type ReportSalesBreakdownPoint = {
   label: string;
   sales: number;
   totalCommission: number;
-  items: number;
   orders: number;
 };
 
-const UNKNOWN_CHANNEL_LABEL = "Desconhecido";
 const UNKNOWN_SUB_ID_LABEL = "Sem ID de Sub";
-
-function formatHourBucket(timestampSec: number): string {
-  if (!Number.isFinite(timestampSec) || timestampSec <= 0) return "Sem horário";
-  const date = new Date(timestampSec * 1000);
-  const hour = String(date.getHours()).padStart(2, "0");
-  return `${hour}:00 - ${hour}:59`;
-}
 
 function normalizeSubId(rawValue: string): string {
   const raw = String(rawValue || "").trim();
   if (!raw || raw === "----" || raw === "-" || raw.toLowerCase() === "null") return UNKNOWN_SUB_ID_LABEL;
   const firstToken = raw.split(/[\s|,;]+/)[0] || raw;
   return firstToken;
-}
-
-function normalizeClickChannel(rawValue: string): string {
-  const raw = String(rawValue || "").trim();
-  if (!raw) return UNKNOWN_CHANNEL_LABEL;
-
-  const lowered = raw.toLowerCase();
-  if (["unknown", "desconhecido", "n/a", "na", "none", "(not set)", "null", "-"].includes(lowered)) {
-    return UNKNOWN_CHANNEL_LABEL;
-  }
-
-  const maybeHost = raw.replace(/^https?:\/\//i, "").split("/")[0].trim().toLowerCase();
-  if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(maybeHost)) {
-    return maybeHost.replace(/^www\./, "");
-  }
-
-  return raw;
-}
-
-function toClickAggregatePoints(sourceMap: Map<string, number>, total: number): ClickAggregatePoint[] {
-  if (total <= 0) return [];
-  return Array.from(sourceMap.entries())
-    .map(([label, clicks]) => ({
-      key: label,
-      label,
-      clicks,
-      share: Number(((clicks / total) * 100).toFixed(1)),
-    }))
-    .sort((a, b) => b.clicks - a.clicks || a.label.localeCompare(b.label));
-}
-
-function buildClickInsights(rows: ShopeeReportRow[]): ReportClickInsights {
-  const uniqueEvents = new Map<string, { clickTime: number; channel: string; subId: string }>();
-
-  for (const row of rows) {
-    const conversionKey = String(row.conversionId || "").trim() || `${row.orderId || "sem-pedido"}:${row.itemId || "sem-item"}`;
-    const current = uniqueEvents.get(conversionKey) || {
-      clickTime: 0,
-      channel: UNKNOWN_CHANNEL_LABEL,
-      subId: UNKNOWN_SUB_ID_LABEL,
-    };
-
-    const rowClickTime = Number(row.clickTime || 0);
-    const rowChannel = normalizeClickChannel(String(row.referrer || ""));
-    const rowSubId = normalizeSubId(String(row.utmContent || ""));
-
-    if (rowClickTime >= current.clickTime) {
-      current.clickTime = rowClickTime;
-      if (rowChannel !== UNKNOWN_CHANNEL_LABEL) current.channel = rowChannel;
-      if (rowSubId !== UNKNOWN_SUB_ID_LABEL) current.subId = rowSubId;
-    } else {
-      if (current.channel === UNKNOWN_CHANNEL_LABEL && rowChannel !== UNKNOWN_CHANNEL_LABEL) current.channel = rowChannel;
-      if (current.subId === UNKNOWN_SUB_ID_LABEL && rowSubId !== UNKNOWN_SUB_ID_LABEL) current.subId = rowSubId;
-    }
-
-    uniqueEvents.set(conversionKey, current);
-  }
-
-  const events = Array.from(uniqueEvents.values()).filter((event) => event.clickTime > 0);
-  const hourMap = new Map<string, number>();
-  const channelMap = new Map<string, number>();
-  const subIdMap = new Map<string, number>();
-
-  for (const event of events) {
-    const hourLabel = formatHourBucket(event.clickTime);
-    hourMap.set(hourLabel, (hourMap.get(hourLabel) || 0) + 1);
-    channelMap.set(event.channel, (channelMap.get(event.channel) || 0) + 1);
-    subIdMap.set(event.subId, (subIdMap.get(event.subId) || 0) + 1);
-  }
-
-  const totalClicks = events.length;
-  const byHour = toClickAggregatePoints(hourMap, totalClicks);
-  const byChannel = toClickAggregatePoints(channelMap, totalClicks);
-  const bySubId = toClickAggregatePoints(subIdMap, totalClicks);
-
-  return {
-    totalClicks,
-    peakHour: byHour.length > 0 ? { label: byHour[0].label, clicks: byHour[0].clicks } : null,
-    byHour,
-    byChannel,
-    bySubId,
-  };
 }
 
 function buildTopProducts(rows: ShopeeReportRow[]): ReportProductPoint[] {
@@ -417,7 +341,7 @@ function buildTopProducts(rows: ShopeeReportRow[]): ReportProductPoint[] {
       orderIds: new Set<string>(),
     };
 
-    const eventTime = Math.max(Number(row.purchaseTime || 0), Number(row.clickTime || 0));
+    const eventTime = Math.max(toUnixSeconds(row.purchaseTime), toUnixSeconds(row.clickTime));
     current.latestPurchaseTime = Math.max(current.latestPurchaseTime, Number.isFinite(eventTime) ? eventTime : 0);
     current.sales += Number(row.actualAmount || 0);
     current.totalCommission += Number(row.totalCommission || 0);
@@ -449,7 +373,6 @@ function buildSalesBreakdown(
     label: string;
     sales: number;
     totalCommission: number;
-    items: number;
     orderIds: Set<string>;
   }>();
 
@@ -461,13 +384,11 @@ function buildSalesBreakdown(
       label,
       sales: 0,
       totalCommission: 0,
-      items: 0,
       orderIds: new Set<string>(),
     };
 
     current.sales += Number(row.actualAmount || 0);
     current.totalCommission += Number(row.totalCommission || 0);
-    current.items += Math.max(1, Number(row.qty || 0));
     if (row.orderId) current.orderIds.add(row.orderId);
     breakdown.set(key, current);
   }
@@ -478,14 +399,9 @@ function buildSalesBreakdown(
       label: entry.label,
       sales: Number(entry.sales.toFixed(2)),
       totalCommission: Number(entry.totalCommission.toFixed(2)),
-      items: entry.items,
       orders: entry.orderIds.size,
     }))
     .sort((a, b) => b.totalCommission - a.totalCommission || b.sales - a.sales || b.orders - a.orders);
-}
-
-function getAvailableReportViews(): ReportInnerView[] {
-  return ["dashboard", "clicks", "sales", "history"];
 }
 
 type ReportKpiTone = "primary" | "success" | "info" | "warning";
@@ -673,16 +589,91 @@ function ReportKpiCard(props: {
   );
 }
 
+function SalesBreakdownCard(props: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  firstColumnLabel: string;
+  itemLabel: string;
+  currency: string;
+  pagedBreakdown: PageSlice<ReportSalesBreakdownPoint>;
+  onPageChange: (nextPage: number) => void;
+}) {
+  const {
+    icon,
+    title,
+    description,
+    firstColumnLabel,
+    itemLabel,
+    currency,
+    pagedBreakdown,
+    onPageChange,
+  } = props;
+
+  return (
+    <Card className="border-border/70 bg-card/70 shadow-sm">
+      <CardHeader className="pb-3">
+        <ReportSectionHeader
+          icon={icon}
+          title={title}
+          description={description}
+        />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {pagedBreakdown.total === 0 ? (
+          <p className="text-sm text-muted-foreground">{`Sem ${itemLabel} com vendas no período.`}</p>
+        ) : (
+          <>
+            <DataTableShell minWidth={0}>
+              <table className="w-full table-fixed text-sm">
+                <thead className="bg-muted/45 text-left text-2xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="w-[44%] px-3 py-2 font-semibold">{firstColumnLabel}</th>
+                    <th className="w-[16%] px-3 py-2 font-semibold">Pedidos</th>
+                    <th className="w-[20%] px-3 py-2 font-semibold">Vendido</th>
+                    <th className="w-[20%] px-3 py-2 font-semibold">Comissão</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedBreakdown.pageItems.map((point) => (
+                    <tr key={point.key} className="border-t border-border/60 align-top">
+                      <td className="px-3 py-2.5 font-medium">
+                        <TruncatedCellText value={point.label} className="font-medium" />
+                      </td>
+                      <td className="px-3 py-2.5">{formatNumber(point.orders)}</td>
+                      <td className="px-3 py-2.5">{formatMoney(point.sales, currency)}</td>
+                      <td className="px-3 py-2.5 font-semibold">{formatMoney(point.totalCommission, currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </DataTableShell>
+
+            <TablePager
+              page={pagedBreakdown.page}
+              totalPages={pagedBreakdown.totalPages}
+              from={pagedBreakdown.from}
+              to={pagedBreakdown.to}
+              total={pagedBreakdown.total}
+              itemLabel={itemLabel}
+              onPageChange={onPageChange}
+            />
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ReportBlockView(props: {
   title: string;
   block: ShopeeReportBlock;
   currency: string;
   source: ShopeeReportSource;
-  availableViews: ReportInnerView[];
   activeView: ReportInnerView;
   onActiveViewChange: (view: ReportInnerView) => void;
 }) {
-  const { title, block, currency, source, availableViews, activeView, onActiveViewChange } = props;
+  const { title, block, currency, source, activeView, onActiveViewChange } = props;
 
   const sourceLabel = source === "conversion" ? "Comissões estimadas" : "Comissões validadas";
   const sourceHint = source === "conversion"
@@ -690,8 +681,6 @@ function ReportBlockView(props: {
     : "Base validada pela plataforma para fechamento financeiro e conciliação final.";
 
   const [salesSearch, setSalesSearch] = useState("");
-  const [clickChannelPage, setClickChannelPage] = useState(1);
-  const [clickSubIdPage, setClickSubIdPage] = useState(1);
   const [productPage, setProductPage] = useState(1);
   const [salesChannelPage, setSalesChannelPage] = useState(1);
   const [salesSubIdPage, setSalesSubIdPage] = useState(1);
@@ -699,7 +688,6 @@ function ReportBlockView(props: {
   const [dailyPage, setDailyPage] = useState(1);
   const [historyPage, setHistoryPage] = useState(1);
 
-  const clickInsights = useMemo(() => buildClickInsights(block.rows), [block.rows]);
   const topProducts = useMemo(() => buildTopProducts(block.rows), [block.rows]);
   const channelSalesBreakdown = useMemo(
     () => buildSalesBreakdown(block.rows, (row) => String(row.referrer || "").trim() || "Desconhecido"),
@@ -712,8 +700,8 @@ function ReportBlockView(props: {
 
   const sortedRows = useMemo(
     () => [...block.rows].sort((a, b) => {
-      const timeA = Math.max(Number(a.purchaseTime || 0), Number(a.clickTime || 0));
-      const timeB = Math.max(Number(b.purchaseTime || 0), Number(b.clickTime || 0));
+      const timeA = Math.max(toUnixSeconds(a.purchaseTime), toUnixSeconds(a.clickTime));
+      const timeB = Math.max(toUnixSeconds(b.purchaseTime), toUnixSeconds(b.clickTime));
       if (timeB !== timeA) return timeB - timeA;
       return String(b.orderId || "").localeCompare(String(a.orderId || ""));
     }),
@@ -765,37 +753,13 @@ function ReportBlockView(props: {
     [block.summary.cancelledOrders, block.summary.completedOrders, block.summary.pendingOrders, block.summary.unpaidOrders],
   );
 
-  const trackedSubIds = useMemo(
-    () => clickInsights.bySubId.filter((item) => item.label !== UNKNOWN_SUB_ID_LABEL).length,
-    [clickInsights.bySubId],
-  );
-  const realClickChannels = useMemo(
-    () => clickInsights.byChannel.filter((item) => item.label !== UNKNOWN_CHANNEL_LABEL),
-    [clickInsights.byChannel],
-  );
-  const unknownChannelClicks = useMemo(
-    () => clickInsights.byChannel.find((item) => item.label === UNKNOWN_CHANNEL_LABEL)?.clicks || 0,
-    [clickInsights.byChannel],
-  );
-  const realClickSubIds = useMemo(
-    () => clickInsights.bySubId.filter((item) => item.label !== UNKNOWN_SUB_ID_LABEL),
-    [clickInsights.bySubId],
-  );
-  const missingSubIdClicks = useMemo(
-    () => clickInsights.bySubId.find((item) => item.label === UNKNOWN_SUB_ID_LABEL)?.clicks || 0,
-    [clickInsights.bySubId],
-  );
-  const clickChannelsOrdered = useMemo(
-    () => [...realClickChannels].sort((a, b) => b.clicks - a.clicks || a.label.localeCompare(b.label)),
-    [realClickChannels],
-  );
-  const clickSubIdsOrdered = useMemo(
-    () => [...realClickSubIds].sort((a, b) => b.clicks - a.clicks || a.label.localeCompare(b.label)),
-    [realClickSubIds],
-  );
   const statusTotal = useMemo(
     () => statusItems.reduce((sum, item) => sum + item.count, 0),
     [statusItems],
+  );
+  const completedOrderRatio = useMemo(
+    () => (statusTotal > 0 ? (block.summary.completedOrders / statusTotal) * 100 : 0),
+    [block.summary.completedOrders, statusTotal],
   );
 
   const dailySeries = useMemo(() => [...block.daily].sort((a, b) => b.date.localeCompare(a.date)), [block.daily]);
@@ -808,14 +772,6 @@ function ReportBlockView(props: {
     setSalesTrendPage(1);
   }, [dailySeries.length]);
 
-  const pagedClickChannels = useMemo(
-    () => paginateByPage(clickChannelsOrdered, clickChannelPage, 8),
-    [clickChannelPage, clickChannelsOrdered],
-  );
-  const pagedClickSubIds = useMemo(
-    () => paginateByPage(clickSubIdsOrdered, clickSubIdPage, 8),
-    [clickSubIdPage, clickSubIdsOrdered],
-  );
   const pagedTopProducts = useMemo(
     () => paginateByPage(topProducts, productPage, 8),
     [productPage, topProducts],
@@ -837,7 +793,6 @@ function ReportBlockView(props: {
     [filteredRows, historyPage],
   );
 
-  const maxHourlyClicks = clickInsights.byHour[0]?.clicks || 1;
   const salesTrend = useMemo(() => {
     const points = dailySeries.map((day) => ({
       date: day.date,
@@ -870,10 +825,6 @@ function ReportBlockView(props: {
     [salesTrend.points, salesTrendPage],
   );
 
-  const showDashboard = availableViews.includes("dashboard");
-  const showClicks = availableViews.includes("clicks");
-  const showSales = availableViews.includes("sales");
-  const showHistory = availableViews.includes("history");
   const tabViewportClass = "space-y-5";
 
   const headerStats = [
@@ -931,64 +882,21 @@ function ReportBlockView(props: {
         onValueChange={(value) => onActiveViewChange(value as ReportInnerView)}
         className="space-y-5"
       >
-        <TabsList className="grid h-auto w-full grid-cols-1 gap-1.5 rounded-2xl border border-border/60 bg-muted/25 p-1.5 sm:grid-cols-2 xl:grid-cols-4">
-          {showDashboard && (
-            <TabsTrigger
-              value="dashboard"
-              className="min-h-[72px] h-full flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-3 py-2.5 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm"
-            >
+        <TabsList className="mx-auto grid h-auto w-full max-w-[1040px] grid-cols-1 gap-2 rounded-2xl border border-border/60 bg-muted/25 p-2 overflow-x-visible sm:grid-cols-2 lg:grid-cols-3">
+          {REPORT_INNER_TAB_ITEMS.map((tab) => (
+            <TabsTrigger key={tab.value} value={tab.value} className={INNER_TAB_TRIGGER_CLASS}>
               <span className="flex items-center justify-center gap-1.5 text-sm font-semibold">
-                <BarChart3 className="h-4 w-4" />
-                Painel
+                <tab.icon className="h-4 w-4" />
+                {tab.label}
               </span>
-              <span className="text-2xs font-medium text-muted-foreground">Visão executiva da operação</span>
+              <span className="text-2xs font-medium text-muted-foreground">{tab.description}</span>
             </TabsTrigger>
-          )}
-
-          {showClicks && (
-            <TabsTrigger
-              value="clicks"
-              className="min-h-[72px] h-full flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-3 py-2.5 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm"
-            >
-              <span className="flex items-center justify-center gap-1.5 text-sm font-semibold">
-                <MousePointerClick className="h-4 w-4" />
-                Cliques
-              </span>
-              <span className="text-2xs font-medium text-muted-foreground">Origem e distribuição do tráfego</span>
-            </TabsTrigger>
-          )}
-
-          {showSales && (
-            <TabsTrigger
-              value="sales"
-              className="min-h-[72px] h-full flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-3 py-2.5 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm"
-            >
-              <span className="flex items-center justify-center gap-1.5 text-sm font-semibold">
-                <ShoppingCart className="h-4 w-4" />
-                Vendas
-              </span>
-              <span className="text-2xs font-medium text-muted-foreground">Produtos, canais e evolução diária</span>
-            </TabsTrigger>
-          )}
-
-          {showHistory && (
-            <TabsTrigger
-              value="history"
-              className="min-h-[72px] h-full flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-3 py-2.5 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm"
-            >
-              <span className="flex items-center justify-center gap-1.5 text-sm font-semibold">
-                <Search className="h-4 w-4" />
-                Histórico
-              </span>
-              <span className="text-2xs font-medium text-muted-foreground">Eventos detalhados por pedido e item</span>
-            </TabsTrigger>
-          )}
+          ))}
         </TabsList>
 
-        {showDashboard && (
         <TabsContent value="dashboard" className="mt-0 animate-in fade-in duration-500">
           <div className={tabViewportClass}>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <ReportKpiCard
               title="Total vendido"
               value={formatMoney(block.summary.totalSales, currency)}
@@ -1010,69 +918,83 @@ function ReportBlockView(props: {
               icon={ShoppingCart}
               tone="info"
             />
-            <ReportKpiCard
-              title="Fraudes mapeadas"
-              value={formatNumber(block.summary.fraudItems)}
-              sub={`Ticket médio: ${formatMoney(block.summary.averageTicket, currency)}`}
-              icon={Package}
-              tone="warning"
-            />
             </div>
 
-            <div className="grid gap-4 xl:grid-cols-5">
-              <Card className="border-border/70 bg-card/70 shadow-sm xl:col-span-2">
+            <div className="grid items-stretch gap-4 xl:grid-cols-2">
+              <Card className="h-full border-border/70 bg-card/70 shadow-sm">
               <CardHeader className="pb-3">
                 <ReportSectionHeader
                   icon={Package}
                   title="Status de pedidos"
                   description="Distribuição dos estados para leitura rápida do funil de conversão."
+                  action={<Badge variant="outline" className="w-fit">{`${formatNumber(statusTotal)} pedidos`}</Badge>}
                 />
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="flex h-full flex-col space-y-3">
                 {statusTotal <= 0 ? (
-                  <p className="text-sm text-muted-foreground">Sem status de pedidos para o período selecionado.</p>
+                  <div className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5">
+                    <p className="text-sm text-muted-foreground">Sem status de pedidos para o período selecionado.</p>
+                  </div>
                 ) : (
-                  statusItems.map((item) => {
-                    const ratio = statusTotal > 0 ? (item.count / statusTotal) * 100 : 0;
-                    return (
-                      <div key={item.key} className="space-y-1.5">
+                  <div className="space-y-2">
+                    {statusItems.map((item) => {
+                      const ratio = statusTotal > 0 ? (item.count / statusTotal) * 100 : 0;
+                      return (
+                        <div key={item.key} className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <Badge variant={item.badgeVariant}>{item.label}</Badge>
-                          <p className="text-xs font-semibold text-muted-foreground">{formatNumber(item.count)}</p>
+                          <p className="text-xs font-semibold text-muted-foreground">
+                            {formatCountLabel(item.count, "pedido", "pedidos")}
+                          </p>
                         </div>
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted/70">
+                        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted/70">
                           <div
                             className={cn("h-full rounded-full transition-all", item.barClass)}
                             style={{ width: `${Math.max(4, ratio)}%` }}
                           />
                         </div>
-                      </div>
-                    );
-                  })
+                        <p className="mt-1.5 text-2xs text-muted-foreground">{`${ratio.toFixed(1)}% do período`}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
 
-                <Separator className="bg-border/70" />
-
-                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                  <p>{`Concluídos: ${formatNumber(block.summary.completedOrders)}`}</p>
-                  <p>{`Pendentes: ${formatNumber(block.summary.pendingOrders)}`}</p>
-                  <p>{`Cancelados: ${formatNumber(block.summary.cancelledOrders)}`}</p>
-                  <p>{`Não pagos: ${formatNumber(block.summary.unpaidOrders)}`}</p>
+                <div className="mt-auto grid grid-cols-2 gap-2">
+                  <div className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5 text-center">
+                    <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Total de pedidos</p>
+                    <p className="mt-1 text-sm font-semibold">{formatNumber(statusTotal)}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5 text-center">
+                    <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Taxa concluída</p>
+                    <p className="mt-1 text-sm font-semibold">{`${completedOrderRatio.toFixed(1)}%`}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5 text-center">
+                    <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Pendentes</p>
+                    <p className="mt-1 text-sm font-semibold">{formatNumber(block.summary.pendingOrders)}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5 text-center">
+                    <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Cancel. + não pago</p>
+                    <p className="mt-1 text-sm font-semibold">{formatNumber(block.summary.cancelledOrders + block.summary.unpaidOrders)}</p>
+                  </div>
                 </div>
               </CardContent>
               </Card>
 
-              <Card className="border-border/70 bg-card/70 shadow-sm xl:col-span-3">
+              <Card className="h-full border-border/70 bg-card/70 shadow-sm">
               <CardHeader className="pb-3">
                 <ReportSectionHeader
                   icon={CalendarDays}
                   title="Evolução de vendas no período"
                   description="Série diária baseada no período filtrado da API Shopee, com foco em volume e comissão."
+                  action={<Badge variant="outline" className="w-fit">{`${formatNumber(salesTrend.points.length)} dias`}</Badge>}
                 />
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="flex h-full flex-col space-y-3">
                 {salesTrend.points.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Sem série diária para o período selecionado.</p>
+                  <div className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5">
+                    <p className="text-sm text-muted-foreground">Sem série diária para o período selecionado.</p>
+                  </div>
                 ) : (
                   <>
                     <div className="grid gap-2 sm:grid-cols-3">
@@ -1134,6 +1056,7 @@ function ReportBlockView(props: {
                       total={pagedSalesTrend.total}
                       itemLabel="dias"
                       onPageChange={setSalesTrendPage}
+                      className="mt-auto"
                     />
                   </>
                 )}
@@ -1142,205 +1065,7 @@ function ReportBlockView(props: {
             </div>
           </div>
         </TabsContent>
-        )}
 
-        {showClicks && (
-        <TabsContent value="clicks" className="mt-0 animate-in fade-in duration-500">
-          <div className={tabViewportClass}>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <ReportKpiCard
-              title="Cliques rastreados"
-              value={formatNumber(clickInsights.totalClicks)}
-              sub="Eventos únicos por conversão"
-              icon={MousePointerClick}
-              tone="primary"
-            />
-            <ReportKpiCard
-              title="Hora de pico"
-              value={clickInsights.peakHour?.label || "-"}
-              sub={clickInsights.peakHour ? formatCountLabel(clickInsights.peakHour.clicks, "clique", "cliques") : "Sem dados"}
-              icon={Clock3}
-              tone="warning"
-            />
-            <ReportKpiCard
-              title="Canais mapeados"
-              value={formatNumber(realClickChannels.length)}
-              sub={unknownChannelClicks > 0
-                ? `${formatNumber(unknownChannelClicks)} cliques sem origem identificada`
-                : "Origens reais de tráfego"}
-              icon={TrendingUp}
-              tone="info"
-            />
-            <ReportKpiCard
-              title="IDs de Sub ativos"
-              value={formatNumber(trackedSubIds)}
-              sub={missingSubIdClicks > 0 ? `+ ${formatNumber(missingSubIdClicks)} cliques sem ID de Sub` : "Todos os cliques com ID de Sub"}
-              icon={Layers3}
-              tone="success"
-            />
-            </div>
-
-            <Card className="border-border/70 bg-card/70 shadow-sm">
-            <CardHeader className="pb-3">
-              <ReportSectionHeader
-                icon={BarChart3}
-                title="Distribuição por hora"
-                description="Comparativo de intensidade de cliques por janela horária."
-              />
-            </CardHeader>
-            <CardContent>
-              {clickInsights.byHour.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Sem cliques rastreados no período selecionado.</p>
-              ) : (
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {clickInsights.byHour.slice(0, 12).map((point, index) => {
-                    const width = Math.max(10, (point.clicks / maxHourlyClicks) * 100);
-                    return (
-                      <div key={point.key} className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm font-semibold">{point.label}</p>
-                          <Badge variant={index === 0 ? "info" : "outline"}>
-                            {`${point.share.toFixed(1)}%`}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted/70">
-                          <div className="h-full rounded-full bg-primary/85" style={{ width: `${width}%` }} />
-                        </div>
-                        <p className="mt-1.5 text-xs text-muted-foreground">{formatCountLabel(point.clicks, "clique", "cliques")}</p>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-            </Card>
-
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card className="border-border/70 bg-card/70 shadow-sm">
-              <CardHeader className="pb-3">
-                <ReportSectionHeader
-                  icon={TrendingUp}
-                  title="Cliques reais por canal"
-                  description="Apenas eventos com clickTime válido, ordenados do maior para o menor."
-                  action={unknownChannelClicks > 0 ? (
-                    <Badge variant="outline">{`${formatNumber(unknownChannelClicks)} sem origem`}</Badge>
-                  ) : undefined}
-                />
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {pagedClickChannels.total === 0 ? (
-                  <p className="text-sm text-muted-foreground">Nenhum canal real encontrado para o período.</p>
-                ) : (
-                  <>
-                    <DataTableShell minWidth={0}>
-                      <table className="w-full table-fixed text-sm">
-                        <thead className="bg-muted/45 text-left text-2xs uppercase tracking-wide text-muted-foreground">
-                          <tr>
-                            <th className="w-12 px-3 py-2 font-semibold">#</th>
-                            <th className="w-[44%] px-3 py-2 font-semibold">Canal</th>
-                            <th className="w-[22%] px-3 py-2 font-semibold">Cliques</th>
-                            <th className="w-[22%] px-3 py-2 font-semibold">Participação</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {pagedClickChannels.pageItems.map((point, index) => {
-                            const rank = pagedClickChannels.from + index;
-                            return (
-                            <tr key={point.key} className="border-t border-border/60 align-top">
-                              <td className="px-3 py-2.5">
-                                <Badge variant="outline" className="min-w-[2rem] justify-center">{rank}</Badge>
-                              </td>
-                              <td className="px-3 py-2.5 font-medium">
-                                <TruncatedCellText value={point.label} className="font-medium" />
-                              </td>
-                              <td className="px-3 py-2.5">{formatNumber(point.clicks)}</td>
-                              <td className="px-3 py-2.5">{`${point.share.toFixed(1)}%`}</td>
-                            </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </DataTableShell>
-
-                    <TablePager
-                      page={pagedClickChannels.page}
-                      totalPages={pagedClickChannels.totalPages}
-                      from={pagedClickChannels.from}
-                      to={pagedClickChannels.to}
-                      total={pagedClickChannels.total}
-                      itemLabel="canais"
-                      onPageChange={setClickChannelPage}
-                    />
-                  </>
-                )}
-              </CardContent>
-              </Card>
-
-              <Card className="border-border/70 bg-card/70 shadow-sm">
-              <CardHeader className="pb-3">
-                <ReportSectionHeader
-                  icon={Layers3}
-                  title="Cliques reais por ID de Sub"
-                  description="Apenas IDs de Sub válidos, ordenados do maior para o menor."
-                  action={missingSubIdClicks > 0 ? (
-                    <Badge variant="outline">{`${formatNumber(missingSubIdClicks)} sem ID de Sub`}</Badge>
-                  ) : undefined}
-                />
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {pagedClickSubIds.total === 0 ? (
-                  <p className="text-sm text-muted-foreground">Nenhum ID de Sub válido detectado para o período.</p>
-                ) : (
-                  <>
-                    <DataTableShell minWidth={0}>
-                      <table className="w-full table-fixed text-sm">
-                        <thead className="bg-muted/45 text-left text-2xs uppercase tracking-wide text-muted-foreground">
-                          <tr>
-                            <th className="w-12 px-3 py-2 font-semibold">#</th>
-                            <th className="w-[44%] px-3 py-2 font-semibold">ID de Sub</th>
-                            <th className="w-[22%] px-3 py-2 font-semibold">Cliques</th>
-                            <th className="w-[22%] px-3 py-2 font-semibold">Participação</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {pagedClickSubIds.pageItems.map((point, index) => {
-                            const rank = pagedClickSubIds.from + index;
-                            return (
-                            <tr key={point.key} className="border-t border-border/60 align-top">
-                              <td className="px-3 py-2.5">
-                                <Badge variant="outline" className="min-w-[2rem] justify-center">{rank}</Badge>
-                              </td>
-                              <td className="px-3 py-2.5 font-medium">
-                                <TruncatedCellText value={point.label} className="font-medium" />
-                              </td>
-                              <td className="px-3 py-2.5">{formatNumber(point.clicks)}</td>
-                              <td className="px-3 py-2.5">{`${point.share.toFixed(1)}%`}</td>
-                            </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </DataTableShell>
-
-                    <TablePager
-                      page={pagedClickSubIds.page}
-                      totalPages={pagedClickSubIds.totalPages}
-                      from={pagedClickSubIds.from}
-                      to={pagedClickSubIds.to}
-                      total={pagedClickSubIds.total}
-                      itemLabel="IDs de Sub"
-                      onPageChange={setClickSubIdPage}
-                    />
-                  </>
-                )}
-              </CardContent>
-              </Card>
-            </div>
-          </div>
-        </TabsContent>
-        )}
-
-        {showSales && (
         <TabsContent value="sales" className="mt-0 animate-in fade-in duration-500">
           <div className={tabViewportClass}>
             <Card className="border-border/70 bg-card/70 shadow-sm">
@@ -1400,109 +1125,27 @@ function ReportBlockView(props: {
             </Card>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              <Card className="border-border/70 bg-card/70 shadow-sm">
-              <CardHeader className="pb-3">
-                <ReportSectionHeader
-                  icon={TrendingUp}
-                  title="Canal: volume e comissão"
-                  description="Consolidado de pedidos, vendas e comissões por canal."
-                />
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {pagedSalesChannels.total === 0 ? (
-                  <p className="text-sm text-muted-foreground">Sem canais com vendas para o período.</p>
-                ) : (
-                  <>
-                    <DataTableShell minWidth={0}>
-                      <table className="w-full table-fixed text-sm">
-                        <thead className="bg-muted/45 text-left text-2xs uppercase tracking-wide text-muted-foreground">
-                          <tr>
-                            <th className="w-[44%] px-3 py-2 font-semibold">Canal</th>
-                            <th className="w-[16%] px-3 py-2 font-semibold">Pedidos</th>
-                            <th className="w-[20%] px-3 py-2 font-semibold">Vendido</th>
-                            <th className="w-[20%] px-3 py-2 font-semibold">Comissão</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {pagedSalesChannels.pageItems.map((point) => (
-                            <tr key={point.key} className="border-t border-border/60 align-top">
-                              <td className="px-3 py-2.5 font-medium">
-                                <TruncatedCellText value={point.label} className="font-medium" />
-                              </td>
-                              <td className="px-3 py-2.5">{formatNumber(point.orders)}</td>
-                              <td className="px-3 py-2.5">{formatMoney(point.sales, currency)}</td>
-                              <td className="px-3 py-2.5 font-semibold">{formatMoney(point.totalCommission, currency)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </DataTableShell>
+              <SalesBreakdownCard
+                icon={TrendingUp}
+                title="Canal: volume e comissão"
+                description="Consolidado de pedidos, vendas e comissões por canal."
+                firstColumnLabel="Canal"
+                itemLabel="canais"
+                currency={currency}
+                pagedBreakdown={pagedSalesChannels}
+                onPageChange={setSalesChannelPage}
+              />
 
-                    <TablePager
-                      page={pagedSalesChannels.page}
-                      totalPages={pagedSalesChannels.totalPages}
-                      from={pagedSalesChannels.from}
-                      to={pagedSalesChannels.to}
-                      total={pagedSalesChannels.total}
-                      itemLabel="canais"
-                      onPageChange={setSalesChannelPage}
-                    />
-                  </>
-                )}
-              </CardContent>
-              </Card>
-
-              <Card className="border-border/70 bg-card/70 shadow-sm">
-              <CardHeader className="pb-3">
-                <ReportSectionHeader
-                  icon={Layers3}
-                  title="ID de Sub: volume e comissão"
-                  description="Leitura dos resultados por identificador de campanha."
-                />
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {pagedSalesSubIds.total === 0 ? (
-                  <p className="text-sm text-muted-foreground">Sem IDs de Sub com vendas no período.</p>
-                ) : (
-                  <>
-                    <DataTableShell minWidth={0}>
-                      <table className="w-full table-fixed text-sm">
-                        <thead className="bg-muted/45 text-left text-2xs uppercase tracking-wide text-muted-foreground">
-                          <tr>
-                            <th className="w-[44%] px-3 py-2 font-semibold">ID de Sub</th>
-                            <th className="w-[16%] px-3 py-2 font-semibold">Pedidos</th>
-                            <th className="w-[20%] px-3 py-2 font-semibold">Vendido</th>
-                            <th className="w-[20%] px-3 py-2 font-semibold">Comissão</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {pagedSalesSubIds.pageItems.map((point) => (
-                            <tr key={point.key} className="border-t border-border/60 align-top">
-                              <td className="px-3 py-2.5 font-medium">
-                                <TruncatedCellText value={point.label} className="font-medium" />
-                              </td>
-                              <td className="px-3 py-2.5">{formatNumber(point.orders)}</td>
-                              <td className="px-3 py-2.5">{formatMoney(point.sales, currency)}</td>
-                              <td className="px-3 py-2.5 font-semibold">{formatMoney(point.totalCommission, currency)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </DataTableShell>
-
-                    <TablePager
-                      page={pagedSalesSubIds.page}
-                      totalPages={pagedSalesSubIds.totalPages}
-                      from={pagedSalesSubIds.from}
-                      to={pagedSalesSubIds.to}
-                      total={pagedSalesSubIds.total}
-                      itemLabel="IDs de Sub"
-                      onPageChange={setSalesSubIdPage}
-                    />
-                  </>
-                )}
-              </CardContent>
-              </Card>
+              <SalesBreakdownCard
+                icon={Layers3}
+                title="ID de Sub: volume e comissão"
+                description="Leitura dos resultados por identificador de campanha."
+                firstColumnLabel="ID de Sub"
+                itemLabel="IDs de Sub"
+                currency={currency}
+                pagedBreakdown={pagedSalesSubIds}
+                onPageChange={setSalesSubIdPage}
+              />
             </div>
 
             <Card className="border-border/70 bg-card/70 shadow-sm">
@@ -1561,9 +1204,7 @@ function ReportBlockView(props: {
           </div>
 
         </TabsContent>
-        )}
 
-        {showHistory && (
         <TabsContent value="history" className="mt-0 animate-in fade-in duration-500">
           <div className={tabViewportClass}>
             <Card className="border-border/70 bg-card/70 shadow-sm">
@@ -1657,7 +1298,6 @@ function ReportBlockView(props: {
             </Card>
           </div>
         </TabsContent>
-        )}
       </Tabs>
     </div>
   );
@@ -1670,11 +1310,22 @@ export default function ShopeeReports() {
   const [preset, setPreset] = useState<ShopeeReportPreset>(DEFAULT_PRESET);
   const [draftRange, setDraftRange] = useState<DateRange>(() => buildPresetRange(DEFAULT_PRESET));
   const [appliedRange, setAppliedRange] = useState<DateRange>(() => buildPresetRange(DEFAULT_PRESET));
-  const [draftFilters, setDraftFilters] = useState<ShopeeReportFilters>(DEFAULT_REPORT_FILTERS);
-  const [appliedFilters, setAppliedFilters] = useState<ShopeeReportFilters>(DEFAULT_REPORT_FILTERS);
+  const [customCalendarOpen, setCustomCalendarOpen] = useState(false);
+  const [customSelectionStep, setCustomSelectionStep] = useState<CustomRangeSelectionStep>("start");
+  const [customDisplayMonth, setCustomDisplayMonth] = useState<Date>(() => startOfMonth(utcTodayStart()));
+
+  const maxSelectableDate = useMemo(() => toYmd(utcTodayStart()), []);
+  const maxSelectableDateValue = useMemo(() => parseYmdDate(maxSelectableDate), [maxSelectableDate]);
+  const customStartDateValue = useMemo(() => parseYmdDate(draftRange.startDate), [draftRange.startDate]);
+  const customEndDateValue = useMemo(() => parseYmdDate(draftRange.endDate), [draftRange.endDate]);
+  const customCalendarDays = useMemo(() => {
+    const start = startOfWeek(startOfMonth(customDisplayMonth), { weekStartsOn: 0 });
+    const end = endOfWeek(endOfMonth(customDisplayMonth), { weekStartsOn: 0 });
+    return eachDayOfInterval({ start, end });
+  }, [customDisplayMonth]);
 
   const reportsQuery = useQuery<ShopeeReportsResponse>({
-    queryKey: ["shopee-reports", appliedRange.startDate, appliedRange.endDate, appliedFilters],
+    queryKey: ["shopee-reports", appliedRange.startDate, appliedRange.endDate],
     enabled: isConfigured && !loadingCredentials,
     staleTime: 60_000,
     queryFn: async () => {
@@ -1684,7 +1335,7 @@ export default function ShopeeReports() {
       const payloadBody = {
         startDate: appliedRange.startDate,
         endDate: appliedRange.endDate,
-        filters: toRpcFilters(appliedFilters),
+        filters: REPORT_RPC_FILTERS,
       };
       const candidates = ["shopee-reports", "shopee_reports", "shopee reports"] as const;
 
@@ -1705,8 +1356,6 @@ export default function ShopeeReports() {
     },
   });
 
-  const availableViews = useMemo<ReportInnerView[]>(() => getAvailableReportViews(), []);
-
   useEffect(() => {
     if (!reportsQuery.error) return;
     const rawMessage = reportsQuery.error instanceof Error ? reportsQuery.error.message : "Falha ao carregar relatórios Shopee";
@@ -1719,43 +1368,77 @@ export default function ShopeeReports() {
 
   const currency = reportsQuery.data?.currency || "BRL";
 
-  const handlePresetChange = (value: ShopeeReportPreset) => {
-    setPreset(value);
-    if (value === "custom") return;
-    const range = buildPresetRange(value as ShopeeQuickPreset);
-    setDraftRange(range);
-  };
+  const applyRangeSelection = (range: DateRange): boolean => {
+    const startDate = String(range.startDate || "").trim();
+    const endDate = String(range.endDate || "").trim();
 
-  const handleApplyRange = () => {
-    const startDate = String(draftRange.startDate || "").trim();
-    const endDate = String(draftRange.endDate || "").trim();
     if (!isValidYmd(startDate) || !isValidYmd(endDate)) {
       toast.error("Datas inválidas. Use o formato YYYY-MM-DD.");
-      return;
+      return false;
     }
+
     if (startDate > endDate) {
       toast.error("Período inválido: data inicial maior que a data final.");
-      return;
+      return false;
     }
+
+    const isSameRange = appliedRange.startDate === startDate && appliedRange.endDate === endDate;
+
+    setDraftRange({ startDate, endDate });
     setAppliedRange({ startDate, endDate });
-    setAppliedFilters({ ...draftFilters });
+
+    if (isSameRange) {
+      void reportsQuery.refetch();
+    }
+
+    return true;
   };
 
-  const handleResetFilters = () => {
-    const baseRange = buildPresetRange(DEFAULT_PRESET);
-    setPreset(DEFAULT_PRESET);
-    setDraftRange(baseRange);
-    setAppliedRange(baseRange);
-    setDraftFilters(DEFAULT_REPORT_FILTERS);
-    setAppliedFilters(DEFAULT_REPORT_FILTERS);
+  const handlePresetChange = (value: ShopeeReportPreset) => {
+    setPreset(value);
+    if (value === "custom") {
+      const draftStart = parseYmdDate(draftRange.startDate);
+      const fallbackStart = parseYmdDate(appliedRange.startDate);
+      const monthBase = draftStart || fallbackStart || utcTodayStart();
+      setCustomDisplayMonth(startOfMonth(monthBase));
+      setCustomSelectionStep("start");
+      setCustomCalendarOpen(true);
+      return;
+    }
+
+    const range = buildPresetRange(value);
+    setCustomSelectionStep("start");
+    setCustomCalendarOpen(false);
+    applyRangeSelection(range);
   };
+
+  const handleCustomDaySelect = (date: Date) => {
+    const dayIso = format(date, "yyyy-MM-dd");
+
+    if (customSelectionStep === "start") {
+      setDraftRange({ startDate: dayIso, endDate: dayIso });
+      setCustomSelectionStep("end");
+      return;
+    }
+
+    const startCandidate = isValidYmd(draftRange.startDate) ? draftRange.startDate : dayIso;
+    const startDate = startCandidate <= dayIso ? startCandidate : dayIso;
+    const nextRange = { startDate, endDate: dayIso };
+
+    if (applyRangeSelection(nextRange)) {
+      setCustomSelectionStep("start");
+      setCustomCalendarOpen(false);
+    }
+  };
+
+  const periodChipClass = "h-7 w-full justify-center rounded-full px-2 text-[11px] font-medium";
 
   return (
     <PageWrapper fallbackLabel="Carregando relatórios...">
       <div className="ds-page pb-[calc(var(--safe-area-bottom)+0.75rem)]">
         <PageHeader
           title="Relatórios Shopee"
-          description="Painel operacional para acompanhar comissões, cliques, produtos e histórico de vendas."
+          description="Painel operacional para acompanhar comissões, produtos e histórico de vendas."
         >
           {isConfigured && (
             <Button
@@ -1775,76 +1458,143 @@ export default function ShopeeReports() {
 
         {isConfigured ? (
           <Card className="border-border/45 bg-card/75 shadow-sm">
-            <CardContent className="px-3 py-2 sm:px-4 sm:py-2.5">
-              <div className="mx-auto flex max-w-[1040px] items-center justify-center">
-                <div className="flex w-full items-center justify-center gap-2 whitespace-nowrap">
-                  <Badge variant="outline" className="h-7 rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            <CardContent className="px-2 py-2 sm:px-3 sm:py-2.5">
+              <div className="w-full rounded-2xl bg-background/30 px-1.5 py-1.5">
+                <div className="grid w-full items-center gap-1 md:grid-cols-[max-content_minmax(0,1fr)] md:gap-1.5">
+                  <div className="flex items-center justify-center md:justify-start">
+                    <Badge variant="outline" className="h-7 rounded-full border-transparent bg-background/55 px-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                       Filtros da consulta
                     </Badge>
+                  </div>
 
-                    <Badge variant="secondary" className="h-7 rounded-full px-2 text-[11px] font-medium">
-                      {formatRangeSummary(draftRange)}
-                    </Badge>
+                  <div className="min-w-0 w-full">
+                    <div className="grid min-w-0 w-full grid-cols-2 gap-0.5 rounded-xl bg-background/55 p-0.5 sm:grid-cols-4 sm:gap-1 xl:grid-cols-7">
+                      {PERIOD_INTERACTIVE_CHIPS.map((chip) => {
+                        if (chip.value !== "custom") {
+                          return (
+                            <Button
+                              key={chip.value}
+                              type="button"
+                              size="sm"
+                              variant={preset === chip.value ? "default" : "ghost"}
+                              className={cn(
+                                periodChipClass,
+                                preset === chip.value ? "shadow-sm" : "text-muted-foreground hover:text-foreground",
+                              )}
+                              onClick={() => handlePresetChange(chip.value)}
+                              disabled={reportsQuery.isFetching}
+                            >
+                              {chip.label}
+                            </Button>
+                          );
+                        }
 
-                    <div className="flex items-center gap-0.5 rounded-full border border-border/60 bg-background/55 px-0.5 py-0.5">
-                      {PERIOD_INTERACTIVE_CHIPS.map((chip) => (
-                        <Button
-                          key={chip.value}
-                          type="button"
-                          size="sm"
-                          variant={preset === chip.value ? "default" : "ghost"}
-                          className={cn(
-                            "h-6 rounded-full px-2 text-[11px] font-medium",
-                            preset === chip.value ? "shadow-sm" : "text-muted-foreground hover:text-foreground",
-                          )}
-                          onClick={() => handlePresetChange(chip.value)}
-                          disabled={reportsQuery.isFetching}
-                        >
-                          {chip.label}
-                        </Button>
-                      ))}
+                        return (
+                          <Popover
+                            key={chip.value}
+                            modal
+                            open={preset === "custom" && customCalendarOpen}
+                            onOpenChange={(nextOpen) => {
+                              setCustomCalendarOpen(nextOpen);
+                              if (!nextOpen) setCustomSelectionStep("start");
+                            }}
+                          >
+                            <PopoverTrigger asChild>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={preset === chip.value ? "default" : "ghost"}
+                                className={cn(
+                                  periodChipClass,
+                                  preset === chip.value ? "shadow-sm" : "text-muted-foreground hover:text-foreground",
+                                )}
+                                onClick={() => handlePresetChange(chip.value)}
+                                disabled={reportsQuery.isFetching}
+                              >
+                                {chip.label}
+                              </Button>
+                            </PopoverTrigger>
+
+                            <PopoverContent align="center" className="w-[min(20rem,calc(100vw-1rem))] p-2.5 sm:w-[298px] sm:p-3">
+                              <div className="mb-2.5 flex items-center justify-between">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-9 w-9 sm:h-8 sm:w-8"
+                                  onClick={() => setCustomDisplayMonth((prev) => addMonths(prev, -1))}
+                                >
+                                  <ChevronLeft className="h-4 w-4" />
+                                </Button>
+                                <span className="text-sm font-medium">
+                                  {format(customDisplayMonth, "MMMM yyyy", { locale: ptBR })}
+                                </span>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-9 w-9 sm:h-8 sm:w-8"
+                                  onClick={() => setCustomDisplayMonth((prev) => addMonths(prev, 1))}
+                                >
+                                  <ChevronRight className="h-4 w-4" />
+                                </Button>
+                              </div>
+
+                              <p className="mb-2 text-[11px] text-muted-foreground">
+                                {customSelectionStep === "start"
+                                  ? "Selecione o dia inicial da consulta"
+                                  : "Selecione o dia final da consulta"}
+                              </p>
+
+                              <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground">
+                                {(["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"] as const).map((dayLabel) => (
+                                  <span key={dayLabel} className="py-1">
+                                    {dayLabel}
+                                  </span>
+                                ))}
+                              </div>
+
+                              <div className="mt-1 grid grid-cols-7 gap-1">
+                                {customCalendarDays.map((day) => {
+                                  const dayIso = format(day, "yyyy-MM-dd");
+                                  const isStart = customStartDateValue ? isSameDay(day, customStartDateValue) : false;
+                                  const isEnd = customEndDateValue ? isSameDay(day, customEndDateValue) : false;
+                                  const muted = !isSameMonth(day, customDisplayMonth);
+                                  const afterMax = maxSelectableDateValue
+                                    ? isBefore(startOfDay(maxSelectableDateValue), startOfDay(day))
+                                    : false;
+                                  const beforeStart = customSelectionStep === "end" && customStartDateValue
+                                    ? isBefore(startOfDay(day), startOfDay(customStartDateValue))
+                                    : false;
+                                  const isDisabled = muted || afterMax || beforeStart;
+
+                                  return (
+                                    <Button
+                                      key={dayIso}
+                                      type="button"
+                                      variant={isStart || isEnd ? "default" : "ghost"}
+                                      className={cn(
+                                        "h-9 w-9 min-w-0 p-0 text-xs sm:h-8 sm:w-8",
+                                        muted && "text-muted-foreground",
+                                        isDisabled && "cursor-not-allowed opacity-40",
+                                      )}
+                                      disabled={isDisabled}
+                                      onMouseDown={(event) => event.preventDefault()}
+                                      onClick={() => handleCustomDaySelect(day)}
+                                    >
+                                      {format(day, "d")}
+                                    </Button>
+                                  );
+                                })}
+                              </div>
+                            </PopoverContent>
+                          </Popover>
+                        );
+                      })}
                     </div>
-
-                    {preset === "custom" ? (
-                      <div className="flex items-center gap-1 rounded-full border border-border/60 bg-background/55 px-1 py-0.5">
-                        <DatePicker
-                          value={draftRange.startDate}
-                          onChange={(nextDate) => setDraftRange((prev) => ({ ...prev, startDate: nextDate }))}
-                          placeholder="Início"
-                          className="h-7 w-[98px] rounded-full text-[11px]"
-                        />
-
-                        <DatePicker
-                          value={draftRange.endDate}
-                          onChange={(nextDate) => setDraftRange((prev) => ({ ...prev, endDate: nextDate }))}
-                          minDate={draftRange.startDate}
-                          placeholder="Fim"
-                          className="h-7 w-[98px] rounded-full text-[11px]"
-                        />
-                      </div>
-                    ) : null}
-
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleResetFilters}
-                      disabled={reportsQuery.isFetching}
-                      className="h-7 rounded-full px-3 text-xs"
-                    >
-                      Limpar
-                    </Button>
-
-                    <Button
-                      size="sm"
-                      onClick={handleApplyRange}
-                      disabled={reportsQuery.isFetching}
-                      className="h-7 rounded-full px-3 text-xs"
-                    >
-                      <CalendarDays className="mr-1 h-3.5 w-3.5" />
-                      Aplicar
-                    </Button>
                   </div>
                 </div>
+              </div>
             </CardContent>
           </Card>
         ) : null}
@@ -1883,7 +1633,7 @@ export default function ShopeeReports() {
             <TabsList className="grid h-auto w-full grid-cols-1 gap-2 rounded-2xl border border-border/60 bg-muted/25 p-1.5 md:grid-cols-2">
               <TabsTrigger
                 value="conversion"
-                className="min-h-[78px] h-full flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-4 py-3 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm"
+                className={SOURCE_TAB_TRIGGER_CLASS}
               >
                 <span className="flex items-center justify-center gap-1.5 text-sm font-semibold">
                   <Sparkles className="h-4 w-4 text-primary" />
@@ -1894,7 +1644,7 @@ export default function ShopeeReports() {
 
               <TabsTrigger
                 value="validated"
-                className="min-h-[78px] h-full flex-col items-center justify-center gap-0.5 rounded-xl border border-transparent px-4 py-3 text-center data-[state=active]:border-border/70 data-[state=active]:bg-background data-[state=active]:shadow-sm"
+                className={SOURCE_TAB_TRIGGER_CLASS}
               >
                 <span className="flex items-center justify-center gap-1.5 text-sm font-semibold">
                   <Wallet className="h-4 w-4 text-success" />
@@ -1910,7 +1660,6 @@ export default function ShopeeReports() {
                 title="Visão de conversões"
                 block={reportsQuery.data.conversion}
                 currency={currency}
-                availableViews={availableViews}
                 activeView={activeView}
                 onActiveViewChange={setActiveView}
               />
@@ -1922,7 +1671,6 @@ export default function ShopeeReports() {
                 title="Visão de validação"
                 block={reportsQuery.data.validated}
                 currency={currency}
-                availableViews={availableViews}
                 activeView={activeView}
                 onActiveViewChange={setActiveView}
               />

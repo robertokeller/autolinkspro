@@ -6,7 +6,7 @@
  * L2 subcategories use listType: 4, matchId: <id>
  */
 
-export interface ShopeeSubCategory {
+interface ShopeeSubCategory {
   id: number;
   label: string;
 }

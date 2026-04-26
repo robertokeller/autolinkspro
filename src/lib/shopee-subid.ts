@@ -1,6 +1,6 @@
-export const SHOPEE_SUB_ID_MAX_LENGTH = 80;
+const SHOPEE_SUB_ID_MAX_LENGTH = 80;
 
-const SHOPEE_SUB_ID_ALLOWED = /^[A-Za-z0-9]{1,80}$/;
+const SHOPEE_SUB_ID_ALLOWED = new RegExp(`^[A-Za-z0-9]{1,${SHOPEE_SUB_ID_MAX_LENGTH}}$`);
 
 type ShopeeSubIdLike = {
   value: string;

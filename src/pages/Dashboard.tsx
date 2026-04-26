@@ -6,11 +6,12 @@ import {
   MessageSquare,
   Route,
   Search,
+  ShieldAlert,
   ShoppingBag,
   ShoppingCart,
   Tag,
 } from "lucide-react";
-import { subDays, startOfDay } from "date-fns";
+import { startOfDay, subDays } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { TelegramIcon, WhatsAppIcon } from "@/components/icons/ChannelPlatformIcon";
@@ -26,6 +27,7 @@ import { useShopeeAutomacoes } from "@/hooks/useShopeeAutomacoes";
 import { useShopeeCredentials } from "@/hooks/useShopeeCredentials";
 import { useServiceHealth } from "@/hooks/useServiceHealth";
 import { useViewportProfile } from "@/hooks/useViewportProfile";
+import { backend } from "@/integrations/backend/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { resolveEffectiveOperationalLimitsByPlanId, type AppFeature } from "@/lib/access-control";
 import { getAllChannelHealth } from "@/lib/channel-central";
@@ -51,6 +53,10 @@ import {
 
 const DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"];
 const CHANNEL_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
+const DASHBOARD_USAGE_CHART_INTERVAL_MS = 60 * 1000;
+const DASHBOARD_SEND_TYPES = ["automation_run", "route_forward", "schedule_sent"] as const;
+const DASHBOARD_CHART_PAGE_SIZE = 250;
+const DASHBOARD_CHART_MAX_PAGES = 8;
 
 function ptCount(value: number, singular: string, plural: string): string {
   if (!Number.isFinite(value)) return `0 ${plural}`;
@@ -78,6 +84,172 @@ export default function Dashboard() {
     refetchInterval: () => (document.visibilityState === "visible" ? CHANNEL_HEALTH_INTERVAL_MS : false),
     staleTime: CHANNEL_HEALTH_INTERVAL_MS,
   });
+  const {
+    data: confirmedSendsChartData,
+    isLoading: confirmedSendsChartLoading,
+    isError: confirmedSendsChartError,
+  } = useQuery({
+    queryKey: ["dashboard-confirmed-sends-chart", user?.id],
+    enabled: Boolean(user?.id),
+    staleTime: DASHBOARD_USAGE_CHART_INTERVAL_MS,
+    refetchInterval: () => (document.visibilityState === "visible" ? DASHBOARD_USAGE_CHART_INTERVAL_MS : false),
+    queryFn: async (): Promise<ChartRow[]> => {
+      if (!user?.id) return [];
+      const now = new Date();
+      const dayBuckets = Array.from({ length: 7 }, (_, index) => {
+        const date = subDays(now, 6 - index);
+        const dayStart = startOfDay(date);
+        const dayEnd = new Date(dayStart);
+        dayEnd.setDate(dayEnd.getDate() + 1);
+        return {
+          day: DAY_LABELS[date.getDay()],
+          dayStart,
+          dayEnd,
+          automacoes: 0,
+          rotas: 0,
+          agendamentos: 0,
+        };
+      });
+
+      type HistoryChartRow = {
+        id: string;
+        type: string;
+        created_at: string;
+        processing_status: string;
+        details: unknown;
+      };
+
+      const extractSentCount = (row: HistoryChartRow): number => {
+        const details = row.details && typeof row.details === "object" && !Array.isArray(row.details)
+          ? row.details as Record<string, unknown>
+          : null;
+        const targetSummary = details?.targetSummary && typeof details.targetSummary === "object" && !Array.isArray(details.targetSummary)
+          ? details.targetSummary as Record<string, unknown>
+          : null;
+        const summarySent = targetSummary?.sent;
+        const sentTargets = typeof summarySent === "number"
+          ? summarySent
+          : typeof summarySent === "string" && summarySent.trim()
+            ? Number(summarySent)
+            : Number.NaN;
+
+        if (Number.isFinite(sentTargets) && sentTargets > 0) {
+          return Math.floor(sentTargets);
+        }
+
+        return String(row.processing_status || "").toLowerCase() === "sent" ? 1 : 0;
+      };
+
+      const windowStartIso = dayBuckets[0]?.dayStart.toISOString() || new Date(0).toISOString();
+      let cursor: { created_at: string; id: string } | null = null;
+
+      for (let page = 0; page < DASHBOARD_CHART_MAX_PAGES; page++) {
+        let query = backend
+          .from("history_entries")
+          .select("id,type,created_at,processing_status,details")
+          .eq("user_id", user.id)
+          .in("type", [...DASHBOARD_SEND_TYPES])
+          .in("processing_status", ["sent", "blocked", "failed", "error", "processed", "skipped"])
+          .gte("created_at", windowStartIso)
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(DASHBOARD_CHART_PAGE_SIZE);
+
+        if (cursor) {
+          query = query.cursor(cursor);
+        }
+
+        const { data, error, next_cursor } = await query;
+        if (error) throw error;
+
+        const batch = (data || []) as HistoryChartRow[];
+        if (batch.length === 0) break;
+
+        for (const row of batch) {
+          const createdAt = new Date(row.created_at);
+          if (Number.isNaN(createdAt.getTime())) continue;
+
+          const sentCount = extractSentCount(row);
+          if (sentCount <= 0) continue;
+
+          const bucket = dayBuckets.find((item) => createdAt >= item.dayStart && createdAt < item.dayEnd);
+          if (!bucket) continue;
+
+          if (row.type === "automation_run") bucket.automacoes += sentCount;
+          if (row.type === "route_forward") bucket.rotas += sentCount;
+          if (row.type === "schedule_sent") bucket.agendamentos += sentCount;
+        }
+
+        if (!next_cursor || batch.length < DASHBOARD_CHART_PAGE_SIZE) break;
+        cursor = next_cursor;
+      }
+
+      return dayBuckets.map((bucket) => ({
+        day: bucket.day,
+        totalEnvios: bucket.automacoes + bucket.rotas + bucket.agendamentos,
+        automacoes: bucket.automacoes,
+        rotas: bucket.rotas,
+        agendamentos: bucket.agendamentos,
+      }));
+    },
+  });
+  const {
+    data: sendsKpis24h,
+    isLoading: sendsKpis24hLoading,
+    isError: sendsKpis24hError,
+  } = useQuery({
+    queryKey: ["dashboard-sends-kpis-24h", user?.id],
+    enabled: Boolean(user?.id),
+    staleTime: DASHBOARD_USAGE_CHART_INTERVAL_MS,
+    refetchInterval: () => (document.visibilityState === "visible" ? DASHBOARD_USAGE_CHART_INTERVAL_MS : false),
+    queryFn: async (): Promise<{ operations24h: number; success24h: number; errors24h: number; blocked24h: number }> => {
+      if (!user?.id) {
+        return {
+          operations24h: 0,
+          success24h: 0,
+          errors24h: 0,
+          blocked24h: 0,
+        };
+      }
+
+      const since24hIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+      const countEntries = async (processingStatuses?: string[]) => {
+        let query = backend
+          .from("history_entries")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .in("type", [...DASHBOARD_SEND_TYPES])
+          .gte("created_at", since24hIso);
+
+        if (Array.isArray(processingStatuses) && processingStatuses.length > 0) {
+          if (processingStatuses.length === 1) {
+            query = query.eq("processing_status", processingStatuses[0]);
+          } else {
+            query = query.in("processing_status", processingStatuses);
+          }
+        }
+
+        const { count, error } = await query;
+        if (error) throw error;
+        return Math.max(0, count || 0);
+      };
+
+      const [operations24h, success24h, errors24h, blocked24h] = await Promise.all([
+        countEntries(),
+        countEntries(["sent"]),
+        countEntries(["error", "failed"]),
+        countEntries(["blocked"]),
+      ]);
+
+      return {
+        operations24h,
+        success24h,
+        errors24h,
+        blocked24h,
+      };
+    },
+  });
   const { health: shopeeHealth, isLoading: shopeeHealthLoading } = useServiceHealth("shopee");
   const { health: meliHealth, isLoading: meliHealthLoading } = useServiceHealth("meli");
   const { health: amazonHealth, isLoading: amazonHealthLoading } = useServiceHealth("amazon");
@@ -92,20 +264,21 @@ export default function Dashboard() {
   const analytics = useMemo(() => {
     const now = new Date();
     const last24h = subDays(now, 1);
-    const weekStart = subDays(now, 6);
     const next24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
     const finalProcessingStates = new Set(["sent", "blocked", "failed", "error", "processed", "skipped"]);
     const realEntries = entries.filter((entry) => finalProcessingStates.has(String(entry.processingStatus || entry.status || "").toLowerCase()));
     const entries24h = realEntries.filter((entry) => new Date(entry.date) >= last24h);
-    const entries7d = realEntries.filter((entry) => new Date(entry.date) >= weekStart);
 
-    const operations24h = entries24h.length;
-    const success24h = entries24h.filter((entry) => entry.status === "success" || entry.processingStatus === "sent").length;
-    const errors24h = entries24h.filter((entry) => entry.status === "error" || entry.processingStatus === "failed").length;
-    const convertedLinks7d = entries7d.filter(
-      (entry) => entry.type === "link_converted" && (entry.status === "success" || entry.processingStatus === "sent"),
-    ).length;
+    const fallbackOperations24h = entries24h.length;
+    const fallbackSuccess24h = entries24h.filter((entry) => entry.status === "success" || entry.processingStatus === "sent").length;
+    const fallbackErrors24h = entries24h.filter((entry) => entry.status === "error" || entry.processingStatus === "failed").length;
+    const fallbackBlocked24h = entries24h.filter((entry) => entry.processingStatus === "blocked").length;
+
+    const operations24h = sendsKpis24h?.operations24h ?? (sendsKpis24hError ? fallbackOperations24h : 0);
+    const success24h = sendsKpis24h?.success24h ?? (sendsKpis24hError ? fallbackSuccess24h : 0);
+    const errors24h = sendsKpis24h?.errors24h ?? (sendsKpis24hError ? fallbackErrors24h : 0);
+    const blocked24h = sendsKpis24h?.blocked24h ?? (sendsKpis24hError ? fallbackBlocked24h : 0);
 
     const routeActive = routes.filter((route) => route.status === "active").length;
     const routePaused = routes.filter((route) => route.status === "paused").length;
@@ -127,7 +300,7 @@ export default function Dashboard() {
       operations24h,
       success24h,
       errors24h,
-      convertedLinks7d,
+      blocked24h,
       routeActive,
       routePaused,
       routeError,
@@ -139,14 +312,14 @@ export default function Dashboard() {
       meliActive,
       meliDisconnected,
     };
-  }, [automationList, entries, linkHubPages, meliSessions, posts, routes]);
+  }, [automationList, entries, linkHubPages, meliSessions, posts, routes, sendsKpis24h, sendsKpis24hError]);
 
   const effectiveOperationalLimits = useMemo(
     () => (planId ? resolveEffectiveOperationalLimitsByPlanId(planId) : null),
     [planId],
   );
 
-  const chartData = useMemo<ChartRow[]>(() => {
+  const fallbackChartData = useMemo<ChartRow[]>(() => {
     const sentEntries = entries.filter((entry) => entry.processingStatus === "sent");
     const now = new Date();
 
@@ -174,6 +347,11 @@ export default function Dashboard() {
       };
     });
   }, [entries]);
+
+  const chartData = useMemo<ChartRow[]>(
+    () => confirmedSendsChartData || (confirmedSendsChartError ? fallbackChartData : []),
+    [confirmedSendsChartData, confirmedSendsChartError, fallbackChartData],
+  );
 
   const usage7d = useMemo<UsageSummary>(
     () => chartData.reduce(
@@ -314,11 +492,11 @@ export default function Dashboard() {
       accent: "primary",
     },
     {
-      label: "Links convertidos (7 dias)",
-      value: String(analytics.convertedLinks7d),
-      help: "Conversões de link confirmadas",
-      icon: LinkIcon,
-      accent: "info",
+      label: "Envios bloqueados (24h)",
+      value: String(analytics.blocked24h),
+      help: "Bloqueios por filtros, regras e validações",
+      icon: ShieldAlert,
+      accent: analytics.blocked24h > 0 ? "warning" : "success",
     },
     {
       label: "Rotas ativas",
@@ -335,9 +513,9 @@ export default function Dashboard() {
       accent: "warning",
     },
     {
-      label: "Automações ativas",
+      label: "Automações Shopee ativas",
       value: String(analytics.activeAutomations),
-      help: ptCount(automationList.length, "automação criada no total", "automações criadas no total"),
+      help: ptCount(automationList.length, "automação Shopee criada no total", "automações Shopee criadas no total"),
       icon: Bot,
       accent: analytics.activeAutomations > 0 ? "success" : "info",
     },
@@ -345,6 +523,8 @@ export default function Dashboard() {
 
   const isLoading = histLoading || sessLoading || routesLoading || groupsLoading || postsLoading || linkHubLoading || automationsLoading || meliLoading;
   const isHealthLoading = channelHealthLoading || shopeeHealthLoading || meliHealthLoading || amazonHealthLoading || isCheckingAccess;
+  const isUsageChartLoading = isLoading || (confirmedSendsChartLoading && !confirmedSendsChartData && !confirmedSendsChartError);
+  const isMetricCardsLoading = isLoading || (sendsKpis24hLoading && !sendsKpis24h && !sendsKpis24hError);
 
   const quickActions = useMemo<QuickActionCard[]>(() => {
     const buildFeatureAction = (
@@ -740,11 +920,11 @@ export default function Dashboard() {
         )}
 
         <div className="ds-card-grid order-1 lg:grid-cols-6">
-          <DashboardUsageCard chartData={chartData} compactDashboard={compactDashboard} isLoading={isLoading} usage7d={usage7d} />
+          <DashboardUsageCard chartData={chartData} compactDashboard={compactDashboard} isLoading={isUsageChartLoading} usage7d={usage7d} />
           <DashboardHealthCards isHealthLoading={isHealthLoading} isLoading={isLoading} visibleHealthCards={visibleHealthCards} />
         </div>
 
-        <DashboardMetricCards compactDashboard={compactDashboard} isLoading={isLoading} metricCards={metricCards} />
+        <DashboardMetricCards compactDashboard={compactDashboard} isLoading={isMetricCardsLoading} metricCards={metricCards} />
 
         <div className="ds-card-grid order-2 lg:grid-cols-5">
           <DashboardRiskAlerts isLoading={isLoading} alerts={riskAlerts} />

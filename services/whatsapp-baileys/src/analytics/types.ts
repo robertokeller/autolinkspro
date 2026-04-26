@@ -14,6 +14,7 @@ export interface GroupEvent {
 export interface GroupSnapshot {
   groupId: string;
   groupName: string;
+  sessionId?: string;
   date: string;
   totalMembers: number;
   members: Array<{

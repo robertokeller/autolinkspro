@@ -38,6 +38,7 @@ export async function captureSnapshot(snapshot: GroupSnapshot): Promise<void> {
   void persistHistoryDailyToSQL({
     groupExternalId: snapshot.groupId,
     memberCount: snapshot.totalMembers,
+    sessionId: snapshot.sessionId,
   });
 }
 

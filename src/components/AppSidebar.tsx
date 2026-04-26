@@ -49,8 +49,8 @@ import { ROUTES } from "@/lib/routes";
 const shopeeSubNav = [
   { title: "Vitrine de ofertas", icon: LayoutGrid, href: ROUTES.app.shopeeVitrine },
   { title: "Pesquisa de Ofertas", icon: SearchCheck, href: ROUTES.app.shopeePesquisa },
-  { title: "Relatórios", icon: BarChart3, href: ROUTES.app.shopeeReports },
   { title: "Piloto automático", icon: Bot, href: ROUTES.app.shopeeAutomacoes },
+  { title: "Minhas comissões", icon: BarChart3, href: ROUTES.app.shopeeReports },
   { title: "Configurações", icon: SlidersHorizontal, href: ROUTES.app.shopeeConfiguracoes },
 ];
 

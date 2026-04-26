@@ -154,6 +154,7 @@ export async function captureSnapshotForGroup(
     const snapshot: GroupSnapshot = {
       groupId,
       groupName,
+      sessionId: state.config.sessionId,
       date: new Date().toISOString().slice(0, 10),
       totalMembers: members.length,
       members,

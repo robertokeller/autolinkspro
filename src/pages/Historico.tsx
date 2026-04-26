@@ -82,6 +82,24 @@ function statusVariant(processingStatus: string): "default" | "secondary" | "out
   return "outline";
 }
 
+function deliveryStatusText(deliveryStatus: string): string {
+  if (deliveryStatus === "accepted") return "Aceito";
+  if (deliveryStatus === "pending") return "Pendente";
+  if (deliveryStatus === "server_ack") return "Ack servidor";
+  if (deliveryStatus === "delivered") return "Entregue";
+  if (deliveryStatus === "read") return "Lida";
+  if (deliveryStatus === "played") return "Reproduzida";
+  if (deliveryStatus === "failed") return "Falha entrega";
+  return "";
+}
+
+function deliveryStatusVariant(deliveryStatus: string): "default" | "secondary" | "outline" | "destructive" {
+  if (deliveryStatus === "failed") return "destructive";
+  if (deliveryStatus === "delivered" || deliveryStatus === "read" || deliveryStatus === "played") return "default";
+  if (deliveryStatus === "accepted" || deliveryStatus === "pending" || deliveryStatus === "server_ack") return "secondary";
+  return "outline";
+}
+
 function mechanismLabelFromType(type: string): string {
   if (type === "route_forward") return "Rota";
   if (type === "schedule_sent") return "Agendamento";
@@ -171,6 +189,11 @@ function groupLegacyRouteEntries(entries: HistoryEntry[]): {
       createdAt: child.date,
       title: child.title,
       message: child.message,
+      providerMessageId: compactText(String(child.details.providerMessageId || "")),
+      deliveryStatus: compactText(String(child.details.deliveryStatus || "")).toLowerCase(),
+      deliveryUpdatedAt: compactText(String(child.details.deliveryUpdatedAt || child.date)) || child.date,
+      deliveryError: compactText(String(child.details.deliveryError || "")),
+      deliveryConfirmed: ["delivered", "read", "played"].includes(compactText(String(child.details.deliveryStatus || "")).toLowerCase()),
       details: child.details,
     }));
 
@@ -230,6 +253,8 @@ function buildEntrySearchText(entry: HistoryEntry, targets: SendHistoryTarget[] 
     target.message,
     target.errorSummary,
     target.rawErrorMessage,
+    target.deliveryStatus,
+    target.deliveryError,
   ]).join(" ");
 
   return [
@@ -578,6 +603,11 @@ export default function HistoryPage() {
                                           <Badge variant={statusVariant(target.processingStatus)} className="text-[11px]">
                                             {statusText(target.processingStatus)}
                                           </Badge>
+                                          {target.deliveryStatus && (
+                                            <Badge variant={deliveryStatusVariant(target.deliveryStatus)} className="text-[11px]">
+                                              {deliveryStatusText(target.deliveryStatus)}
+                                            </Badge>
+                                          )}
                                           {target.platform && (
                                             <Badge variant="outline" className="text-[11px]">
                                               {target.platform}
@@ -597,9 +627,9 @@ export default function HistoryPage() {
                                       </span>
                                     </div>
 
-                                    {(target.processingStatus === "failed" || target.processingStatus === "error" || target.processingStatus === "blocked") && (
+                                    {(target.processingStatus === "failed" || target.processingStatus === "error" || target.processingStatus === "blocked" || target.deliveryStatus === "failed") && (
                                       <p className="mt-1 rounded border border-destructive/20 bg-destructive/[0.04] px-2 py-1 text-[11px] text-destructive">
-                                        Problema: {target.errorSummary}
+                                        Problema: {target.deliveryStatus === "failed" && target.deliveryError ? target.deliveryError : target.errorSummary}
                                       </p>
                                     )}
                                   </div>

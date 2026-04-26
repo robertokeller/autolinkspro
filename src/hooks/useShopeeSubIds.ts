@@ -5,7 +5,7 @@ import { backend } from "@/integrations/backend/client";
 import type { Tables } from "@/integrations/backend/types";
 import { normalizeShopeeSubId } from "@/lib/shopee-subid";
 
-export type ShopeeSubIdRow = Tables<"shopee_sub_ids">;
+type ShopeeSubIdRow = Tables<"shopee_sub_ids">;
 type ProfileRow = Pick<Tables<"profiles">, "notification_prefs">;
 
 type ShopeeSubIdStorageMode = "table" | "profile-json";
@@ -13,7 +13,7 @@ type ShopeeSubIdStorageMode = "table" | "profile-json";
 const SHOPEE_SUB_IDS_PROFILE_PREFS_KEY = "shopee_sub_ids";
 const SHOPEE_SUB_IDS_PROFILE_PREFS_VERSION = 1;
 
-export interface ShopeeSubIdItem {
+interface ShopeeSubIdItem {
   id: string;
   value: string;
   isDefault: boolean;

@@ -237,6 +237,124 @@ function sanitizeError(err: unknown): string {
   return String(err);
 }
 
+type OutboundDeliveryStatus =
+  | "accepted"
+  | "pending"
+  | "server_ack"
+  | "delivered"
+  | "read"
+  | "played"
+  | "failed";
+
+function toNumericDeliveryStatus(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    if (/^-?\d+$/.test(trimmed)) {
+      return Number.parseInt(trimmed, 10);
+    }
+  }
+
+  return null;
+}
+
+function normalizeOutboundDeliveryStatus(input: {
+  statusRaw: unknown;
+  errorMessage: string;
+}): {
+  status: OutboundDeliveryStatus | "";
+  ackLevel: number | null;
+  statusCode: number | null;
+  rawStatus: string;
+} {
+  const errorMessage = String(input.errorMessage || "").trim();
+  const rawStatus = String(input.statusRaw ?? "").trim();
+  const statusCode = toNumericDeliveryStatus(input.statusRaw);
+
+  if (errorMessage) {
+    return {
+      status: "failed",
+      ackLevel: statusCode,
+      statusCode,
+      rawStatus,
+    };
+  }
+
+  if (statusCode != null) {
+    if (statusCode <= 0) {
+      return { status: "failed", ackLevel: statusCode, statusCode, rawStatus };
+    }
+    if (statusCode === 1) {
+      return { status: "pending", ackLevel: statusCode, statusCode, rawStatus };
+    }
+    if (statusCode === 2) {
+      return { status: "server_ack", ackLevel: statusCode, statusCode, rawStatus };
+    }
+    if (statusCode === 3) {
+      return { status: "delivered", ackLevel: statusCode, statusCode, rawStatus };
+    }
+    if (statusCode === 4) {
+      return { status: "read", ackLevel: statusCode, statusCode, rawStatus };
+    }
+    return { status: "played", ackLevel: statusCode, statusCode, rawStatus };
+  }
+
+  const normalized = rawStatus.toLowerCase();
+  if (!normalized) {
+    return { status: "", ackLevel: null, statusCode: null, rawStatus };
+  }
+
+  if (normalized === "error" || normalized === "failed" || normalized === "failure") {
+    return { status: "failed", ackLevel: null, statusCode: null, rawStatus };
+  }
+  if (normalized === "pending") {
+    return { status: "pending", ackLevel: null, statusCode: null, rawStatus };
+  }
+  if (normalized === "accepted" || normalized === "sent") {
+    return { status: "accepted", ackLevel: null, statusCode: null, rawStatus };
+  }
+  if (normalized === "server_ack" || normalized === "server-ack" || normalized === "serverack") {
+    return { status: "server_ack", ackLevel: null, statusCode: null, rawStatus };
+  }
+  if (normalized === "delivery_ack" || normalized === "delivered") {
+    return { status: "delivered", ackLevel: null, statusCode: null, rawStatus };
+  }
+  if (normalized === "read" || normalized === "read_ack") {
+    return { status: "read", ackLevel: null, statusCode: null, rawStatus };
+  }
+  if (normalized === "played") {
+    return { status: "played", ackLevel: null, statusCode: null, rawStatus };
+  }
+
+  return { status: "", ackLevel: null, statusCode: null, rawStatus };
+}
+
+function extractOutboundDeliveryErrorMessage(update: Record<string, unknown>): string {
+  const direct = update.error;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  if (direct instanceof Error) return direct.message;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    const row = direct as Record<string, unknown>;
+    const nested =
+      (typeof row.message === "string" && row.message.trim() ? row.message : "")
+      || (typeof row.error === "string" && row.error.trim() ? row.error : "")
+      || (typeof row.reason === "string" && row.reason.trim() ? row.reason : "")
+      || (typeof row.text === "string" && row.text.trim() ? row.text : "");
+    if (nested) return nested;
+  }
+
+  const topLevel =
+    (typeof update.errorMessage === "string" && update.errorMessage.trim() ? update.errorMessage : "")
+    || (typeof update.error_message === "string" && update.error_message.trim() ? update.error_message : "")
+    || (typeof update.reason === "string" && update.reason.trim() ? update.reason : "");
+  return topLevel;
+}
+
 function logMediaCaptureDebug(event: string, payload: Record<string, unknown>): void {
   if (!MEDIA_CAPTURE_DEBUG) return;
   logger.info({ event, ...payload }, "media capture debug");
@@ -1137,6 +1255,10 @@ function generateMediaToken(): string {
 }
 
 const MEDIA_STALE_RETENTION_MS = 45 * 60 * 1000;
+const MEDIA_DELETE_DELAY_DEFAULT_MS = Math.max(
+  1_000,
+  Number(process.env.ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS || "600000") || 600_000,
+);
 
 function detectMediaExtension(kind: "image" | "video", mimeType: string): string {
   const normalized = mimeType.toLowerCase();
@@ -1205,10 +1327,10 @@ function storeTemporaryMedia(
   return { token, fileName: finalFileName };
 }
 
-function scheduleMediaDeletion(token: string, delayMs = 120_000): boolean {
+function scheduleMediaDeletion(token: string, delayMs = MEDIA_DELETE_DELAY_DEFAULT_MS): boolean {
   const current = mediaStore.get(token);
   if (!current) return false;
-  const normalizedDelay = Math.max(1_000, Number(delayMs) || 120_000);
+  const normalizedDelay = Math.max(1_000, Number(delayMs) || MEDIA_DELETE_DELAY_DEFAULT_MS);
   const deleteAt = Date.now() + normalizedDelay;
   current.deleteAt = deleteAt;
   mediaStore.set(token, current);
@@ -1792,6 +1914,45 @@ async function bootSocket(state: SessionState, reason: "manual" | "restore" | "r
       }
     });
 
+    socket.ev.on("messages.update", async (updates: Array<{
+      key?: { id?: string | null; remoteJid?: string | null; fromMe?: boolean | null };
+      update?: Record<string, unknown>;
+    }>) => {
+      if (state.generation !== generation) return;
+      if (!Array.isArray(updates) || updates.length === 0) return;
+
+      for (const item of updates) {
+        if (!item || typeof item !== "object") continue;
+
+        const key = item.key || {};
+        const messageId = String(key.id || "").trim();
+        const remoteJid = String(key.remoteJid || "").trim();
+        const fromMe = key.fromMe === true;
+        if (!fromMe || !messageId || !remoteJid) continue;
+
+        const update = item.update && typeof item.update === "object" && !Array.isArray(item.update)
+          ? item.update
+          : {};
+        const errorMessage = extractOutboundDeliveryErrorMessage(update);
+        const normalized = normalizeOutboundDeliveryStatus({
+          statusRaw: update.status,
+          errorMessage,
+        });
+        if (!normalized.status) continue;
+
+        await emitWebhook(state, "message_delivery_update", {
+          to: remoteJid,
+          messageId,
+          providerMessageId: messageId,
+          deliveryStatus: normalized.status,
+          ackLevel: normalized.ackLevel ?? undefined,
+          statusCode: normalized.statusCode ?? undefined,
+          rawStatus: normalized.rawStatus || undefined,
+          error: errorMessage || undefined,
+        });
+      }
+    });
+
     socket.ev.on("groups.update", async (updates) => {
       if (state.generation !== generation) return;
       for (const update of (updates as Array<{ id?: string; subject?: string }>)) {
@@ -1996,7 +2157,7 @@ app.post("/api/media/:token/schedule-delete", async (req: Request<{ token: strin
   }
 
   const delayMsRaw = Number(req.body?.delayMs);
-  const delayMs = Number.isFinite(delayMsRaw) ? delayMsRaw : 120_000;
+  const delayMs = Number.isFinite(delayMsRaw) ? delayMsRaw : MEDIA_DELETE_DELAY_DEFAULT_MS;
   const ok = scheduleMediaDeletion(token, delayMs);
   if (!ok) {
     res.status(404).json({ error: "Mídia temporária não encontrada" });
@@ -2121,6 +2282,7 @@ app.post("/api/sessions/:sessionId/disconnect", async (req: Request<{ sessionId:
         socket.ev.removeAllListeners("creds.update");
         socket.ev.removeAllListeners("connection.update");
         socket.ev.removeAllListeners("messages.upsert");
+        socket.ev.removeAllListeners("messages.update");
         await socket.logout();
       } catch (error) {
         logger.warn({ sessionId, error: sanitizeError(error) }, "error while disconnecting socket");
@@ -2306,16 +2468,20 @@ app.post("/api/send-message", async (req: Request<unknown, unknown, SendBody>, r
         sendResult = await state.socket!.sendMessage(targetJid, { text: messageContent });
       }
 
+      const providerMessageId = String(sendResult?.key?.id || "").trim();
       const groupName = targetJid.endsWith("@g.us") ? await resolveGroupName(state, targetJid) : undefined;
 
       await emitWebhook(state, "message_sent", {
         to: targetJid,
         groupName,
+        messageId: providerMessageId || undefined,
+        providerMessageId: providerMessageId || undefined,
+        deliveryStatus: "accepted",
         messageType: mediaKind || "text",
         message: messageContent,
       });
 
-      return { id: sendResult?.key?.id || null };
+      return { id: providerMessageId || null };
     })();
 
     inFlightSends.set(sendKey, sendPromise);
@@ -2384,6 +2550,7 @@ async function shutdown(signal: string): Promise<void> {
       state.socket.ev.removeAllListeners("creds.update");
       state.socket.ev.removeAllListeners("connection.update");
       state.socket.ev.removeAllListeners("messages.upsert");
+      state.socket.ev.removeAllListeners("messages.update");
       state.socket = null;
     }
 

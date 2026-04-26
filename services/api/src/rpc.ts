@@ -119,7 +119,7 @@ const ROUTE_DESTINATION_SEND_TIMEOUT_DYNAMIC_MAX_MS = Math.max(
 );
 const ROUTE_DESTINATION_DELAY_BASE_MS = Math.max(
   100,
-  Math.min(5_000, Number(process.env.ROUTE_DESTINATION_DELAY_BASE_MS || "500") || 500),
+  Math.min(5_000, Number(process.env.ROUTE_DESTINATION_DELAY_BASE_MS || "1000") || 1_000),
 );
 const ROUTE_DESTINATION_DELAY_STEP_DESTINATIONS = Math.max(
   1,
@@ -127,11 +127,51 @@ const ROUTE_DESTINATION_DELAY_STEP_DESTINATIONS = Math.max(
 );
 const ROUTE_DESTINATION_DELAY_STEP_MS = Math.max(
   0,
-  Math.min(2_000, Number(process.env.ROUTE_DESTINATION_DELAY_STEP_MS || "120") || 120),
+  Math.min(2_000, Number(process.env.ROUTE_DESTINATION_DELAY_STEP_MS || "0") || 0),
 );
 const ROUTE_DESTINATION_DELAY_MAX_MS = Math.max(
   ROUTE_DESTINATION_DELAY_BASE_MS,
-  Math.min(10_000, Number(process.env.ROUTE_DESTINATION_DELAY_MAX_MS || "1500") || 1_500),
+  Math.min(10_000, Number(process.env.ROUTE_DESTINATION_DELAY_MAX_MS || "1000") || 1_000),
+);
+const ROUTE_DESTINATION_SEND_RETRIES = Math.max(
+  0,
+  Math.min(3, Number(process.env.ROUTE_DESTINATION_SEND_RETRIES || "3") || 3),
+);
+const ROUTE_DESTINATION_SEND_RETRY_DELAY_MS = Math.max(
+  250,
+  Math.min(10_000, Number(process.env.ROUTE_DESTINATION_SEND_RETRY_DELAY_MS || "1500") || 1_500),
+);
+const ROUTE_ACTIVITY_BASE_MARGIN_MS = Math.max(
+  10_000,
+  Math.min(300_000, Number(process.env.ROUTE_ACTIVITY_BASE_MARGIN_MS || "45000") || 45_000),
+);
+const ROUTE_ACTIVITY_RETRY_MARGIN_PER_DESTINATION_MS = Math.max(
+  500,
+  Math.min(60_000, Number(process.env.ROUTE_ACTIVITY_RETRY_MARGIN_PER_DESTINATION_MS || "2500") || 2_500),
+);
+const ROUTE_ACTIVITY_MAX_CAP_MS = Math.max(
+  60_000,
+  Math.min(43_200_000, Number(process.env.ROUTE_ACTIVITY_MAX_CAP_MS || "14400000") || 14_400_000),
+);
+const ROUTE_HEAVY_LOAD_THRESHOLD_DESTINATIONS = Math.max(
+  10,
+  Math.min(2_000, Number(process.env.ROUTE_HEAVY_LOAD_THRESHOLD_DESTINATIONS || "40") || 40),
+);
+const ROUTE_HEAVY_LOAD_CHUNK_SIZE = Math.max(
+  5,
+  Math.min(500, Number(process.env.ROUTE_HEAVY_LOAD_CHUNK_SIZE || "25") || 25),
+);
+const ROUTE_HEAVY_LOAD_COOLDOWN_MS = Math.max(
+  0,
+  Math.min(120_000, Number(process.env.ROUTE_HEAVY_LOAD_COOLDOWN_MS || "3000") || 3_000),
+);
+const ROUTE_DYNAMIC_QUEUE_DEFER_MS = Math.max(
+  5_000,
+  Math.min(1_800_000, Number(process.env.ROUTE_DYNAMIC_QUEUE_DEFER_MS || "30000") || 30_000),
+);
+const ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS = Math.max(
+  10_000,
+  Math.min(7_200_000, Number(process.env.ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS || "600000") || 600_000),
 );
 const CHANNEL_EVENTS_FETCH_TIMEOUT_MS = Math.max(
   20_000,
@@ -619,6 +659,7 @@ type DynamicDispatchPolicy = {
   destinationCount: number;
   sendTimeoutMs: number;
   interDestinationDelayMs: number;
+  estimatedMaxActivityMs: number;
 };
 
 function buildDynamicDispatchPolicy(destinationCountRaw: number): DynamicDispatchPolicy {
@@ -634,11 +675,23 @@ function buildDynamicDispatchPolicy(destinationCountRaw: number): DynamicDispatc
     ROUTE_DESTINATION_DELAY_MAX_MS,
     ROUTE_DESTINATION_DELAY_BASE_MS + (delaySteps * ROUTE_DESTINATION_DELAY_STEP_MS),
   );
+  const baseDelayBudgetMs = interDestinationDelayMs * destinationCount;
+  const retryMarginMs = destinationCount
+    * ROUTE_DESTINATION_SEND_RETRIES
+    * (ROUTE_DESTINATION_SEND_RETRY_DELAY_MS + ROUTE_ACTIVITY_RETRY_MARGIN_PER_DESTINATION_MS);
+  const estimatedMaxActivityMs = Math.max(
+    interDestinationDelayMs,
+    Math.min(
+      ROUTE_ACTIVITY_MAX_CAP_MS,
+      baseDelayBudgetMs + retryMarginMs + ROUTE_ACTIVITY_BASE_MARGIN_MS,
+    ),
+  );
 
   return {
     destinationCount,
     sendTimeoutMs,
     interDestinationDelayMs,
+    estimatedMaxActivityMs,
   };
 }
 
@@ -646,6 +699,15 @@ async function maybeWaitBetweenDestinations(index: number, total: number, delayM
   if (delayMs <= 0) return;
   if (index >= total - 1) return;
   await sleep(delayMs);
+
+  if (total < ROUTE_HEAVY_LOAD_THRESHOLD_DESTINATIONS) return;
+  if (ROUTE_HEAVY_LOAD_COOLDOWN_MS <= 0) return;
+
+  const chunkSize = Math.max(1, Math.min(total, ROUTE_HEAVY_LOAD_CHUNK_SIZE));
+  const processedCount = index + 1;
+  if (processedCount % chunkSize !== 0) return;
+  if (index >= total - 1) return;
+  await sleep(ROUTE_HEAVY_LOAD_COOLDOWN_MS);
 }
 
 function isLocalhostUrl(raw: string): boolean {
@@ -1015,6 +1077,7 @@ function parseTimeToMinutes(value: unknown, fallbackMinutes: number): number {
 const ROUTE_QUIET_HOURS_DEFAULT_START = "22:00";
 const ROUTE_QUIET_HOURS_DEFAULT_END = "08:00";
 const ROUTE_QUIET_HOURS_SCHEDULE_SOURCE = "route_quiet_hours";
+const ROUTE_DYNAMIC_QUEUE_SCHEDULE_SOURCE = "route_dynamic_queue";
 
 function normalizeClockTimeForRules(value: unknown, fallback: string): string {
   const raw = String(value || "").trim();
@@ -4001,10 +4064,93 @@ type HistoryEntryTargetInput = {
   errorStep?: string;
   messageType?: string;
   sendOrder?: number;
+  providerMessageId?: string;
+  deliveryStatus?: string;
+  deliveryUpdatedAt?: string;
+  deliveryError?: string;
+  deliveryMetadata?: Record<string, unknown>;
   details?: Record<string, unknown>;
 };
 
 let historyEntryTargetsTableAvailable: boolean | null = null;
+let historyEntryTargetsDeliveryColumnsAvailable: boolean | null = null;
+
+type TargetDeliveryStatus =
+  | "accepted"
+  | "pending"
+  | "server_ack"
+  | "delivered"
+  | "read"
+  | "played"
+  | "failed";
+
+const TARGET_DELIVERY_STATUS_RANK: Record<TargetDeliveryStatus, number> = {
+  accepted: 1,
+  pending: 2,
+  server_ack: 3,
+  delivered: 4,
+  read: 5,
+  played: 6,
+  failed: 7,
+};
+
+function normalizeTargetDeliveryStatus(value: unknown): TargetDeliveryStatus | "" {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "accepted") return "accepted";
+  if (normalized === "pending") return "pending";
+  if (normalized === "server_ack" || normalized === "server-ack" || normalized === "serverack") return "server_ack";
+  if (normalized === "delivered" || normalized === "delivery_ack") return "delivered";
+  if (normalized === "read" || normalized === "read_ack") return "read";
+  if (normalized === "played") return "played";
+  if (normalized === "failed" || normalized === "error" || normalized === "failure") return "failed";
+  return "";
+}
+
+function isDeliveryConfirmedStatus(status: string): boolean {
+  return status === "delivered" || status === "read" || status === "played";
+}
+
+function shouldAdvanceDeliveryStatus(currentRaw: unknown, nextRaw: unknown): boolean {
+  const current = normalizeTargetDeliveryStatus(currentRaw);
+  const next = normalizeTargetDeliveryStatus(nextRaw);
+  if (!next) return false;
+  if (!current) return true;
+  if (current === next) return true;
+  if (current === "failed") return next === "failed";
+  if (isDeliveryConfirmedStatus(current) && next === "failed") return false;
+  return TARGET_DELIVERY_STATUS_RANK[next] >= TARGET_DELIVERY_STATUS_RANK[current];
+}
+
+function normalizeProviderMessageId(value: unknown): string {
+  return String(value || "").trim();
+}
+
+function extractProviderMessageIdFromSendResponse(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const row = payload as Record<string, unknown>;
+  const direct = normalizeProviderMessageId(
+    row.id
+    ?? row.messageId
+    ?? row.message_id,
+  );
+  if (direct) return direct;
+  const nested = row.data && typeof row.data === "object" && !Array.isArray(row.data)
+    ? row.data as Record<string, unknown>
+    : null;
+  if (!nested) return "";
+  return normalizeProviderMessageId(
+    nested.id
+    ?? nested.messageId
+    ?? nested.message_id,
+  );
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
 
 function normalizeHistoryEntryStatus(status: unknown): HistoryEntryStatus {
   const normalized = String(status || "").trim().toLowerCase();
@@ -4033,6 +4179,76 @@ async function canWriteHistoryEntryTargets(): Promise<boolean> {
     historyEntryTargetsTableAvailable = false;
   }
   return historyEntryTargetsTableAvailable;
+}
+
+async function hasHistoryEntryTargetDeliveryColumns(): Promise<boolean> {
+  if (historyEntryTargetsDeliveryColumnsAvailable != null) {
+    return historyEntryTargetsDeliveryColumnsAvailable;
+  }
+
+  try {
+    const row = await queryOne<{ has_columns: boolean }>(
+      `SELECT (
+         EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'history_entry_targets'
+              AND column_name = 'provider_message_id'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'history_entry_targets'
+              AND column_name = 'delivery_status'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'history_entry_targets'
+              AND column_name = 'delivery_updated_at'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'history_entry_targets'
+              AND column_name = 'delivery_error'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'history_entry_targets'
+              AND column_name = 'delivery_metadata'
+         )
+       ) AS has_columns`,
+      [],
+    );
+    historyEntryTargetsDeliveryColumnsAvailable = row?.has_columns === true;
+  } catch {
+    // Keep compatibility mode when metadata is not accessible.
+    historyEntryTargetsDeliveryColumnsAvailable = false;
+  }
+
+  return historyEntryTargetsDeliveryColumnsAvailable;
+}
+
+function isMissingHistoryEntryTargetDeliveryColumnsError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: unknown; message?: unknown };
+  const code = String(err.code ?? "").trim();
+  const message = String(err.message ?? "").trim().toLowerCase();
+  if (code !== "42703") return false;
+  return (
+    message.includes("provider_message_id")
+    || message.includes("delivery_status")
+    || message.includes("delivery_updated_at")
+    || message.includes("delivery_error")
+    || message.includes("delivery_metadata")
+  );
 }
 
 function summarizeHistoryEntryTargets(targets: HistoryEntryTargetInput[]): {
@@ -4134,6 +4350,13 @@ async function insertHistoryEntryWithTargets(input: {
   errorStep?: string;
 }): Promise<void> {
   const normalizedTargets = input.targets.map((target, index) => ({
+    providerMessageId: normalizeProviderMessageId(target.providerMessageId),
+    deliveryStatus: normalizeTargetDeliveryStatus(target.deliveryStatus),
+    deliveryUpdatedAt: String(target.deliveryUpdatedAt || "").trim(),
+    deliveryError: String(target.deliveryError || "").trim(),
+    deliveryMetadata: target.deliveryMetadata && typeof target.deliveryMetadata === "object" && !Array.isArray(target.deliveryMetadata)
+      ? target.deliveryMetadata
+      : {},
     destination: String(target.destination || "").trim() || "-",
     destinationGroupId: tryParseUuid(target.destinationGroupId),
     platform: String(target.platform || "").trim(),
@@ -4143,9 +4366,26 @@ async function insertHistoryEntryWithTargets(input: {
     errorStep: String(target.errorStep || "").trim(),
     messageType: String(target.messageType || input.messageType || "text").trim() || "text",
     sendOrder: Number.isFinite(Number(target.sendOrder)) ? Math.max(0, Math.trunc(Number(target.sendOrder))) : index,
-    details: target.details && typeof target.details === "object" && !Array.isArray(target.details)
-      ? target.details
-      : {},
+    details: {
+      ...(target.details && typeof target.details === "object" && !Array.isArray(target.details)
+        ? target.details
+        : {}),
+      ...(normalizeProviderMessageId(target.providerMessageId)
+        ? { providerMessageId: normalizeProviderMessageId(target.providerMessageId) }
+        : {}),
+      ...(normalizeTargetDeliveryStatus(target.deliveryStatus)
+        ? { deliveryStatus: normalizeTargetDeliveryStatus(target.deliveryStatus) }
+        : {}),
+      ...(String(target.deliveryUpdatedAt || "").trim()
+        ? { deliveryUpdatedAt: String(target.deliveryUpdatedAt || "").trim() }
+        : {}),
+      ...(String(target.deliveryError || "").trim()
+        ? { deliveryError: String(target.deliveryError || "").trim() }
+        : {}),
+      ...(target.deliveryMetadata && typeof target.deliveryMetadata === "object" && !Array.isArray(target.deliveryMetadata)
+        ? { deliveryMetadata: target.deliveryMetadata }
+        : {}),
+    },
   }));
 
   const summary = summarizeHistoryEntryTargets(normalizedTargets);
@@ -4181,6 +4421,11 @@ async function insertHistoryEntryWithTargets(input: {
       errorStep: target.errorStep,
       messageType: target.messageType,
       sendOrder: target.sendOrder,
+      providerMessageId: target.providerMessageId,
+      deliveryStatus: target.deliveryStatus,
+      deliveryUpdatedAt: target.deliveryUpdatedAt,
+      deliveryError: target.deliveryError,
+      deliveryMetadata: target.deliveryMetadata,
       details: target.details,
     }));
   }
@@ -4205,32 +4450,79 @@ async function insertHistoryEntryWithTargets(input: {
 
   if (!canWriteTargets || normalizedTargets.length === 0) return;
 
-  const valueClauses: string[] = [];
-  const params: unknown[] = [];
-  for (const target of normalizedTargets) {
-    const base = params.length;
-    valueClauses.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13})`);
-    params.push(
-      uuid(),
-      parentId,
-      input.userId,
-      target.destinationGroupId,
-      target.destination,
-      target.platform,
-      target.status,
-      target.processingStatus,
-      target.blockReason,
-      target.errorStep,
-      target.messageType,
-      target.sendOrder,
-      JSON.stringify(target.details),
-    );
-  }
+  let includeDeliveryColumns = await hasHistoryEntryTargetDeliveryColumns();
+  const insertTargets = async (withDeliveryColumns: boolean): Promise<void> => {
+    const valueClauses: string[] = [];
+    const params: unknown[] = [];
+    for (const target of normalizedTargets) {
+      const base = params.length;
+      if (withDeliveryColumns) {
+        valueClauses.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18})`);
+        params.push(
+          uuid(),
+          parentId,
+          input.userId,
+          target.destinationGroupId,
+          target.destination,
+          target.platform,
+          target.status,
+          target.processingStatus,
+          target.blockReason,
+          target.errorStep,
+          target.messageType,
+          target.sendOrder,
+          JSON.stringify(target.details),
+          target.providerMessageId || null,
+          target.deliveryStatus || null,
+          target.deliveryUpdatedAt || null,
+          target.deliveryError || null,
+          JSON.stringify(target.deliveryMetadata || {}),
+        );
+      } else {
+        valueClauses.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13})`);
+        params.push(
+          uuid(),
+          parentId,
+          input.userId,
+          target.destinationGroupId,
+          target.destination,
+          target.platform,
+          target.status,
+          target.processingStatus,
+          target.blockReason,
+          target.errorStep,
+          target.messageType,
+          target.sendOrder,
+          JSON.stringify(target.details),
+        );
+      }
+    }
 
-  await execute(
-    `INSERT INTO history_entry_targets (id, history_entry_id, user_id, destination_group_id, destination, platform, status, processing_status, block_reason, error_step, message_type, send_order, details) VALUES ${valueClauses.join(",")}`,
-    params,
-  );
+    if (withDeliveryColumns) {
+      await execute(
+        `INSERT INTO history_entry_targets (id, history_entry_id, user_id, destination_group_id, destination, platform, status, processing_status, block_reason, error_step, message_type, send_order, details, provider_message_id, delivery_status, delivery_updated_at, delivery_error, delivery_metadata) VALUES ${valueClauses.join(",")}`,
+        params,
+      );
+      return;
+    }
+
+    await execute(
+      `INSERT INTO history_entry_targets (id, history_entry_id, user_id, destination_group_id, destination, platform, status, processing_status, block_reason, error_step, message_type, send_order, details) VALUES ${valueClauses.join(",")}`,
+      params,
+    );
+  };
+
+  try {
+    await insertTargets(includeDeliveryColumns);
+  } catch (error) {
+    if (includeDeliveryColumns && isMissingHistoryEntryTargetDeliveryColumnsError(error)) {
+      historyEntryTargetsDeliveryColumnsAvailable = false;
+      includeDeliveryColumns = false;
+      await insertTargets(includeDeliveryColumns);
+      return;
+    }
+    throw error;
+  }
 }
 
 function normalizeHistoryEntryProcessingStatus(status: unknown): HistoryEntryProcessingStatus {
@@ -4663,7 +4955,10 @@ function isTransientMicroserviceError(error: unknown): boolean {
     || message.includes("rate limit")
     || message.includes("timeout")
     || message.includes("temporar")
+    || message.includes("fetch failed")
     || message.includes("econnreset")
+    || message.includes("econnrefused")
+    || message.includes("enotfound")
     || message.includes("socket hang up")
   );
 }
@@ -5703,7 +5998,7 @@ function markScheduledPostMediaCleanup(metadata: Record<string, unknown>, nowMs:
   if (!parseScheduledPostMedia(metadata)) return metadata;
   return {
     ...metadata,
-    mediaCleanupAt: new Date(nowMs + 120_000).toISOString(),
+    mediaCleanupAt: new Date(nowMs + ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS).toISOString(),
   };
 }
 
@@ -5969,6 +6264,178 @@ async function materializeRouteMediaForQueue(userId: string, media: RouteForward
   return media;
 }
 
+type RouteDestinationSendError = {
+  message: string;
+  status?: number;
+};
+
+type RouteDestinationSendResult = {
+  data: unknown;
+  error: RouteDestinationSendError | null;
+  attempts: number;
+  attemptedSend: boolean;
+  usedFallbackMedia: boolean;
+};
+
+function isSessionNotOnlineErrorMessage(message: string): boolean {
+  const normalized = String(message || "").trim().toLowerCase();
+  return (
+    normalized.includes("sessão não está online")
+    || normalized.includes("sessao nao esta online")
+  );
+}
+
+function isTemporaryMediaMissingErrorMessage(message: string): boolean {
+  const normalized = String(message || "").trim().toLowerCase();
+  return (
+    normalized.includes("mídia temporária não encontrada para envio")
+    || normalized.includes("midia temporaria nao encontrada para envio")
+  );
+}
+
+function buildRouteDestinationPayload(input: {
+  platform: string;
+  sessionId: string;
+  externalId: string;
+  content: string;
+  media: RouteForwardMedia | null;
+}): Record<string, unknown> {
+  if (input.platform === "whatsapp") {
+    return {
+      sessionId: input.sessionId,
+      jid: input.externalId,
+      content: input.content,
+      media: input.media ?? undefined,
+    };
+  }
+  return {
+    sessionId: input.sessionId,
+    chatId: input.externalId,
+    message: input.content,
+    media: input.media ?? undefined,
+  };
+}
+
+async function sendRouteDestinationWithResilience(input: {
+  userId: string;
+  platform: string;
+  sessionId: string;
+  externalId: string;
+  content: string;
+  media: RouteForwardMedia | null;
+  fallbackMedia: RouteForwardMedia | null;
+  scopedHeaders: Record<string, string>;
+  timeoutMs: number;
+}): Promise<RouteDestinationSendResult> {
+  const { platform } = input;
+  const baseUrl = platform === "whatsapp"
+    ? WHATSAPP_URL
+    : platform === "telegram"
+      ? TELEGRAM_URL
+      : "";
+
+  if (!baseUrl) {
+    return {
+      data: null,
+      error: { message: `Serviço ${platform || "desconhecido"} indisponível` },
+      attempts: 0,
+      attemptedSend: false,
+      usedFallbackMedia: false,
+    };
+  }
+
+  const path = platform === "whatsapp"
+    ? "/api/send-message"
+    : "/api/telegram/send-message";
+
+  let currentMedia = input.media;
+  let attempts = 0;
+  let usedFallbackMedia = false;
+  const totalAttempts = Math.max(1, ROUTE_DESTINATION_SEND_RETRIES + 1);
+  let lastResult: { data: unknown; error: RouteDestinationSendError | null } = {
+    data: null,
+    error: { message: "Falha ao enviar para o destino." },
+  };
+
+  while (attempts < totalAttempts) {
+    attempts += 1;
+    const payload = buildRouteDestinationPayload({
+      platform,
+      sessionId: input.sessionId,
+      externalId: input.externalId,
+      content: input.content,
+      media: currentMedia,
+    });
+
+    const result = await proxyMicroservice(
+      baseUrl,
+      path,
+      "POST",
+      payload,
+      input.scopedHeaders,
+      input.timeoutMs,
+    );
+
+    const error = result.error
+      ? {
+          message: String(result.error.message || "Falha ao enviar para o destino."),
+          status: Number((result.error as { status?: number }).status) || undefined,
+        }
+      : null;
+
+    lastResult = { data: result.data, error };
+
+    if (!error) {
+      return {
+        data: result.data,
+        error: null,
+        attempts,
+        attemptedSend: true,
+        usedFallbackMedia,
+      };
+    }
+
+    const canUseFallbackMedia = (
+      !usedFallbackMedia
+      && Boolean(currentMedia?.token)
+      && Boolean(input.fallbackMedia?.base64)
+      && isTemporaryMediaMissingErrorMessage(error.message)
+    );
+
+    if (canUseFallbackMedia) {
+      currentMedia = input.fallbackMedia;
+      usedFallbackMedia = true;
+      if (attempts < totalAttempts) {
+        await sleep(Math.min(1_500, ROUTE_DESTINATION_SEND_RETRY_DELAY_MS));
+        continue;
+      }
+    }
+
+    const shouldRetry = (
+      attempts < totalAttempts
+      && (
+        isTransientMicroserviceError(error)
+        || isSessionNotOnlineErrorMessage(error.message)
+      )
+    );
+
+    if (shouldRetry) {
+      await sleep(Math.min(5_000, ROUTE_DESTINATION_SEND_RETRY_DELAY_MS * attempts));
+      continue;
+    }
+
+    break;
+  }
+
+  return {
+    data: lastResult.data,
+    error: lastResult.error,
+    attempts,
+    attemptedSend: attempts > 0,
+    usedFallbackMedia,
+  };
+}
+
 async function queueRouteForwardForQuietHours(input: {
   userId: string;
   routeId: string;
@@ -5983,6 +6450,39 @@ async function queueRouteForwardForQuietHours(input: {
   quietHoursEnd: string;
   scheduledAtIso: string;
 }): Promise<{ queued: boolean; postId?: string; error?: string }> {
+  return queueRouteForwardForDeferredDispatch({
+    userId: input.userId,
+    routeId: input.routeId,
+    routeName: input.routeName,
+    sourceName: input.sourceName,
+    sourceExternalId: input.sourceExternalId,
+    sessionId: input.sessionId,
+    content: input.content,
+    media: input.media,
+    destinationGroupIds: input.destinationGroupIds,
+    scheduledAtIso: input.scheduledAtIso,
+    scheduleSource: ROUTE_QUIET_HOURS_SCHEDULE_SOURCE,
+    extraMetadata: {
+      quietHoursStart: input.quietHoursStart,
+      quietHoursEnd: input.quietHoursEnd,
+    },
+  });
+}
+
+async function queueRouteForwardForDeferredDispatch(input: {
+  userId: string;
+  routeId: string;
+  routeName: string;
+  sourceName: string;
+  sourceExternalId: string;
+  sessionId: string;
+  content: string;
+  media: RouteForwardMedia | null;
+  destinationGroupIds: string[];
+  scheduledAtIso: string;
+  scheduleSource: string;
+  extraMetadata?: Record<string, unknown>;
+}): Promise<{ queued: boolean; postId?: string; error?: string }> {
   const {
     userId,
     routeId,
@@ -5993,9 +6493,9 @@ async function queueRouteForwardForQuietHours(input: {
     content,
     media,
     destinationGroupIds,
-    quietHoursStart,
-    quietHoursEnd,
     scheduledAtIso,
+    scheduleSource,
+    extraMetadata,
   } = input;
 
   const uniqueDestinationGroupIds = Array.from(new Set(toUuidArray(destinationGroupIds)));
@@ -6008,15 +6508,16 @@ async function queueRouteForwardForQuietHours(input: {
     finalContent: content,
     messageType: media ? media.kind : "text",
     media: media || null,
-    scheduleSource: ROUTE_QUIET_HOURS_SCHEDULE_SOURCE,
+    scheduleSource: String(scheduleSource || "").trim() || ROUTE_QUIET_HOURS_SCHEDULE_SOURCE,
     routeId,
     routeName,
     sourceName,
     sourceExternalId,
     sourceSessionId: sessionId,
-    quietHoursStart,
-    quietHoursEnd,
     queuedAt: nowIso(),
+    ...(extraMetadata && typeof extraMetadata === "object" && !Array.isArray(extraMetadata)
+      ? extraMetadata
+      : {}),
   };
 
   const createdPost = await queryOne<{ id: string }>(
@@ -6057,7 +6558,7 @@ async function scheduleRouteForwardMediaDeletion(input: {
 
   const delayMs = Number.isFinite(Number(input.delayMs))
     ? Math.max(1_000, Number(input.delayMs))
-    : 120_000;
+    : ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS;
 
   const headers = buildUserScopedHeaders(userId);
   const callScheduleDelete = async (service: "whatsapp" | "telegram") => {
@@ -6366,6 +6867,433 @@ function toIntegrationEvents(payload: unknown): IntegrationEvent[] {
     events.push({ event, data });
   }
   return events;
+}
+
+function pickFirstNonEmptyText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const text = value.trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function parseNullableNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (!/^-?\d+$/.test(trimmed)) return null;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeEventTimestampOrNow(value: unknown): string {
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+  }
+  return nowIso();
+}
+
+function mapWhatsAppAckCodeToDeliveryStatus(code: number | null): TargetDeliveryStatus | "" {
+  if (code == null) return "";
+  if (code <= 0) return "failed";
+  if (code === 1) return "pending";
+  if (code === 2) return "server_ack";
+  if (code === 3) return "delivered";
+  if (code === 4) return "read";
+  return "played";
+}
+
+function buildWhatsAppDeliveryUpdateFromEvent(input: {
+  event: string;
+  data: Record<string, unknown>;
+  sessionId: string;
+}): {
+  providerMessageId: string;
+  destinationExternalId: string;
+  deliveryStatus: TargetDeliveryStatus;
+  deliveryUpdatedAt: string;
+  deliveryError: string;
+  deliveryMetadata: Record<string, unknown>;
+} | null {
+  const providerMessageId = normalizeProviderMessageId(
+    input.data.providerMessageId
+    ?? input.data.messageId
+    ?? input.data.message_id
+    ?? input.data.id,
+  );
+  if (!providerMessageId) return null;
+
+  const destinationExternalId = String(
+    input.data.to
+    ?? input.data.groupId
+    ?? input.data.group_id
+    ?? input.data.jid
+    ?? "",
+  ).trim();
+
+  const deliveryError = pickFirstNonEmptyText(
+    input.data.error,
+    input.data.errorMessage,
+    input.data.error_message,
+    input.data.reason,
+  );
+
+  const normalizedFromEvent = normalizeTargetDeliveryStatus(
+    input.data.deliveryStatus
+    ?? input.data.status
+    ?? input.data.delivery_status
+    ?? (input.event === "message_sent" ? "accepted" : ""),
+  );
+  const ackCode = parseNullableNumber(
+    input.data.ackLevel
+    ?? input.data.statusCode
+    ?? input.data.status_code,
+  );
+  const normalizedFromAck = mapWhatsAppAckCodeToDeliveryStatus(ackCode);
+  let deliveryStatus = normalizedFromEvent || normalizedFromAck;
+
+  if (!deliveryStatus && deliveryError) {
+    deliveryStatus = "failed";
+  }
+
+  if (!deliveryStatus) return null;
+
+  const deliveryMetadataInput = parseJsonObject(input.data.deliveryMetadata);
+  const deliveryUpdatedAt = normalizeEventTimestampOrNow(
+    input.data.timestamp
+    ?? input.data.updatedAt
+    ?? input.data.updated_at
+    ?? input.data.occurredAt
+    ?? input.data.occurred_at,
+  );
+
+  return {
+    providerMessageId,
+    destinationExternalId,
+    deliveryStatus,
+    deliveryUpdatedAt,
+    deliveryError,
+    deliveryMetadata: {
+      ...deliveryMetadataInput,
+      event: input.event,
+      sessionId: input.sessionId,
+      ackLevel: ackCode ?? undefined,
+      rawStatus: typeof input.data.rawStatus === "string" ? input.data.rawStatus : undefined,
+      statusCode: parseNullableNumber(input.data.statusCode ?? input.data.status_code) ?? undefined,
+      destinationExternalId: destinationExternalId || undefined,
+    },
+  };
+}
+
+async function refreshHistoryEntriesAfterTargetDeliveryUpdate(input: {
+  userId: string;
+  targetIds: string[];
+  deliveryStatus: TargetDeliveryStatus;
+  deliveryUpdatedAt: string;
+  deliveryError: string;
+}): Promise<void> {
+  const targetIds = toUuidArray(input.targetIds);
+  if (targetIds.length === 0) return;
+
+  const entryRows = await query<{ history_entry_id: string }>(
+    `SELECT DISTINCT history_entry_id
+       FROM history_entry_targets
+      WHERE user_id = $1
+        AND id = ANY($2::uuid[])`,
+    [input.userId, targetIds],
+  );
+  const entryIds = toUuidArray(entryRows.map((row) => row.history_entry_id));
+  if (entryIds.length === 0) return;
+
+  const includeDeliveryColumns = await hasHistoryEntryTargetDeliveryColumns();
+  const summaryRows = await query<{
+    history_entry_id: string;
+    total: string | number;
+    sent: string | number;
+    failed: string | number;
+    blocked: string | number;
+    processed: string | number;
+    skipped: string | number;
+  }>(
+    includeDeliveryColumns
+      ? `SELECT
+          history_entry_id,
+          COUNT(*)::bigint AS total,
+          COUNT(*) FILTER (
+            WHERE processing_status = 'sent'
+              AND COALESCE(delivery_status, '') <> 'failed'
+          )::bigint AS sent,
+          COUNT(*) FILTER (
+            WHERE processing_status IN ('failed', 'error')
+               OR COALESCE(delivery_status, '') = 'failed'
+          )::bigint AS failed,
+          COUNT(*) FILTER (WHERE processing_status = 'blocked')::bigint AS blocked,
+          COUNT(*) FILTER (WHERE processing_status = 'processed')::bigint AS processed,
+          COUNT(*) FILTER (WHERE processing_status = 'skipped')::bigint AS skipped
+        FROM history_entry_targets
+        WHERE history_entry_id = ANY($1::uuid[])
+        GROUP BY history_entry_id`
+      : `SELECT
+          history_entry_id,
+          COUNT(*)::bigint AS total,
+          COUNT(*) FILTER (WHERE processing_status = 'sent')::bigint AS sent,
+          COUNT(*) FILTER (WHERE processing_status IN ('failed', 'error'))::bigint AS failed,
+          COUNT(*) FILTER (WHERE processing_status = 'blocked')::bigint AS blocked,
+          COUNT(*) FILTER (WHERE processing_status = 'processed')::bigint AS processed,
+          COUNT(*) FILTER (WHERE processing_status = 'skipped')::bigint AS skipped
+        FROM history_entry_targets
+        WHERE history_entry_id = ANY($1::uuid[])
+        GROUP BY history_entry_id`,
+    [entryIds],
+  );
+
+  const summaryByEntry = new Map(
+    summaryRows.map((row) => [String(row.history_entry_id || "").trim(), {
+      total: Math.max(0, Number(row.total) || 0),
+      sent: Math.max(0, Number(row.sent) || 0),
+      failed: Math.max(0, Number(row.failed) || 0),
+      blocked: Math.max(0, Number(row.blocked) || 0),
+      processed: Math.max(0, Number(row.processed) || 0),
+      skipped: Math.max(0, Number(row.skipped) || 0),
+    }]),
+  );
+
+  const markAsFailed = input.deliveryStatus === "failed";
+
+  for (const entryId of entryIds) {
+    const summary = summaryByEntry.get(entryId) || {
+      total: 0,
+      sent: 0,
+      failed: 0,
+      blocked: 0,
+      processed: 0,
+      skipped: 0,
+    };
+
+    const detailsPatch: Record<string, unknown> = {
+      hasTargets: true,
+      targetSummary: summary,
+    };
+
+    if (markAsFailed) {
+      detailsPatch.deliveryStatus = "failed";
+      detailsPatch.deliveryUpdatedAt = input.deliveryUpdatedAt || nowIso();
+      if (input.deliveryError) {
+        detailsPatch.deliveryError = input.deliveryError;
+      }
+    }
+
+    await execute(
+      `UPDATE history_entries
+          SET details = COALESCE(details, '{}'::jsonb) || $2::jsonb,
+              processing_status = CASE
+                WHEN $3::boolean AND COALESCE(processing_status, '') IN ('sent', 'processed')
+                  THEN 'error'
+                ELSE processing_status
+              END,
+              status = CASE
+                WHEN $3::boolean AND COALESCE(status, '') NOT IN ('error', 'failed')
+                  THEN 'error'
+                ELSE status
+              END,
+              block_reason = CASE
+                WHEN $3::boolean AND COALESCE(block_reason, '') = ''
+                  THEN 'delivery_failed'
+                ELSE block_reason
+              END,
+              error_step = CASE
+                WHEN $3::boolean AND COALESCE(error_step, '') = ''
+                  THEN 'delivery_update'
+                ELSE error_step
+              END,
+              updated_at = NOW()
+        WHERE id = $1
+          AND user_id = $4`,
+      [entryId, JSON.stringify(detailsPatch), markAsFailed, input.userId],
+    );
+  }
+}
+
+async function applyWhatsAppDeliveryUpdate(input: {
+  userId: string;
+  update: {
+    providerMessageId: string;
+    destinationExternalId: string;
+    deliveryStatus: TargetDeliveryStatus;
+    deliveryUpdatedAt: string;
+    deliveryError: string;
+    deliveryMetadata: Record<string, unknown>;
+  };
+}): Promise<number> {
+  if (!await canWriteHistoryEntryTargets()) return 0;
+
+  const providerMessageId = normalizeProviderMessageId(input.update.providerMessageId);
+  if (!providerMessageId) return 0;
+  const destinationExternalId = String(input.update.destinationExternalId || "").trim();
+  const deliveryStatus = normalizeTargetDeliveryStatus(input.update.deliveryStatus);
+  if (!deliveryStatus) return 0;
+
+  const deliveryUpdatedAt = normalizeEventTimestampOrNow(input.update.deliveryUpdatedAt);
+  const deliveryError = String(input.update.deliveryError || "").trim();
+  const deliveryMetadata = parseJsonObject(input.update.deliveryMetadata);
+  const detailsPatch = {
+    providerMessageId,
+    deliveryStatus,
+    deliveryUpdatedAt,
+    deliveryError,
+    deliveryMetadata,
+  };
+
+  const applyFallbackDetailsOnly = async (): Promise<number> => {
+    const candidates = await query<{
+      id: string;
+      details: Record<string, unknown> | null;
+    }>(
+      `SELECT id, details
+         FROM history_entry_targets
+        WHERE user_id = $1
+          AND platform = 'whatsapp'
+          AND details->>'providerMessageId' = $2
+          AND created_at >= NOW() - INTERVAL '14 days'
+        ORDER BY created_at DESC
+        LIMIT 25`,
+      [input.userId, providerMessageId],
+    );
+
+    const filtered = destinationExternalId
+      ? candidates.filter((row) => {
+          const details = parseJsonObject(row.details);
+          const destinationHint = pickFirstNonEmptyText(
+            details.destinationExternalId,
+            details.externalId,
+            details.destinationExternalID,
+          );
+          return !destinationHint || destinationHint === destinationExternalId;
+        })
+      : candidates;
+
+    const updateIds = filtered
+      .filter((row) => {
+        const details = parseJsonObject(row.details);
+        return shouldAdvanceDeliveryStatus(details.deliveryStatus, deliveryStatus);
+      })
+      .map((row) => row.id);
+
+    if (updateIds.length === 0) return 0;
+
+    await execute(
+      `UPDATE history_entry_targets
+          SET details = COALESCE(details, '{}'::jsonb) || $2::jsonb
+        WHERE id = ANY($1::uuid[])`,
+      [updateIds, JSON.stringify(detailsPatch)],
+    );
+
+    await refreshHistoryEntriesAfterTargetDeliveryUpdate({
+      userId: input.userId,
+      targetIds: updateIds,
+      deliveryStatus,
+      deliveryUpdatedAt,
+      deliveryError,
+    }).catch(() => undefined);
+    return updateIds.length;
+  };
+
+  let includeDeliveryColumns = await hasHistoryEntryTargetDeliveryColumns();
+  if (!includeDeliveryColumns) {
+    return applyFallbackDetailsOnly();
+  }
+
+  try {
+    const candidates = await query<{
+      id: string;
+      delivery_status: string | null;
+      details: Record<string, unknown> | null;
+    }>(
+      `SELECT id, delivery_status, details
+         FROM history_entry_targets
+        WHERE user_id = $1
+          AND platform = 'whatsapp'
+          AND (
+            provider_message_id = $2
+            OR details->>'providerMessageId' = $2
+          )
+          AND created_at >= NOW() - INTERVAL '14 days'
+        ORDER BY created_at DESC
+        LIMIT 25`,
+      [input.userId, providerMessageId],
+    );
+
+    const filtered = destinationExternalId
+      ? candidates.filter((row) => {
+          const details = parseJsonObject(row.details);
+          const destinationHint = pickFirstNonEmptyText(
+            details.destinationExternalId,
+            details.externalId,
+            details.destinationExternalID,
+          );
+          return !destinationHint || destinationHint === destinationExternalId;
+        })
+      : candidates;
+
+    const updateIds = filtered
+      .filter((row) => {
+        const details = parseJsonObject(row.details);
+        const currentStatus = pickFirstNonEmptyText(row.delivery_status, details.deliveryStatus);
+        return shouldAdvanceDeliveryStatus(currentStatus, deliveryStatus);
+      })
+      .map((row) => row.id);
+
+    if (updateIds.length === 0) return 0;
+
+    await execute(
+      `UPDATE history_entry_targets
+          SET provider_message_id = CASE
+                WHEN COALESCE(provider_message_id, '') = '' THEN $2
+                ELSE provider_message_id
+              END,
+              delivery_status = $3,
+              delivery_updated_at = $4::timestamptz,
+              delivery_error = CASE WHEN $5 <> '' THEN $5 ELSE NULL END,
+              delivery_metadata = COALESCE(delivery_metadata, '{}'::jsonb) || $6::jsonb,
+              details = COALESCE(details, '{}'::jsonb) || $7::jsonb
+        WHERE id = ANY($1::uuid[])`,
+      [
+        updateIds,
+        providerMessageId,
+        deliveryStatus,
+        deliveryUpdatedAt,
+        deliveryError,
+        JSON.stringify(deliveryMetadata),
+        JSON.stringify(detailsPatch),
+      ],
+    );
+
+    await refreshHistoryEntriesAfterTargetDeliveryUpdate({
+      userId: input.userId,
+      targetIds: updateIds,
+      deliveryStatus,
+      deliveryUpdatedAt,
+      deliveryError,
+    }).catch(() => undefined);
+
+    return updateIds.length;
+  } catch (error) {
+    if (isMissingHistoryEntryTargetDeliveryColumnsError(error)) {
+      historyEntryTargetsDeliveryColumnsAvailable = false;
+      includeDeliveryColumns = false;
+      if (!includeDeliveryColumns) {
+        return applyFallbackDetailsOnly();
+      }
+    }
+    throw error;
+  }
 }
 
 async function upsertGroupRow(input: {
@@ -7676,6 +8604,20 @@ async function applyWhatsAppEvents(userId: string, sessionId: string, events: In
         continue;
       }
 
+      if (event === "message_sent" || event === "message_delivery_update") {
+        const deliveryUpdate = buildWhatsAppDeliveryUpdateFromEvent({
+          event,
+          data,
+          sessionId,
+        });
+        if (!deliveryUpdate) continue;
+        await applyWhatsAppDeliveryUpdate({
+          userId,
+          update: deliveryUpdate,
+        });
+        continue;
+      }
+
       if (event === "message_received") {
         const sourceExternalId = String(data.groupId ?? "").trim();
         const sourceName = String(data.groupName ?? data.groupId ?? "Grupo").trim() || "Grupo";
@@ -8358,7 +9300,7 @@ async function processRouteMessageForUser(input: {
   const routeMeliSessionCache = new Map<string, string>();
   const routeTemplateCache = new Map<string, { content: string; scope: TemplateScope } | null>();
   const shouldScheduleInboundMediaDeletion = Boolean(media?.token);
-  let inboundMediaDeleteDelayMs = 120_000;
+  let inboundMediaDeleteDelayMs = ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS;
 
   try {
 
@@ -9037,7 +9979,7 @@ async function processRouteMessageForUser(input: {
       if (shouldScheduleInboundMediaDeletion && queuedMedia?.token && !queuedMedia.base64) {
         inboundMediaDeleteDelayMs = Math.max(
           inboundMediaDeleteDelayMs,
-          (queuedMinutes * 60_000) + 120_000,
+          (queuedMinutes * 60_000) + ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS,
         );
       }
 
@@ -9094,10 +10036,90 @@ async function processRouteMessageForUser(input: {
     }
 
     const routeDispatchPolicy = buildDynamicDispatchPolicy(filteredTargetIds.length);
+    const routeMediaFallback = routeMedia
+      ? await materializeRouteMediaForQueue(userId, routeMedia)
+      : null;
+    const routeActivityStartedAtMs = Date.now();
+    const routeActivityDeadlineMs = routeActivityStartedAtMs + routeDispatchPolicy.estimatedMaxActivityMs;
+    let routeActivityDeferred = false;
+    let routeActivityDeferredCount = 0;
+    let routeActivityDeferredQueuePostId = "";
+    let routeActivityDeferredError = "";
+    let routeActivityDeferredUntilIso = "";
     const routeTargets: HistoryEntryTargetInput[] = [];
     for (let targetIndex = 0; targetIndex < filteredTargetIds.length; targetIndex++) {
+      if (Date.now() > routeActivityDeadlineMs) {
+        const remainingTargetIds = filteredTargetIds.slice(targetIndex);
+        if (remainingTargetIds.length > 0) {
+          const deferredAtIso = new Date(Date.now() + ROUTE_DYNAMIC_QUEUE_DEFER_MS).toISOString();
+          const queuedMedia = await materializeRouteMediaForQueue(userId, routeMedia);
+          if (shouldScheduleInboundMediaDeletion && queuedMedia?.token && !queuedMedia.base64) {
+            inboundMediaDeleteDelayMs = Math.max(
+              inboundMediaDeleteDelayMs,
+              ROUTE_DYNAMIC_QUEUE_DEFER_MS + ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS,
+            );
+          }
+
+          const queueResult = await queueRouteForwardForDeferredDispatch({
+            userId,
+            routeId: route.id,
+            routeName: route.name,
+            sourceName,
+            sourceExternalId,
+            sessionId,
+            content: outboundText,
+            media: queuedMedia,
+            destinationGroupIds: remainingTargetIds,
+            scheduledAtIso: deferredAtIso,
+            scheduleSource: ROUTE_DYNAMIC_QUEUE_SCHEDULE_SOURCE,
+            extraMetadata: {
+              reason: "activity_budget_exceeded",
+              estimatedMaxActivityMs: routeDispatchPolicy.estimatedMaxActivityMs,
+              activityStartedAt: new Date(routeActivityStartedAtMs).toISOString(),
+              activityDeadlineAt: new Date(routeActivityDeadlineMs).toISOString(),
+            },
+          });
+
+          routeActivityDeferred = queueResult.queued;
+          routeActivityDeferredCount = remainingTargetIds.length;
+          routeActivityDeferredQueuePostId = String(queueResult.postId || "");
+          routeActivityDeferredError = String(queueResult.error || "");
+          routeActivityDeferredUntilIso = deferredAtIso;
+
+          for (let deferredOffset = 0; deferredOffset < remainingTargetIds.length; deferredOffset++) {
+            const deferredTargetId = remainingTargetIds[deferredOffset];
+            const deferredGroup = destGroupMap.get(String(deferredTargetId));
+            const deferredOrder = targetIndex + deferredOffset;
+            routeTargets.push({
+              destination: String(deferredGroup?.name || deferredTargetId || "Destino"),
+              destinationGroupId: tryParseUuid(deferredGroup?.id || deferredTargetId),
+              platform: String(deferredGroup?.platform || ""),
+              status: "warning",
+              processingStatus: "blocked",
+              blockReason: queueResult.queued ? "activity_budget_queued" : "activity_budget_exceeded",
+              errorStep: "activity_budget",
+              messageType: routeMedia ? routeMedia.kind : "text",
+              sendOrder: deferredOrder,
+              details: {
+                message: outboundText,
+                routeId: route.id,
+                routeName: route.name,
+                reason: queueResult.queued ? "activity_budget_queued" : "activity_budget_exceeded",
+                destinationId: deferredTargetId,
+                queuePostId: queueResult.postId || null,
+                queuedUntil: deferredAtIso,
+                queueError: queueResult.error || "",
+                estimatedMaxActivityMs: routeDispatchPolicy.estimatedMaxActivityMs,
+                activityStartedAt: new Date(routeActivityStartedAtMs).toISOString(),
+                activityDeadlineAt: new Date(routeActivityDeadlineMs).toISOString(),
+              },
+            });
+          }
+        }
+        break;
+      }
+
       const targetId = filteredTargetIds[targetIndex];
-      let sendAttempted = false;
       const group = destGroupMap.get(String(targetId));
       if (!group) {
         routeTargets.push({
@@ -9147,6 +10169,13 @@ async function processRouteMessageForUser(input: {
       const scopedHeaders = buildUserScopedHeaders(userId);
       const mediaForDestination = routeMedia
         ? await resolveRouteForwardMediaForPlatform({ userId, platform, media: routeMedia })
+        : null;
+      const fallbackMediaForDestination = routeMediaFallback?.base64
+        ? await resolveRouteForwardMediaForPlatform({
+            userId,
+            platform,
+            media: routeMediaFallback,
+          })
         : null;
       if (!mediaForDestination) {
         logRouteMediaDebug("route.process.blocked.missing_image_required.outbound", {
@@ -9214,26 +10243,21 @@ async function processRouteMessageForUser(input: {
         });
         continue;
       }
-      let result = { data: null as unknown, error: { message: "Plataforma inválida" } as { message: string } | null };
-      if (platform === "whatsapp" && WHATSAPP_URL) {
-        sendAttempted = true;
-        result = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-          sessionId: destinationSessionId,
-          jid: destinationExternalId,
-          content: outboundTextSafe,
-          media: mediaForDestination ?? undefined,
-        }, scopedHeaders, routeDispatchPolicy.sendTimeoutMs);
-      } else if (platform === "telegram" && TELEGRAM_URL) {
-        sendAttempted = true;
-        result = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-          sessionId: destinationSessionId,
-          chatId: destinationExternalId,
-          message: outboundTextSafe,
-          media: mediaForDestination ?? undefined,
-        }, scopedHeaders, routeDispatchPolicy.sendTimeoutMs);
-      }
+      const result = await sendRouteDestinationWithResilience({
+        userId,
+        platform,
+        sessionId: destinationSessionId,
+        externalId: destinationExternalId,
+        content: outboundTextSafe,
+        media: mediaForDestination,
+        fallbackMedia: fallbackMediaForDestination,
+        scopedHeaders,
+        timeoutMs: routeDispatchPolicy.sendTimeoutMs,
+      });
+      const providerMessageId = extractProviderMessageIdFromSendResponse(result.data);
+      const deliveryAcceptedAt = providerMessageId ? nowIso() : "";
 
-      if (sendAttempted) {
+      if (result.attemptedSend) {
         await maybeWaitBetweenDestinations(targetIndex, filteredTargetIds.length, routeDispatchPolicy.interDestinationDelayMs);
       }
 
@@ -9250,6 +10274,8 @@ async function processRouteMessageForUser(input: {
           textLength: outboundTextSafe.length,
           media: summarizeRouteForwardMedia(mediaForDestination),
           error: result.error.message,
+          attempts: result.attempts,
+          usedFallbackMedia: result.usedFallbackMedia,
         });
         routeTargets.push({
           destination: String(group.name || targetId || "Destino"),
@@ -9266,6 +10292,11 @@ async function processRouteMessageForUser(input: {
             routeId: route.id,
             routeName: route.name,
             error: result.error.message,
+            attempts: result.attempts,
+            usedFallbackMedia: result.usedFallbackMedia,
+            providerMessageId,
+            destinationExternalId,
+            destinationSessionId,
             platform,
             hasMedia: !!mediaForDestination,
           },
@@ -9285,12 +10316,31 @@ async function processRouteMessageForUser(input: {
         errorStep: "",
         messageType: mediaForDestination ? mediaForDestination.kind : "text",
         sendOrder: targetIndex,
+        providerMessageId,
+        deliveryStatus: providerMessageId ? "accepted" : "",
+        deliveryUpdatedAt: deliveryAcceptedAt,
+        deliveryError: "",
+        deliveryMetadata: providerMessageId
+          ? {
+              source: "send_response",
+              platform,
+              destinationExternalId,
+              destinationSessionId,
+            }
+          : {},
         details: {
           message: outboundTextSafe,
           platform,
           routeId: route.id,
           routeName: route.name,
           hasMedia: !!mediaForDestination,
+          attempts: result.attempts,
+          usedFallbackMedia: result.usedFallbackMedia,
+          providerMessageId,
+          deliveryStatus: providerMessageId ? "accepted" : undefined,
+          deliveryUpdatedAt: deliveryAcceptedAt || undefined,
+          destinationExternalId,
+          destinationSessionId,
           ...(autoImageSource ? { autoImageSource } : {}),
         },
       });
@@ -9309,6 +10359,29 @@ async function processRouteMessageForUser(input: {
         routeName: route.name,
         destinationCount: filteredTargetIds.length,
         hasMedia: !!routeMedia,
+        dispatchPolicy: {
+          destinationCount: routeDispatchPolicy.destinationCount,
+          sendTimeoutMs: routeDispatchPolicy.sendTimeoutMs,
+          interDestinationDelayMs: routeDispatchPolicy.interDestinationDelayMs,
+          estimatedMaxActivityMs: routeDispatchPolicy.estimatedMaxActivityMs,
+          retryCount: ROUTE_DESTINATION_SEND_RETRIES,
+          retryDelayMs: ROUTE_DESTINATION_SEND_RETRY_DELAY_MS,
+          heavyLoadThresholdDestinations: ROUTE_HEAVY_LOAD_THRESHOLD_DESTINATIONS,
+          heavyLoadChunkSize: ROUTE_HEAVY_LOAD_CHUNK_SIZE,
+          heavyLoadCooldownMs: ROUTE_HEAVY_LOAD_COOLDOWN_MS,
+        },
+        activityBudget: {
+          startedAt: new Date(routeActivityStartedAtMs).toISOString(),
+          deadlineAt: new Date(routeActivityDeadlineMs).toISOString(),
+          finishedAt: nowIso(),
+          durationMs: Math.max(0, Date.now() - routeActivityStartedAtMs),
+          estimatedMaxActivityMs: routeDispatchPolicy.estimatedMaxActivityMs,
+          deferred: routeActivityDeferred,
+          deferredCount: routeActivityDeferredCount,
+          deferredQueuePostId: routeActivityDeferredQueuePostId || null,
+          deferredQueueError: routeActivityDeferredError || null,
+          deferredUntil: routeActivityDeferredUntilIso || null,
+        },
         ...(autoImageSource ? { autoImageSource } : {}),
       },
       targets: routeTargets,
@@ -11432,20 +12505,31 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
 
-      // Resolve group UUID from external_id (WhatsApp JID)
-      // We don't know the userId here — it's a service call — so we find the group
-      // by external_id without scoping to a single user (service is trusted).
-      const groupRow = await queryOne<{ id: string; user_id: string; session_id: string | null }>(
-        `SELECT id, user_id, session_id FROM groups
-          WHERE external_id = $1 AND platform = 'whatsapp' AND deleted_at IS NULL
-          LIMIT 1`,
-        [groupExternalId],
+      // Resolve owner group from external_id (WhatsApp JID). When the same group appears
+      // in multiple accounts, require session disambiguation to avoid cross-account writes.
+      const sessionScope = String(sessionId || "").trim();
+      const groupCandidates = await query<{ id: string; user_id: string; session_id: string | null }>(
+        `SELECT id, user_id, session_id
+           FROM groups
+          WHERE external_id = $1
+            AND platform = 'whatsapp'
+            AND deleted_at IS NULL
+            AND ($2 = '' OR COALESCE(session_id::text, '') = $2)
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+          LIMIT 5`,
+        [groupExternalId, sessionScope],
       );
-      if (!groupRow) {
+      if (groupCandidates.length === 0) {
         // Group not yet synced — silently ignore
         ok(res, { stored: false, reason: "group_not_found" });
         return;
       }
+      const ownerCandidates = new Set(groupCandidates.map((row) => String(row.user_id || "").trim()).filter(Boolean));
+      if (!sessionScope && ownerCandidates.size > 1) {
+        ok(res, { stored: false, reason: "ambiguous_group_owner" });
+        return;
+      }
+      const groupRow = groupCandidates[0];
 
       const groupUUID = groupRow.id;
       const ownerUserId = groupRow.user_id;
@@ -11806,16 +12890,28 @@ rpcRouter.post("/rpc", async (req, res) => {
         return;
       }
 
-      const groupRow = await queryOne<{ id: string; user_id: string; session_id: string | null }>(
-        `SELECT id, user_id, session_id FROM groups
-          WHERE external_id = $1 AND platform = 'whatsapp' AND deleted_at IS NULL
-          LIMIT 1`,
-        [groupExternalId],
+      const sessionScope = String(sessionId || "").trim();
+      const groupCandidates = await query<{ id: string; user_id: string; session_id: string | null }>(
+        `SELECT id, user_id, session_id
+           FROM groups
+          WHERE external_id = $1
+            AND platform = 'whatsapp'
+            AND deleted_at IS NULL
+            AND ($2 = '' OR COALESCE(session_id::text, '') = $2)
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+          LIMIT 5`,
+        [groupExternalId, sessionScope],
       );
-      if (!groupRow) {
+      if (groupCandidates.length === 0) {
         ok(res, { stored: false, reason: "group_not_found" });
         return;
       }
+      const ownerCandidates = new Set(groupCandidates.map((row) => String(row.user_id || "").trim()).filter(Boolean));
+      if (!sessionScope && ownerCandidates.size > 1) {
+        ok(res, { stored: false, reason: "ambiguous_group_owner" });
+        return;
+      }
+      const groupRow = groupCandidates[0];
 
       await upsertGroupMemberHistoryDaily({
         userId: groupRow.user_id,
@@ -12578,13 +13674,24 @@ if (funcName === "whatsapp-connect") {
 
     // â”€â”€ dispatch-messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (funcName === "dispatch-messages") {
+      const canRunGlobalDispatch = isService || (effectiveAdmin && !userIsAdmin);
+
       // Rescue stuck jobs: posts left in 'processing' after a crash or timeout.
       // Reset them to 'pending' so they are retried in this or the next cycle.
-      const stuckRows = await query<{ id: string; updated_at: string }>(
-        `UPDATE scheduled_posts SET status = 'pending', updated_at = NOW()
-         WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '5 minutes'
-         RETURNING id, updated_at`
-      );
+      const stuckRows = canRunGlobalDispatch
+        ? await query<{ id: string; updated_at: string }>(
+            `UPDATE scheduled_posts SET status = 'pending', updated_at = NOW()
+             WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '5 minutes'
+             RETURNING id, updated_at`
+          )
+        : await query<{ id: string; updated_at: string }>(
+            `UPDATE scheduled_posts SET status = 'pending', updated_at = NOW()
+             WHERE user_id = $1
+               AND status = 'processing'
+               AND updated_at < NOW() - INTERVAL '5 minutes'
+             RETURNING id, updated_at`,
+            [userId],
+          );
       if (stuckRows.length > 0) {
         console.log(JSON.stringify({
           ts: new Date().toISOString(), svc: "api", event: "dispatch_released_stuck_jobs",
@@ -12592,14 +13699,13 @@ if (funcName === "whatsapp-connect") {
         }));
       }
 
-      await cleanupExpiredScheduledPostMedia();
+      await cleanupExpiredScheduledPostMedia(canRunGlobalDispatch ? undefined : userId);
 
       const limit = Math.min(Number(params.limit ?? 20), 50);
       // Atomic claim: UPDATE status -> 'processing' using FOR UPDATE SKIP LOCKED so that
       // concurrent calls from the frontend and the scheduler never process the same post.
       // Only rows still 'pending' at the moment of the UPDATE are claimed, preventing
       // double-dispatch (SQL-5).
-      const canRunGlobalDispatch = isService || (effectiveAdmin && !userIsAdmin);
       const claimedRows = canRunGlobalDispatch
         ? await query(
             `UPDATE scheduled_posts SET status = 'processing', updated_at = NOW()
@@ -12693,7 +13799,11 @@ if (funcName === "whatsapp-connect") {
       for (const post of pending) {
         const nowMs = Date.now();
         const meta = parseScheduleMetadata(post.metadata);
-        const isRouteQuietHoursQueue = String(meta.scheduleSource || "").trim().toLowerCase() === ROUTE_QUIET_HOURS_SCHEDULE_SOURCE;
+        const scheduleSource = String(meta.scheduleSource || "").trim().toLowerCase();
+        const isRouteDeferredQueue = (
+          scheduleSource === ROUTE_QUIET_HOURS_SCHEDULE_SOURCE
+          || scheduleSource === ROUTE_DYNAMIC_QUEUE_SCHEDULE_SOURCE
+        );
         const routeQueueRouteId = typeof meta.routeId === "string" ? meta.routeId.trim() : "";
         const recurrence = normalizeScheduleRecurrence(post.recurrence);
         const dueSlotKey = getDueScheduleSlotKey(
@@ -12864,6 +13974,9 @@ if (funcName === "whatsapp-connect") {
           : [];
         const groupMap = new Map(groupRows.map((g) => [g.id, g]));
         const scheduleDispatchPolicy = buildDynamicDispatchPolicy(destIds.length);
+        const scheduleMediaFallback = scheduleMedia
+          ? await materializeRouteMediaForQueue(String(post.user_id), scheduleMedia)
+          : null;
         const scheduleTargets: HistoryEntryTargetInput[] = [];
         for (let destinationIndex = 0; destinationIndex < destIds.length; destinationIndex++) {
           const gid = destIds[destinationIndex];
@@ -12886,7 +13999,7 @@ if (funcName === "whatsapp-connect") {
                 error: `Grupo destino não encontrado: ${gid}`,
               },
             });
-            break;
+            continue;
           }
 
           const platform = String(g.platform ?? "");
@@ -12912,7 +14025,7 @@ if (funcName === "whatsapp-connect") {
                 error: "Sessão do destino offline ou grupo sem identificador externo.",
               },
             });
-            break;
+            continue;
           }
 
           const scopedHeaders = buildUserScopedHeaders(String(post.user_id));
@@ -12921,6 +14034,13 @@ if (funcName === "whatsapp-connect") {
             platform,
             media: scheduleMedia,
           });
+          const fallbackMediaForDestination = scheduleMediaFallback?.base64
+            ? await resolveRouteForwardMediaForPlatform({
+                userId: String(post.user_id),
+                platform,
+                media: scheduleMediaFallback,
+              })
+            : null;
           if (requiresScheduleImage && !mediaForDestination) {
             ok_ = false;
             failed += 1;
@@ -12942,30 +14062,22 @@ if (funcName === "whatsapp-connect") {
                 hasMedia: false,
               },
             });
-            break;
+            continue;
           }
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
-          let sentResult = { data: null, error: { message: "Plataforma inválida" } };
-          let sendAttempted = false;
-          if (platform === "whatsapp" && WHATSAPP_URL) {
-            sendAttempted = true;
-            sentResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-              sessionId: session,
-              jid: externalId,
-              content: outboundMessage,
-              media: mediaForDestination ?? undefined,
-            }, scopedHeaders, scheduleDispatchPolicy.sendTimeoutMs);
-          } else if (platform === "telegram" && TELEGRAM_URL) {
-            sendAttempted = true;
-            sentResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-              sessionId: session,
-              chatId: externalId,
-              message: outboundMessage,
-              media: mediaForDestination ?? undefined,
-            }, scopedHeaders, scheduleDispatchPolicy.sendTimeoutMs);
-          } else {
-            sentResult = { data: null, error: { message: `Serviço ${platform || "desconhecido"} indisponível` } };
-          }
+          const sentResult = await sendRouteDestinationWithResilience({
+            userId: String(post.user_id),
+            platform,
+            sessionId: session,
+            externalId,
+            content: outboundMessage,
+            media: mediaForDestination,
+            fallbackMedia: fallbackMediaForDestination,
+            scopedHeaders,
+            timeoutMs: scheduleDispatchPolicy.sendTimeoutMs,
+          });
+          const providerMessageId = extractProviderMessageIdFromSendResponse(sentResult.data);
+          const deliveryAcceptedAt = providerMessageId ? nowIso() : "";
           if (sentResult.error) {
             ok_ = false;
             failed += 1;
@@ -12984,10 +14096,15 @@ if (funcName === "whatsapp-connect") {
                 platform,
                 reason: "destination_send_failed",
                 error: String(sentResult.error.message || "Falha ao enviar para o destino."),
+                attempts: sentResult.attempts,
+                usedFallbackMedia: sentResult.usedFallbackMedia,
+                providerMessageId,
+                destinationExternalId: externalId,
+                destinationSessionId: session,
                 hasMedia: !!mediaForDestination,
               },
             });
-            break;
+            continue;
           }
 
           scheduleTargets.push({
@@ -13000,15 +14117,34 @@ if (funcName === "whatsapp-connect") {
             errorStep: "",
             messageType: mediaForDestination ? mediaForDestination.kind : "text",
             sendOrder: destinationIndex,
+            providerMessageId,
+            deliveryStatus: providerMessageId ? "accepted" : "",
+            deliveryUpdatedAt: deliveryAcceptedAt,
+            deliveryError: "",
+            deliveryMetadata: providerMessageId
+              ? {
+                  source: "send_response",
+                  platform,
+                  destinationExternalId: externalId,
+                  destinationSessionId: session,
+                }
+              : {},
             details: {
               message,
               platform: g.platform,
+              attempts: sentResult.attempts,
+              usedFallbackMedia: sentResult.usedFallbackMedia,
+              providerMessageId,
+              deliveryStatus: providerMessageId ? "accepted" : undefined,
+              deliveryUpdatedAt: deliveryAcceptedAt || undefined,
+              destinationExternalId: externalId,
+              destinationSessionId: session,
               hasMedia: !!mediaForDestination,
             },
           });
           sent++;
           postSentCount += 1;
-          if (sendAttempted) {
+          if (sentResult.attemptedSend) {
             await maybeWaitBetweenDestinations(destinationIndex, destIds.length, scheduleDispatchPolicy.interDestinationDelayMs);
           }
         }
@@ -13074,7 +14210,7 @@ if (funcName === "whatsapp-connect") {
           });
         }
 
-        if (postSentCount > 0 && isRouteQuietHoursQueue && isUuid(routeQueueRouteId)) {
+        if (postSentCount > 0 && isRouteDeferredQueue && isUuid(routeQueueRouteId)) {
           await execute(
             `UPDATE routes
                 SET rules = jsonb_set(
@@ -13101,7 +14237,7 @@ if (funcName === "whatsapp-connect") {
           await scheduleRouteForwardMediaDeletion({
             userId: String(post.user_id),
             media: scheduleMedia,
-            delayMs: 120_000,
+            delayMs: ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS,
           });
         }
       }
@@ -14753,27 +15889,21 @@ if (funcName === "whatsapp-connect") {
             continue;
           }
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
-          let sendAttempted = false;
-          let sendResult = { data: null as unknown, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } as { message: string } | null };
-          if (platform === "whatsapp" && WHATSAPP_URL) {
-            sendAttempted = true;
-            sendResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-              sessionId,
-              jid: externalId,
-              content: outboundMessage,
-              media: mediaForDestination,
-            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
-          } else if (platform === "telegram" && TELEGRAM_URL) {
-            sendAttempted = true;
-            sendResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-              sessionId,
-              chatId: externalId,
-              message: outboundMessage,
-              media: mediaForDestination,
-            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
-          }
+          const sendResult = await sendRouteDestinationWithResilience({
+            userId: ownerUserId,
+            platform,
+            sessionId,
+            externalId,
+            content: outboundMessage,
+            media: mediaForDestination,
+            fallbackMedia: null,
+            scopedHeaders,
+            timeoutMs: automationDispatchPolicy.sendTimeoutMs,
+          });
+          const providerMessageId = extractProviderMessageIdFromSendResponse(sendResult.data);
+          const deliveryAcceptedAt = providerMessageId ? nowIso() : "";
 
-          if (sendAttempted) {
+          if (sendResult.attemptedSend) {
             await maybeWaitBetweenDestinations(destinationIndex, destinationGroups.length, automationDispatchPolicy.interDestinationDelayMs);
           }
 
@@ -14796,6 +15926,8 @@ if (funcName === "whatsapp-connect") {
                 platform,
                 reason: "destination_send_failed",
                 error: sendResult.error.message,
+                attempts: sendResult.attempts,
+                providerMessageId,
                 product: selectedProduct,
                 hasMedia: true,
                 message,
@@ -14816,10 +15948,26 @@ if (funcName === "whatsapp-connect") {
             errorStep: "",
             messageType: "image",
             sendOrder: destinationIndex,
+            providerMessageId,
+            deliveryStatus: providerMessageId ? "accepted" : "",
+            deliveryUpdatedAt: deliveryAcceptedAt,
+            deliveryError: "",
+            deliveryMetadata: providerMessageId
+              ? {
+                  source: "send_response",
+                  platform,
+                  destinationExternalId: externalId,
+                  destinationSessionId: sessionId,
+                }
+              : {},
             details: {
               automationId,
               source,
               platform,
+              attempts: sendResult.attempts,
+              providerMessageId,
+              deliveryStatus: providerMessageId ? "accepted" : undefined,
+              deliveryUpdatedAt: deliveryAcceptedAt || undefined,
               product: selectedProduct,
               hasMedia: true,
               message,
@@ -14851,7 +15999,7 @@ if (funcName === "whatsapp-connect") {
           await scheduleRouteForwardMediaDeletion({
             userId: ownerUserId,
             media: automationMedia,
-            delayMs: 120_000,
+            delayMs: ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS,
           });
           processed += 1;
           await execute(
@@ -15475,27 +16623,21 @@ if (funcName === "whatsapp-connect") {
           }
 
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
-          let sendAttempted = false;
-          let sendResult = { data: null as unknown, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } as { message: string } | null };
-          if (platform === "whatsapp" && WHATSAPP_URL) {
-            sendAttempted = true;
-            sendResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-              sessionId,
-              jid: externalId,
-              content: outboundMessage,
-              media: mediaForDestination,
-            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
-          } else if (platform === "telegram" && TELEGRAM_URL) {
-            sendAttempted = true;
-            sendResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-              sessionId,
-              chatId: externalId,
-              message: outboundMessage,
-              media: mediaForDestination,
-            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
-          }
+          const sendResult = await sendRouteDestinationWithResilience({
+            userId: ownerUserId,
+            platform,
+            sessionId,
+            externalId,
+            content: outboundMessage,
+            media: mediaForDestination,
+            fallbackMedia: null,
+            scopedHeaders,
+            timeoutMs: automationDispatchPolicy.sendTimeoutMs,
+          });
+          const providerMessageId = extractProviderMessageIdFromSendResponse(sendResult.data);
+          const deliveryAcceptedAt = providerMessageId ? nowIso() : "";
 
-          if (sendAttempted) {
+          if (sendResult.attemptedSend) {
             await maybeWaitBetweenDestinations(destinationIndex, destinationGroups.length, automationDispatchPolicy.interDestinationDelayMs);
           }
 
@@ -15518,6 +16660,8 @@ if (funcName === "whatsapp-connect") {
                 platform,
                 reason: "destination_send_failed",
                 error: sendResult.error.message,
+                attempts: sendResult.attempts,
+                providerMessageId,
                 product: selectedProduct,
                 hasMedia: true,
                 message,
@@ -15538,10 +16682,26 @@ if (funcName === "whatsapp-connect") {
             errorStep: "",
             messageType: "image",
             sendOrder: destinationIndex,
+            providerMessageId,
+            deliveryStatus: providerMessageId ? "accepted" : "",
+            deliveryUpdatedAt: deliveryAcceptedAt,
+            deliveryError: "",
+            deliveryMetadata: providerMessageId
+              ? {
+                  source: "send_response",
+                  platform,
+                  destinationExternalId: externalId,
+                  destinationSessionId: sessionId,
+                }
+              : {},
             details: {
               automationId,
               source,
               platform,
+              attempts: sendResult.attempts,
+              providerMessageId,
+              deliveryStatus: providerMessageId ? "accepted" : undefined,
+              deliveryUpdatedAt: deliveryAcceptedAt || undefined,
               product: selectedProduct,
               hasMedia: true,
               message,
@@ -15573,7 +16733,7 @@ if (funcName === "whatsapp-connect") {
           await scheduleRouteForwardMediaDeletion({
             userId: ownerUserId,
             media: automationMedia,
-            delayMs: 120_000,
+            delayMs: ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS,
           });
           processed += 1;
           await execute(
@@ -16194,27 +17354,21 @@ if (funcName === "whatsapp-connect") {
           }
 
           const outboundMessage = formatMessageForDestinationPlatform(message, platform) || " ";
-          let sendAttempted = false;
-          let sendResult = { data: null as unknown, error: { message: `Plataforma ${platform || "desconhecida"} indisponível` } as { message: string } | null };
-          if (platform === "whatsapp" && WHATSAPP_URL) {
-            sendAttempted = true;
-            sendResult = await proxyMicroservice(WHATSAPP_URL, "/api/send-message", "POST", {
-              sessionId,
-              jid: externalId,
-              content: outboundMessage,
-              media: mediaForDestination,
-            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
-          } else if (platform === "telegram" && TELEGRAM_URL) {
-            sendAttempted = true;
-            sendResult = await proxyMicroservice(TELEGRAM_URL, "/api/telegram/send-message", "POST", {
-              sessionId,
-              chatId: externalId,
-              message: outboundMessage,
-              media: mediaForDestination,
-            }, scopedHeaders, automationDispatchPolicy.sendTimeoutMs);
-          }
+          const sendResult = await sendRouteDestinationWithResilience({
+            userId: ownerUserId,
+            platform,
+            sessionId,
+            externalId,
+            content: outboundMessage,
+            media: mediaForDestination,
+            fallbackMedia: null,
+            scopedHeaders,
+            timeoutMs: automationDispatchPolicy.sendTimeoutMs,
+          });
+          const providerMessageId = extractProviderMessageIdFromSendResponse(sendResult.data);
+          const deliveryAcceptedAt = providerMessageId ? nowIso() : "";
 
-          if (sendAttempted) {
+          if (sendResult.attemptedSend) {
             await maybeWaitBetweenDestinations(destinationIndex, destinationGroups.length, automationDispatchPolicy.interDestinationDelayMs);
           }
 
@@ -16237,6 +17391,8 @@ if (funcName === "whatsapp-connect") {
                 platform,
                 reason: "destination_send_failed",
                 error: sendResult.error.message,
+                attempts: sendResult.attempts,
+                providerMessageId,
                 product: selectedProduct,
                 hasMedia: true,
                 message,
@@ -16257,10 +17413,26 @@ if (funcName === "whatsapp-connect") {
             errorStep: "",
             messageType: "image",
             sendOrder: destinationIndex,
+            providerMessageId,
+            deliveryStatus: providerMessageId ? "accepted" : "",
+            deliveryUpdatedAt: deliveryAcceptedAt,
+            deliveryError: "",
+            deliveryMetadata: providerMessageId
+              ? {
+                  source: "send_response",
+                  platform,
+                  destinationExternalId: externalId,
+                  destinationSessionId: sessionId,
+                }
+              : {},
             details: {
               automationId,
               source,
               platform,
+              attempts: sendResult.attempts,
+              providerMessageId,
+              deliveryStatus: providerMessageId ? "accepted" : undefined,
+              deliveryUpdatedAt: deliveryAcceptedAt || undefined,
               product: selectedProduct,
               hasMedia: true,
               message,
@@ -16292,7 +17464,7 @@ if (funcName === "whatsapp-connect") {
           await scheduleRouteForwardMediaDeletion({
             userId: ownerUserId,
             media: automationMedia,
-            delayMs: 120_000,
+            delayMs: ROUTE_MEDIA_DELETE_DELAY_AFTER_COMPLETION_MS,
           });
           processed += 1;
           await execute(

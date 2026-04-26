@@ -121,6 +121,11 @@ type TableMap = {
     error_step: string;
     message_type: string;
     send_order: number;
+    provider_message_id: string | null;
+    delivery_status: string | null;
+    delivery_updated_at: string | null;
+    delivery_error: string | null;
+    delivery_metadata: Json;
     details: Json;
   }>;
   link_hub_pages: TableDef<{
